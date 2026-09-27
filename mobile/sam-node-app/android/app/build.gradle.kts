@@ -76,6 +76,10 @@ android {
 kotlin {
     compilerOptions {
         jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+        // Kotlin 2.4 defaults the module name to "{group}:{project}"; the
+        // appfunctions compiler names a generated class after it, and ':'
+        // is not legal in an identifier.
+        moduleName = "sam_node_app"
     }
 }
 
