@@ -12,8 +12,8 @@ allow entry, the control plane host; the mesh rides on that connection.
 ## Requirements
 
 - `sbx` 0.45 or later (the first release with v3 kits).
-- A v3 workload. The built-in names such as `sbx run claude` select v2 kits,
-  which refuse v3 mixins, so compose the agent from v3 kits as shown below.
+- A v3 workload such as `docker/sbx-kit-claude`. The built-in names such as
+  `sbx run claude` select v2 kits, which refuse v3 mixins.
 - A control plane reachable over HTTPS on a hostname. `sam-one --tunnel`
   works. A standalone router advertised only by IP address does not yet.
 
@@ -76,9 +76,7 @@ repository.
 6. Start Claude Code with the kit:
 
    ```sh
-   sbx run docker/sbx-kit-shell:1.0.0 \
-     --kit docker/sbx-kit-claude-mixin:<version> \
-     --kit ./development/examples/sbx-kit \
+   sbx run docker/sbx-kit-claude --kit ./development/examples/sbx-kit \
      --kit-args-file kit-args.yaml --name sam-demo
    ```
 
