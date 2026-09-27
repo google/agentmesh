@@ -1,0 +1,39 @@
+#!/bin/sh
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Runs once at sandbox create, before the agent starts.
+set -eu
+d=$HOME/.sam
+mkdir -p "$d" && chmod 700 "$d"
+if [ ! -s "$d/api-token" ]; then
+  (umask 077; head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' > "$d/api-token")
+fi
+tok=$(cat "$d/api-token")
+url=http://127.0.0.1:8080/mcp
+hdr="X-Sam-Authentication: Bearer $tok"
+
+warn() { echo "sam: $1 mcp add failed; add $url by hand" >&2; }
+if command -v claude >/dev/null; then
+  claude mcp add --transport http --scope user --header "$hdr" sam "$url" || warn claude
+fi
+if command -v gemini >/dev/null; then
+  gemini mcp add --transport http --scope user -H "$hdr" sam "$url" || warn gemini
+fi
+if command -v codex >/dev/null; then
+  # codex mcp add has no header flag; the table goes straight into its config.
+  mkdir -p "$HOME/.codex"
+  printf '\n[mcp_servers.sam]\nurl = "%s"\nhttp_headers = { "X-Sam-Authentication" = "Bearer %s" }\n' \
+    "$url" "$tok" >> "$HOME/.codex/config.toml"
+fi

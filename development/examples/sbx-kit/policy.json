@@ -1,0 +1,15 @@
+{
+  "roles": [
+    {
+      "name": "sam:role:node",
+      "allowed_services": ["system://sam.catalog"],
+      "allowed_targets": ["*"],
+      "allowed_labels": ["site=office"]
+    },
+    {
+      "name": "agent",
+      "allowed_services": ["mcp://tools"],
+      "allowed_targets": ["*"]
+    }
+  ]
+}

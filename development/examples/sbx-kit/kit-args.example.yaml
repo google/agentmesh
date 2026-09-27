@@ -1,0 +1,4 @@
+# Copy to kit-args.yaml and fill in. Keys are <kit handle>.<arg>; the handle
+# is this directory's name. Keep the file out of version control.
+sbx-kit.controlPlane: my-mesh.trycloudflare.com
+sbx-kit.token: PASTE-THE-AGENT-TOKEN

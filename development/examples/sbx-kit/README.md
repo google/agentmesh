@@ -1,0 +1,116 @@
+# SAM kit for Docker sandboxes
+
+A [Docker sandbox kit](https://github.com/docker/sandbox-kit-spec) that puts a
+SAM mesh node inside the sandbox, next to the agent, and registers it with the
+agent as an MCP server. The agent reaches the mesh's tools and models by name,
+under the mesh's policy and audit, and the admin can revoke it without touching
+the sandbox.
+
+Docker's host proxy stays the sandbox's internet boundary. The kit adds one
+allow entry, the control plane host; the mesh rides on that connection.
+
+## Requirements
+
+- `sbx` 0.45 or later (the first release with v3 kits).
+- A v3 workload. The built-in names such as `sbx run claude` select v2 kits,
+  which refuse v3 mixins, so compose the agent from v3 kits as shown below.
+- A control plane reachable over HTTPS on a hostname. `sam-one --tunnel`
+  works. A standalone router advertised only by IP address does not yet.
+
+## Files
+
+| | |
+| --- | --- |
+| `sam.yaml` | The kit: args, the one allow entry, the install and startup hooks. |
+| `sam.dockerfile` | Copies `sam-node` from `ghcr.io/google/sam-node` and the hooks into an overlay. |
+| `hooks/install.sh` | Once, at create: mints the node API token and runs `mcp add` for Claude Code, Gemini CLI and Codex, whichever are present. |
+| `hooks/startup.sh` | Every boot: enrolls on the first, then runs `sam-node run --daemonize`. |
+| `policy.json`, `pep.yaml` | The walkthrough's mesh: one node serving `mcp://tools`, one `agent` role allowed to call it. |
+| `kit-args.example.yaml` | The two values the kit needs. |
+
+## Walkthrough
+
+**Admin**, in a checkout of this repository, with `sam-one`, `sam-node` and
+`npx` on the path. Each server runs in the foreground in its own terminal.
+
+1. Start a tool server for the mesh to serve:
+
+   ```sh
+   npx -y @modelcontextprotocol/server-everything streamableHttp
+   ```
+
+2. Start the mesh on a public URL:
+
+   ```sh
+   cd development/examples/sbx-kit
+   sam-one --data-dir ~/.sam-sbx/one --tunnel cloudflare --tunnel-install \
+     --policy-file policy.json --no-join-token --enroll-qr=false
+   ```
+
+   Note the `https://` URL in the banner; below it is `$URL`, and its host
+   is `$HOST`.
+
+3. Admit the node that serves the tools, and start it:
+
+   ```sh
+   sam-one token create --server "$URL" --data-dir ~/.sam-sbx/one \
+     --max-usages 1 | awk '/^Token:/ {print $2}' > ~/.sam-sbx/pep-token
+   sam-node run --control-plane "$URL" --bootstrap-token-path ~/.sam-sbx/pep-token \
+     --config pep.yaml --data-dir ~/.sam-sbx/pep --bind-addr=
+   ```
+
+4. Mint the sandbox's token:
+
+   ```sh
+   sam-one token create --server "$URL" --data-dir ~/.sam-sbx/one \
+     --role agent --max-usages 1
+   ```
+
+**Developer**, on the machine running Docker sandboxes, in a checkout of this
+repository.
+
+5. Copy `kit-args.example.yaml` to `kit-args.yaml`, and fill in `$HOST` and
+   the token from step 4. Keep the file out of version control: the token must
+   not appear on a command line.
+
+6. Start Claude Code with the kit:
+
+   ```sh
+   sbx run docker/sbx-kit-shell:1.0.0 \
+     --kit docker/sbx-kit-claude-mixin:<version> \
+     --kit ./development/examples/sbx-kit \
+     --kit-args-file kit-args.yaml --name sam-demo
+   ```
+
+   `sbx` asks you to approve one network allow entry, the control plane host.
+
+7. Ask Claude: *"List the tools on the SAM mesh and call echo with hello."* It
+   finds `mcp://tools` through the `sam` MCP server and calls it.
+
+**Admin** again.
+
+8. Take the tools away from the agent role:
+
+   ```sh
+   jq '(.roles[] | select(.name == "agent") | .allowed_services) = []' policy.json \
+     | curl -sS -X POST "$URL/policies" \
+         -H "Authorization: Bearer $(cat ~/.sam-sbx/one/admin-token)" \
+         -H 'Content-Type: application/json' --data @-
+   ```
+
+9. Ask Claude to call the tool again. The mesh refuses it by policy. The
+   sandbox and the agent were not restarted.
+
+## Notes
+
+- **The token is single-use.** The first boot spends it and the node keeps
+  its identity in `~/.sam`, so restarts need nothing. A recreated sandbox
+  needs a fresh token.
+- **The node is the agent's identity.** The mesh sees one member per sandbox,
+  with the role the token grants.
+- **Logs.** Inside the sandbox, `~/.sam/sam-node.log`. On the host, `sbx
+  policy log` shows what the proxy refused.
+- **Other agents.** The install hook registers the node with Gemini CLI and
+  Codex too, if the workload ships them. Any other MCP client can use
+  `http://127.0.0.1:8080/mcp` with the header
+  `X-Sam-Authentication: Bearer $(cat ~/.sam/api-token)`.
