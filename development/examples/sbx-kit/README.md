@@ -26,7 +26,7 @@ allow entry, the control plane host; the mesh rides on that connection.
 | `hooks/install.sh` | Once, at create: mints the node API token and runs `mcp add` for Claude Code, Gemini CLI and Codex, whichever are present. |
 | `hooks/startup.sh` | Every boot: enrolls on the first, then runs `sam-node run --daemonize`. |
 | `policy.json`, `pep.yaml` | The walkthrough's mesh: one node serving `mcp://tools`, one `agent` role allowed to call it. |
-| `kit-args.example.yaml` | The two values the kit needs. |
+| `kit-args.example` | The two values the kit needs. |
 
 ## Walkthrough
 
@@ -69,15 +69,15 @@ allow entry, the control plane host; the mesh rides on that connection.
 **Developer**, on the machine running Docker sandboxes, in a checkout of this
 repository.
 
-5. Copy `kit-args.example.yaml` to `kit-args.yaml`, and fill in `$HOST` and
-   the token from step 4. Keep the file out of version control: the token must
+5. Copy `kit-args.example` to `kit-args`, and fill in `$HOST` (no
+   `https://`) and the token from step 4. Keep the file out of version control: the token must
    not appear on a command line.
 
 6. Start Claude Code with the kit:
 
    ```sh
    sbx run docker/sbx-kit-claude --kit ./development/examples/sbx-kit \
-     --kit-args-file kit-args.yaml --name sam-demo
+     --kit-args-file kit-args --name sam-demo
    ```
 
    `sbx` asks you to approve one network allow entry, the control plane host.
