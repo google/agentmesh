@@ -8,13 +8,13 @@
 # image only libgmp10.
 
 # Stage 1: Build
-FROM python:3.12-slim-bookworm@sha256:392307d22300de8b5986851a12d9176dfc0fc073e65bf6523ebd7dcbeb23564e AS builder
+FROM python:3.14-slim-bookworm@sha256:82bc3c539b8813ada9d68c63b40158fa002f7f33de9bf3312a3dfdc0620dff56 AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libgmp-dev python3-dev && rm -rf /var/lib/apt/lists/*
 COPY sdk/python /src
 RUN python -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir '/src[examples]'
 
 # Stage 2: Final
-FROM python:3.12-slim-bookworm@sha256:392307d22300de8b5986851a12d9176dfc0fc073e65bf6523ebd7dcbeb23564e
+FROM python:3.14-slim-bookworm@sha256:82bc3c539b8813ada9d68c63b40158fa002f7f33de9bf3312a3dfdc0620dff56
 RUN apt-get update && apt-get install -y --no-install-recommends libgmp10 && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 65532 nonroot && useradd --uid 65532 --gid nonroot --create-home nonroot
 WORKDIR /app
