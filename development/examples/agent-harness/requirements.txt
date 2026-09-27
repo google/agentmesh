@@ -5,7 +5,7 @@
 # There is no proxy support here on purpose. The sandbox routes the agent's
 # traffic to the boundary through tun0, so the agent neither configures a proxy
 # nor knows there is one.
-openai>=3.14.1,<4
+openai>=3.16.2,<4
 # Pinned to a major version: 1.x spells the transport streamablehttp_client and
 # 2.x spells it streamable_http_client, so an unpinned floor silently changes
 # the API underneath a sandbox image.
