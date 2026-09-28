@@ -111,7 +111,8 @@ repository.
 - **A project `.mcp.json` pointing at `127.0.0.1:8080`** is loaded too,
   since the workspace is mounted, and reaches this node with your host node's
   token, so it fails with `401`. The kit's own server is `sam`. Disable the
-  other one with `disabledMcpjsonServers` in `.claude/settings.local.json`.
+  other one inside the sandbox only, by adding its name to
+  `disabledMcpjsonServers` in the sandbox's `~/.claude/settings.json`.
 - **Other agents.** The install hook registers the node with Gemini CLI and
   Codex too, if the workload ships them. Any other MCP client can use
   `http://127.0.0.1:8080/mcp` with the header
