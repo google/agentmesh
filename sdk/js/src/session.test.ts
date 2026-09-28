@@ -388,6 +388,8 @@ test("an egress floor stated at join is held on the HTTP path, and the provider 
     b.addFact(wasm.Fact.fromString("expiration(2035-01-01T00:00:00Z)"));
     return b.build(forged.getPrivateKey()).toBytes();
   });
+  // Enrolled and attesting the floor, but not a node: a router hosts no service.
+  const notANode = await serve((peerId) => mint(peerId, ROLE_ROUTER, undefined, { region: "eu" }));
   const addrOf = (host: Libp2p) => (host.getMultiaddrs()[0] as ReturnType<typeof multiaddr>).toString();
   const sessions: MeshSession[] = [];
   const join = async (options: JoinOptions): Promise<MeshSession> => {
@@ -418,7 +420,9 @@ test("an egress floor stated at join is held on the HTTP path, and the provider 
     // A banned provider is refused before any handshake.
     plain.banned.add(provider.peerId.toString(), Date.now());
     await assert.rejects(plain.request(addrOf(provider), "a2a://agent", "/card"), /banned/);
+    // Only nodes host services, as sam-node's checkPeerLabels requires.
+    await assert.rejects(held.request(addrOf(notANode), "a2a://agent", "/card"), /lacks expected role "sam:role:node"/);
   } finally {
-    await Promise.all([...sessions.map((s) => s.close()), provider.stop(), impostor.stop()]);
+    await Promise.all([...sessions.map((s) => s.close()), provider.stop(), impostor.stop(), notANode.stop()]);
   }
 });

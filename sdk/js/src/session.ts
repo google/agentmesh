@@ -19,6 +19,7 @@ import { peerIdFromString } from "@libp2p/peer-id";
 import { isMultiaddr, multiaddr, type Multiaddr } from "@multiformats/multiaddr";
 import { AUTH_HANDLER_OPTIONS, AUTH_PROTOCOL, authenticateWithPeer, authStreamHandler } from "./auth.ts";
 import { ROLE_ROUTER, requireRole, type VerifiedBiscuit } from "./biscuit.ts";
+import { ROLE_NODE } from "./controlplane.ts";
 import { canonicalPeerId } from "./identity.ts";
 import { isServiceType, parseServiceTarget, serviceCID } from "./discovery.ts";
 import { createMeshHost, listenThroughRelay, type MeshHost, type MeshHostOptions, type RelayListener } from "./host.ts";
@@ -637,7 +638,7 @@ export class MeshSession {
 
   /**
    * The connection an HTTP call goes out on, its peer verified as an enrolled
-   * member holding the floor before anything is sent (sam-node's VerifyPeerLabels).
+   * node holding the floor before anything is sent (sam-node's VerifyPeerLabels).
    */
   async #egressConnection(peer: Peer, signal?: AbortSignal): Promise<Connection> {
     const conn = await this.connect(peer, signal);
@@ -647,6 +648,8 @@ export class MeshSession {
       return conn;
     }
     const provider = await authenticateWithPeer(conn, this.mesh.authFrame(), this.mesh.credential.controlPlaneKeys);
+    // Only nodes host services; a router's or an admin's credential is a member, not a provider.
+    requireRole(provider, ROLE_NODE);
     requireEgressLabels(provider, this.#egressRequireLabels);
     this.#egressVerdicts.set(peerId, new Date(Date.now() + EGRESS_VERDICT_TTL_MS));
     return conn;

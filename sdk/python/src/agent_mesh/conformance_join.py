@@ -70,8 +70,17 @@ def _emit(obj: dict) -> None:
 
 
 def _labels_from_env(name: str) -> dict[str, str]:
-    """Labels from an environment variable written "k=v,k2=v2"."""
-    return dict(pair.split("=", 1) for pair in os.environ.get(name, "").split(",") if "=" in pair)
+    """Labels from an environment variable written "k=v,k2=v2"; a pair without
+    "=" is refused (parseRequiredLabels), so a typo never switches a floor off."""
+    out: dict[str, str] = {}
+    for pair in os.environ.get(name, "").split(","):
+        if not pair.strip():
+            continue
+        key, sep, value = pair.partition("=")
+        if not sep:
+            raise SystemExit(f"{name}: invalid label {pair.strip()!r}: expected key=value")
+        out[key.strip()] = value.strip()
+    return out
 
 
 def _root_cause(err: BaseException) -> BaseException:

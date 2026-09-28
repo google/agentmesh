@@ -477,8 +477,8 @@ holds against the control plane's records.
   `MeshTransport`) verifies the provider with or without a floor, through
   the mutual `/sam/auth/1.0.0` handshake, as `sam-node`'s `VerifyPeerLabels`
   does before its egress proxy sends anything; a positive verdict is kept
-  per peer for five minutes (`labelGateTTL`), a miss never. Refusals are
-  `LabelsNotSatisfiedError`, which names the floor.
+  per peer for five minutes (`labelGateTTL`); a refusal is not kept. An
+  unmet floor is a `LabelsNotSatisfiedError` naming the floor.
 - `session.listTools(peer, service)` and `session.callTool(peer, service,
   tool, args)` on top of that.
 - Tests. Unit: each SDK calls a tool on an in-process provider that serves

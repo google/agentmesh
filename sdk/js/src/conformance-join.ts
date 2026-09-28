@@ -78,14 +78,23 @@ function emit(obj: unknown): void {
   process.stdout.write(JSON.stringify(obj) + "\n");
 }
 
-/** Labels from an environment variable written "k=v,k2=v2". */
+/**
+ * Labels from an environment variable written "k=v,k2=v2"; a pair without
+ * "=" is refused (parseRequiredLabels), so a typo never switches a floor off.
+ */
 function labelsFromEnv(name: string): Record<string, string> {
-  return Object.fromEntries(
-    (process.env[name] ?? "")
-      .split(",")
-      .filter((pair) => pair.includes("="))
-      .map((pair) => pair.split("=", 2) as [string, string]),
-  );
+  const out: Record<string, string> = {};
+  for (const pair of (process.env[name] ?? "").split(",")) {
+    if (pair.trim() === "") {
+      continue;
+    }
+    const eq = pair.indexOf("=");
+    if (eq === -1) {
+      throw new Error(`${name}: invalid label ${JSON.stringify(pair.trim())}: expected key=value`);
+    }
+    out[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
+  }
+  return out;
 }
 
 function failure(cmd: string | undefined, err: unknown): unknown {

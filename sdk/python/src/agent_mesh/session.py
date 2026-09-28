@@ -40,6 +40,7 @@ from ._proto import sam_pb2 as pb
 from .auth import AUTH_PROTOCOL, auth_stream_handler, authenticate_with_peer
 from .authorizer import ProviderAuthorizerOptions
 from .biscuit import ROLE_ROUTER, VerifiedBiscuit, require_role
+from .controlplane import ROLE_NODE
 from .discovery import DiscoveredProvider, find_peer, find_providers, parse_service_target, service_key
 from .host import create_mesh_host, dial, dial_addrs, peer_info
 from .httpx_transport import MESH_PATH_PREFIX
@@ -522,12 +523,14 @@ class MeshSession:
         )
 
     async def _egress_peer(self, peer: Peer) -> ID:
-        """The peer an HTTP call goes out to, verified as an enrolled member
+        """The peer an HTTP call goes out to, verified as an enrolled node
         holding the floor before anything is sent (sam-node's VerifyPeerLabels)."""
         peer_id = await self.connect(peer)
         if self._egress_verdicts.get(str(peer_id), 0.0) > time.monotonic():
             return peer_id
         provider = await authenticate_with_peer(self.host, peer_id, self.mesh.auth_frame(), self.mesh.credential.control_plane_keys)
+        # Only nodes host services; a router's or an admin's credential is a member, not a provider.
+        require_role(provider, ROLE_NODE)
         require_egress_labels(provider, self.egress_require_labels)
         self._egress_verdicts[str(peer_id)] = time.monotonic() + EGRESS_VERDICT_TTL
         return peer_id

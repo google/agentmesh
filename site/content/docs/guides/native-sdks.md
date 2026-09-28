@@ -890,8 +890,8 @@ round: `join({ egressRequireLabels })` (`join(egress_require_labels=)`)
 names labels every peer the session calls must attest, all of them, as
 `egress.require_labels` does for a `sam-node`. It is stated once at `join`
 and held for the session, on every call and however the peer was named;
-the agent's calls cannot waive or widen it. It is the program author's
-floor, not the operator's: nothing outside the process sets it.
+the agent's calls cannot waive or widen it. The floor belongs to the
+program that calls `join`; no configuration outside the process sets it.
 
 `acceptA2A` (`accept_a2a`) fetched the mesh policy and started answering.
 Every caller must present a credential signed by a trusted control plane

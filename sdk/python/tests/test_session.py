@@ -452,6 +452,8 @@ def test_an_egress_floor_stated_at_join_is_held_on_the_http_path():
             _, impostor_addr = await start_provider(
                 nursery, lambda p: ba.BiscuitBuilder("node({p}); expiration(2035-01-01T00:00:00Z);", {"p": p}).build(forged.private_key).to_bytes(), handshakes
             )
+            # Enrolled and attesting the floor, but not a node: a router hosts no service.
+            _, not_a_node_addr = await start_provider(nursery, lambda p: mint(p, ROLE_ROUTER, labels={"region": "eu"}), handshakes)
 
             def join(**options):
                 mesh = AgentMesh.enroll("http://127.0.0.1:1", bootstrap_token="sbt", transport=fake_control_plane([router_addr]))
@@ -482,6 +484,9 @@ def test_an_egress_floor_stated_at_join_is_held_on_the_http_path():
                 plain.banned.add(str(provider.get_id()), int(time.time() * 1000))
                 with pytest.raises(PermissionError, match="banned"):
                     await plain.request(provider_addr, "a2a://agent", "/card")
+                # Only nodes host services, as sam-node's checkPeerLabels requires.
+                with pytest.raises(BiscuitVerificationError, match="lacks expected role 'sam:role:node'"):
+                    await held.request(not_a_node_addr, "a2a://agent", "/card")
             nursery.cancel_scope.cancel()
 
     trio.run(with_timeout, 60, main)
