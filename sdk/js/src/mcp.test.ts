@@ -31,7 +31,7 @@ import { readFileSync } from "node:fs";
 import { after, before, test } from "node:test";
 import { z } from "zod";
 import { AuthRejectedError, MAX_AUTH_FRAME_BYTES, MCP_PROTOCOL } from "./auth.ts";
-import { loadBiscuit, verifyPeerBiscuit } from "./biscuit.ts";
+import { ROLE_ROUTER, loadBiscuit, verifyPeerBiscuit } from "./biscuit.ts";
 import { ROLE_NODE } from "./controlplane.ts";
 import { parseServiceTarget, serviceCID } from "./discovery.ts";
 import { AuthFrameSchema, AuthResponseSchema } from "./gen/sam_pb.ts";
@@ -227,4 +227,16 @@ test("a provider whose credential the caller does not trust is rejected", async 
 test("a service the provider does not have ends the session before MCP starts", async () => {
   const conn = await caller.dial(provider.getMultiaddrs()[0] as Parameters<typeof caller.dial>[0]);
   await assert.rejects(openMCPSession(conn, frame("mcp://no-such-service"), [cpKey], { signal: AbortSignal.timeout(3000) }));
+});
+
+test("only a node is a provider, as sam-node's checkPeerLabels requires", async () => {
+  // The provider answers with the credential it holds at the time; a router's, attesting the floor, is not a provider's.
+  const nodeBiscuit = providerBiscuit;
+  providerBiscuit = mint(provider.peerId.toString(), ROLE_ROUTER, { region: "eu" });
+  try {
+    const conn = await caller.dial(provider.getMultiaddrs()[0] as Parameters<typeof caller.dial>[0]);
+    await assert.rejects(openMCPSession(conn, frame("mcp://calc"), [cpKey], {}, { region: "eu" }), /lacks expected role "sam:role:node"/);
+  } finally {
+    providerBiscuit = nodeBiscuit;
+  }
 });

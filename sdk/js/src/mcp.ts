@@ -22,7 +22,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { JSONRPCMessageSchema, type JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { AUTH_HANDSHAKE_TIMEOUT_MS, AuthRejectedError, MAX_AUTH_FRAME_BYTES, MCP_PROTOCOL } from "./auth.ts";
-import { BiscuitVerificationError, verifyPeerBiscuit, type VerifiedBiscuit } from "./biscuit.ts";
+import { BiscuitVerificationError, requireRole, verifyPeerBiscuit, type VerifiedBiscuit } from "./biscuit.ts";
+import { ROLE_NODE } from "./controlplane.ts";
 import { decodeAuthResponse } from "./credential.ts";
 
 /** go-msgio's default message cap, which sam-node's StreamTransport uses. */
@@ -178,6 +179,8 @@ export async function openMCPSession(
       throw new AuthRejectedError(conn.remotePeer.toString(), resp.error || "no reason given");
     }
     provider = await verifyPeerBiscuit(resp.biscuit, conn.remotePeer.toString(), trustedKeys);
+    // Only nodes host services; a router's or an admin's credential is a member, not a provider.
+    requireRole(provider, ROLE_NODE);
     requireLabels(provider, options.requiredLabels);
     requireEgressLabels(provider, egressRequireLabels);
   } catch (err) {

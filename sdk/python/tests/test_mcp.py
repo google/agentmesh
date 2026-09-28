@@ -33,7 +33,7 @@ from mcp.shared.message import SessionMessage
 
 from agent_mesh._proto import sam_pb2 as pb
 from agent_mesh.auth import MCP_PROTOCOL, AuthRejectedError
-from agent_mesh.biscuit import VerifiedBiscuit, verify_peer_biscuit
+from agent_mesh.biscuit import ROLE_ROUTER, VerifiedBiscuit, verify_peer_biscuit
 from agent_mesh.controlplane import ROLE_NODE
 from agent_mesh.discovery import parse_service_target, service_key
 from agent_mesh.identity import Identity
@@ -129,10 +129,10 @@ def mcp_stream_handler(provider_biscuit: bytes, served: list[str]):
     return handle
 
 
-async def start_provider(nursery, labels=None):
+async def start_provider(nursery, labels=None, role=ROLE_NODE):
     identity = Identity.generate()
     host = libp2p_host(identity)
-    biscuit = mint(identity.peer_id, ROLE_NODE, labels)
+    biscuit = mint(identity.peer_id, role, labels)
     served: list[str] = []
     host.set_stream_handler(MCP_PROTOCOL, mcp_stream_handler(biscuit, served))
     started = trio.Event()
@@ -227,6 +227,13 @@ def test_tools_over_the_mesh_stream():
                     with trio.fail_after(5):
                         async with open_mcp_session(caller, pid, frame(caller_biscuit, "mcp://no-such-service"), [CP_KEY]):
                             pass
+
+                # Only a node is a provider, as sam-node's checkPeerLabels requires: a router attesting the floor is not.
+                router, router_addr, _ = await start_provider(nursery, labels={"region": "eu"}, role=ROLE_ROUTER)
+                await caller.connect(info_from_p2p_addr(router_addr))
+                with pytest.raises(AuthRejectedError, match="lacks expected role 'sam:role:node'"):
+                    async with open_mcp_session(caller, router.get_id(), frame(caller_biscuit, "mcp://calc"), [CP_KEY], egress_require_labels={"region": "eu"}):
+                        pass
             nursery.cancel_scope.cancel()
 
     async def with_timeout():

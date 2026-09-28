@@ -34,7 +34,8 @@ from mcp.shared.message import SessionMessage
 
 from ._proto import sam_pb2 as pb
 from .auth import AUTH_HANDSHAKE_TIMEOUT, MAX_AUTH_FRAME_BYTES, MCP_PROTOCOL, AuthRejectedError
-from .biscuit import BiscuitVerificationError, VerifiedBiscuit, verify_peer_biscuit
+from .biscuit import BiscuitVerificationError, VerifiedBiscuit, require_role, verify_peer_biscuit
+from .controlplane import ROLE_NODE
 from .host import open_stream
 
 logger = logging.getLogger("agent_mesh")
@@ -126,6 +127,8 @@ async def open_mcp_session(
             raise AuthRejectedError(str(peer_id), resp.error or "no reason given")
         try:
             provider = verify_peer_biscuit(resp.biscuit, str(peer_id), trusted_keys)
+            # Only nodes host services; a router's or an admin's credential is a member, not a provider.
+            require_role(provider, ROLE_NODE)
         except BiscuitVerificationError as err:
             raise AuthRejectedError(str(peer_id), f"provider credential rejected: {err}") from err
         require_labels(provider, required_labels)
