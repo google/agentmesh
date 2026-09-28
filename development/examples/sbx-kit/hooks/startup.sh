@@ -71,9 +71,12 @@ else
   command -v kiro-cli >/dev/null && { merge "$HOME/.kiro/settings/mcp.json" "$(servers '')" || warn kiro; }
 fi
 
-exec sam-node run --daemonize \
+# A failing startup hook stops the sandbox from booting; a node that cannot
+# start must not take the agent, and the logs, down with it.
+sam-node run --daemonize \
   --control-plane "https://$SAM_CONTROL_PLANE" \
   --bootstrap-token-path "$d/token" \
   --api-token-path "$d/api-token" \
   --data-dir "$d" \
-  --bind-addr 127.0.0.1:8080
+  --bind-addr 127.0.0.1:8080 >&2 ||
+  echo "sam: sam-node did not start; see $d/sam-node.log" >&2
