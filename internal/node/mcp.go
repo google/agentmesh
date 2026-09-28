@@ -148,13 +148,18 @@ func NewUnauthenticatedMCPServer(controlPlaneURL string) *mcp.Server {
 	return mcpServer
 }
 
+// MCP 2026-07-28 removed sessions, and the SDK serves it over HTTP only in
+// stateless mode; a stateful server also refuses legacy clients that already
+// send the new per-request _meta version tag.
+var streamableOptions = &mcp.StreamableHTTPOptions{Stateless: true}
+
 // NewUnauthenticatedMCPHandler creates an HTTP handler for the unauthenticated MCP server.
 func NewUnauthenticatedMCPHandler(controlPlaneURL string) http.Handler {
 	mcpServer := NewUnauthenticatedMCPServer(controlPlaneURL)
 
 	streamableHandler := mcp.NewStreamableHTTPHandler(func(request *http.Request) *mcp.Server {
 		return mcpServer
-	}, nil)
+	}, streamableOptions)
 
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", streamableHandler)
@@ -171,10 +176,10 @@ func NewMCPHandler(node *SamNode) http.Handler {
 
 	// Per agent, not per node: the SDK gives a tool handler the session's
 	// context rather than the request's, so the only place to bind who the
-	// session belongs to is where the session's server is chosen.
+	// request belongs to is where its server is chosen.
 	streamableHandler := mcp.NewStreamableHTTPHandler(func(request *http.Request) *mcp.Server {
 		return servers.forAgent(agentFromLocalGateway(request))
-	}, nil)
+	}, streamableOptions)
 
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", streamableHandler)

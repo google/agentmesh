@@ -70,8 +70,9 @@ func TestMCPHandler_HTTP(t *testing.T) {
 	}
 	defer func() { _ = resp2.Body.Close() }()
 
-	if resp2.StatusCode != http.StatusOK && resp2.StatusCode != http.StatusBadRequest {
-		t.Errorf("Expected status OK or BadRequest on /mcp, got %d", resp2.StatusCode)
+	// Stateless servers have no standalone SSE stream; the spec reserves 405 for that.
+	if resp2.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("Expected status MethodNotAllowed on GET /mcp, got %d", resp2.StatusCode)
 	}
 }
 

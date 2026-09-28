@@ -30,7 +30,7 @@ proxy path does not accept it there.
 |---|---|---|
 | `GET /healthz`, `GET /readyz` | none | `200` while the process is up. Every other route except `/debug/*` answers `503` until the node is connected to the mesh, so a `503` on `/mcp` is the practical readiness signal. |
 | `GET /metrics` | token | Prometheus metrics (`sam_node_*`). |
-| `POST /mcp` | token | The MCP server (Streamable HTTP). `/` is an alias. |
+| `POST /mcp` | token | The MCP server (Streamable HTTP, sessionless: no `Mcp-Session-Id`, `GET` answers `405`). `/` is an alias. |
 | `GET /v1/models` | token | Models served by every reachable inference provider. |
 | `POST /v1/chat/completions`, `POST /v1/completions` | token | OpenAI-compatible inference, routed to a provider of the requested model. |
 | `GET /sam/service/discover` | token | Discover services on the mesh. |

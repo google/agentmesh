@@ -830,6 +830,35 @@ func TestNewMCPHandler_RegistersFindRemoteTools(t *testing.T) {
 	}
 }
 
+// A legacy-version client that also sends the 2026-07-28 per-request _meta
+// tag must be served, not refused as a new-protocol request; a stateful SDK
+// handler answers it with -32022.
+func TestNewMCPHandler_AcceptsLegacyRequestWithProtocolVersionMeta(t *testing.T) {
+	srv := httptest.NewServer(NewMCPHandler(&SamNode{BiscuitTimeout: 500 * time.Millisecond}))
+	defer srv.Close()
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"tc","version":"0.0.1"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2025-11-25"}}}`
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/mcp", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Mcp-Protocol-Version", "2025-11-25")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	out, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(out), `"protocolVersion":"2025-11-25"`) {
+		t.Fatalf("initialize with _meta protocol version tag: status %d body %s", resp.StatusCode, out)
+	}
+	if resp.Header.Get("Mcp-Session-Id") != "" {
+		t.Errorf("stateless handler must not issue Mcp-Session-Id, got %q", resp.Header.Get("Mcp-Session-Id"))
+	}
+}
+
 func TestHandleDescribeRemoteTool_EmptyPeerID(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
