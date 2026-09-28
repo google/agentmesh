@@ -32,6 +32,12 @@ tok=$(cat "$d/api-token")
 url=http://127.0.0.1:8080/mcp
 hdr="X-Sam-Authentication: Bearer $tok"
 warn() { echo "sam: $1 registration failed; add $url by hand" >&2; }
+# has CLI DIR: the agent is here if its CLI is on PATH or its kit seeded its
+# config dir; hooks may not see the PATH the agent's login shell builds.
+has() {
+  if command -v "$1" >/dev/null || [ -d "$2" ]; then echo "sam: registering $1" >&2; else return 1; fi
+}
+echo "sam: PATH=$PATH" >&2
 
 # merge FILE JSON: deep-merges JSON into FILE, keeping the agent's own keys.
 merge() {
@@ -45,12 +51,12 @@ servers() { # mcpServers entry with extra fields for one agent's schema
   echo "{\"mcpServers\":{\"sam-mesh\":{$1\"url\":\"$url\",\"headers\":{\"X-Sam-Authentication\":\"Bearer $tok\"}}}}"
 }
 
-if command -v claude >/dev/null; then
+if has claude /nonexistent; then  # registered through its CLI only
   # --header is variadic: it must come after the name and the url.
   claude mcp remove --scope user sam-mesh >/dev/null 2>&1 || true
   claude mcp add --transport http --scope user sam-mesh "$url" --header "$hdr" >&2 || warn claude
 fi
-if command -v codex >/dev/null && ! grep -qs '^\[mcp_servers\.sam-mesh\]' "$HOME/.codex/config.toml"; then
+if has codex "$HOME/.codex" && ! grep -qs '^\[mcp_servers\.sam-mesh\]' "$HOME/.codex/config.toml"; then
   mkdir -p "$HOME/.codex"
   printf '\n[mcp_servers.sam-mesh]\nurl = "%s"\nhttp_headers = { "X-Sam-Authentication" = "Bearer %s" }\n' \
     "$url" "$tok" >> "$HOME/.codex/config.toml"
@@ -58,17 +64,17 @@ fi
 if ! command -v jq >/dev/null; then
   echo "sam: jq missing; only claude and codex are registered" >&2
 else
-  if command -v gemini >/dev/null; then
+  if has gemini "$HOME/.gemini"; then
     merge "$HOME/.gemini/settings.json" "{\"mcpServers\":{\"sam-mesh\":{\"httpUrl\":\"$url\",\"headers\":{\"X-Sam-Authentication\":\"Bearer $tok\"}}}}" || warn gemini
   fi
-  if command -v opencode >/dev/null; then
+  if has opencode "$HOME/.config/opencode"; then
     merge "$HOME/.config/opencode/opencode.json" "{\"mcp\":{\"sam-mesh\":{\"type\":\"remote\",\"enabled\":true,\"url\":\"$url\",\"headers\":{\"X-Sam-Authentication\":\"Bearer $tok\"}}}}" || warn opencode
   fi
-  command -v devin >/dev/null && { merge "$HOME/.config/devin/mcp_config.json" "$(servers '"transport":"http",')" || warn devin; }
-  command -v cursor-agent >/dev/null && { merge "$HOME/.cursor/mcp.json" "$(servers '')" || warn cursor; }
-  command -v copilot >/dev/null && { merge "$HOME/.copilot/mcp-config.json" "$(servers '"type":"http","tools":["*"],')" || warn copilot; }
-  command -v droid >/dev/null && { merge "$HOME/.factory/mcp.json" "$(servers '"type":"http",')" || warn droid; }
-  command -v kiro-cli >/dev/null && { merge "$HOME/.kiro/settings/mcp.json" "$(servers '')" || warn kiro; }
+  has devin "$HOME/.config/devin" && { merge "$HOME/.config/devin/mcp_config.json" "$(servers '"transport":"http",')" || warn devin; }
+  has cursor-agent "$HOME/.cursor" && { merge "$HOME/.cursor/mcp.json" "$(servers '')" || warn cursor; }
+  has copilot "$HOME/.copilot" && { merge "$HOME/.copilot/mcp-config.json" "$(servers '"type":"http","tools":["*"],')" || warn copilot; }
+  has droid "$HOME/.factory" && { merge "$HOME/.factory/mcp.json" "$(servers '"type":"http",')" || warn droid; }
+  has kiro-cli "$HOME/.kiro" && { merge "$HOME/.kiro/settings/mcp.json" "$(servers '')" || warn kiro; }
 fi
 
 # A failing startup hook stops the sandbox from booting; a node that cannot
