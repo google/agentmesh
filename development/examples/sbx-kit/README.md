@@ -108,6 +108,10 @@ repository.
   with the role the token grants.
 - **Logs.** Inside the sandbox, `~/.sam/sam-node.log`. On the host, `sbx
   policy log` shows what the proxy refused.
+- **A project `.mcp.json` pointing at `127.0.0.1:8080`** is loaded too,
+  since the workspace is mounted, and reaches this node with your host node's
+  token, so it fails with `401`. The kit's own server is `sam`. Disable the
+  other one with `disabledMcpjsonServers` in `.claude/settings.local.json`.
 - **Other agents.** The install hook registers the node with Gemini CLI and
   Codex too, if the workload ships them. Any other MCP client can use
   `http://127.0.0.1:8080/mcp` with the header
