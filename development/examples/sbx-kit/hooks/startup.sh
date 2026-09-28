@@ -33,18 +33,19 @@ url=http://127.0.0.1:8080/mcp
 hdr="X-Sam-Authentication: Bearer $tok"
 warn() { echo "sam: $1 mcp add failed; add $url by hand" >&2; }
 if command -v claude >/dev/null; then
-  claude mcp remove --scope user sam >/dev/null 2>&1 || true
-  claude mcp add --transport http --scope user --header "$hdr" sam "$url" >&2 || warn claude
+  # --header is variadic: it must come after the name and the url.
+  claude mcp remove --scope user sam-mesh >/dev/null 2>&1 || true
+  claude mcp add --transport http --scope user sam-mesh "$url" --header "$hdr" >&2 || warn claude
 else
   echo "sam: claude not on PATH ($PATH)" >&2
 fi
 if command -v gemini >/dev/null; then
-  gemini mcp add --transport http --scope user -H "$hdr" sam "$url" >&2 || warn gemini
+  gemini mcp add --transport http --scope user sam-mesh "$url" -H "$hdr" >&2 || warn gemini
 fi
-if command -v codex >/dev/null && ! grep -qs '^\[mcp_servers\.sam\]' "$HOME/.codex/config.toml"; then
+if command -v codex >/dev/null && ! grep -qs '^\[mcp_servers\.sam-mesh\]' "$HOME/.codex/config.toml"; then
   # codex mcp add has no header flag; the table goes straight into its config.
   mkdir -p "$HOME/.codex"
-  printf '\n[mcp_servers.sam]\nurl = "%s"\nhttp_headers = { "X-Sam-Authentication" = "Bearer %s" }\n' \
+  printf '\n[mcp_servers.sam-mesh]\nurl = "%s"\nhttp_headers = { "X-Sam-Authentication" = "Bearer %s" }\n' \
     "$url" "$tok" >> "$HOME/.codex/config.toml"
 fi
 

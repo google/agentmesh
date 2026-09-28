@@ -82,7 +82,7 @@ repository.
    `sbx` asks you to approve one network allow entry, the control plane host.
 
 7. Ask Claude: *"List the tools on the SAM mesh and call echo with hello."* It
-   finds `mcp://tools` through the `sam` MCP server and calls it.
+   finds `mcp://tools` through the `sam-mesh` MCP server and calls it.
 
 **Admin** again.
 
@@ -110,7 +110,7 @@ repository.
   policy log` shows what the proxy refused.
 - **A project `.mcp.json` pointing at `127.0.0.1:8080`** is loaded too,
   since the workspace is mounted, and reaches this node with your host node's
-  token, so it fails with `401`. The kit's own server is `sam`. Disable the
+  token, so it fails with `401`. The kit's own server is `sam-mesh`. Disable the
   other one inside the sandbox only, by adding its name to
   `disabledMcpjsonServers` in the sandbox's `~/.claude/settings.json`.
 - **Other agents.** The startup hook registers the node with Gemini CLI and
