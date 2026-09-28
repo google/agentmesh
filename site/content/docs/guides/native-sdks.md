@@ -885,7 +885,13 @@ circuit because it admitted the agent too. Either way the SDK verifies the
 peer's credential before sending anything, and `requiredLabels`
 (`required_labels` in Python) refuses a peer whose control-plane-attested
 labels carry none of the pairs you ask for; one matching pair is enough,
-as with `X-Sam-Required-Labels` on a `sam-node`.
+as with `X-Sam-Required-Labels` on a `sam-node`. A floor is the other way
+round: `join({ egressRequireLabels })` (`join(egress_require_labels=)`)
+names labels every peer the session calls must attest, all of them, as
+`egress.require_labels` does for a `sam-node`. It is stated once at `join`
+and held for the session, on every call and however the peer was named;
+the agent's calls cannot waive or widen it. It is the program author's
+floor, not the operator's: nothing outside the process sets it.
 
 `acceptA2A` (`accept_a2a`) fetched the mesh policy and started answering.
 Every caller must present a credential signed by a trusted control plane

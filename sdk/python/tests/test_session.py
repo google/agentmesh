@@ -21,6 +21,7 @@ import time
 import urllib.parse
 
 import biscuit_auth as ba
+import httpx
 import multiaddr
 import pytest
 import trio
@@ -38,11 +39,16 @@ from libp2p.utils.varint import encode_varint_prefixed, read_varint_prefixed_byt
 from agent_mesh._proto import circuit_pb2 as circuit
 from agent_mesh._proto import sam_pb2 as pb
 from agent_mesh.auth import AUTH_PROTOCOL, auth_stream_handler, authenticate_with_peer
-from agent_mesh.biscuit import ROLE_ROUTER
+from agent_mesh.authorizer import ProviderAuthorizerOptions
+from agent_mesh.biscuit import ROLE_ROUTER, BiscuitVerificationError
 from agent_mesh.controlplane import ROLE_NODE
+from agent_mesh.httpx_transport import MeshTransport
 from agent_mesh.identity import Identity
+from agent_mesh.libp2p_http import HTTP_PROTOCOL, A2AEndpoint, HTTPResponse, ProviderOptions, http_ingress_handler
+from agent_mesh.mcp_client import LabelsNotSatisfiedError
 from agent_mesh.mesh import AgentMesh
 from agent_mesh.relay import HOP_PROTOCOL as RELAY_HOP_PROTOCOL
+from agent_mesh.session import MeshSession
 from google.protobuf.timestamp_pb2 import Timestamp
 
 
@@ -61,10 +67,23 @@ CP = ba.KeyPair()
 CP_KEY = CP.public_key.to_bytes()
 
 
-def mint(peer_id: str, role: str, expiration: str = "2035-01-01T00:00:00Z") -> bytes:
-    return ba.BiscuitBuilder(
-        "node({p}); expiration(" + expiration + "); role({r});", {"p": peer_id, "r": role}
-    ).build(CP.private_key).to_bytes()
+def mint(peer_id: str, role: str, expiration: str = "2035-01-01T00:00:00Z", labels: dict[str, str] | None = None) -> bytes:
+    code = "node({p}); client_peer_id({p}); expiration(" + expiration + "); role({r});"
+    params = {"p": peer_id, "r": role}
+    for i, (k, v) in enumerate((labels or {}).items()):
+        code += f" label({{k{i}}}, {{v{i}}});"
+        params[f"k{i}"] = k
+        params[f"v{i}"] = v
+    return ba.BiscuitBuilder(code, params).build(CP.private_key).to_bytes()
+
+
+# What the control plane renders for a policy granting the node role every
+# A2A service on any target, and nothing else.
+POLICY_RULES = [
+    'granted_service_all("a2a") <- role("sam:role:node")',
+    'granted_service_all("sam:system") <- role("sam:role:node")',
+    'target_unrestricted(true) <- role("sam:role:node")',
+]
 
 
 def fake_control_plane(router_addresses):
@@ -149,6 +168,34 @@ async def start_router(nursery, role=ROLE_ROUTER, trusted=(CP_KEY,), grants=True
     nursery.start_soon(run)
     await started.wait()
     return router, addr_box[0]
+
+
+async def start_provider(nursery, biscuit_for, handshakes: list[str]):
+    """A provider answering /sam/auth and /libp2p-http as a member does, with
+    whatever credential biscuit_for gives it; the handshakes it answers are
+    recorded in handshakes."""
+    identity = Identity.generate()
+    host = libp2p_host(identity)
+    biscuit = biscuit_for(identity.peer_id)
+    host.set_stream_handler(AUTH_PROTOCOL, auth_stream_handler(lambda: biscuit, lambda: [CP_KEY], on_authenticated=lambda peer, _v: handshakes.append(peer)))
+
+    async def card(_request, _caller) -> HTTPResponse:
+        return HTTPResponse(status=200, body=b'{"ok": true}')
+
+    options = ProviderOptions(authorizer=ProviderAuthorizerOptions(trusted_keys=lambda: [CP_KEY], own_biscuit=lambda: biscuit, policy_rules=lambda: POLICY_RULES))
+    host.set_stream_handler(HTTP_PROTOCOL, http_ingress_handler(A2AEndpoint(target=card), options))
+    started = trio.Event()
+    addr_box = []
+
+    async def run():
+        async with host.run(listen_addrs=[multiaddr.Multiaddr("/ip4/127.0.0.1/tcp/0")]):
+            addr_box.append(f"{host.get_addrs()[0]}")
+            started.set()
+            await trio.sleep_forever()
+
+    nursery.start_soon(run)
+    await started.wait()
+    return host, addr_box[0]
 
 
 async def with_timeout(seconds, fn):
@@ -386,6 +433,55 @@ def test_a_refused_renewal_drops_the_connection_and_the_retry_authenticates_agai
                 await wait_for(lambda: session.routers[0].reservation.expire > first)
                 auth, reserve = ("auth", mesh.peer_id), ("reserve", mesh.peer_id)
                 assert events[:5] == [auth, reserve, reserve, auth, reserve]
+            nursery.cancel_scope.cancel()
+
+    trio.run(with_timeout, 60, main)
+
+
+def test_an_egress_floor_stated_at_join_is_held_on_the_http_path():
+    """The floor is held on request() and on MeshTransport, and the provider
+    is verified as an enrolled member with or without one."""
+
+    async def main():
+        async with trio.open_nursery() as nursery:
+            _, router_addr = await start_router(nursery)
+            handshakes: list[str] = []
+            provider, provider_addr = await start_provider(nursery, lambda p: mint(p, ROLE_NODE, labels={"region": "eu"}), handshakes)
+            # Enrolled nowhere: a credential no trusted key signed.
+            forged = ba.KeyPair()
+            _, impostor_addr = await start_provider(
+                nursery, lambda p: ba.BiscuitBuilder("node({p}); expiration(2035-01-01T00:00:00Z);", {"p": p}).build(forged.private_key).to_bytes(), handshakes
+            )
+
+            def join(**options):
+                mesh = AgentMesh.enroll("http://127.0.0.1:1", bootstrap_token="sbt", transport=fake_control_plane([router_addr]))
+                return mesh.join(reserve=False, refresh_lead=0, **options)
+
+            async with join(egress_require_labels={"region": "eu"}) as held, join(egress_require_labels={"region": "eu", "team": "platform"}) as missed, join() as plain:
+                card = MeshSession.mesh_url(str(provider.get_id()), "a2a://agent", "/card")
+                # Met: one handshake verifies the provider; the verdict is kept for the next calls.
+                assert (await held.request(provider_addr, "a2a://agent", "/card")).status == 200
+                assert (await held.request(provider_addr, "a2a://agent", "/card")).status == 200
+                async with httpx.AsyncClient(transport=MeshTransport(held)) as client:
+                    assert (await client.get(card)).status_code == 200
+                assert handshakes == [held.peer_id]
+
+                # Missed: every path refuses, and a refusal is not kept: each call asks again.
+                with pytest.raises(LabelsNotSatisfiedError):
+                    await missed.request(provider_addr, "a2a://agent", "/card")
+                async with httpx.AsyncClient(transport=MeshTransport(missed)) as client:
+                    with pytest.raises(LabelsNotSatisfiedError):
+                        await client.get(card)
+                assert handshakes == [held.peer_id, missed.peer_id, missed.peer_id]
+
+                # No floor: no gate, but the provider is verified all the same.
+                assert (await plain.request(provider_addr, "a2a://agent", "/card")).status == 200
+                with pytest.raises(BiscuitVerificationError):
+                    await plain.request(impostor_addr, "a2a://agent", "/card")
+                # A banned provider is refused before any handshake.
+                plain.banned.add(str(provider.get_id()), int(time.time() * 1000))
+                with pytest.raises(PermissionError, match="banned"):
+                    await plain.request(provider_addr, "a2a://agent", "/card")
             nursery.cancel_scope.cancel()
 
     trio.run(with_timeout, 60, main)

@@ -37,7 +37,7 @@ from agent_mesh.biscuit import VerifiedBiscuit, verify_peer_biscuit
 from agent_mesh.controlplane import ROLE_NODE
 from agent_mesh.discovery import parse_service_target, service_key
 from agent_mesh.identity import Identity
-from agent_mesh.mcp_client import LabelsNotSatisfiedError, open_mcp_session, require_labels, tool_call_result
+from agent_mesh.mcp_client import LabelsNotSatisfiedError, open_mcp_session, require_egress_labels, require_labels, tool_call_result
 
 from .test_session import CP, CP_KEY, libp2p_host
 
@@ -197,6 +197,20 @@ def test_tools_over_the_mesh_stream():
                 async with open_mcp_session(caller, pid, frame(caller_biscuit, "mcp://calc"), [CP_KEY], required_labels={"region": "eu", "team": "platform"}):
                     pass
 
+                # The egress floor is met only by every one of its pairs, beside the caller's requirement.
+                async with open_mcp_session(caller, pid, frame(caller_biscuit, "mcp://calc"), [CP_KEY], egress_require_labels={"region": "eu"}):
+                    pass
+                with pytest.raises(LabelsNotSatisfiedError, match="does not attest the egress floor: region=eu, team=platform"):
+                    async with open_mcp_session(caller, pid, frame(caller_biscuit, "mcp://calc"), [CP_KEY], egress_require_labels={"region": "eu", "team": "platform"}):
+                        pass
+                # Both apply when both are set: neither one's pairs stand in for the other's.
+                with pytest.raises(LabelsNotSatisfiedError):
+                    async with open_mcp_session(caller, pid, frame(caller_biscuit, "mcp://calc"), [CP_KEY], required_labels={"region": "eu"}, egress_require_labels={"team": "platform"}):
+                        pass
+                with pytest.raises(LabelsNotSatisfiedError):
+                    async with open_mcp_session(caller, pid, frame(caller_biscuit, "mcp://calc"), [CP_KEY], required_labels={"team": "platform"}, egress_require_labels={"region": "eu"}):
+                        pass
+
                 # A provider whose credential the caller does not trust is rejected.
                 with pytest.raises(AuthRejectedError):
                     async with open_mcp_session(caller, pid, frame(caller_biscuit, "mcp://calc"), [ba.KeyPair().public_key.to_bytes()]):
@@ -247,3 +261,23 @@ def test_a_requirement_of_several_labels_is_met_by_any_one_of_them():
     # an empty requirement is no requirement
     require_labels(attesting({}), {})
     require_labels(attesting({}), None)
+
+
+def test_the_egress_floor_is_met_only_by_every_one_of_its_pairs():
+    """sam-node's api.LabelFloorCheck for egress.require_labels, run through
+    the SDK's predicate: a floor takes no alternatives."""
+    from datetime import datetime, timezone
+
+    def attesting(labels: dict) -> VerifiedBiscuit:
+        return VerifiedBiscuit(peer_id="p", expiration=datetime.now(timezone.utc), verifying_key=CP_KEY, roles=[], labels=labels)
+
+    require_egress_labels(attesting({"region": "eu", "team": "platform"}), {"region": "eu"})
+    require_egress_labels(attesting({"region": "eu", "team": "platform"}), {"region": "eu", "team": "platform"})
+    # one pair short is a refusal that names the whole floor
+    with pytest.raises(LabelsNotSatisfiedError, match="peer p does not attest the egress floor: region=eu, team=platform"):
+        require_egress_labels(attesting({"region": "eu"}), {"region": "eu", "team": "platform"})
+    with pytest.raises(LabelsNotSatisfiedError):
+        require_egress_labels(attesting({"region": "us"}), {"region": "eu"})
+    # no floor is no floor
+    require_egress_labels(attesting({}), {})
+    require_egress_labels(attesting({}), None)

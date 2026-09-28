@@ -47,7 +47,7 @@ from .libp2p_http import (
     mesh_http_target,
     open_http_request,
 )
-from .mcp_client import LabelsNotSatisfiedError, ToolCallResult, ToolInfo, open_mcp_session, require_labels
+from .mcp_client import LabelsNotSatisfiedError, ToolCallResult, ToolInfo, open_mcp_session, require_egress_labels, require_labels
 from .mesh import AgentMesh, ControlPlaneSync
 from .relay import dial_through_relay, reserve_relay
 from .session import AdmittedRouter, MeshSession, Peer
@@ -117,6 +117,7 @@ __all__ = [
     "peer_id_from_public_key",
     "refresh_challenge",
     "register_challenge",
+    "require_egress_labels",
     "require_labels",
     "require_role",
     "reserve_relay",

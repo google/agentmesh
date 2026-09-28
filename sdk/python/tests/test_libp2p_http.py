@@ -141,13 +141,13 @@ class _Mesh:
 
 class FakeSession:
     """What MeshTransport needs of a session: the host, the credential and
-    connect(); the peer is already connected here."""
+    _egress_peer(); the peer is already connected and verified here."""
 
     def __init__(self, host, biscuit: bytes) -> None:
         self.host = host
         self.mesh = _Mesh(_Credential(biscuit))
 
-    async def connect(self, peer) -> ID:
+    async def _egress_peer(self, peer) -> ID:
         return ID.from_base58(str(peer))
 
 

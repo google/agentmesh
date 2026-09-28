@@ -36,7 +36,7 @@ import { ROLE_NODE } from "./controlplane.ts";
 import { parseServiceTarget, serviceCID } from "./discovery.ts";
 import { AuthFrameSchema, AuthResponseSchema } from "./gen/sam_pb.ts";
 import { Identity } from "./identity.ts";
-import { LabelsNotSatisfiedError, StreamTransport, openMCPSession, requireLabels } from "./mcp.ts";
+import { LabelsNotSatisfiedError, StreamTransport, openMCPSession, requireEgressLabels, requireLabels } from "./mcp.ts";
 
 type Wasm = Awaited<ReturnType<typeof loadBiscuit>>;
 
@@ -184,6 +184,28 @@ test("a requirement of several labels is met by any one of them, as sam-node's c
   assert.throws(() => requireLabels(attesting({}), { region: "eu", team: "platform" }), /region=eu, team=platform/);
   // an empty requirement is no requirement
   requireLabels(attesting({}), {});
+});
+
+test("the egress floor is met only by every one of its pairs, as sam-node's api.LabelFloorCheck", () => {
+  const attesting = (labels: Record<string, string>) => ({ peerId: "p", expiration: new Date(), verifyingKey: cpKey, roles: [], labels });
+  requireEgressLabels(attesting({ region: "eu", team: "platform" }), { region: "eu" });
+  requireEgressLabels(attesting({ region: "eu", team: "platform" }), { region: "eu", team: "platform" });
+  // one pair short is a refusal that names the whole floor
+  assert.throws(() => requireEgressLabels(attesting({ region: "eu" }), { region: "eu", team: "platform" }), /peer p does not attest the egress floor: region=eu, team=platform/);
+  assert.throws(() => requireEgressLabels(attesting({ region: "us" }), { region: "eu" }), LabelsNotSatisfiedError);
+  // no floor is no floor
+  requireEgressLabels(attesting({}), {});
+  requireEgressLabels(attesting({}), undefined);
+});
+
+test("the egress floor is held on the MCP path beside the caller's requirement", async () => {
+  const conn = await caller.dial(provider.getMultiaddrs()[0] as Parameters<typeof caller.dial>[0]);
+  const ok = await openMCPSession(conn, frame("mcp://calc"), [cpKey], {}, { region: "eu" });
+  await ok.close();
+  await assert.rejects(openMCPSession(conn, frame("mcp://calc"), [cpKey], {}, { region: "eu", team: "platform" }), LabelsNotSatisfiedError);
+  // Both apply when both are set: neither one's pairs stand in for the other's.
+  await assert.rejects(openMCPSession(conn, frame("mcp://calc"), [cpKey], { requiredLabels: { region: "eu" } }, { team: "platform" }), LabelsNotSatisfiedError);
+  await assert.rejects(openMCPSession(conn, frame("mcp://calc"), [cpKey], { requiredLabels: { team: "platform" } }, { region: "eu" }), LabelsNotSatisfiedError);
 });
 
 test("a caller the provider cannot verify gets no session", async () => {

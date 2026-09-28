@@ -77,7 +77,7 @@ class MeshTransport(httpx.AsyncBaseTransport):
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         peer_text, target = split_mesh_url(request.url)
-        peer_id = await self._session.connect(peer_text)
+        peer_id = await self._session._egress_peer(peer_text)  # noqa: SLF001 - the session's verified egress path, not a caller option
         body = await request.aread()
         headers = {k.decode("latin-1"): v.decode("latin-1") for k, v in request.headers.raw}
         response = await open_http_request(

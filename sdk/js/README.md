@@ -168,7 +168,9 @@ process.on("SIGTERM", stop);
 `enroll` reuses the identity and credential saved in `stateDir` when they
 are still valid for that control plane, and needs exactly one of
 `bootstrapTokenPath`, `bootstrapToken` or `jwt` otherwise. Read tokens from
-a file or the environment; do not put them on a command line.
+a file or the environment; do not put them on a command line. `labels` are
+attested at enrollment; `join({ egressRequireLabels })` is the floor every
+peer the session calls must attest, all of it, held for the session.
 
 A plaintext `http://` control plane is accepted only on loopback. Pass
 `allowInsecure: true` for a network you trust.

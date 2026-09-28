@@ -496,6 +496,38 @@ func TestNativeSDKsMesh(t *testing.T) {
 		}
 	})
 
+	// A member whose egress floor nobody attests is refused before anything is
+	// sent, MCP and HTTP alike; the members above carry a floor the mesh does
+	// satisfy (launchSDKMember). MCP to an SDK member fails before the floor: no /sam/mcp.
+	t.Run("egress-floor", func(t *testing.T) {
+		for _, launcher := range sdkMemberLaunchers {
+			cmd, skip := launcher.cmd(root)
+			if skip != "" {
+				continue
+			}
+			floored := launchSDKMember(t, launcher.name+"-floored", cmd, root, baseURL, adminToken, "SAM_SDK_EGRESS_REQUIRE_LABELS=team=nobody")
+			byFloor := func(what, target, err string) {
+				if !strings.Contains(err, "LabelsNotSatisfied") {
+					t.Errorf("%s %s to %s was not refused by the floor: %q", floored.name, what, target, err)
+				}
+			}
+			nodeRelayAddr := samNode.peerID.String()
+			byFloor("tools", "the node", floored.toolsRequiring(t, nodeRelayAddr, "mcp://"+serviceName, nil).Error)
+			byFloor("call", "the node", floored.callRaw(t, nodeRelayAddr, "mcp://"+serviceName, "add", nil).Error)
+			byFloor("http", "the node", floored.httpRaw(t, nodeRelayAddr, "egress://"+sdkMeshEgressHost, "/").Error)
+			for _, m := range members {
+				byFloor("http", m.name, floored.httpRaw(t, m.report.PeerID, "a2a://agent", "/card").Error)
+				if res := floored.toolsRequiring(t, m.report.PeerID, "mcp://"+serviceName, nil); res.OK {
+					t.Errorf("%s listed tools of %s, an SDK member: %v", floored.name, m.name, res.Tools)
+				}
+				if res := floored.callRaw(t, m.report.PeerID, "mcp://"+serviceName, "add", nil); res.OK {
+					t.Errorf("%s called a tool of %s, an SDK member: %+v", floored.name, m.name, res)
+				}
+			}
+			floored.quit(t)
+		}
+	})
+
 	// Every SDK member is an agent: it accepts A2A requests for a2a://agent,
 	// answered in the runner's process, reachable by peer ID through the
 	// router. It publishes nothing; the policy rules it evaluates are the
@@ -848,7 +880,8 @@ func startSDKMember(t *testing.T, name string, cmd *exec.Cmd, root, baseURL, adm
 }
 
 // launchSDKMember starts a conformance-join runner with a fresh bootstrap
-// token and the labels the matrix uses, plus env, and reads its join report.
+// token, the labels the matrix uses and an egress floor every provider in the
+// mesh satisfies, plus env (a later entry wins), and reads its join report.
 func launchSDKMember(t *testing.T, name string, cmd *exec.Cmd, root, baseURL, adminToken string, env ...string) *sdkMember {
 	t.Helper()
 	tokenPath := filepath.Join(t.TempDir(), "bootstrap.token")
@@ -860,6 +893,7 @@ func launchSDKMember(t *testing.T, name string, cmd *exec.Cmd, root, baseURL, ad
 		"SAM_BOOTSTRAP_TOKEN_PATH="+tokenPath,
 		"SAM_SDK_STATE_DIR="+filepath.Join(t.TempDir(), "state"),
 		"SAM_SDK_LABELS="+labelsEnv(sdkMeshLabels),
+		"SAM_SDK_EGRESS_REQUIRE_LABELS=region="+sdkMeshLabels["region"],
 	), env...)
 	cmd.Dir = root
 	m := &sdkMember{name: name, cmd: cmd, stderr: &bytes.Buffer{}}
@@ -1144,13 +1178,21 @@ type sdkHTTPResult struct {
 	Body   string `json:"body"`
 }
 
-// http asks the member to call an inference or A2A service over /libp2p-http.
-func (m *sdkMember) http(t *testing.T, addr, service, path string) sdkHTTPResult {
+// httpRaw asks the member to call an inference or A2A service over
+// /libp2p-http, and reports a refusal instead of failing.
+func (m *sdkMember) httpRaw(t *testing.T, addr, service, path string) sdkHTTPResult {
 	t.Helper()
 	var res sdkHTTPResult
 	if line := m.send(t, map[string]string{"cmd": "http", "addr": addr, "service": service, "path": path}); json.Unmarshal(line, &res) != nil {
 		t.Fatalf("%s member: http answered %q", m.name, line)
 	}
+	return res
+}
+
+// http is httpRaw that must be answered.
+func (m *sdkMember) http(t *testing.T, addr, service, path string) sdkHTTPResult {
+	t.Helper()
+	res := m.httpRaw(t, addr, service, path)
 	if !res.OK {
 		t.Fatalf("%s member could not call %s%s at %s: %s", m.name, service, path, addr, res.Error)
 	}

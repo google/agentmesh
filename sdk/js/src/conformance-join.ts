@@ -78,6 +78,16 @@ function emit(obj: unknown): void {
   process.stdout.write(JSON.stringify(obj) + "\n");
 }
 
+/** Labels from an environment variable written "k=v,k2=v2". */
+function labelsFromEnv(name: string): Record<string, string> {
+  return Object.fromEntries(
+    (process.env[name] ?? "")
+      .split(",")
+      .filter((pair) => pair.includes("="))
+      .map((pair) => pair.split("=", 2) as [string, string]),
+  );
+}
+
 function failure(cmd: string | undefined, err: unknown): unknown {
   return { cmd, ok: false, error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) };
 }
@@ -172,14 +182,11 @@ async function main(): Promise<void> {
   const stateDir = requireEnv("SAM_SDK_STATE_DIR");
   const allowInsecure = process.env.SAM_INSECURE_CONTROL_PLANE === "1";
   const listenAddrs = (process.env.SAM_SDK_LISTEN_ADDRS ?? "").split(",").filter((a) => a !== "");
-  // Labels this member declares at enrollment, "k=v,k2=v2"; the policy's
-  // allowed_labels decide whether the control plane attests them.
-  const labels = Object.fromEntries(
-    (process.env.SAM_SDK_LABELS ?? "")
-      .split(",")
-      .filter((pair) => pair.includes("="))
-      .map((pair) => pair.split("=", 2) as [string, string]),
-  );
+  // Labels this member declares at enrollment; the policy's allowed_labels
+  // decide whether the control plane attests them. SAM_SDK_EGRESS_REQUIRE_LABELS
+  // is the floor every provider this member calls must attest.
+  const labels = labelsFromEnv("SAM_SDK_LABELS");
+  const egressRequireLabels = labelsFromEnv("SAM_SDK_EGRESS_REQUIRE_LABELS");
 
   const mesh = await AgentMesh.enroll({
     controlPlaneUrl,
@@ -197,6 +204,7 @@ async function main(): Promise<void> {
   const session = await mesh.join({
     listenAddrs,
     ...(routerAddresses !== undefined ? { routerAddresses } : {}),
+    ...(Object.keys(egressRequireLabels).length > 0 ? { egressRequireLabels } : {}),
     signal: AbortSignal.timeout(20_000),
     controlPlaneSyncIntervalMs: 0,
     controlPlaneSyncJitterMs: 0,

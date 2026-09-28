@@ -55,7 +55,7 @@ from .libp2p_http import (
     http_request_over_stream,
     mesh_http_target,
 )
-from .mcp_client import ToolCallResult, ToolInfo, open_mcp_session, tool_call_result
+from .mcp_client import ToolCallResult, ToolInfo, open_mcp_session, require_egress_labels, tool_call_result
 from .relay import STOP_PROTOCOL, dial_through_relay, reserve_relay, split_circuit_address, stop_stream_handler
 from .sync import GOSSIP_EVENTS_TOPIC, BanSet, verify_mesh_event
 
@@ -81,6 +81,8 @@ DEFAULT_POLICY_SYNC = 15 * 60.0
 DEFAULT_CONTROL_PLANE_SYNC = 15 * 60.0
 FIRST_CONTROL_PLANE_SYNC = 2.0
 DEFAULT_CONTROL_PLANE_SYNC_JITTER = 2.0
+# How long a provider's positive egress verdict is kept; sam-node's labelGateTTL.
+EGRESS_VERDICT_TTL = 5 * 60.0
 
 # How a caller names the peer it wants to reach: a provider `discover` returned,
 # a peer id, or a multiaddr. For a provider or a peer id the SDK dials the
@@ -143,6 +145,10 @@ class MeshSession:
     banned: BanSet = field(default_factory=BanSet)
     # This member's agent, once accept_a2a was called.
     endpoint: Optional[A2AEndpoint] = None
+    # sam-node's egress.require_labels for an SDK member: every provider this
+    # session calls must attest all of these pairs, on top of a call's
+    # required_labels. Held on every call, MCP and HTTP alike; no call waives it.
+    egress_require_labels: Optional[Mapping[str, str]] = None
     policy_sync_interval: float = DEFAULT_POLICY_SYNC
     control_plane_sync_interval: float = DEFAULT_CONTROL_PLANE_SYNC
     control_plane_sync_jitter: float = DEFAULT_CONTROL_PLANE_SYNC_JITTER
@@ -153,6 +159,8 @@ class MeshSession:
     _policy_rules: Optional[list[str]] = field(default=None, repr=False)
     _sync_lock: trio.Lock = field(default_factory=trio.Lock, repr=False)
     _sync_trigger: trio.Event = field(default_factory=trio.Event, repr=False)
+    # Peers verified as enrolled and holding the floor, until when; misses are never kept.
+    _egress_verdicts: dict[str, float] = field(default_factory=dict, repr=False)
 
     @property
     def peer_id(self) -> str:
@@ -352,7 +360,9 @@ class MeshSession:
         async def opened() -> AsyncIterator[tuple[ClientSession, VerifiedBiscuit]]:
             peer_id = await self.connect(peer)
             frame = self.mesh.auth_frame(target_service, agent)
-            async with open_mcp_session(self.host, peer_id, frame, self.mesh.credential.control_plane_keys, required_labels=required_labels) as opened_session:
+            async with open_mcp_session(
+                self.host, peer_id, frame, self.mesh.credential.control_plane_keys, required_labels=required_labels, egress_require_labels=self.egress_require_labels
+            ) as opened_session:
                 yield opened_session
 
         return opened()
@@ -506,10 +516,21 @@ class MeshSession:
     ) -> HTTPResponse:
         """Calls an inference or A2A service on a provider over /libp2p-http,
         the way sam-node's egress proxy does for /sam/<peer>/<type>/<name>/<path>."""
-        peer_id = await self.connect(peer)
+        peer_id = await self._egress_peer(peer)
         return await http_request_over_stream(
             self.host, peer_id, self.mesh.credential.biscuit, target_service, path, method=method, headers=headers, body=body, agent=agent
         )
+
+    async def _egress_peer(self, peer: Peer) -> ID:
+        """The peer an HTTP call goes out to, verified as an enrolled member
+        holding the floor before anything is sent (sam-node's VerifyPeerLabels)."""
+        peer_id = await self.connect(peer)
+        if self._egress_verdicts.get(str(peer_id), 0.0) > time.monotonic():
+            return peer_id
+        provider = await authenticate_with_peer(self.host, peer_id, self.mesh.auth_frame(), self.mesh.credential.control_plane_keys)
+        require_egress_labels(provider, self.egress_require_labels)
+        self._egress_verdicts[str(peer_id)] = time.monotonic() + EGRESS_VERDICT_TTL
+        return peer_id
 
     async def accept_a2a(self, target: Union[str, HTTPHandler], *, name: str = DEFAULT_A2A_NAME) -> str:
         """Makes this member's agent reachable: other members call it as
@@ -584,11 +605,13 @@ async def join_mesh(
     policy_sync_interval: float = DEFAULT_POLICY_SYNC,
     control_plane_sync_interval: float = DEFAULT_CONTROL_PLANE_SYNC,
     control_plane_sync_jitter: float = DEFAULT_CONTROL_PLANE_SYNC_JITTER,
+    egress_require_labels: Optional[Mapping[str, str]] = None,
 ) -> AsyncIterator[MeshSession]:
     """Implements AgentMesh.join(); lives here to keep mesh.py free of libp2p.
     router_addresses names the routers to join through instead of the ones the
     credential lists; a peer behind another router is still reached, see
-    MeshSession.connect."""
+    MeshSession.connect. egress_require_labels is the floor every provider
+    this member calls must attest, see MeshSession."""
     router_addrs = [multiaddr.Multiaddr(a) for a in (mesh.credential.router_addresses if router_addresses is None else router_addresses)]
     if not router_addrs:
         raise RuntimeError("credential lists no router addresses; the control plane had no active router at enrollment" if router_addresses is None else "router_addresses names no router")
@@ -624,6 +647,7 @@ async def join_mesh(
                     routers=admitted,
                     authenticated_peers=authenticated,
                     banned=banned,
+                    egress_require_labels=egress_require_labels,
                     policy_sync_interval=policy_sync_interval,
                     control_plane_sync_interval=control_plane_sync_interval,
                     control_plane_sync_jitter=control_plane_sync_jitter,

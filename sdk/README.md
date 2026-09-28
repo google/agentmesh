@@ -460,13 +460,25 @@ holds against the control plane's records.
 - `/sam/mcp/1.0.0` client: `session.openMCP(peer, "mcp://<name>")` sends
   the `AuthFrame` naming the service, verifies the provider's credential
   and the caller's required labels (`checkPeerLabels`: several pairs are
-  met by any one of them, as `api.LabelCheck` joins them with `or`; the
-  conjunction is the operator's egress floor, which only `sam-node` has),
-  then runs the
-  official MCP client over the varint-framed stream. JS: a `Transport` for
-  `@modelcontextprotocol/sdk`; Python: a pair of memory streams pumped to
-  and from the libp2p stream for `mcp.ClientSession`. `""` as the target is
-  the provider's own catalog (`list_local_services`, `get_mesh_info`).
+  met by any one of them, as `api.LabelCheck` joins them with `or`), then
+  runs the official MCP client over the varint-framed stream. JS: a
+  `Transport` for `@modelcontextprotocol/sdk`; Python: a pair of memory
+  streams pumped to and from the libp2p stream for `mcp.ClientSession`.
+  `""` as the target is the provider's own catalog (`list_local_services`,
+  `get_mesh_info`).
+- Egress floor: `join({ egressRequireLabels })` (`join(egress_require_labels=)`)
+  is `sam-node`'s `egress.require_labels` for an SDK member. The floor is
+  the conjunction (`api.LabelFloorCheck` joins the pairs with `,`): every
+  provider the session calls must attest all of them, on top of a call's
+  required labels, on every outbound call however the peer was named, MCP
+  and HTTP alike. Stated once at join and held for the session; a call
+  cannot waive or widen it. The three implementations agree on it, as they
+  do on the caller's requirement. The HTTP path (`request`, `fetch`,
+  `MeshTransport`) verifies the provider with or without a floor, through
+  the mutual `/sam/auth/1.0.0` handshake, as `sam-node`'s `VerifyPeerLabels`
+  does before its egress proxy sends anything; a positive verdict is kept
+  per peer for five minutes (`labelGateTTL`), a miss never. Refusals are
+  `LabelsNotSatisfiedError`, which names the floor.
 - `session.listTools(peer, service)` and `session.callTool(peer, service,
   tool, args)` on top of that.
 - Tests. Unit: each SDK calls a tool on an in-process provider that serves

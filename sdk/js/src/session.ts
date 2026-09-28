@@ -22,7 +22,7 @@ import { ROLE_ROUTER, requireRole, type VerifiedBiscuit } from "./biscuit.ts";
 import { canonicalPeerId } from "./identity.ts";
 import { isServiceType, parseServiceTarget, serviceCID } from "./discovery.ts";
 import { createMeshHost, listenThroughRelay, type MeshHost, type MeshHostOptions, type RelayListener } from "./host.ts";
-import { openMCPSession, type MCPSession, type MCPSessionOptions } from "./mcp.ts";
+import { openMCPSession, requireEgressLabels, type MCPSession, type MCPSessionOptions } from "./mcp.ts";
 import type { AgentMesh, ControlPlaneSync } from "./mesh.ts";
 import {
   HTTP_HANDLER_OPTIONS,
@@ -75,6 +75,12 @@ export interface JoinOptions extends MeshHostOptions {
    * how long the member is unreachable at most before it reserves again.
    */
   relayCheckIntervalMs?: number;
+  /**
+   * sam-node's egress.require_labels for an SDK member: every provider this
+   * session calls must attest all of these pairs, on top of a call's
+   * requiredLabels. Held on every call, MCP and HTTP alike; no call waives it.
+   */
+  egressRequireLabels?: Record<string, string>;
   /** Bounds the whole join. */
   signal?: AbortSignal;
 }
@@ -132,6 +138,8 @@ const DEFAULT_CONTROL_PLANE_SYNC_MS = 15 * 60 * 1000;
 const FIRST_CONTROL_PLANE_SYNC_MS = 2_000;
 const DEFAULT_CONTROL_PLANE_SYNC_JITTER_MS = 2_000;
 const DEFAULT_RELAY_CHECK_MS = 30 * 1000;
+/** How long a provider's positive egress verdict is kept; sam-node's labelGateTTL. */
+const EGRESS_VERDICT_TTL_MS = 5 * 60 * 1000;
 
 /**
  * A member that is on the mesh: a libp2p host authenticated with at least
@@ -161,6 +169,9 @@ export class MeshSession {
   readonly #syncIntervalMs: number;
   readonly #syncJitterMs: number;
   #policyRules: string[] | undefined;
+  readonly #egressRequireLabels: Record<string, string> | undefined;
+  /** Peers verified as enrolled and holding the floor, until when; misses are never kept. */
+  readonly #egressVerdicts = new Map<string, Date>();
   #closed = false;
 
   constructor(mesh: AgentMesh, node: MeshHost, routers: AdmittedRouter[], authenticatedPeers: Map<string, Date>, banned: BanSet, options: JoinOptions, relayListener?: RelayListener) {
@@ -175,6 +186,7 @@ export class MeshSession {
     this.#policySyncMs = options.policySyncIntervalMs ?? DEFAULT_POLICY_SYNC_MS;
     this.#syncIntervalMs = options.controlPlaneSyncIntervalMs ?? DEFAULT_CONTROL_PLANE_SYNC_MS;
     this.#syncJitterMs = options.controlPlaneSyncJitterMs ?? DEFAULT_CONTROL_PLANE_SYNC_JITTER_MS;
+    this.#egressRequireLabels = options.egressRequireLabels;
     this.#scheduleRefresh();
     this.#listenForEvents();
     this.#keepRouterAdmissions();
@@ -458,7 +470,7 @@ export class MeshSession {
    */
   async openMCP(peer: Peer, targetService: string, options: MCPSessionOptions = {}): Promise<MCPSession> {
     const conn = await this.connect(peer, options.signal);
-    return openMCPSession(conn, this.mesh.authFrame(targetService, options.agent ?? ""), this.mesh.credential.controlPlaneKeys, options);
+    return openMCPSession(conn, this.mesh.authFrame(targetService, options.agent ?? ""), this.mesh.credential.controlPlaneKeys, options, this.#egressRequireLabels);
   }
 
   /** Lists the tools a provider serves for a service. */
@@ -619,8 +631,25 @@ export class MeshSession {
    * way sam-node's egress proxy does for /sam/<peer>/<type>/<name>/<path>.
    */
   async request(peer: Peer, targetService: string, path: string, options: HTTPRequestOptions = {}): Promise<HTTPResponse> {
-    const conn = await this.connect(peer, options.signal);
+    const conn = await this.#egressConnection(peer, options.signal);
     return httpRequestOverStream(conn, this.mesh.credential.biscuit, targetService, path, options);
+  }
+
+  /**
+   * The connection an HTTP call goes out on, its peer verified as an enrolled
+   * member holding the floor before anything is sent (sam-node's VerifyPeerLabels).
+   */
+  async #egressConnection(peer: Peer, signal?: AbortSignal): Promise<Connection> {
+    const conn = await this.connect(peer, signal);
+    const peerId = conn.remotePeer.toString();
+    const until = this.#egressVerdicts.get(peerId);
+    if (until !== undefined && until.getTime() > Date.now()) {
+      return conn;
+    }
+    const provider = await authenticateWithPeer(conn, this.mesh.authFrame(), this.mesh.credential.controlPlaneKeys);
+    requireEgressLabels(provider, this.#egressRequireLabels);
+    this.#egressVerdicts.set(peerId, new Date(Date.now() + EGRESS_VERDICT_TTL_MS));
+    return conn;
   }
 
   /**
@@ -633,7 +662,7 @@ export class MeshSession {
     return async (input, init) => {
       const request = new Request(input, init);
       const { peerId } = splitMeshURL(new URL(request.url));
-      const conn = await this.connect(peerId, request.signal);
+      const conn = await this.#egressConnection(peerId, request.signal);
       const streamOptions: { agent?: string; signal?: AbortSignal } = {};
       if (options.agent !== undefined) {
         streamOptions.agent = options.agent;

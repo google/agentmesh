@@ -69,6 +69,11 @@ def _emit(obj: dict) -> None:
     print(json.dumps(obj), flush=True)
 
 
+def _labels_from_env(name: str) -> dict[str, str]:
+    """Labels from an environment variable written "k=v,k2=v2"."""
+    return dict(pair.split("=", 1) for pair in os.environ.get(name, "").split(",") if "=" in pair)
+
+
 def _root_cause(err: BaseException) -> BaseException:
     # trio wraps a failure in one ExceptionGroup per nursery it crossed.
     while isinstance(err, BaseExceptionGroup) and len(err.exceptions) == 1:
@@ -160,9 +165,11 @@ async def main() -> None:
     state_dir = _require_env("SAM_SDK_STATE_DIR")
     allow_insecure = os.environ.get("SAM_INSECURE_CONTROL_PLANE") == "1"
     listen = [a for a in os.environ.get("SAM_SDK_LISTEN_ADDRS", "").split(",") if a]
-    # Labels this member declares at enrollment, "k=v,k2=v2"; the policy's
-    # allowed_labels decide whether the control plane attests them.
-    labels = dict(pair.split("=", 1) for pair in os.environ.get("SAM_SDK_LABELS", "").split(",") if "=" in pair)
+    # Labels this member declares at enrollment; the policy's allowed_labels
+    # decide whether the control plane attests them. SAM_SDK_EGRESS_REQUIRE_LABELS
+    # is the floor every provider this member calls must attest.
+    labels = _labels_from_env("SAM_SDK_LABELS")
+    egress_require_labels = _labels_from_env("SAM_SDK_EGRESS_REQUIRE_LABELS")
 
     mesh = AgentMesh.enroll(
         control_plane_url,
@@ -177,7 +184,9 @@ async def main() -> None:
     # can put two members on different routers.
     only = {p for p in os.environ.get("SAM_SDK_ROUTERS", "").split(",") if p}
     router_addresses = [a for a in mesh.credential.router_addresses if any(a.endswith(f"/p2p/{p}") for p in only)] if only else None
-    async with mesh.join(listen_addrs=listen, router_addresses=router_addresses, control_plane_sync_interval=0, control_plane_sync_jitter=0) as session:
+    async with mesh.join(
+        listen_addrs=listen, router_addresses=router_addresses, control_plane_sync_interval=0, control_plane_sync_jitter=0, egress_require_labels=egress_require_labels or None
+    ) as session:
         _emit(
             {
                 "sdk": "python",

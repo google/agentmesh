@@ -46,22 +46,33 @@ MCP_CLIENT_INFO = mcp_types.Implementation(name="agent-mesh-sdk", version="0.1.0
 
 
 class LabelsNotSatisfiedError(Exception):
-    """The provider's credential carries none of the labels the caller requires (checkPeerLabels)."""
+    """The provider's credential lacks what the caller requires (any one pair)
+    or what the session's egress floor requires (every pair), as
+    checkPeerLabels refuses."""
 
-    def __init__(self, peer_id: str, required: Sequence[str]):
-        super().__init__(f"peer {peer_id} carries none of the required labels: {', '.join(required)}")
+    def __init__(self, peer_id: str, required: Sequence[str], what: str = "carries none of the required labels"):
+        super().__init__(f"peer {peer_id} {what}: {', '.join(required)}")
 
 
 def require_labels(provider: VerifiedBiscuit, required: Optional[Mapping[str, str]]) -> None:
     """A caller's requirement is satisfied by any one pair, as sam-node's
     api.LabelCheck (`check if label(k1, v1) or label(k2, v2)`): several pairs
-    mean "any of these will do". The operator's egress floor is the
-    conjunction, and sam-node's alone."""
+    mean "any of these will do". The egress floor (require_egress_labels) is the
+    conjunction."""
     if not required:
         return
     if any(provider.labels.get(k) == v for k, v in required.items()):
         return
     raise LabelsNotSatisfiedError(provider.peer_id, [f"{k}={v}" for k, v in required.items()])
+
+
+def require_egress_labels(provider: VerifiedBiscuit, required: Optional[Mapping[str, str]]) -> None:
+    """The egress floor is met only by every one of its pairs, as sam-node's
+    api.LabelFloorCheck (`check if label(k1, v1), label(k2, v2)`) for
+    egress.require_labels: a floor takes no alternatives. Empty is no floor."""
+    if not required or all(provider.labels.get(k) == v for k, v in required.items()):
+        return
+    raise LabelsNotSatisfiedError(provider.peer_id, [f"{k}={v}" for k, v in required.items()], "does not attest the egress floor")
 
 
 @dataclass
@@ -97,10 +108,12 @@ async def open_mcp_session(
     trusted_keys: Sequence[bytes],
     *,
     required_labels: Optional[Mapping[str, str]] = None,
+    egress_require_labels: Optional[Mapping[str, str]] = None,
 ) -> AsyncIterator[tuple[ClientSession, VerifiedBiscuit]]:
     """Opens /sam/mcp/1.0.0 to a connected provider with `frame`, this member's
     AuthFrame naming the service, verifies the provider and yields an
-    initialized MCP ClientSession with the provider's credential."""
+    initialized MCP ClientSession with the provider's credential; egress_require_labels
+    is the session's, not the caller's (require_egress_labels)."""
     stream = await open_stream(host, peer_id, MCP_PROTOCOL, AUTH_HANDSHAKE_TIMEOUT)
     try:
         with trio.fail_after(AUTH_HANDSHAKE_TIMEOUT):
@@ -116,6 +129,7 @@ async def open_mcp_session(
         except BiscuitVerificationError as err:
             raise AuthRejectedError(str(peer_id), f"provider credential rejected: {err}") from err
         require_labels(provider, required_labels)
+        require_egress_labels(provider, egress_require_labels)
     except trio.TooSlowError as err:
         await stream.close()
         raise AuthRejectedError(str(peer_id), "handshake timed out") from err

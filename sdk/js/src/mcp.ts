@@ -102,10 +102,13 @@ export interface MCPSession {
   close(): Promise<void>;
 }
 
-/** The provider's credential carries none of the labels the caller requires (checkPeerLabels). */
+/**
+ * The provider's credential lacks what the caller requires (any one pair) or
+ * what the session's egress floor requires (every pair), as checkPeerLabels refuses.
+ */
 export class LabelsNotSatisfiedError extends Error {
-  constructor(peerId: string, required: string[]) {
-    super(`peer ${peerId} carries none of the required labels: ${required.join(", ")}`);
+  constructor(peerId: string, required: string[], what = "carries none of the required labels") {
+    super(`peer ${peerId} ${what}: ${required.join(", ")}`);
     this.name = "LabelsNotSatisfiedError";
   }
 }
@@ -113,8 +116,8 @@ export class LabelsNotSatisfiedError extends Error {
 /**
  * A caller's requirement is satisfied by any one pair, as sam-node's
  * api.LabelCheck (`check if label(k1, v1) or label(k2, v2)`): several pairs
- * mean "any of these will do". The operator's egress floor is the
- * conjunction, and sam-node's alone.
+ * mean "any of these will do". The egress floor (requireEgressLabels) is the
+ * conjunction.
  */
 export function requireLabels(provider: VerifiedBiscuit, required: Record<string, string> | undefined): void {
   if (!required) {
@@ -131,15 +134,37 @@ export function requireLabels(provider: VerifiedBiscuit, required: Record<string
 }
 
 /**
+ * The egress floor is met only by every one of its pairs, as sam-node's
+ * api.LabelFloorCheck (`check if label(k1, v1), label(k2, v2)`) for
+ * egress.require_labels: a floor takes no alternatives. Empty is no floor.
+ */
+export function requireEgressLabels(provider: VerifiedBiscuit, required: Record<string, string> | undefined): void {
+  if (!required) {
+    return;
+  }
+  const pairs = Object.entries(required);
+  if (pairs.every(([k, v]) => provider.labels[k] === v)) {
+    return;
+  }
+  throw new LabelsNotSatisfiedError(
+    provider.peerId,
+    pairs.map(([k, v]) => `${k}=${v}`),
+    "does not attest the egress floor",
+  );
+}
+
+/**
  * Opens /sam/mcp/1.0.0 to a connected provider for targetService ("" is the
  * provider's own catalog), verifies the provider, and returns a connected
- * MCP client. frame is this member's AuthFrame for that service.
+ * MCP client. frame is this member's AuthFrame for that service; egressRequireLabels
+ * is the session's, not the caller's (requireEgressLabels).
  */
 export async function openMCPSession(
   conn: Connection,
   frame: Uint8Array,
   trustedKeys: Uint8Array[],
   options: MCPSessionOptions = {},
+  egressRequireLabels?: Record<string, string>,
 ): Promise<MCPSession> {
   const signal = options.signal ?? AbortSignal.timeout(AUTH_HANDSHAKE_TIMEOUT_MS);
   const stream = await conn.newStream(MCP_PROTOCOL, { signal, runOnLimitedConnection: true });
@@ -154,6 +179,7 @@ export async function openMCPSession(
     }
     provider = await verifyPeerBiscuit(resp.biscuit, conn.remotePeer.toString(), trustedKeys);
     requireLabels(provider, options.requiredLabels);
+    requireEgressLabels(provider, egressRequireLabels);
   } catch (err) {
     await stream.close().catch(() => stream.abort(err instanceof Error ? err : new Error(String(err))));
     if (err instanceof BiscuitVerificationError) {

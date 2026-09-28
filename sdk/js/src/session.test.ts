@@ -30,12 +30,15 @@ import { multiaddr } from "@multiformats/multiaddr";
 import { createLibp2p } from "libp2p";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { AUTH_PROTOCOL, AuthRejectedError, authenticateWithPeer, authStreamHandler } from "./auth.ts";
-import { ROLE_ROUTER, loadBiscuit, verifyPeerBiscuit } from "./biscuit.ts";
+import { AUTH_HANDLER_OPTIONS, AUTH_PROTOCOL, AuthRejectedError, authenticateWithPeer, authStreamHandler } from "./auth.ts";
+import { BiscuitVerificationError, ROLE_ROUTER, loadBiscuit, verifyPeerBiscuit } from "./biscuit.ts";
 import { ROLE_NODE } from "./controlplane.ts";
 import { BootstrapEnrollRequestSchema, BootstrapEnrollResponseSchema, EnrollmentStatus, KeysResponseSchema, AuthFrameSchema } from "./gen/sam_pb.ts";
 import { Identity } from "./identity.ts";
+import { HTTP_HANDLER_OPTIONS, HTTP_PROTOCOL, a2aEndpoint, httpIngressHandler } from "./libp2p-http.ts";
+import { LabelsNotSatisfiedError } from "./mcp.ts";
 import { AgentMesh } from "./mesh.ts";
+import { MeshSession, type JoinOptions } from "./session.ts";
 
 type Wasm = Awaited<ReturnType<typeof loadBiscuit>>;
 
@@ -46,13 +49,25 @@ let router: Libp2p;
 let routerAddr: string;
 let routerBiscuit: Uint8Array;
 
-function mint(peerId: string, role: string, expiration = "2035-01-01T00:00:00Z"): Uint8Array {
+function mint(peerId: string, role: string, expiration = "2035-01-01T00:00:00Z", labels: Record<string, string> = {}): Uint8Array {
   const b = wasm.Biscuit.builder();
   b.addFact(wasm.Fact.fromString(`node(${JSON.stringify(peerId)})`));
+  b.addFact(wasm.Fact.fromString(`client_peer_id(${JSON.stringify(peerId)})`));
   b.addFact(wasm.Fact.fromString(`expiration(${expiration})`));
   b.addFact(wasm.Fact.fromString(`role(${JSON.stringify(role)})`));
+  for (const [k, v] of Object.entries(labels)) {
+    b.addFact(wasm.Fact.fromString(`label(${JSON.stringify(k)}, ${JSON.stringify(v)})`));
+  }
   return b.build(cpKeyPair.getPrivateKey()).toBytes();
 }
+
+// What the control plane renders for a policy granting the node role every
+// A2A service on any target, and nothing else.
+const POLICY_RULES = [
+  `granted_service_all("a2a") <- role("sam:role:node")`,
+  `granted_service_all("sam:system") <- role("sam:role:node")`,
+  `target_unrestricted(true) <- role("sam:role:node")`,
+];
 
 function proto(bytes: Uint8Array): Response {
   return new Response(Buffer.from(bytes), { status: 200, headers: { "Content-Type": "application/x-protobuf" } });
@@ -97,6 +112,8 @@ before(async () => {
     connectionEncrypters: [tls()],
     streamMuxers: [yamux()],
     services: { identify: identify(), relay: circuitRelayServer() },
+    // Every member here dials from loopback; the per-host inbound rate limit would refuse the later ones.
+    connectionManager: { inboundConnectionThreshold: Infinity },
   });
   routerBiscuit = mint(router.peerId.toString(), ROLE_ROUTER);
   await router.handle(
@@ -341,4 +358,67 @@ test("an explicit rejection is reported with its reason", async () => {
   assert.match(reason.message, /12D3KooWtest.*peer is revoked/);
   // The verifier does not depend on libp2p; a token for another peer is refused before any network I/O.
   await assert.rejects(verifyPeerBiscuit(routerBiscuit, "12D3KooWA4Xop1JaT3MHxwYMkCepYsv4iPVopMXwCz5iHYdBfeSB", [cpKey]), /not bound to peer/);
+});
+
+test("an egress floor stated at join is held on the HTTP path, and the provider is verified with or without one", async () => {
+  // A provider answering /sam/auth and /libp2p-http as a member does, with
+  // whatever credential mintFor gives it; the handshakes it answers are counted.
+  const handshakes: string[] = [];
+  const serve = async (mintFor: (peerId: string) => Uint8Array): Promise<Libp2p> => {
+    const identity = Identity.generate();
+    const biscuit = mintFor(identity.peerId);
+    const host = await createLibp2p({
+      privateKey: privateKeyFromProtobuf(identity.toLibp2pPrivateKey()),
+      addresses: { listen: ["/ip4/127.0.0.1/tcp/0"] },
+      transports: [tcp()],
+      connectionEncrypters: [tls()],
+      streamMuxers: [yamux()],
+      services: { identify: identify() },
+    });
+    await host.handle(AUTH_PROTOCOL, authStreamHandler({ ownBiscuit: () => biscuit, trustedKeys: () => [cpKey], onAuthenticated: (peerId) => handshakes.push(peerId) }), AUTH_HANDLER_OPTIONS);
+    await host.handle(HTTP_PROTOCOL, httpIngressHandler(a2aEndpoint({ handler: () => Response.json({ ok: true }) }), { ownBiscuit: () => biscuit, trustedKeys: () => [cpKey], policyRules: () => POLICY_RULES }), HTTP_HANDLER_OPTIONS);
+    return host;
+  };
+  const provider = await serve((peerId) => mint(peerId, ROLE_NODE, undefined, { region: "eu" }));
+  // Enrolled nowhere: a credential no trusted key signed.
+  const forged = new wasm.KeyPair(wasm.SignatureAlgorithm.Ed25519);
+  const impostor = await serve((peerId) => {
+    const b = wasm.Biscuit.builder();
+    b.addFact(wasm.Fact.fromString(`node(${JSON.stringify(peerId)})`));
+    b.addFact(wasm.Fact.fromString("expiration(2035-01-01T00:00:00Z)"));
+    return b.build(forged.getPrivateKey()).toBytes();
+  });
+  const addrOf = (host: Libp2p) => (host.getMultiaddrs()[0] as ReturnType<typeof multiaddr>).toString();
+  const sessions: MeshSession[] = [];
+  const join = async (options: JoinOptions): Promise<MeshSession> => {
+    const mesh = await AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", bootstrapToken: "sbt", fetch: fakeControlPlane([routerAddr]) });
+    const session = await mesh.join({ refreshLeadMs: 0, reserveRelay: false, ...options });
+    sessions.push(session);
+    return session;
+  };
+  try {
+    const held = await join({ egressRequireLabels: { region: "eu" } });
+    const missed = await join({ egressRequireLabels: { region: "eu", team: "platform" } });
+    const plain = await join({});
+    const card = MeshSession.meshURL(provider.peerId.toString(), "a2a://agent", "/card");
+    // Met: one handshake verifies the provider; the verdict is kept for the next calls.
+    assert.equal((await held.request(addrOf(provider), "a2a://agent", "/card")).status, 200);
+    assert.equal((await held.request(addrOf(provider), "a2a://agent", "/card")).status, 200);
+    assert.equal((await held.fetch()(card)).status, 200);
+    assert.deepEqual(handshakes, [held.peerId]);
+
+    // Missed: every path refuses, and a refusal is not kept: each call asks again.
+    await assert.rejects(missed.request(addrOf(provider), "a2a://agent", "/card"), LabelsNotSatisfiedError);
+    await assert.rejects(missed.fetch()(card), LabelsNotSatisfiedError);
+    assert.deepEqual(handshakes, [held.peerId, missed.peerId, missed.peerId]);
+
+    // No floor: no gate, but the provider is verified all the same.
+    assert.equal((await plain.request(addrOf(provider), "a2a://agent", "/card")).status, 200);
+    await assert.rejects(plain.request(addrOf(impostor), "a2a://agent", "/card"), BiscuitVerificationError);
+    // A banned provider is refused before any handshake.
+    plain.banned.add(provider.peerId.toString(), Date.now());
+    await assert.rejects(plain.request(addrOf(provider), "a2a://agent", "/card"), /banned/);
+  } finally {
+    await Promise.all([...sessions.map((s) => s.close()), provider.stop(), impostor.stop()]);
+  }
 });
