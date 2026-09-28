@@ -13,14 +13,41 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Runs on every boot. The bootstrap token is spent on the first one; later
-# boots reuse the identity stored in ~/.sam.
+# Runs on every boot, after every kit's install hooks, so an agent kit that
+# seeds its config at install cannot drop the registration. Idempotent.
 set -eu
 d=$HOME/.sam
 mkdir -p "$d" && chmod 700 "$d"
+exec 2>>"$d/hooks.log"
+echo "$(date -u +%FT%TZ) startup" >&2
+
+if [ ! -s "$d/api-token" ]; then
+  (umask 077; head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' > "$d/api-token")
+fi
 if [ ! -s "$d/token" ]; then
   (umask 077; printf '%s' "$SAM_BOOTSTRAP_TOKEN" > "$d/token")
 fi
+
+tok=$(cat "$d/api-token")
+url=http://127.0.0.1:8080/mcp
+hdr="X-Sam-Authentication: Bearer $tok"
+warn() { echo "sam: $1 mcp add failed; add $url by hand" >&2; }
+if command -v claude >/dev/null; then
+  claude mcp remove --scope user sam >/dev/null 2>&1 || true
+  claude mcp add --transport http --scope user --header "$hdr" sam "$url" >&2 || warn claude
+else
+  echo "sam: claude not on PATH ($PATH)" >&2
+fi
+if command -v gemini >/dev/null; then
+  gemini mcp add --transport http --scope user -H "$hdr" sam "$url" >&2 || warn gemini
+fi
+if command -v codex >/dev/null && ! grep -qs '^\[mcp_servers\.sam\]' "$HOME/.codex/config.toml"; then
+  # codex mcp add has no header flag; the table goes straight into its config.
+  mkdir -p "$HOME/.codex"
+  printf '\n[mcp_servers.sam]\nurl = "%s"\nhttp_headers = { "X-Sam-Authentication" = "Bearer %s" }\n' \
+    "$url" "$tok" >> "$HOME/.codex/config.toml"
+fi
+
 exec sam-node run --daemonize \
   --control-plane "https://$SAM_CONTROL_PLANE" \
   --bootstrap-token-path "$d/token" \

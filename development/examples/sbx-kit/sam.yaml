@@ -7,7 +7,6 @@ sourceUrl: https://github.com/google/sam
 licenses: [Apache-2.0]
 version: "0.1.0-rc.7"
 provides: [sam]
-# Orders our install hook after the agent mixin's, which seeds the files `mcp add` writes to.
 integrates: [claude, codex, gemini]
 dockerfile: sam.dockerfile
 args:
@@ -31,12 +30,8 @@ capabilities:
         allow: ["${{ kit.args.controlPlane }}"]
   - type: com.docker.sandbox/lifecycle@1
     config:
-      install:
-        - command: /usr/local/lib/sam/install.sh
-          user: "1000"
-          description: Mint the node API token and register the node's MCP with the agent CLIs present
       startup:
         - command: /usr/local/lib/sam/startup.sh
           user: "1000"
           env: [SAM_CONTROL_PLANE, SAM_BOOTSTRAP_TOKEN]
-          description: Enroll on first boot, then run sam-node in the background
+          description: Register the node's MCP with the agent CLIs present, enroll on first boot, run sam-node

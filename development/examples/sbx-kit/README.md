@@ -21,10 +21,9 @@ allow entry, the control plane host; the mesh rides on that connection.
 
 | | |
 | --- | --- |
-| `sam.yaml` | The kit: args, the one allow entry, the install and startup hooks. |
+| `sam.yaml` | The kit: args, the one allow entry, the startup hook. |
 | `sam.dockerfile` | Copies `sam-node` from `ghcr.io/google/sam-node` and the hooks into an overlay. |
-| `hooks/install.sh` | Once, at create: mints the node API token and runs `mcp add` for Claude Code, Gemini CLI and Codex, whichever are present. |
-| `hooks/startup.sh` | Every boot: enrolls on the first, then runs `sam-node run --daemonize`. |
+| `hooks/startup.sh` | Every boot: registers the node with Claude Code, Gemini CLI and Codex, whichever are present, enrolls on the first boot, then runs `sam-node run --daemonize`. |
 | `policy.json`, `pep.yaml` | The walkthrough's mesh: one node serving `mcp://tools`, one `agent` role allowed to call it. |
 | `kit-args.example` | The two values the kit needs. |
 
@@ -106,14 +105,15 @@ repository.
   needs a fresh token.
 - **The node is the agent's identity.** The mesh sees one member per sandbox,
   with the role the token grants.
-- **Logs.** Inside the sandbox, `~/.sam/sam-node.log`. On the host, `sbx
+- **Logs.** Inside the sandbox, `~/.sam/sam-node.log` for the node and
+  `~/.sam/hooks.log` for the registration. On the host, `sbx
   policy log` shows what the proxy refused.
 - **A project `.mcp.json` pointing at `127.0.0.1:8080`** is loaded too,
   since the workspace is mounted, and reaches this node with your host node's
   token, so it fails with `401`. The kit's own server is `sam`. Disable the
   other one inside the sandbox only, by adding its name to
   `disabledMcpjsonServers` in the sandbox's `~/.claude/settings.json`.
-- **Other agents.** The install hook registers the node with Gemini CLI and
+- **Other agents.** The startup hook registers the node with Gemini CLI and
   Codex too, if the workload ships them. Any other MCP client can use
   `http://127.0.0.1:8080/mcp` with the header
   `X-Sam-Authentication: Bearer $(cat ~/.sam/api-token)`.
