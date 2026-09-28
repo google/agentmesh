@@ -23,7 +23,7 @@ allow entry, the control plane host; the mesh rides on that connection.
 | --- | --- |
 | `sam.yaml` | The kit: args, the one allow entry, the startup hook. |
 | `sam.dockerfile` | Copies `sam-node` from `ghcr.io/google/sam-node` and the hooks into an overlay. |
-| `hooks/startup.sh` | Every boot: registers the node with Claude Code, Gemini CLI and Codex, whichever are present, enrolls on the first boot, then runs `sam-node run --daemonize`. |
+| `hooks/startup.sh` | Every boot: registers the node with every supported agent CLI present, enrolls on the first boot, then runs `sam-node run --daemonize`. |
 | `policy.json`, `pep.yaml` | The walkthrough's mesh: one node serving `mcp://tools`, one `agent` role allowed to call it. |
 | `kit-args.example` | The two values the kit needs. |
 
@@ -113,7 +113,9 @@ repository.
   token, so it fails with `401`. The kit's own server is `sam-mesh`. Disable the
   other one inside the sandbox only, by adding its name to
   `disabledMcpjsonServers` in the sandbox's `~/.claude/settings.json`.
-- **Other agents.** The startup hook registers the node with Gemini CLI and
-  Codex too, if the workload ships them. Any other MCP client can use
+- **Other agents.** The startup hook registers `sam-mesh` with whichever of
+  these the workload ships: Claude Code, Codex, Gemini CLI, OpenCode, Devin,
+  Cursor, Copilot, Droid and Kiro. Swap the workload, for example
+  `sbx run docker/sbx-kit-codex --kit …`. Any other MCP client can use
   `http://127.0.0.1:8080/mcp` with the header
   `X-Sam-Authentication: Bearer $(cat ~/.sam/api-token)`.

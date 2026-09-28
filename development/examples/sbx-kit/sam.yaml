@@ -7,7 +7,7 @@ sourceUrl: https://github.com/google/sam
 licenses: [Apache-2.0]
 version: "0.1.0-rc.7"
 provides: [sam]
-integrates: [claude, codex, gemini]
+integrates: [claude, codex, gemini, opencode, devin, cursor, copilot, droid, kiro]
 dockerfile: sam.dockerfile
 args:
   samVersion:
