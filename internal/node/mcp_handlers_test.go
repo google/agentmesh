@@ -834,11 +834,14 @@ func TestNewMCPHandler_RegistersFindRemoteTools(t *testing.T) {
 // tag must be served, not refused as a new-protocol request; a stateful SDK
 // handler answers it with -32022.
 func TestNewMCPHandler_AcceptsLegacyRequestWithProtocolVersionMeta(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	srv := httptest.NewServer(NewMCPHandler(&SamNode{BiscuitTimeout: 500 * time.Millisecond}))
 	defer srv.Close()
 
 	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"tc","version":"0.0.1"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2025-11-25"}}}`
-	req, err := http.NewRequest(http.MethodPost, srv.URL+"/mcp", strings.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/mcp", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
