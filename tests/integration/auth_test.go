@@ -101,7 +101,8 @@ func TestNodeAuthEnforcementIntegration(t *testing.T) {
 
 		// /sam/service/discover expects node to be connected.
 		{"discover with token", "GET", "/sam/service/discover?type=mcp&name=test", http.StatusOK, true},
-		{"mcp root with token", "GET", "/mcp", http.StatusBadRequest, true},
+		// The sessionless MCP server has no standalone stream: GET is 405.
+		{"mcp root with token", "GET", "/mcp", http.StatusMethodNotAllowed, true},
 	}
 
 	for _, tt := range tests {
