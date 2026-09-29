@@ -1,4 +1,4 @@
-# Copy to kit-args and fill in: one name=value per line. Keep it out of
+# Copy to sam-kit-args and fill in: one name=value per line. Keep it out of
 # version control. controlPlane is the host only, without https://.
 controlPlane=my-mesh.trycloudflare.com
 token=PASTE-THE-AGENT-TOKEN
