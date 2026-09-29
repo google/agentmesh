@@ -114,8 +114,8 @@ repository.
   other one inside the sandbox only, by adding its name to
   `disabledMcpjsonServers` in the sandbox's `~/.claude/settings.json`.
 - **Other agents.** The startup hook registers `sam-mesh` with whichever of
-  these the workload ships: Claude Code, Codex, Gemini CLI, OpenCode, Devin,
-  Cursor, Copilot, Droid and Kiro. Swap the workload, for example
+  these the workload ships: Claude Code, Codex, Gemini CLI, Antigravity,
+  OpenCode, Devin, Cursor, Copilot, Droid and Kiro. Swap the workload, for example
   `sbx run docker/sbx-kit-codex --kit …`. Any other MCP client can use
   `http://127.0.0.1:8080/mcp` with the header
   `X-Sam-Authentication: Bearer $(cat ~/.sam/api-token)`.

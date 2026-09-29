@@ -32,10 +32,10 @@ tok=$(cat "$d/api-token")
 url=http://127.0.0.1:8080/mcp
 hdr="X-Sam-Authentication: Bearer $tok"
 warn() { echo "sam: $1 registration failed; add $url by hand" >&2; }
-# has CLI DIR: the agent is here if its CLI is on PATH or its kit seeded its
-# config dir; hooks may not see the PATH the agent's login shell builds.
+# has CLI PATH: the agent is here if its CLI is on PATH or its kit seeded its
+# config; hooks may not see the PATH the agent's login shell builds.
 has() {
-  if command -v "$1" >/dev/null || [ -d "$2" ]; then echo "sam: registering $1" >&2; else return 1; fi
+  if command -v "$1" >/dev/null || [ -e "$2" ]; then echo "sam: registering $1" >&2; else return 1; fi
 }
 echo "sam: PATH=$PATH" >&2
 
@@ -64,7 +64,7 @@ fi
 if ! command -v jq >/dev/null; then
   echo "sam: jq missing; only claude and codex are registered" >&2
 else
-  if has gemini "$HOME/.gemini"; then
+  if has gemini "$HOME/.gemini/settings.json"; then
     merge "$HOME/.gemini/settings.json" "{\"mcpServers\":{\"sam-mesh\":{\"httpUrl\":\"$url\",\"headers\":{\"X-Sam-Authentication\":\"Bearer $tok\"}}}}" || warn gemini
   fi
   if has opencode "$HOME/.config/opencode"; then
@@ -75,6 +75,8 @@ else
   has copilot "$HOME/.copilot" && { merge "$HOME/.copilot/mcp-config.json" "$(servers '"type":"http","tools":["*"],')" || warn copilot; }
   has droid "$HOME/.factory" && { merge "$HOME/.factory/mcp.json" "$(servers '"type":"http",')" || warn droid; }
   has kiro-cli "$HOME/.kiro" && { merge "$HOME/.kiro/settings/mcp.json" "$(servers '')" || warn kiro; }
+  # Antigravity (agy) keys the URL as serverUrl.
+  has agy "$HOME/.gemini/antigravity-cli" && { merge "$HOME/.gemini/config/mcp_config.json" "{\"mcpServers\":{\"sam-mesh\":{\"serverUrl\":\"$url\",\"headers\":{\"X-Sam-Authentication\":\"Bearer $tok\"}}}}" || warn antigravity; }
 fi
 
 # A failing startup hook stops the sandbox from booting; a node that cannot
