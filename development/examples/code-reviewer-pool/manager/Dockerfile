@@ -1,4 +1,4 @@
-FROM node:26-slim@sha256:14bf3eac4bf209d906d3c41256597d3ab1f926b2e93a79e9bdfe1efd32454239
+FROM node:26-slim@sha256:ec7758ee051e457b468b32bde57b0879010b325bb9862718e9615225ce4aaae1
 
 WORKDIR /srv
 COPY package.json package-lock.json server.mjs lease-token.mjs ./
