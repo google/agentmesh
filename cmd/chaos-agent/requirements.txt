@@ -1,4 +1,4 @@
-openai>=3.17.0,<4
+openai>=3.18.0,<4
 # Pinned to a major version: 1.x spells the transport streamablehttp_client and
 # 2.x spells it streamable_http_client, so an unpinned floor silently changes
 # the API underneath a sandbox image.
