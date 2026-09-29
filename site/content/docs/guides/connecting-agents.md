@@ -53,6 +53,14 @@ ordinary OpenAI request to the node's `/v1` endpoint, with `base_url`
 `http://127.0.0.1:8080/v1` and the token as the API key. `/v1/models` lists
 the available models.
 
+A2A agents are not MCP tools either. `discover_remote_services` with
+`{"type":"a2a"}` lists them with a `local_proxy_url`, and any stock A2A
+client works through that URL, for example the official
+[`a2a` CLI](https://github.com/a2aproject/a2a-cli), whose own skill teaches
+an agent the protocol. The
+[node API reference](../../reference/node-api/#talking-a2a-through-the-proxy)
+shows the call.
+
 Two things an agent should know (the skill below tells it): service names
 are not unique across the mesh, so the peer ID identifies a provider, and
 discovery is best-effort per peer, so on a partly reachable mesh some entries

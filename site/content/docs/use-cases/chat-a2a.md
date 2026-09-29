@@ -140,6 +140,17 @@ something else, then ask the agent what your name is. It answers from its
 own server-side session. The client never sent the history again, only the
 `contextId`.
 
+The official [`a2a` CLI](https://github.com/a2aproject/a2a-cli) is another
+stock client. Its reply prints the `contextId` the server created; pass it
+back as `--context-id` and the agent continues the same conversation:
+
+```bash
+export A2ACLI_SVC_PARAM='X-Sam-Authentication=Bearer devtoken'
+CARD="http://127.0.0.1:9099/sam/$PEER/a2a/chat/.well-known/agent-card.json"
+a2a send -a "$CARD" "hello, I am Ada"
+a2a send -a "$CARD" --context-id <contextId from the first reply> "what is my name?"
+```
+
 ## Configuration
 
 | var | default | used by |

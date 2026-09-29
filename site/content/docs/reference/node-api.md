@@ -183,6 +183,18 @@ curl -s --unix-socket $SOCK \
   http://localhost/sam/<peer-id>/a2a/triage/.well-known/agent-card.json
 ```
 
+The official [`a2a` CLI](https://github.com/a2aproject/a2a-cli) (v0.3.0 or
+later) is such a client. It speaks TCP only, so the token travels as a
+service parameter, set through the environment to keep it off the command
+line; `X-Sam-Required-Labels` goes in the same variable, comma-separated:
+
+```bash
+CARD=http://127.0.0.1:8080/sam/<peer-id>/a2a/triage/.well-known/agent-card.json
+export A2ACLI_SVC_PARAM="X-Sam-Authentication=Bearer $TOKEN"
+a2a card get $CARD
+a2a send -a $CARD "hello"
+```
+
 ## Inference
 
 `/v1/models` collects the model list of every reachable `inference` provider

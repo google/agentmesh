@@ -36,9 +36,6 @@ build:
 	# nano-init is a separate module: it carries a userspace TCP stack, which
 	# has no business in the dependency graph every other binary builds from.
 	go -C cmd/nano-init build -v -o "$(OUT_DIR)/nano-init" .
-	# sam-a2a-bridge is a separate module too: it keeps the a2a SDK out of
-	# the root dependency graph.
-	go -C cmd/sam-a2a-bridge build -v -o "$(OUT_DIR)/sam-a2a-bridge" .
 
 
 .PHONY: mobile-ffi-host mobile-ffi-android mobile-ffi-android-x86_64 mobile-ffi-ios mobile-ffi mobile-app-apk mobile-app-apk-emulator mobile-app-bundle

@@ -1,6 +1,6 @@
 ---
 name: sam-mesh
-description: "Use when local tools cannot provide a needed capability and a SAM agent mesh can: inspect mesh state, discover reachable services/tools, describe and call namespaced remote MCP tools, and reach OpenAI-compatible inference models hosted by mesh peers. Also use to set up, join, or reconnect a sam-node when its MCP tools are not callable yet."
+description: "Use when local tools cannot provide a needed capability and a SAM agent mesh can: inspect mesh state, discover reachable services/tools, describe and call namespaced remote MCP tools, reach OpenAI-compatible inference models hosted by mesh peers, and hand work to A2A agents on the mesh through the official a2a CLI. Also use to set up, join, or reconnect a sam-node when its MCP tools are not callable yet."
 ---
 
 # SAM Agent Skill
@@ -21,6 +21,7 @@ Pick the path that matches the need:
   [Inspect The Mesh](#inspect-the-mesh).
 - The task needs a model completion:
   [Use Mesh Inference](#use-mesh-inference).
+- The task needs a remote A2A agent: [Call A2A Agents](#call-a2a-agents).
 
 ## Bootstrap A Node
 
@@ -154,7 +155,8 @@ Use service discovery when you need to inventory reachable service providers:
   by service name.
 - Treat `discover_remote_services` as service inventory. Non-MCP service types
   are not callable with `call_remote_tool`. For `inference://` services see
-  [Use Mesh Inference](#use-mesh-inference).
+  [Use Mesh Inference](#use-mesh-inference), for `a2a://` services
+  [Call A2A Agents](#call-a2a-agents).
 
 Use tool discovery when you need remote MCP tools:
 
@@ -243,6 +245,48 @@ curl --unix-socket ~/.config/sam-mesh/sam.sock \
 Ask the user before sending private or sensitive content to a mesh model, and
 say which provider will receive it.
 
+## Call A2A Agents
+
+The mesh also carries `a2a://` services: agents that speak the A2A protocol.
+They are plain HTTP behind the node's proxy path and are never invoked with
+`call_remote_tool`. Drive them with the official `a2a` CLI
+(github.com/a2aproject/a2a-cli, v0.3.0 or later). It ships its own agent
+skill, which covers the protocol side: cards, messages, tasks and streaming.
+This section only adds what the mesh needs.
+
+Check for the CLI with `a2a version`. If it is missing, propose the install
+from its README (`go install github.com/a2aproject/a2a-cli@latest` names the
+binary `a2a-cli`; rename it to `a2a`) and its skill with
+`npx skills add https://github.com/a2aproject/a2a-cli --skill a2a-cli`, and
+let the user approve each command.
+
+1. Call `discover_remote_services` with `{"type":"a2a"}` and take the
+   `local_proxy_url` of the provider you want.
+2. Point the CLI at the agent card under that URL. The node regenerates the
+   card so its interface URL is the proxy path itself; every later request
+   then goes through the mesh with no further SAM-specific setup.
+3. The CLI speaks TCP only, so it needs the node API token from
+   [Talk To The Node Over HTTP](#talk-to-the-node-over-http) as a service
+   parameter. Pass it through the CLI's environment, never as a flag, so the
+   value stays out of the process arguments and the shell history:
+
+```bash
+A2ACLI_SVC_PARAM="X-Sam-Authentication=Bearer $(cat ~/.config/sam-mesh/api-token)" \
+  a2a card get <local_proxy_url>/.well-known/agent-card.json
+```
+
+Every other `a2a` command takes the same card URL through `-a` and the same
+environment. To accept only a provider whose labels the control plane
+attested, append `,X-Sam-Required-Labels=region=eu` to that variable: the
+node then refuses fail-closed with `403` before any data leaves it. That
+refusal is the feature: report it, never retry with weaker labels on your
+own. A `--svc-param` flag replaces the whole variable, and the variable is
+split on commas, so several label pairs need a `--config` YAML file with
+both entries under `svc-param` instead.
+
+Ask the user before sending private or sensitive content to a mesh agent, and
+say which peer will receive it.
+
 ## Minimal Workflow
 
 1. Confirm no local tool can satisfy the task.
@@ -263,7 +307,8 @@ say which provider will receive it.
    `{"peer_id":"...","tool_name":"service.tool","arguments":{...}}`.
 
 For a model completion rather than a tool, skip steps 5-7 and follow
-[Use Mesh Inference](#use-mesh-inference) instead.
+[Use Mesh Inference](#use-mesh-inference) instead; for an A2A agent,
+[Call A2A Agents](#call-a2a-agents).
 
 ## Safety And Reliability
 
