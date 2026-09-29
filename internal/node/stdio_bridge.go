@@ -206,8 +206,6 @@ func (b *StdioBridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Mcp-Session-Id", "stdio-bridge")
-
 	if !isCall {
 		w.WriteHeader(http.StatusAccepted)
 		return
