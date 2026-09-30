@@ -212,6 +212,16 @@ egress:
 	// serving the MCP service "calc" from a backend this test runs.
 	backend := httptest.NewServer(newBoundaryMCPHandler(t))
 	t.Cleanup(backend.Close)
+	// A stock A2A agent behind the node; its card names its own address.
+	agentCard := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/agent-card.json" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, sdkMeshStockAgentCard)
+	}))
+	t.Cleanup(agentCard.Close)
 	nodeBin := buildBinary(t, "./cmd/sam-node")
 	nodeHome := filepath.Join(t.TempDir(), "node")
 	if err := os.MkdirAll(nodeHome, 0o755); err != nil {
@@ -232,7 +242,9 @@ egress:
 		"--allow-loopback",
 		"--api-token-path", tokenPath(t, "node-token"),
 		"--discovery-interval", "100ms",
-		"--config", writeNodeConfig(t, nodeHome, sdkMeshLabels, svcDecl{Type: "mcp", Name: "calc", TargetURL: backend.URL}),
+		"--config", writeNodeConfig(t, nodeHome, sdkMeshLabels,
+			svcDecl{Type: "mcp", Name: "calc", TargetURL: backend.URL},
+			svcDecl{Type: "a2a", Name: sdkMeshAgentName, TargetURL: agentCard.URL}),
 		"--secrets-dir", secrets,
 		"--log-level", "debug",
 	)
@@ -258,6 +270,15 @@ egress:
 		mintToken: mintToken,
 	}
 }
+
+const sdkMeshAgentName = "echo-agent"
+
+const sdkMeshStockAgentCard = `{"name":"echo-agent","description":"stock agent behind a sam-node","version":"1.0.0",` +
+	`"capabilities":{"streaming":true},` +
+	`"supportedInterfaces":[{"url":"http://127.0.0.1:7777/","protocolBinding":"JSONRPC","protocolVersion":"1.0"},` +
+	`{"url":"127.0.0.1:50051","protocolBinding":"GRPC","protocolVersion":"1.0"}],` +
+	`"signatures":[{"protected":"eyJhbGciOiJFUzI1NiJ9","signature":"c3RhbGU"}],` +
+	`"skills":[],"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"]}`
 
 // sdkMember is a running SDK conformance-join runner: a mesh member written
 // in another language that the test drives over stdin/stdout. Both runners
@@ -467,6 +488,35 @@ func TestNativeSDKsMesh(t *testing.T) {
 			// A service the node does not have gets the stream closed on it.
 			if res := m.callRaw(t, nodeRelayAddr, "mcp://no-such-service", "add", nil); res.OK {
 				t.Fatalf("%s called a service the node does not serve: %+v", m.name, res)
+			}
+
+			// A stock client bootstraps from the node's agent card, so the SDK
+			// serves it rewritten for the mesh, as the node's egress proxy does.
+			res := m.http(t, nodeRelayAddr, "a2a://"+sdkMeshAgentName, "/.well-known/agent-card.json")
+			var card struct {
+				SupportedInterfaces []struct {
+					URL             string `json:"url"`
+					ProtocolBinding string `json:"protocolBinding"`
+				} `json:"supportedInterfaces"`
+				Capabilities struct {
+					Streaming bool `json:"streaming"`
+				} `json:"capabilities"`
+				Signatures []json.RawMessage `json:"signatures"`
+			}
+			if res.Status != 200 || json.Unmarshal([]byte(res.Body), &card) != nil {
+				t.Fatalf("%s fetching the node's agent card: %+v", m.name, res)
+			}
+			meshBase := "http://mesh/sam/" + samNode.peerID.String() + "/a2a/" + sdkMeshAgentName
+			if len(card.SupportedInterfaces) != 1 || card.SupportedInterfaces[0].URL != meshBase || card.SupportedInterfaces[0].ProtocolBinding != "JSONRPC" {
+				t.Errorf("%s got interfaces %+v, want one JSONRPC interface at %s", m.name, card.SupportedInterfaces, meshBase)
+			}
+			// Streaming stays as the agent declares it: the SDK's transport streams.
+			if !card.Capabilities.Streaming || len(card.Signatures) != 0 {
+				t.Errorf("%s got a card with streaming=%v (want true) and %d signatures (want none)", m.name, card.Capabilities.Streaming, len(card.Signatures))
+			}
+			// The bare service root serves the same card, as the node does for a2a-go.
+			if root := m.http(t, nodeRelayAddr, "a2a://"+sdkMeshAgentName, "/"); root.Body != res.Body {
+				t.Errorf("%s got a different card at the service root: %s", m.name, root.Body)
 			}
 		})
 	}
