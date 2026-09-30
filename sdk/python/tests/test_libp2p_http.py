@@ -35,6 +35,7 @@ from agent_mesh.controlplane import ROLE_NODE
 from agent_mesh.httpx_transport import MeshTransport, split_mesh_url
 from agent_mesh.identity import Identity
 from agent_mesh.libp2p_http import (
+    AGENT_CARD_PATH,
     HTTP_PROTOCOL,
     A2AEndpoint,
     HTTPRequest,
@@ -44,6 +45,7 @@ from agent_mesh.libp2p_http import (
     http_request_over_stream,
     mesh_http_target,
     open_http_request,
+    rewrite_agent_card,
 )
 from agent_mesh.session import MeshSession
 
@@ -64,6 +66,21 @@ def mint(peer_id: str, role: str) -> bytes:
     ).build(CP.private_key).to_bytes()
 
 
+STOCK_CARD = {
+    "name": "echo-agent",
+    "version": "1.0.0",
+    "capabilities": {"streaming": True, "pushNotifications": False},
+    "supportedInterfaces": [
+        {"url": "http://127.0.0.1:7777/", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"},
+        {"url": "127.0.0.1:50051", "protocolBinding": "GRPC", "protocolVersion": "1.0"},
+    ],
+    "signatures": [{"protected": "eyJhbGciOiJFUzI1NiJ9", "signature": "c3RhbGU"}],
+    "skills": [],
+    "defaultInputModes": ["text/plain"],
+    "defaultOutputModes": ["text/plain"],
+}
+
+
 class FakeA2AServer(BaseHTTPRequestHandler):
     """Stands in for an A2A server beside the agent: echoes the request and,
     on /stream, answers with three SSE events as message/stream would."""
@@ -73,7 +90,23 @@ class FakeA2AServer(BaseHTTPRequestHandler):
     def _answer(self) -> None:
         length = int(self.headers.get("content-length") or 0)
         body = self.rfile.read(length) if length else b""
-        FakeA2AServer.seen.append({"method": self.command, "path": self.path, "peer": self.headers.get("x-peer-id"), "body": body.decode(), "biscuit": self.headers.get("x-sam-biscuit")})
+        FakeA2AServer.seen.append(
+            {
+                "method": self.command,
+                "path": self.path,
+                "peer": self.headers.get("x-peer-id"),
+                "body": body.decode(),
+                "biscuit": self.headers.get("x-sam-biscuit"),
+                "encoding": self.headers.get("accept-encoding"),
+            }
+        )
+        if self.path == f"/{AGENT_CARD_PATH}" and self.headers.get("x-card") == "missing":
+            self.send_response(404)
+            self.send_header("content-type", "text/plain")
+            self.send_header("content-length", "7")
+            self.end_headers()
+            self.wfile.write(b"no card")
+            return
         if self.path == "/stream":
             self.send_response(200)
             self.send_header("content-type", "text/event-stream")
@@ -82,7 +115,12 @@ class FakeA2AServer(BaseHTTPRequestHandler):
                 self.wfile.write(f"data: {json.dumps({'event': i})}\n\n".encode())
                 self.wfile.flush()
             return
-        payload = json.dumps({"path": self.path, "echo": body.decode()}).encode()
+        if self.path == f"/{AGENT_CARD_PATH}":
+            grpc_only = self.headers.get("x-card") == "grpc-only"
+            interfaces = [i for i in STOCK_CARD["supportedInterfaces"] if not grpc_only or i["protocolBinding"] == "GRPC"]
+            payload = json.dumps({**STOCK_CARD, "supportedInterfaces": interfaces}).encode()
+        else:
+            payload = json.dumps({"path": self.path, "echo": body.decode()}).encode()
         self.send_response(200)
         self.send_header("content-type", "application/json")
         self.send_header("x-backend", "fake")
@@ -223,6 +261,55 @@ def test_the_agent_is_reachable_by_authorized_callers(backend_url):
     trio.run(with_timeout)
 
 
+def test_the_card_of_an_agent_behind_a_node_comes_back_rewritten_for_the_mesh(backend_url):
+    async def main():
+        async with trio.open_nursery() as nursery:
+            agent, addr = await start_agent(nursery, backend_url, [])
+            caller_identity = Identity.generate()
+            caller = libp2p_host(caller_identity)
+            caller_biscuit = mint(caller_identity.peer_id, ROLE_NODE)
+            async with caller.run(listen_addrs=[]):
+                await caller.connect(info_from_p2p_addr(addr))
+                pid = agent.get_id()
+                base = MeshSession.mesh_url(str(pid), "a2a://agent")
+                async with httpx.AsyncClient(transport=MeshTransport(FakeSession(caller, caller_biscuit))) as client:  # type: ignore[arg-type]
+                    answer = await client.get(f"{base}/{AGENT_CARD_PATH}")
+                    assert answer.status_code == 200 and answer.headers["content-type"] == "application/json"
+                    card = answer.json()
+                    assert card["supportedInterfaces"] == [{"url": base, "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}]
+                    assert card["capabilities"] == {"streaming": True, "pushNotifications": False}
+                    assert "signatures" not in card and card["name"] == "echo-agent" and card["skills"] == []
+                    assert FakeA2AServer.seen[-1]["path"] == f"/{AGENT_CARD_PATH}"
+                    # The bare service root serves the card too, the way a2a-go resolves a pathful base URL,
+                    # and the fetch is the SDK's own: at the well-known path, without the client's accept-encoding.
+                    assert (await client.get(base, headers={"accept-encoding": "x-test-only"})).json() == card
+                    assert FakeA2AServer.seen[-1]["path"] == f"/{AGENT_CARD_PATH}" and FakeA2AServer.seen[-1]["encoding"] != "x-test-only"
+                    missing = await client.get(f"{base}/{AGENT_CARD_PATH}", headers={"x-card": "missing"})
+                    assert missing.status_code == 404 and missing.text == "no card"
+                    refused = await client.get(f"{base}/{AGENT_CARD_PATH}", headers={"x-card": "grpc-only"})
+                    assert refused.status_code == 502 and "no supported interface the mesh can carry" in refused.text
+                    assert (await client.get(f"{base}/card")).json() == {"path": "/card", "echo": ""}
+                raw = await http_request_over_stream(caller, pid, caller_biscuit, "a2a://agent", f"/{AGENT_CARD_PATH}")
+                assert raw.status == 200 and raw.json() == card
+            nursery.cancel_scope.cancel()
+
+    async def with_timeout():
+        with trio.fail_after(30):
+            await main()
+
+    trio.run(with_timeout)
+
+
+def test_rewrite_agent_card_keeps_only_what_the_mesh_carries():
+    with pytest.raises(ValueError, match="not a JSON object"):
+        rewrite_agent_card([], "http://mesh/x")
+    with pytest.raises(ValueError, match="no supported interface"):
+        rewrite_agent_card({"supportedInterfaces": []}, "http://mesh/x")
+    assert rewrite_agent_card({"supportedInterfaces": [{"url": "x", "protocolBinding": "http+json"}]}, "http://mesh/x") == {
+        "supportedInterfaces": [{"url": "http://mesh/x", "protocolBinding": "http+json"}],
+    }
+
+
 def test_an_in_process_handler_sees_the_verified_caller():
     async def hello(request: HTTPRequest, caller) -> HTTPResponse:
         return HTTPResponse(status=201, body=f"hello {caller.peer_id} {request.method} {request.path}".encode())
@@ -278,7 +365,7 @@ def test_a_reset_mid_body_is_an_error_and_a_close_is_the_end():
     async def main():
         async with trio.open_nursery() as nursery:
             server = libp2p_host(Identity.generate())
-            handlers = {"/a2a/cut": truncating, "/a2a/end": closing}
+            handlers = {"/inference/cut": truncating, "/inference/end": closing}
 
             async def route(stream) -> None:
                 request = b""
@@ -304,12 +391,12 @@ def test_a_reset_mid_body_is_an_error_and_a_close_is_the_end():
                 await caller.connect(info_from_p2p_addr(addr_box[0]))
                 pid = server.get_id()
                 with trio.fail_after(10):
-                    ended = await open_http_request(caller, pid, b"x", "GET", "/a2a/end")
+                    ended = await open_http_request(caller, pid, b"x", "GET", "/inference/end")
                     assert ended.status == 200
                     assert (await ended.read()).decode().count("data:") == 2
                     await ended.aclose()
 
-                    cut = await open_http_request(caller, pid, b"x", "GET", "/a2a/cut")
+                    cut = await open_http_request(caller, pid, b"x", "GET", "/inference/cut")
                     assert cut.status == 200
                     with pytest.raises(ConnectionError, match="mid-response"):
                         await cut.read()

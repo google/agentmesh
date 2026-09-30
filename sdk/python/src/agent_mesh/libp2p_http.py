@@ -53,6 +53,19 @@ HEADER_SAM_NO_TRAILING_SLASH = "x-sam-no-trailing-slash"
 # The service name an agent answers under unless it picks another.
 DEFAULT_A2A_NAME = "agent"
 
+# The path prefix of a mesh URL, http://mesh/sam/<peer-id>/<type>/<name>/<path>:
+# the shape of sam-node's egress proxy and of an agent card rewritten for the
+# mesh, by sam-node or by this SDK. The peer ID is in the path, not the host.
+MESH_PATH_PREFIX = "/sam/"
+
+# The well-known agent card location (A2A spec / RFC 8615).
+AGENT_CARD_PATH = ".well-known/agent-card.json"
+
+_MAX_AGENT_CARD_BYTES = 1 << 20
+# The bare service root counts too: a2a-go treats a pathful base URL as the card location.
+_AGENT_CARD_TARGET = re.compile(r"^/a2a/([^/?]+)(?:/(?:\.well-known/agent-card\.json)?)?(?:\?.*)?$")
+_HTTP_BINDINGS = ("JSONRPC", "HTTP+JSON")
+
 _MAX_INGRESS_BODY_BYTES = 8 * 1024 * 1024
 _READ_CHUNK = 64 * 1024
 _REQUEST_TIMEOUT = 60.0
@@ -306,6 +319,34 @@ def mesh_http_target(target_service: str, path: str = "") -> str:
     return f"/{scheme}/{name}" + (path if path.startswith("/") else "/" + path)
 
 
+def mesh_url(peer_id: str, target_service: str, path: str = "") -> str:
+    """The URL an httpx client on MeshTransport uses for a service on a peer:
+    http://mesh/sam/<peer-id>/<type>/<name>/<path>."""
+    return "http://mesh" + MESH_PATH_PREFIX + peer_id + mesh_http_target(target_service, path)
+
+
+def _agent_card_service(method: str, target: str) -> Optional[str]:
+    m = _AGENT_CARD_TARGET.match(target)
+    return f"a2a://{m.group(1)}" if method == "GET" and m else None
+
+
+def rewrite_agent_card(card: object, base: str) -> dict:
+    """An agent card rebuilt for the mesh, as sam-node's egress proxy serves
+    it: HTTP interfaces point at base, gRPC ones go, signatures no longer match.
+    Streaming stays as declared, this transport streams. Raises when no interface remains."""
+    if not isinstance(card, dict):
+        raise ValueError("agent card is not a JSON object")
+    interfaces = card.get("supportedInterfaces")
+    kept = [
+        {**iface, "url": base}
+        for iface in (interfaces if isinstance(interfaces, list) else [])
+        if isinstance(iface, dict) and str(iface.get("protocolBinding", "")).upper() in _HTTP_BINDINGS
+    ]
+    if not kept:
+        raise ValueError("agent card advertises no supported interface the mesh can carry (JSONRPC or HTTP+JSON); is the agent serving a pre-1.0 A2A card?")
+    return {**{k: v for k, v in card.items() if k != "signatures"}, "supportedInterfaces": kept}
+
+
 class StreamedResponse:
     """A response whose body is still arriving on the stream: status and
     headers are in; `iter_body` yields the body as the peer sends it, which is
@@ -341,6 +382,19 @@ class StreamedResponse:
         await self._stream.close()
 
 
+class _BufferedResponse(StreamedResponse):
+    def __init__(self, status: int, headers: dict[str, str], body: bytes) -> None:
+        self.status = status
+        self.headers = headers
+        self._payload = body
+
+    async def iter_body(self) -> AsyncIterator[bytes]:
+        yield self._payload
+
+    async def aclose(self) -> None:
+        return None
+
+
 async def open_http_request(
     host: IHost,
     peer_id: ID,
@@ -356,7 +410,60 @@ async def open_http_request(
     """Client side of /libp2p-http, as go-libp2p-http's RoundTripper: one
     stream per request, plain HTTP/1.1 with Host set to the peer ID and the
     biscuit in X-Sam-Biscuit. Returns once the response headers are in; the
-    body streams after. The timeout bounds the headers, not the body."""
+    body streams after. The timeout bounds the headers, not the body. An
+    agent card is served rewritten for the mesh (rewrite_agent_card), as
+    sam-node's egress proxy serves one."""
+    service = _agent_card_service(method, target)
+    if service is None:
+        return await _open_http_request(host, peer_id, biscuit, method, target, headers=headers, body=body, agent=agent, timeout=timeout)
+    return await _serve_agent_card(host, peer_id, biscuit, headers, agent, timeout, service)
+
+
+async def _serve_agent_card(host: IHost, peer_id: ID, biscuit: bytes, headers: Optional[Mapping[str, str]], agent: str, timeout: float, service: str) -> StreamedResponse:
+    """Impersonates the agent's card endpoint as sam-node's egress proxy does:
+    holds the client's request, fetches the card itself with identity encoding,
+    and answers with it regenerated; the agent's own non-200 is relayed as it is."""
+    base = mesh_url(str(peer_id), service)
+    identity = {k: v for k, v in (headers or {}).items() if k.lower() != "accept-encoding"}
+    try:
+        response = await _open_http_request(host, peer_id, biscuit, "GET", mesh_http_target(service, AGENT_CARD_PATH), headers=identity, body=b"", agent=agent, timeout=timeout)
+    except Exception as err:  # noqa: BLE001 - answered as sam-node's 502
+        return _bad_gateway(f"agent card fetch failed: {err}")
+    if response.status != 200:
+        return response
+    try:
+        with trio.fail_after(timeout):
+            card = json.loads(await response.read(_MAX_AGENT_CARD_BYTES))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return _bad_gateway("agent card is not valid JSON")
+    except Exception as err:  # noqa: BLE001 - answered as sam-node's 502
+        return _bad_gateway(f"agent card fetch failed: {err}")
+    finally:
+        await response.aclose()
+    try:
+        payload = json.dumps(rewrite_agent_card(card, base)).encode()
+    except ValueError as err:
+        return _bad_gateway(str(err))
+    return _BufferedResponse(200, {"content-type": "application/json", "content-length": str(len(payload))}, payload)
+
+
+def _bad_gateway(reason: str) -> StreamedResponse:
+    payload = f"Bad Gateway: {reason}".encode()
+    return _BufferedResponse(502, {"content-type": "text/plain", "content-length": str(len(payload))}, payload)
+
+
+async def _open_http_request(
+    host: IHost,
+    peer_id: ID,
+    biscuit: bytes,
+    method: str,
+    target: str,
+    *,
+    headers: Optional[Mapping[str, str]],
+    body: bytes,
+    agent: str,
+    timeout: float,
+) -> StreamedResponse:
     out = [(k.lower(), v) for k, v in (headers or {}).items() if k.lower() not in ("host", "content-length", HEADER_SAM_BISCUIT, HEADER_PEER_ID)]
     out.append(("host", str(peer_id)))
     out.append((HEADER_SAM_BISCUIT, base64.b64encode(biscuit).decode()))
@@ -412,9 +519,11 @@ async def http_request_over_stream(
 
 
 __all__: Sequence[str] = (
+    "AGENT_CARD_PATH",
     "A2AEndpoint",
     "DEFAULT_A2A_NAME",
     "HTTP_PROTOCOL",
+    "MESH_PATH_PREFIX",
     "HTTPHandler",
     "HTTPRequest",
     "HTTPResponse",
@@ -423,5 +532,7 @@ __all__: Sequence[str] = (
     "http_ingress_handler",
     "http_request_over_stream",
     "mesh_http_target",
+    "mesh_url",
     "open_http_request",
+    "rewrite_agent_card",
 )

@@ -465,6 +465,10 @@ plug the mesh in as its transport.
   agent card, and what an A2A client on the mesh is given. The peer ID is in
   the path because URL parsers lowercase the host and a peer ID is
   case-sensitive.
+- An agent behind a `sam-node` serves a card naming its own address. The
+  SDK hands the client that card rewritten for the mesh, as `sam-node`'s
+  egress proxy does, so a stock A2A client given the mesh URL bootstraps
+  from it unchanged.
 - The A2A JavaScript SDK takes a `fetch` for its client and mounts its server
   as Express handlers. `session.fetch()` is the fetch;
   `acceptA2A({ listener: app })` runs the Express app on the mesh, with

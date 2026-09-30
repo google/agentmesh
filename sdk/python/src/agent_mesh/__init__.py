@@ -34,6 +34,7 @@ from .discovery import DHT_PROTOCOL, DiscoveredProvider, find_providers, parse_s
 from .httpx_transport import MESH_PATH_PREFIX, MeshTransport, split_mesh_url
 from .identity import Identity, canonical_peer_id, libp2p_public_key, peer_id_from_public_key, verify_ed25519
 from .libp2p_http import (
+    AGENT_CARD_PATH,
     DEFAULT_A2A_NAME,
     HTTP_PROTOCOL,
     A2AEndpoint,
@@ -45,7 +46,9 @@ from .libp2p_http import (
     http_ingress_handler,
     http_request_over_stream,
     mesh_http_target,
+    mesh_url,
     open_http_request,
+    rewrite_agent_card,
 )
 from .mcp_client import LabelsNotSatisfiedError, ToolCallResult, ToolInfo, open_mcp_session, require_egress_labels, require_labels
 from .mesh import AgentMesh, ControlPlaneSync
@@ -57,6 +60,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     "A2AEndpoint",
+    "AGENT_CARD_PATH",
     "AUTH_PROTOCOL",
     "AdmittedRouter",
     "AgentMesh",
@@ -111,6 +115,7 @@ __all__ = [
     "http_request_over_stream",
     "libp2p_public_key",
     "mesh_http_target",
+    "mesh_url",
     "open_http_request",
     "open_mcp_session",
     "parse_service_target",
@@ -122,6 +127,7 @@ __all__ = [
     "require_role",
     "reserve_relay",
     "service_key",
+    "rewrite_agent_card",
     "split_mesh_url",
     "validate_control_plane_url",
     "verify_ed25519",

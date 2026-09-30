@@ -141,7 +141,7 @@ pinned by a test:
   ID is case-sensitive. The URL an HTTP client uses for a peer's service
   therefore carries the peer ID in the path,
   `http://mesh/sam/<peer-id>/<type>/<name>/<path>`, the shape of `sam-node`'s
-  egress proxy and of an agent card it rewrote; the host is ignored.
+  egress proxy and of an agent card rewritten for the mesh; the host is ignored.
 - A member that publishes nothing has announced no address, so nothing in
   the DHT or a router's peerstore names one. `sam-node` dials
   `/p2p/<router>/p2p-circuit` for every router it authenticated with when
@@ -520,7 +520,13 @@ holds against the control plane's records.
   `open_http_request` / `fetchOverStream` return once the headers are in
   and stream the body; `MeshTransport` (httpx) and `session.fetch()`
   (fetch) carry a client's requests to the peer a mesh URL names. The A2A
-  SDK's client takes either without changes.
+  SDK's client takes either without changes. The card of an agent behind a
+  `sam-node` names the agent's own address; a GET of the well-known card
+  path or of the service root is answered the way the node's egress proxy
+  answers it: the SDK fetches the card itself, with identity encoding, and
+  serves it rewritten (`rewriteAgentCard` / `rewrite_agent_card`): HTTP
+  interfaces point at the mesh URL, gRPC ones are dropped, signatures go.
+  Streaming stays as the agent declares it, since the transport streams.
 - `sam-node`: a peer it knows no address for is dialed through every
   router it authenticated with, so its egress proxy reaches an agent by
   peer ID (`preparePeerAddrs`).

@@ -43,7 +43,6 @@ from .biscuit import ROLE_ROUTER, VerifiedBiscuit, require_role
 from .controlplane import ROLE_NODE
 from .discovery import DiscoveredProvider, find_peer, find_providers, parse_service_target, service_key
 from .host import create_mesh_host, dial, dial_addrs, peer_info
-from .httpx_transport import MESH_PATH_PREFIX
 from .identity import canonical_peer_id
 from .libp2p_http import (
     DEFAULT_A2A_NAME,
@@ -55,6 +54,7 @@ from .libp2p_http import (
     http_ingress_handler,
     http_request_over_stream,
     mesh_http_target,
+    mesh_url,
 )
 from .mcp_client import ToolCallResult, ToolInfo, open_mcp_session, require_egress_labels, tool_call_result
 from .relay import STOP_PROTOCOL, dial_through_relay, reserve_relay, split_circuit_address, stop_stream_handler
@@ -171,8 +171,8 @@ class MeshSession:
     def mesh_url(peer_id: str, target_service: str, path: str = "") -> str:
         """The URL an httpx client on `MeshTransport` uses for a service on a
         peer: http://mesh/sam/<peer-id>/<type>/<name>/<path>, the shape of
-        sam-node's egress proxy and of an agent card it rewrote."""
-        return "http://mesh" + MESH_PATH_PREFIX + canonical_peer_id(peer_id) + mesh_http_target(target_service, path)
+        sam-node's egress proxy and of an agent card rewritten for the mesh."""
+        return mesh_url(canonical_peer_id(peer_id), target_service, path)
 
     @property
     def agent_url(self) -> Optional[str]:

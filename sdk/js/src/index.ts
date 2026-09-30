@@ -47,6 +47,7 @@ export { LabelsNotSatisfiedError, StreamTransport, openMCPSession, requireEgress
 export { AuthorizationError, authorizeCaller, type AuthorizeRequest, type ProviderAuthorizerOptions } from "./authorizer.ts";
 export {
   DEFAULT_A2A_NAME,
+  AGENT_CARD_PATH,
   HTTP_HANDLER_OPTIONS,
   HTTP_PROTOCOL,
   MESH_PATH_PREFIX,
@@ -57,6 +58,7 @@ export {
   httpRequestOverStream,
   meshHTTPTarget,
   meshURL,
+  rewriteAgentCard,
   splitMeshURL,
   type A2AEndpoint,
   type A2AEndpointSpec,

@@ -29,6 +29,7 @@ import { after, before, test } from "node:test";
 import { loadBiscuit } from "./biscuit.ts";
 import { ROLE_NODE } from "./controlplane.ts";
 import {
+  AGENT_CARD_PATH,
   HTTP_PROTOCOL,
   a2aEndpoint,
   admitIngress,
@@ -37,6 +38,7 @@ import {
   httpRequestOverStream,
   meshHTTPTarget,
   meshURL,
+  rewriteAgentCard,
   splitMeshURL,
   type ProviderOptions,
 } from "./libp2p-http.ts";
@@ -55,7 +57,7 @@ let callerBiscuit: Uint8Array;
 let guestBiscuit: Uint8Array;
 let backend: http.Server;
 let backendURL: string;
-const backendSeen: { method: string; url: string; peer: string | undefined; body: string }[] = [];
+const backendSeen: { method: string; url: string; peer: string | undefined; body: string; encoding: string | undefined }[] = [];
 const listenerSeen: { url: string; peer: string | undefined; biscuit: string | undefined }[] = [];
 const authorized: string[] = [];
 
@@ -98,14 +100,40 @@ function providerOptions(biscuit: Uint8Array): ProviderOptions {
   };
 }
 
+const STOCK_CARD = {
+  name: "echo-agent",
+  version: "1.0.0",
+  capabilities: { streaming: true, pushNotifications: false },
+  supportedInterfaces: [
+    { url: "http://127.0.0.1:7777/", protocolBinding: "JSONRPC", protocolVersion: "1.0" },
+    { url: "127.0.0.1:50051", protocolBinding: "GRPC", protocolVersion: "1.0" },
+  ],
+  signatures: [{ protected: "eyJhbGciOiJFUzI1NiJ9", signature: "c3RhbGU" }],
+  skills: [],
+  defaultInputModes: ["text/plain"],
+  defaultOutputModes: ["text/plain"],
+};
+
 // Stands in for an A2A server beside the agent: echoes the request and, on
 // /stream, answers with three SSE events as message/stream would.
 function fakeA2AServer(req: http.IncomingMessage, res: http.ServerResponse): void {
   let body = "";
   req.on("data", (c: Buffer) => (body += c.toString()));
   req.on("end", () => {
-    backendSeen.push({ method: req.method ?? "", url: req.url ?? "", peer: req.headers["x-peer-id"] as string | undefined, body });
+    backendSeen.push({ method: req.method ?? "", url: req.url ?? "", peer: req.headers["x-peer-id"] as string | undefined, body, encoding: req.headers["accept-encoding"] as string | undefined });
     assert.equal(req.headers["x-sam-biscuit"], undefined, "biscuit leaked to the backend");
+    if (req.url === `/${AGENT_CARD_PATH}` && req.headers["x-card"] === "missing") {
+      res.writeHead(404, { "content-type": "text/plain" });
+      res.end("no card");
+      return;
+    }
+    if (req.url === `/${AGENT_CARD_PATH}`) {
+      const grpcOnly = req.headers["x-card"] === "grpc-only";
+      const supportedInterfaces = STOCK_CARD.supportedInterfaces.filter((i) => !grpcOnly || i.protocolBinding === "GRPC");
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ...STOCK_CARD, supportedInterfaces }));
+      return;
+    }
     if (req.url === "/stream") {
       res.writeHead(200, { "content-type": "text/event-stream" });
       let i = 0;
@@ -240,6 +268,49 @@ test("a fetch over the stream delivers an SSE body event by event", async () => 
       .filter((l) => l.startsWith("data:")),
     ['data: {"event":0}', 'data: {"event":1}', 'data: {"event":2}'],
   );
+});
+
+test("the card of an agent behind a node comes back rewritten for the mesh, as sam-node serves it", async () => {
+  const conn = await dial();
+  const base = meshURL(agent.peerId.toString(), "a2a://agent");
+  const response = await fetchOverStream(conn, callerBiscuit, new Request(`${base}/${AGENT_CARD_PATH}`));
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "application/json");
+  const card = (await response.json()) as Record<string, unknown>;
+  assert.deepEqual(card.supportedInterfaces, [{ url: base, protocolBinding: "JSONRPC", protocolVersion: "1.0" }]);
+  assert.deepEqual(card.capabilities, { streaming: true, pushNotifications: false });
+  assert.equal("signatures" in card, false);
+  assert.equal(card.name, "echo-agent");
+  assert.deepEqual(card.skills, []);
+  assert.equal(backendSeen[backendSeen.length - 1]?.url, `/${AGENT_CARD_PATH}`);
+
+  // The bare service root serves the card too, the way a2a-go resolves a pathful base URL.
+  assert.deepEqual(await (await fetchOverStream(conn, callerBiscuit, new Request(base))).json(), card);
+  assert.equal(backendSeen[backendSeen.length - 1]?.url, `/${AGENT_CARD_PATH}`);
+  await fetchOverStream(conn, callerBiscuit, new Request(`${base}/${AGENT_CARD_PATH}`, { headers: { "accept-encoding": "x-test-only" } }));
+  assert.notEqual(backendSeen[backendSeen.length - 1]?.encoding, "x-test-only", "the client's accept-encoding reached the agent");
+
+  const missing = await fetchOverStream(conn, callerBiscuit, new Request(`${base}/${AGENT_CARD_PATH}`, { headers: { "x-card": "missing" } }));
+  assert.equal(missing.status, 404);
+  assert.equal(await missing.text(), "no card");
+
+  const raw = await httpRequestOverStream(conn, callerBiscuit, "a2a://agent", `/${AGENT_CARD_PATH}`);
+  assert.deepEqual(JSON.parse(raw.text()), card);
+
+  const refused = await fetchOverStream(conn, callerBiscuit, new Request(`${base}/${AGENT_CARD_PATH}`, { headers: { "x-card": "grpc-only" } }));
+  assert.equal(refused.status, 502);
+  assert.match(await refused.text(), /no supported interface the mesh can carry/);
+
+  const other = await fetchOverStream(conn, callerBiscuit, new Request(`${base}/card`));
+  assert.deepEqual(await other.json(), { path: "/card", echo: "" });
+});
+
+test("rewriteAgentCard keeps only what the mesh carries", () => {
+  assert.throws(() => rewriteAgentCard([], "http://mesh/x"), /not a JSON object/);
+  assert.throws(() => rewriteAgentCard({ supportedInterfaces: [] }, "http://mesh/x"), /no supported interface/);
+  assert.deepEqual(rewriteAgentCard({ supportedInterfaces: [{ url: "x", protocolBinding: "http+json" }] }, "http://mesh/x"), {
+    supportedInterfaces: [{ url: "http://mesh/x", protocolBinding: "http+json" }],
+  });
 });
 
 test("a fetch handler sees the caller and the path, and its streaming body goes out as it is written", async () => {

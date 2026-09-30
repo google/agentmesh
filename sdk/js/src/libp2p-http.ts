@@ -61,11 +61,16 @@ export const DEFAULT_A2A_NAME = "agent";
 
 /**
  * The path prefix of a mesh URL, http://mesh/sam/<peer-id>/<type>/<name>/<path>:
- * the shape of sam-node's egress proxy and of an agent card it rewrote. The
- * host is ignored; the peer ID is in the path because URL parsers lowercase
- * the host and a peer ID is case-sensitive.
+ * the shape of sam-node's egress proxy and of an agent card rewritten for the
+ * mesh, by sam-node or by this SDK. The host is ignored; the peer ID is in the
+ * path because URL parsers lowercase the host and a peer ID is case-sensitive.
  */
 export const MESH_PATH_PREFIX = "/sam/";
+
+/** The well-known agent card location (A2A spec / RFC 8615). */
+export const AGENT_CARD_PATH = ".well-known/agent-card.json";
+
+const MAX_AGENT_CARD_BYTES = 1 << 20;
 
 /** Largest request body the ingress reads whole for a handler or url target. */
 export const MAX_INGRESS_BODY_BYTES = 8 * 1024 * 1024;
@@ -387,6 +392,94 @@ export function splitMeshURL(url: URL): { peerId: string; target: string } {
   return { peerId, target: "/" + rest.join("/") + url.search };
 }
 
+/** The bare service root counts too: a2a-go treats a pathful base URL as the card location. */
+function agentCardService(method: string, target: string): string | undefined {
+  const m = /^\/a2a\/([^/?]+)(?:\/(?:\.well-known\/agent-card\.json)?)?(?:\?.*)?$/.exec(target);
+  return method === "GET" && m !== null ? `a2a://${m[1]}` : undefined;
+}
+
+/**
+ * An agent card rebuilt for the mesh, as sam-node's egress proxy serves it:
+ * HTTP interfaces point at base, gRPC ones go, signatures no longer match.
+ * Streaming stays as declared, this transport streams. Throws when no interface remains.
+ */
+export function rewriteAgentCard(card: unknown, base: string): Record<string, unknown> {
+  if (typeof card !== "object" || card === null || Array.isArray(card)) {
+    throw new Error("agent card is not a JSON object");
+  }
+  const out = { ...(card as Record<string, unknown>) };
+  delete out.signatures;
+  const interfaces = Array.isArray(out.supportedInterfaces) ? (out.supportedInterfaces as unknown[]) : [];
+  const kept = interfaces.filter(carriedOverHTTP).map((iface) => ({ ...(iface as Record<string, unknown>), url: base }));
+  if (kept.length === 0) {
+    throw new Error("agent card advertises no supported interface the mesh can carry (JSONRPC or HTTP+JSON); is the agent serving a pre-1.0 A2A card?");
+  }
+  return { ...out, supportedInterfaces: kept };
+}
+
+/** Whether an interface's binding can traverse the mesh; gRPC needs its own connection. */
+function carriedOverHTTP(iface: unknown): boolean {
+  const binding = typeof iface === "object" && iface !== null ? (iface as { protocolBinding?: unknown }).protocolBinding : undefined;
+  return typeof binding === "string" && ["JSONRPC", "HTTP+JSON"].includes(binding.toUpperCase());
+}
+
+/**
+ * Impersonates the agent's card endpoint as sam-node's egress proxy does: holds
+ * the client's request, fetches the card itself with identity encoding, and
+ * answers with it regenerated; the agent's own non-200 is relayed as it is.
+ */
+async function serveAgentCard(conn: Connection, biscuit: Uint8Array, request: Request, options: HTTPStreamOptions, service: string): Promise<Response> {
+  const base = meshURL(conn.remotePeer.toString(), service);
+  const headers = new Headers(request.headers);
+  headers.delete("accept-encoding");
+  let response: Response;
+  try {
+    response = await sendOverStream(conn, biscuit, new Request(`${base}/${AGENT_CARD_PATH}`, { headers, signal: request.signal }), options);
+  } catch (err) {
+    return badGateway(`agent card fetch failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (response.status !== 200) {
+    return response;
+  }
+  let card: unknown;
+  try {
+    card = JSON.parse(new TextDecoder().decode(await readLimited(response.body, MAX_AGENT_CARD_BYTES)));
+  } catch {
+    return badGateway("agent card is not valid JSON");
+  }
+  try {
+    return new Response(JSON.stringify(rewriteAgentCard(card, base)), { status: 200, headers: { "content-type": "application/json" } });
+  } catch (err) {
+    return badGateway(err instanceof Error ? err.message : String(err));
+  }
+}
+
+function badGateway(reason: string): Response {
+  return new Response(`Bad Gateway: ${reason}`, { status: 502, headers: { "content-type": "text/plain" } });
+}
+
+/** The first limit bytes of a body, the rest dropped, as io.LimitReader bounds the node. */
+async function readLimited(body: ReadableStream<Uint8Array> | null, limit: number): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  let n = 0;
+  if (body !== null) {
+    const reader = body.getReader();
+    for (let next = await reader.read(); !next.done && n < limit; next = await reader.read()) {
+      const chunk = next.value.subarray(0, limit - n);
+      chunks.push(chunk);
+      n += chunk.length;
+    }
+    await reader.cancel();
+  }
+  const out = new Uint8Array(n);
+  let at = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, at);
+    at += chunk.length;
+  }
+  return out;
+}
+
 export interface HTTPStreamOptions {
   /** The agent this request is made for. */
   agent?: string;
@@ -398,9 +491,16 @@ export interface HTTPStreamOptions {
  * Client side of /libp2p-http, as go-libp2p-http's RoundTripper: one stream
  * per request, plain HTTP/1.1 with Host set to the peer ID and the biscuit in
  * X-Sam-Biscuit. Resolves once the response headers are in; the body streams
- * after, so an SSE response is consumed as the peer sends it.
+ * after, so an SSE response is consumed as the peer sends it. An agent card
+ * is served rewritten for the mesh (rewriteAgentCard), as sam-node serves one.
  */
 export async function fetchOverStream(conn: Connection, biscuit: Uint8Array, request: Request, options: HTTPStreamOptions = {}): Promise<Response> {
+  const { target } = splitMeshURL(new URL(request.url));
+  const service = agentCardService(request.method, target);
+  return service === undefined ? sendOverStream(conn, biscuit, request, options) : serveAgentCard(conn, biscuit, request, options, service);
+}
+
+async function sendOverStream(conn: Connection, biscuit: Uint8Array, request: Request, options: HTTPStreamOptions): Promise<Response> {
   const { target } = splitMeshURL(new URL(request.url));
   const peerId = conn.remotePeer.toString();
   // One controller ends the exchange: the caller's signal at any time, the
