@@ -119,6 +119,33 @@ jobs:
         tags: ${{ steps.meta-node.outputs.tags }}
         labels: ${{ steps.meta-node.outputs.labels }}
 
+    # The Docker sandbox kit copies sam-node from the image pushed above, so it
+    # follows that image's tag and platforms. samVersion is the kit's arg name;
+    # the frontend ignores a raw SAM_VERSION build arg.
+    - name: Extract metadata for sandbox kit
+      id: meta-sbx-kit
+      uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+      with:
+        images: ${{ env.REGISTRY }}/google/sbx-kit-sam
+        tags: |
+          type=ref,event=branch
+          type=ref,event=tag
+          type=semver,pattern={{version}}
+          type=raw,value=${{ github.sha }}
+          type=raw,value=latest,enable={{is_default_branch}}
+          type=raw,value=stable,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+    - name: Build and push sandbox kit
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      with:
+        context: development/integrations/sbx-kit
+        file: development/integrations/sbx-kit/sam.yaml
+        build-args: samVersion=${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+        platforms: ${{ github.ref_type == 'tag' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+        push: true
+        tags: ${{ steps.meta-sbx-kit.outputs.tags }}
+        labels: ${{ steps.meta-sbx-kit.outputs.labels }}
+
     - name: Extract metadata for nano-init
       id: meta-nano-init
       uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
