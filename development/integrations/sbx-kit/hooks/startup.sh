@@ -37,6 +37,9 @@ warn() { echo "sam: $1 registration failed; add $url by hand" >&2; }
 has() {
   if command -v "$1" >/dev/null || [ -e "$2" ]; then echo "sam: registering $1" >&2; else return 1; fi
 }
+# Agent kits install their CLIs under the home directory and add it to PATH
+# themselves (Docker's Claude kit does the same before calling claude).
+export PATH="$HOME/.local/bin:$HOME/.claude/local:$PATH"
 echo "sam: PATH=$PATH" >&2
 
 # merge FILE JSON: deep-merges JSON into FILE, keeping the agent's own keys.
