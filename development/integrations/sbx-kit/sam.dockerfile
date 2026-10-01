@@ -1,4 +1,4 @@
-ARG SAM_VERSION=v0.1.0-rc.7
+ARG SAM_VERSION=v0.1.0-rc.8
 FROM ghcr.io/google/sam-node:${SAM_VERSION} AS sam
 
 FROM scratch

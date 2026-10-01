@@ -5,13 +5,13 @@ displayName: SAM mesh node
 description: Runs a sam-node inside the sandbox and registers it as an MCP server with the agent.
 sourceUrl: https://github.com/google/sam
 licenses: [Apache-2.0]
-version: "0.1.0-rc.7"
+version: "0.1.0-rc.8"
 provides: [sam]
 integrates: [claude, codex, gemini, antigravity, opencode, devin, cursor, copilot, droid, kiro]
 dockerfile: sam.dockerfile
 args:
   samVersion:
-    default: "v0.1.0-rc.7"
+    default: "v0.1.0-rc.8"
     buildArg: SAM_VERSION
     description: ghcr.io/google/sam-node image tag the binary is copied from
   controlPlane:
