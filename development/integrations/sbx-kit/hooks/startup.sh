@@ -57,7 +57,7 @@ servers() { # mcpServers entry with extra fields for one agent's schema
 if has claude /nonexistent; then  # registered through its CLI only
   # --header is variadic: it must come after the name and the url.
   claude mcp remove --scope user sam-mesh >/dev/null 2>&1 || true
-  claude mcp add --transport http --scope user sam-mesh "$url" --header "$hdr" >&2 || warn claude
+  claude mcp add --transport http --scope user sam-mesh "$url" --header "$hdr" >/dev/null || warn claude
 fi
 if has codex "$HOME/.codex" && ! grep -qs '^\[mcp_servers\.sam-mesh\]' "$HOME/.codex/config.toml"; then
   mkdir -p "$HOME/.codex"
