@@ -1,2 +1,0 @@
-# `go build` in this directory drops the binary here; it belongs in bin/.
-/nano-init

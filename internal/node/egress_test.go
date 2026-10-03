@@ -28,6 +28,8 @@ import (
 	"github.com/biscuit-auth/biscuit-go/v2"
 	"github.com/google/sam/api"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // mintFor builds a token bound to peerID carrying facts, as the control plane
@@ -198,7 +200,6 @@ func TestEgressServiceProxiesWithTheNodesCredential(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/repos/acme/x?state=open", nil)
 	req.Header.Set("Authorization", "Bearer the-callers-token")
 	req.Header.Set("Cookie", "session=the-callers-session")
-	req.Header.Set(api.HeaderSamAgent, "reviewer.acme.example")
 	req.Header.Set(api.HeaderPeerID, "12D3KooWCaller")
 	req.Header.Set("X-Forwarded-For", "10.0.0.1")
 	req.Header.Set("Accept", "application/json")
@@ -210,7 +211,7 @@ func TestEgressServiceProxiesWithTheNodesCredential(t *testing.T) {
 	if got.Header.Get("Authorization") != "Bearer ghp_token" {
 		t.Errorf("upstream Authorization = %q, want the node's credential", got.Header.Get("Authorization"))
 	}
-	for _, h := range []string{"Cookie", api.HeaderSamAgent, api.HeaderPeerID, "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"} {
+	for _, h := range []string{"Cookie", api.HeaderPeerID, "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"} {
 		if got.Header.Get(h) != "" {
 			t.Errorf("upstream saw %s=%q", h, got.Header.Get(h))
 		}
@@ -363,4 +364,13 @@ func TestNodeConfigRefusesEgressServices(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "assigned by the control plane") {
 		t.Fatalf("NewServiceFromRequest accepted an egress service: %v", err)
 	}
+}
+
+func counterValue(t *testing.T, c prometheus.Counter) float64 {
+	t.Helper()
+	var m dto.Metric
+	if err := c.Write(&m); err != nil {
+		t.Fatalf("read counter: %v", err)
+	}
+	return m.GetCounter().GetValue()
 }

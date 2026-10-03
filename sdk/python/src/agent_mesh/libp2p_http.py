@@ -46,7 +46,6 @@ HTTP_PROTOCOL = TProtocol("/libp2p-http")
 
 # Headers of the mesh HTTP datapath (api/network.go).
 HEADER_SAM_BISCUIT = "x-sam-biscuit"
-HEADER_SAM_AGENT = "x-sam-agent"
 HEADER_PEER_ID = "x-peer-id"
 HEADER_SAM_NO_TRAILING_SLASH = "x-sam-no-trailing-slash"
 
@@ -107,7 +106,7 @@ HTTPHandler = Callable[[HTTPRequest, VerifiedBiscuit], Awaitable[HTTPResponse]]
 class A2AEndpoint:
     """This member's agent as other members reach it: `a2a://<name>`, answered
     by target, the base URL of an A2A server beside this process or a handler
-    in it. Authorized requests are forwarded with the biscuit and agent headers
+    in it. Authorized requests are forwarded with the biscuit header
     stripped and X-Peer-Id naming the verified caller, as sam-node does. The
     endpoint is not announced anywhere; a caller reaches it by peer ID."""
 
@@ -250,7 +249,6 @@ async def _handle_ingress(
                 peer_id=peer_id,
                 target_service=target_service,
                 protocol=str(HTTP_PROTOCOL),
-                agent=headers.get(HEADER_SAM_AGENT, ""),
                 # The path as the backend sees it, decided before authorization
                 # so path() is what policy meant, never the routing prefix.
                 method=request.method.decode("latin-1"),
@@ -268,12 +266,12 @@ async def _handle_ingress(
     if target_service != endpoint.service:
         return plain(404, "Service not found")
 
-    # The biscuit and the agent are for policy, not for the backend; X-Peer-Id
+    # The biscuit is for policy, not for the backend; X-Peer-Id
     # is set, not added, so an inbound value cannot pose as the verified peer.
     forwarded = {
         k: v
         for k, v in headers.items()
-        if k not in (HEADER_SAM_BISCUIT, HEADER_SAM_AGENT, HEADER_SAM_NO_TRAILING_SLASH, HEADER_PEER_ID, "host", "connection", "transfer-encoding", "content-length")
+        if k not in (HEADER_SAM_BISCUIT, HEADER_SAM_NO_TRAILING_SLASH, HEADER_PEER_ID, "host", "connection", "transfer-encoding", "content-length")
     }
     forwarded[HEADER_PEER_ID] = peer_id
     if upstream_path == "" and not rest:
@@ -404,7 +402,6 @@ async def open_http_request(
     *,
     headers: Optional[Mapping[str, str]] = None,
     body: bytes = b"",
-    agent: str = "",
     timeout: float = _REQUEST_TIMEOUT,
 ) -> StreamedResponse:
     """Client side of /libp2p-http, as go-libp2p-http's RoundTripper: one
@@ -415,18 +412,18 @@ async def open_http_request(
     sam-node's egress proxy serves one."""
     service = _agent_card_service(method, target)
     if service is None:
-        return await _open_http_request(host, peer_id, biscuit, method, target, headers=headers, body=body, agent=agent, timeout=timeout)
-    return await _serve_agent_card(host, peer_id, biscuit, headers, agent, timeout, service)
+        return await _open_http_request(host, peer_id, biscuit, method, target, headers=headers, body=body, timeout=timeout)
+    return await _serve_agent_card(host, peer_id, biscuit, headers, timeout, service)
 
 
-async def _serve_agent_card(host: IHost, peer_id: ID, biscuit: bytes, headers: Optional[Mapping[str, str]], agent: str, timeout: float, service: str) -> StreamedResponse:
+async def _serve_agent_card(host: IHost, peer_id: ID, biscuit: bytes, headers: Optional[Mapping[str, str]], timeout: float, service: str) -> StreamedResponse:
     """Impersonates the agent's card endpoint as sam-node's egress proxy does:
     holds the client's request, fetches the card itself with identity encoding,
     and answers with it regenerated; the agent's own non-200 is relayed as it is."""
     base = mesh_url(str(peer_id), service)
     identity = {k: v for k, v in (headers or {}).items() if k.lower() != "accept-encoding"}
     try:
-        response = await _open_http_request(host, peer_id, biscuit, "GET", mesh_http_target(service, AGENT_CARD_PATH), headers=identity, body=b"", agent=agent, timeout=timeout)
+        response = await _open_http_request(host, peer_id, biscuit, "GET", mesh_http_target(service, AGENT_CARD_PATH), headers=identity, body=b"", timeout=timeout)
     except Exception as err:  # noqa: BLE001 - answered as sam-node's 502
         return _bad_gateway(f"agent card fetch failed: {err}")
     if response.status != 200:
@@ -461,14 +458,11 @@ async def _open_http_request(
     *,
     headers: Optional[Mapping[str, str]],
     body: bytes,
-    agent: str,
     timeout: float,
 ) -> StreamedResponse:
     out = [(k.lower(), v) for k, v in (headers or {}).items() if k.lower() not in ("host", "content-length", HEADER_SAM_BISCUIT, HEADER_PEER_ID)]
     out.append(("host", str(peer_id)))
     out.append((HEADER_SAM_BISCUIT, base64.b64encode(biscuit).decode()))
-    if agent:
-        out.append((HEADER_SAM_AGENT, agent))
     out.append(("content-length", str(len(body))))
 
     conn = h11.Connection(h11.CLIENT)
@@ -505,13 +499,12 @@ async def http_request_over_stream(
     method: str = "GET",
     headers: Optional[Mapping[str, str]] = None,
     body: Union[bytes, str, None] = None,
-    agent: str = "",
     timeout: float = _REQUEST_TIMEOUT,
 ) -> HTTPResponse:
     """One request to /<type>/<name>/<path> on a peer, body read whole."""
     payload = body.encode() if isinstance(body, str) else (body or b"")
     with trio.fail_after(timeout):
-        response = await open_http_request(host, peer_id, biscuit, method, mesh_http_target(target_service, path), headers=headers, body=payload, agent=agent, timeout=timeout)
+        response = await open_http_request(host, peer_id, biscuit, method, mesh_http_target(target_service, path), headers=headers, body=payload, timeout=timeout)
         try:
             return HTTPResponse(status=response.status, headers=response.headers, body=await response.read())
         finally:

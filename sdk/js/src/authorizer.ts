@@ -31,8 +31,6 @@ export interface AuthorizeRequest {
   targetService: string;
   /** The stream protocol; names the service when targetService is "". */
   protocol: string;
-  /** The agent the caller says it acts for; its own claim, checked against its grants. */
-  agent?: string;
   /**
    * The HTTP method and the path as the backend sees it, when the request is
    * HTTP. Both are injected together; a request without them (a stream that
@@ -134,16 +132,6 @@ export async function authorizeCaller(req: AuthorizeRequest, options: ProviderAu
   if (req.method !== undefined) {
     fact(`${BASELINE_DATALOG.fact_method}({m})`, { m: req.method });
     fact(`${BASELINE_DATALOG.fact_path}({p})`, { p: req.path ?? "" });
-  }
-
-  // The caller's word about which agent it acts for, limited to the agent
-  // namespaces its own token grants.
-  if (req.agent) {
-    fact(`${BASELINE_DATALOG.fact_agent}({a})`, { a: req.agent });
-    for (const r of BASELINE_DATALOG.agent_rules) {
-      b.addRule(wasm.Rule.fromString(r));
-    }
-    b.addCheck(wasm.Check.fromString(BASELINE_DATALOG.agent_check));
   }
 
   b.addCheck(wasm.Check.fromString(BASELINE_DATALOG.replay_check));

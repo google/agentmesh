@@ -61,12 +61,8 @@ function options(policyRules: string[], ownBiscuit?: Uint8Array) {
   };
 }
 
-function request(biscuit: Uint8Array, targetService = "mcp://calc", agent?: string): AuthorizeRequest {
-  const req: AuthorizeRequest = { biscuit, peerId: CALLER, targetService, protocol: "/sam/mcp/1.0.0" };
-  if (agent !== undefined) {
-    req.agent = agent;
-  }
-  return req;
+function request(biscuit: Uint8Array, targetService = "mcp://calc"): AuthorizeRequest {
+  return { biscuit, peerId: CALLER, targetService, protocol: "/sam/mcp/1.0.0" };
 }
 
 // The role grants the service through the mesh policy rules, exactly as the
@@ -146,15 +142,6 @@ test("target grants are matched against the provider's own identity", async () =
   await assert.rejects(authorizeCaller(request(nodeToken(CALLER)), options(rules, provider)), AuthorizationError);
 });
 
-test("an agent claim is accepted only inside a granted namespace", async () => {
-  const rules = [...NODE_ROLE_GRANTS, `granted_agent_suffix(".acme.example") <- role("sam:role:node")`];
-  await authorizeCaller(request(nodeToken(CALLER), "mcp://calc", "reviewer.acme.example"), options(rules));
-  await assert.rejects(authorizeCaller(request(nodeToken(CALLER), "mcp://calc", "reviewer.evil.example"), options(rules)), AuthorizationError);
-  // No agent grant at all: any claim is refused, no claim is fine.
-  await assert.rejects(authorizeCaller(request(nodeToken(CALLER), "mcp://calc", "reviewer.acme.example"), options(NODE_ROLE_GRANTS)), AuthorizationError);
-  await authorizeCaller(request(nodeToken(CALLER)), options(NODE_ROLE_GRANTS));
-});
-
 test("a grant narrowed by PolicyRole.http follows the request's method and path", async () => {
   // Rendered as the control plane renders a role with
   // http: [{service: "mcp://calc", methods: ["GET"], paths: ["/v1/*"]}]:
@@ -175,10 +162,10 @@ test("a grant narrowed by PolicyRole.http follows the request's method and path"
 });
 
 test("every baseline item parses in biscuit-wasm", () => {
-  for (const c of [BASELINE_DATALOG.time_check, BASELINE_DATALOG.replay_check, BASELINE_DATALOG.target_check, BASELINE_DATALOG.agent_check]) {
+  for (const c of [BASELINE_DATALOG.time_check, BASELINE_DATALOG.replay_check, BASELINE_DATALOG.target_check]) {
     wasm.Check.fromString(c);
   }
-  for (const r of [...BASELINE_DATALOG.rules, ...BASELINE_DATALOG.http_rules, ...BASELINE_DATALOG.agent_rules, ...BASELINE_DATALOG.target_fact_rules]) {
+  for (const r of [...BASELINE_DATALOG.rules, ...BASELINE_DATALOG.http_rules, ...BASELINE_DATALOG.target_fact_rules]) {
     wasm.Rule.fromString(r);
   }
   for (const p of [...BASELINE_DATALOG.policies, BASELINE_DATALOG.allow_if_true]) {

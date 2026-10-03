@@ -2392,8 +2392,8 @@ func TestResolveRolesAndRoleImpersonationProtection(t *testing.T) {
 			Members: []string{"group:routers", "idp_role:oidc-router-role"},
 		},
 		{
-			Role:    api.RoleSamBox,
-			Members: []string{"user:sambox-admin-sub"},
+			Role:    api.RoleNode,
+			Members: []string{"user:node-admin-sub"},
 		},
 		{
 			// A binding on the mesh role fact itself: must never resolve from a
@@ -2406,11 +2406,11 @@ func TestResolveRolesAndRoleImpersonationProtection(t *testing.T) {
 	t.Run("OIDC claims role is not blindly trusted without explicit binding", func(t *testing.T) {
 		claims := jwt.MapClaims{
 			"sub":   "attacker-sub",
-			"roles": []string{api.RoleRouter, api.RoleSamBox, "unbound-role"},
+			"roles": []string{api.RoleRouter, api.RoleNode, "unbound-role"},
 		}
 		roles := resolveRoles("peer-123", claims, bindings)
 		for _, r := range roles {
-			if r == api.RoleRouter || r == api.RoleSamBox {
+			if r == api.RoleRouter || r == api.RoleNode {
 				t.Errorf("Security flaw: resolveRoles granted capability role %q from raw OIDC claims without explicit binding", r)
 			}
 		}
@@ -2449,17 +2449,17 @@ func TestResolveRolesAndRoleImpersonationProtection(t *testing.T) {
 
 	t.Run("User sub grants bound capability role", func(t *testing.T) {
 		claims := jwt.MapClaims{
-			"sub": "sambox-admin-sub",
+			"sub": "node-admin-sub",
 		}
 		roles := resolveRoles("peer-789", claims, bindings)
-		hasSamBox := false
+		hasNode := false
 		for _, r := range roles {
-			if r == api.RoleSamBox {
-				hasSamBox = true
+			if r == api.RoleNode {
+				hasNode = true
 			}
 		}
-		if !hasSamBox {
-			t.Errorf("Expected role %q to be granted via user sub binding", api.RoleSamBox)
+		if !hasNode {
+			t.Errorf("Expected role %q to be granted via user sub binding", api.RoleNode)
 		}
 	})
 }
@@ -2634,7 +2634,7 @@ func TestAuthDenialPaths(t *testing.T) {
 		reqData := newEnrollBody(unauthorizedJWT)
 		var req api.EnrollRequest
 		_ = proto.Unmarshal(reqData, &req)
-		req.RequestedRole = api.RoleSamBox // not granted to "group:outsiders"
+		req.RequestedRole = "custom-role" // not granted to "group:outsiders"
 		reqData, _ = proto.Marshal(&req)
 
 		resp, err := client.Post(baseURL+"/register", "application/x-protobuf", bytes.NewReader(reqData))

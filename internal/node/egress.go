@@ -294,9 +294,8 @@ func (n *SamNode) applyPendingEgress(ctx context.Context) {
 // handleLocalEgress serves /egress/{host}/{path} on the local API: a client
 // of this node asks for a destination this node serves. The caller is this
 // node, so its own credential is evaluated, with the request's method and
-// path and the destination's host and port, and with the agent the client
-// names, as on the mesh datapath. The client's Authorization was for the
-// node and does not travel further.
+// path and the destination's host and port, as on the mesh datapath. The
+// client's Authorization was for the node and does not travel further.
 func handleLocalEgress(node *SamNode, w http.ResponseWriter, r *http.Request) {
 	if hasDotSegment(r.URL.Path) {
 		http.Error(w, "Invalid path", http.StatusBadRequest)
@@ -324,7 +323,6 @@ func handleLocalEgress(node *SamNode, w http.ResponseWriter, r *http.Request) {
 		PeerID:   node.Host.ID(),
 		Protocol: "local-api",
 		Target:   target,
-		Agent:    agentClaim(r.Header.Get(api.HeaderSamAgent)),
 		HTTP:     &HTTPRequestFacts{Method: r.Method, Path: "/" + upstreamPath},
 		Egress:   egressFactsFor(svc),
 		Local:    true,
@@ -336,7 +334,6 @@ func handleLocalEgress(node *SamNode, w http.ResponseWriter, r *http.Request) {
 	}
 	recordEgressDecision(host, egressOutcomeAllow)
 	r.Header.Del(api.HeaderSamBiscuit)
-	r.Header.Del(api.HeaderSamAgent)
 	r.Header.Set(api.HeaderPeerID, node.Host.ID().String())
 	r.URL.Path = "/" + upstreamPath
 	r.URL.RawPath = ""

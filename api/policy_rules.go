@@ -115,13 +115,6 @@ func BuildPolicyRules(roles []*PolicyRole, bindings []*PolicyBinding) (rules []P
 			add(fact.Predicate, fromRole)
 		}
 
-		for _, fact := range BuildAgentDatalogFacts(role.AllowedAgents) {
-			if fact.Name == FactGrantedAgentAll {
-				warnings = append(warnings, fmt.Sprintf("Role %s may speak for any agent; any peer holding it can name any agent identity in the mesh", roleName))
-			}
-			add(fact.Predicate, fromRole)
-		}
-
 		// Custom entries keep their source text: it may carry expressions,
 		// which biscuit-go cannot print back.
 		for _, dl := range role.CustomDatalog {

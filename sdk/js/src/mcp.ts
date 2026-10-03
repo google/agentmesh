@@ -90,8 +90,6 @@ export class StreamTransport implements Transport {
 export interface MCPSessionOptions {
   /** Labels the provider's credential must all carry, e.g. { region: "eu", compliance: "gdpr" }. */
   requiredLabels?: Record<string, string>;
-  /** The agent this call is made for; attribution beside the token, as in sam-node. */
-  agent?: string;
   signal?: AbortSignal;
 }
 

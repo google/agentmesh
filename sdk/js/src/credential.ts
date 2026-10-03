@@ -56,11 +56,11 @@ export function credentialTimeToLiveSeconds(c: MeshCredential, nowMs = Date.now(
 
 /**
  * The first frame on every mesh stream (/sam/auth/1.0.0, /sam/mcp/1.0.0):
- * the caller's biscuit, the service it wants and the agent it speaks for.
+ * the caller's biscuit and the service it wants.
  * Framing (varint length prefix) is the transport's job.
  */
-export function encodeAuthFrame(biscuit: Uint8Array, targetService = "", agent = ""): Uint8Array {
-  return toBinary(AuthFrameSchema, create(AuthFrameSchema, { biscuit, targetService, agent }));
+export function encodeAuthFrame(biscuit: Uint8Array, targetService = ""): Uint8Array {
+  return toBinary(AuthFrameSchema, create(AuthFrameSchema, { biscuit, targetService }));
 }
 
 /** The peer's answer to an AuthFrame, carrying its own biscuit on success. */

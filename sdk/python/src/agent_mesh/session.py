@@ -372,7 +372,6 @@ class MeshSession:
         target_service: str,
         *,
         required_labels: Optional[Mapping[str, str]] = None,
-        agent: str = "",
     ):  # type: ignore[no-untyped-def]
         """Opens an MCP session with a provider for target_service
         ("mcp://<name>", or "" for the provider's own catalog tools):
@@ -383,7 +382,7 @@ class MeshSession:
         @asynccontextmanager
         async def opened() -> AsyncIterator[tuple[ClientSession, VerifiedBiscuit]]:
             peer_id = await self.connect(peer)
-            frame = self.mesh.auth_frame(target_service, agent)
+            frame = self.mesh.auth_frame(target_service)
             async with open_mcp_session(
                 self.host, peer_id, frame, self.mesh.credential.control_plane_keys, required_labels=required_labels, egress_require_labels=self.egress_require_labels
             ) as opened_session:
@@ -536,13 +535,12 @@ class MeshSession:
         method: str = "GET",
         headers: Optional[Mapping[str, str]] = None,
         body: bytes | str | None = None,
-        agent: str = "",
     ) -> HTTPResponse:
         """Calls an inference or A2A service on a provider over /libp2p-http,
         the way sam-node's egress proxy does for /sam/<peer>/<type>/<name>/<path>."""
         peer_id = await self._egress_peer(peer)
         return await http_request_over_stream(
-            self.host, peer_id, self.mesh.credential.biscuit, target_service, path, method=method, headers=headers, body=body, agent=agent
+            self.host, peer_id, self.mesh.credential.biscuit, target_service, path, method=method, headers=headers, body=body
         )
 
     async def _egress_peer(self, peer: Peer) -> ID:

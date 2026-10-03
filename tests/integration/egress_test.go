@@ -71,7 +71,6 @@ func TestEgressDestinationCUJ(t *testing.T) {
   - name: pep
     allowed_targets: ["*"]
     allowed_labels: ["site=eu"]
-    allowed_agents: ["*.acme.example"]
   - name: contractor
     allowed_services: ["egress://api.github.com"]
     allowed_targets: ["*"]
@@ -210,14 +209,6 @@ egress:
 		// registration, so it is not served, and the others still are.
 		if got := do(t, http.MethodGet, "http://"+pepAPI+"/egress/broken.example/x", pepToken, nil); got != http.StatusNotFound {
 			t.Errorf("a destination with a missing credential: %d, want 404", got)
-		}
-		// The agent the client names is checked against the node's grant.
-		agent := func(id string) map[string]string { return map[string]string{api.HeaderSamAgent: id} }
-		if got := do(t, http.MethodGet, "http://"+pepAPI+"/egress/api.github.com/repos/acme/x", pepToken, agent("reviewer-7.acme.example")); got != http.StatusNoContent {
-			t.Errorf("an agent inside the granted namespace: %d, want 204", got)
-		}
-		if got := do(t, http.MethodGet, "http://"+pepAPI+"/egress/api.github.com/repos/acme/x", pepToken, agent("intruder.evil-acme.example")); got != http.StatusForbidden {
-			t.Errorf("an agent outside it: %d, want 403", got)
 		}
 	})
 

@@ -71,9 +71,8 @@ class MeshTransport(httpx.AsyncBaseTransport):
     over /libp2p-http through the session. Runs under trio, as the session
     does."""
 
-    def __init__(self, session: "MeshSession", *, agent: str = "", timeout: float = _REQUEST_TIMEOUT) -> None:
+    def __init__(self, session: "MeshSession", *, timeout: float = _REQUEST_TIMEOUT) -> None:
         self._session = session
-        self._agent = agent
         self._timeout = timeout
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
@@ -89,7 +88,6 @@ class MeshTransport(httpx.AsyncBaseTransport):
             target,
             headers=headers,
             body=body,
-            agent=self._agent,
             timeout=self._timeout,
         )
         return httpx.Response(response.status, headers=list(response.headers.items()), stream=_BodyStream(response), request=request)

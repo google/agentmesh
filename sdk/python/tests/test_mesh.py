@@ -229,10 +229,9 @@ def test_load_without_identity_says_enroll_first(tmp_path):
 def test_auth_frame_is_the_protobuf_with_this_members_biscuit():
     cp = FakeControlPlane()
     mesh = AgentMesh.enroll("http://127.0.0.1:1", bootstrap_token="sbt_secret", transport=cp.transport)
-    frame = pb.AuthFrame.FromString(mesh.auth_frame("mcp://calculator", "agent:acme.example:bot"))
+    frame = pb.AuthFrame.FromString(mesh.auth_frame("mcp://calculator"))
     assert frame.biscuit == b"biscuit-1"
     assert frame.target_service == "mcp://calculator"
-    assert frame.agent == "agent:acme.example:bot"
 
     resp = decode_auth_response(pb.AuthResponse(success=False, error="denied").SerializeToString())
     assert resp.success is False

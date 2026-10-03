@@ -16,137 +16,13 @@ SERVICE_TYPE_INFERENCE: ServiceType
 SERVICE_TYPE_MCP: ServiceType
 SERVICE_TYPE_UNSPECIFIED: ServiceType
 
-class AgentAttachRequest(_message.Message):
-    __slots__ = ["bundle"]
-    BUNDLE_FIELD_NUMBER: _ClassVar[int]
-    bundle: AgentBundle
-    def __init__(self, bundle: _Optional[_Union[AgentBundle, _Mapping]] = ...) -> None: ...
-
-class AgentAttachResponse(_message.Message):
-    __slots__ = ["egress_socket", "error", "ingress_socket"]
-    EGRESS_SOCKET_FIELD_NUMBER: _ClassVar[int]
-    ERROR_FIELD_NUMBER: _ClassVar[int]
-    INGRESS_SOCKET_FIELD_NUMBER: _ClassVar[int]
-    egress_socket: str
-    error: str
-    ingress_socket: str
-    def __init__(self, egress_socket: _Optional[str] = ..., ingress_socket: _Optional[str] = ..., error: _Optional[str] = ...) -> None: ...
-
-class AgentBundle(_message.Message):
-    __slots__ = ["agent_id", "credential_path", "egress", "external_id", "ingress", "version"]
-    AGENT_ID_FIELD_NUMBER: _ClassVar[int]
-    CREDENTIAL_PATH_FIELD_NUMBER: _ClassVar[int]
-    EGRESS_FIELD_NUMBER: _ClassVar[int]
-    EXTERNAL_ID_FIELD_NUMBER: _ClassVar[int]
-    INGRESS_FIELD_NUMBER: _ClassVar[int]
-    VERSION_FIELD_NUMBER: _ClassVar[int]
-    agent_id: str
-    credential_path: str
-    egress: AgentEgress
-    external_id: str
-    ingress: _containers.RepeatedCompositeFieldContainer[AgentIngress]
-    version: str
-    def __init__(self, version: _Optional[str] = ..., agent_id: _Optional[str] = ..., external_id: _Optional[str] = ..., credential_path: _Optional[str] = ..., egress: _Optional[_Union[AgentEgress, _Mapping]] = ..., ingress: _Optional[_Iterable[_Union[AgentIngress, _Mapping]]] = ...) -> None: ...
-
-class AgentDetachRequest(_message.Message):
-    __slots__ = ["agent_id"]
-    AGENT_ID_FIELD_NUMBER: _ClassVar[int]
-    agent_id: str
-    def __init__(self, agent_id: _Optional[str] = ...) -> None: ...
-
-class AgentDetachResponse(_message.Message):
-    __slots__ = ["error", "success"]
-    ERROR_FIELD_NUMBER: _ClassVar[int]
-    SUCCESS_FIELD_NUMBER: _ClassVar[int]
-    error: str
-    success: bool
-    def __init__(self, success: bool = ..., error: _Optional[str] = ...) -> None: ...
-
-class AgentEgress(_message.Message):
-    __slots__ = ["allow", "secrets"]
-    ALLOW_FIELD_NUMBER: _ClassVar[int]
-    SECRETS_FIELD_NUMBER: _ClassVar[int]
-    allow: _containers.RepeatedScalarFieldContainer[str]
-    secrets: _containers.RepeatedCompositeFieldContainer[AgentSecret]
-    def __init__(self, allow: _Optional[_Iterable[str]] = ..., secrets: _Optional[_Iterable[_Union[AgentSecret, _Mapping]]] = ...) -> None: ...
-
-class AgentIngress(_message.Message):
-    __slots__ = ["description", "name", "port", "type"]
-    DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
-    NAME_FIELD_NUMBER: _ClassVar[int]
-    PORT_FIELD_NUMBER: _ClassVar[int]
-    TYPE_FIELD_NUMBER: _ClassVar[int]
-    description: str
-    name: str
-    port: int
-    type: ServiceType
-    def __init__(self, type: _Optional[_Union[ServiceType, str]] = ..., name: _Optional[str] = ..., port: _Optional[int] = ..., description: _Optional[str] = ...) -> None: ...
-
-class AgentRefreshRequest(_message.Message):
-    __slots__ = ["agent_id", "credential_path"]
-    AGENT_ID_FIELD_NUMBER: _ClassVar[int]
-    CREDENTIAL_PATH_FIELD_NUMBER: _ClassVar[int]
-    agent_id: str
-    credential_path: str
-    def __init__(self, agent_id: _Optional[str] = ..., credential_path: _Optional[str] = ...) -> None: ...
-
-class AgentRefreshResponse(_message.Message):
-    __slots__ = ["error", "expire_time", "success"]
-    ERROR_FIELD_NUMBER: _ClassVar[int]
-    EXPIRE_TIME_FIELD_NUMBER: _ClassVar[int]
-    SUCCESS_FIELD_NUMBER: _ClassVar[int]
-    error: str
-    expire_time: _timestamp_pb2.Timestamp
-    success: bool
-    def __init__(self, success: bool = ..., error: _Optional[str] = ..., expire_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
-
-class AgentSecret(_message.Message):
-    __slots__ = ["header_name", "host", "kind", "value_path"]
-    HEADER_NAME_FIELD_NUMBER: _ClassVar[int]
-    HOST_FIELD_NUMBER: _ClassVar[int]
-    KIND_FIELD_NUMBER: _ClassVar[int]
-    VALUE_PATH_FIELD_NUMBER: _ClassVar[int]
-    header_name: str
-    host: str
-    kind: str
-    value_path: str
-    def __init__(self, host: _Optional[str] = ..., kind: _Optional[str] = ..., header_name: _Optional[str] = ..., value_path: _Optional[str] = ...) -> None: ...
-
-class AgentStatus(_message.Message):
-    __slots__ = ["agent_id", "attached", "credential_expire_time", "ingress"]
-    AGENT_ID_FIELD_NUMBER: _ClassVar[int]
-    ATTACHED_FIELD_NUMBER: _ClassVar[int]
-    CREDENTIAL_EXPIRE_TIME_FIELD_NUMBER: _ClassVar[int]
-    INGRESS_FIELD_NUMBER: _ClassVar[int]
-    agent_id: str
-    attached: bool
-    credential_expire_time: _timestamp_pb2.Timestamp
-    ingress: _containers.RepeatedCompositeFieldContainer[AgentIngress]
-    def __init__(self, agent_id: _Optional[str] = ..., attached: bool = ..., ingress: _Optional[_Iterable[_Union[AgentIngress, _Mapping]]] = ..., credential_expire_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
-
-class AgentStatusRequest(_message.Message):
-    __slots__ = ["agent_id"]
-    AGENT_ID_FIELD_NUMBER: _ClassVar[int]
-    agent_id: str
-    def __init__(self, agent_id: _Optional[str] = ...) -> None: ...
-
-class AgentStatusResponse(_message.Message):
-    __slots__ = ["agents", "error"]
-    AGENTS_FIELD_NUMBER: _ClassVar[int]
-    ERROR_FIELD_NUMBER: _ClassVar[int]
-    agents: _containers.RepeatedCompositeFieldContainer[AgentStatus]
-    error: str
-    def __init__(self, agents: _Optional[_Iterable[_Union[AgentStatus, _Mapping]]] = ..., error: _Optional[str] = ...) -> None: ...
-
 class AuthFrame(_message.Message):
-    __slots__ = ["agent", "biscuit", "target_service"]
-    AGENT_FIELD_NUMBER: _ClassVar[int]
+    __slots__ = ["biscuit", "target_service"]
     BISCUIT_FIELD_NUMBER: _ClassVar[int]
     TARGET_SERVICE_FIELD_NUMBER: _ClassVar[int]
-    agent: str
     biscuit: bytes
     target_service: str
-    def __init__(self, biscuit: _Optional[bytes] = ..., target_service: _Optional[str] = ..., agent: _Optional[str] = ...) -> None: ...
+    def __init__(self, biscuit: _Optional[bytes] = ..., target_service: _Optional[str] = ...) -> None: ...
 
 class AuthResponse(_message.Message):
     __slots__ = ["biscuit", "error", "success"]
@@ -458,22 +334,20 @@ class PolicyConfigUpdateResponse(_message.Message):
     def __init__(self, success: bool = ..., error: _Optional[str] = ...) -> None: ...
 
 class PolicyRole(_message.Message):
-    __slots__ = ["allowed_agents", "allowed_labels", "allowed_services", "allowed_targets", "custom_datalog", "http", "name"]
-    ALLOWED_AGENTS_FIELD_NUMBER: _ClassVar[int]
+    __slots__ = ["allowed_labels", "allowed_services", "allowed_targets", "custom_datalog", "http", "name"]
     ALLOWED_LABELS_FIELD_NUMBER: _ClassVar[int]
     ALLOWED_SERVICES_FIELD_NUMBER: _ClassVar[int]
     ALLOWED_TARGETS_FIELD_NUMBER: _ClassVar[int]
     CUSTOM_DATALOG_FIELD_NUMBER: _ClassVar[int]
     HTTP_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
-    allowed_agents: _containers.RepeatedScalarFieldContainer[str]
     allowed_labels: _containers.RepeatedScalarFieldContainer[str]
     allowed_services: _containers.RepeatedScalarFieldContainer[str]
     allowed_targets: _containers.RepeatedScalarFieldContainer[str]
     custom_datalog: _containers.RepeatedScalarFieldContainer[str]
     http: _containers.RepeatedCompositeFieldContainer[HTTPGrant]
     name: str
-    def __init__(self, name: _Optional[str] = ..., allowed_targets: _Optional[_Iterable[str]] = ..., allowed_services: _Optional[_Iterable[str]] = ..., custom_datalog: _Optional[_Iterable[str]] = ..., allowed_agents: _Optional[_Iterable[str]] = ..., allowed_labels: _Optional[_Iterable[str]] = ..., http: _Optional[_Iterable[_Union[HTTPGrant, _Mapping]]] = ...) -> None: ...
+    def __init__(self, name: _Optional[str] = ..., allowed_targets: _Optional[_Iterable[str]] = ..., allowed_services: _Optional[_Iterable[str]] = ..., custom_datalog: _Optional[_Iterable[str]] = ..., allowed_labels: _Optional[_Iterable[str]] = ..., http: _Optional[_Iterable[_Union[HTTPGrant, _Mapping]]] = ...) -> None: ...
 
 class RegisterServiceRequest(_message.Message):
     __slots__ = ["command", "service", "target_url"]

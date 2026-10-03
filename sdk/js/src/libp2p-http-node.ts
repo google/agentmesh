@@ -24,7 +24,6 @@ import { Duplex } from "node:stream";
 import { AUTH_HANDSHAKE_TIMEOUT_MS } from "./auth.ts";
 import {
   HEADER_PEER_ID,
-  HEADER_SAM_AGENT,
   HEADER_SAM_BISCUIT,
   HEADER_SAM_NO_TRAILING_SLASH,
   admitIngress,
@@ -109,7 +108,6 @@ async function serveListener(req: http.IncomingMessage, res: http.ServerResponse
   // verified peer.
   req.url = admission.path;
   delete req.headers[HEADER_SAM_BISCUIT];
-  delete req.headers[HEADER_SAM_AGENT];
   req.headers[HEADER_PEER_ID] = remotePeer;
   if (admission.noTrailingSlash) {
     req.headers[HEADER_SAM_NO_TRAILING_SLASH] = "true";

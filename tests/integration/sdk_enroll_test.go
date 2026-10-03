@@ -297,8 +297,8 @@ func verifySDKReport(t *testing.T, ctx context.Context, store storage.Store, cpP
 	if !bytes.Equal(frame.Biscuit, refreshed) {
 		t.Error("auth_frame does not carry the refreshed biscuit")
 	}
-	if frame.TargetService != "mcp://echo" || frame.Agent != "agent:example.test:conformance" {
-		t.Errorf("auth_frame target/agent = %q/%q", frame.TargetService, frame.Agent)
+	if frame.TargetService != "mcp://echo" {
+		t.Errorf("auth_frame target = %q", frame.TargetService)
 	}
 }
 

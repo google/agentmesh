@@ -49,7 +49,6 @@ export const HTTP_PROTOCOL = "/libp2p-http";
 
 /** Headers of the mesh HTTP datapath (api/network.go). */
 export const HEADER_SAM_BISCUIT = "x-sam-biscuit";
-export const HEADER_SAM_AGENT = "x-sam-agent";
 export const HEADER_PEER_ID = "x-peer-id";
 export const HEADER_SAM_NO_TRAILING_SLASH = "x-sam-no-trailing-slash";
 
@@ -91,8 +90,8 @@ export type NodeRequestListener = (req: any, res: any) => void;
 /**
  * This member's agent as other members reach it: `a2a://<name>`, answered by
  * exactly one of url (an A2A server beside this process), handler or
- * listener (in this process). Authorized requests arrive with the biscuit and
- * agent headers stripped, X-Peer-Id naming the verified caller and the path
+ * listener (in this process). Authorized requests arrive with the biscuit
+ * header stripped, X-Peer-Id naming the verified caller and the path
  * relative to /a2a/<name>, as sam-node forwards them. The endpoint is not
  * announced anywhere; a caller reaches it by peer ID.
  */
@@ -211,7 +210,6 @@ export async function admitIngress(req: IngressRequest, endpoint: A2AEndpoint, o
         peerId: req.remotePeer,
         targetService,
         protocol: HTTP_PROTOCOL,
-        agent: req.headers.get(HEADER_SAM_AGENT) ?? "",
         // The path as the backend sees it, decided before authorization so
         // path() is what policy meant, never the routing prefix.
         method: req.method,
@@ -235,7 +233,7 @@ export async function admitIngress(req: IngressRequest, endpoint: A2AEndpoint, o
 }
 
 /** Headers of the mesh datapath and of the hop itself, not passed on to the agent. */
-const HOP_HEADERS = new Set([HEADER_SAM_BISCUIT, HEADER_SAM_AGENT, HEADER_SAM_NO_TRAILING_SLASH, HEADER_PEER_ID, "host", "connection", "transfer-encoding", "content-length", "keep-alive"]);
+const HOP_HEADERS = new Set([HEADER_SAM_BISCUIT, HEADER_SAM_NO_TRAILING_SLASH, HEADER_PEER_ID, "host", "connection", "transfer-encoding", "content-length", "keep-alive"]);
 
 /**
  * The headers the agent sees: the request's own, less the datapath's, with
@@ -481,8 +479,6 @@ async function readLimited(body: ReadableStream<Uint8Array> | null, limit: numbe
 }
 
 export interface HTTPStreamOptions {
-  /** The agent this request is made for. */
-  agent?: string;
   /** Bounds the whole exchange; without one, the response headers must arrive within a minute and the body is unbounded. */
   signal?: AbortSignal;
 }
@@ -532,9 +528,6 @@ async function sendOverStream(conn: Connection, biscuit: Uint8Array, request: Re
   });
   headers.set("host", peerId);
   headers.set(HEADER_SAM_BISCUIT, toBase64(biscuit));
-  if (options.agent) {
-    headers.set(HEADER_SAM_AGENT, options.agent);
-  }
   const body = request.body === null ? new Uint8Array(0) : new Uint8Array(await request.arrayBuffer());
   headers.set("content-length", String(body.length));
 
@@ -571,8 +564,6 @@ export interface HTTPRequestOptions {
   method?: string;
   headers?: Record<string, string>;
   body?: Uint8Array | string;
-  /** The agent this request is made for. */
-  agent?: string;
   signal?: AbortSignal;
 }
 
@@ -598,9 +589,6 @@ export async function httpRequestOverStream(
   }
   const request = new Request(meshURL(conn.remotePeer.toString(), targetService, path), init);
   const streamOptions: HTTPStreamOptions = { signal };
-  if (options.agent !== undefined) {
-    streamOptions.agent = options.agent;
-  }
   const response = await fetchOverStream(conn, biscuit, request, streamOptions);
   const buf = new Uint8Array(await response.arrayBuffer());
   if (buf.length > MAX_INGRESS_BODY_BYTES) {

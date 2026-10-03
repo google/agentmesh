@@ -200,10 +200,9 @@ test("enroll reads a workload identity token from jwtPath", async () => {
 test("authFrame is the AuthFrame protobuf with this member's biscuit", async () => {
   const cp = fakeControlPlane();
   const mesh = await AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", bootstrapToken: "sbt_secret", fetch: cp.fetch });
-  const frame = fromBinary(AuthFrameSchema, mesh.authFrame("mcp://calculator", "agent:acme.example:bot"));
+  const frame = fromBinary(AuthFrameSchema, mesh.authFrame("mcp://calculator"));
   assert.deepEqual(frame.biscuit, text("biscuit-1"));
   assert.equal(frame.targetService, "mcp://calculator");
-  assert.equal(frame.agent, "agent:acme.example:bot");
 
   const resp = decodeAuthResponse(toBinary(AuthResponseSchema, create(AuthResponseSchema, { success: false, error: "denied" })));
   assert.equal(resp.success, false);

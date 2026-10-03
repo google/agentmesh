@@ -47,6 +47,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-msgio"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -357,15 +358,6 @@ func createMockBiscuitToken(t *testing.T, peerID string, priv ed25519.PrivateKey
 	}})
 	if err != nil {
 		t.Fatalf("failed to add role fact: %v", err)
-	}
-
-	// The namespace this node may speak agents for, as a real control plane
-	// would mint from a role's allowed_agents. Every agent in these tests is
-	// under acme.example, so enforcement stays live: a claim outside it is
-	// still refused.
-	err = builder.AddAuthorityFact(api.BuildAgentDatalogFact("*.acme.example"))
-	if err != nil {
-		t.Fatalf("failed to add agent namespace fact: %v", err)
 	}
 
 	err = builder.AddAuthorityFact(biscuit.Fact{Predicate: biscuit.Predicate{
@@ -808,4 +800,46 @@ func yamlToJSON(v interface{}) interface{} {
 	default:
 		return v
 	}
+}
+
+func waitForDiscoverableService(t *testing.T, apiAddr, token, svcType, svcName string) {
+	t.Helper()
+
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequest(http.MethodGet,
+			"http://"+apiAddr+"/sam/service/discover?type="+svcType+"&name="+svcName, nil)
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		req.Header.Set(api.HeaderSamAuthentication, "Bearer "+token)
+
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			var providers []*api.DiscoveredProvider
+			decodeErr := json.NewDecoder(resp.Body).Decode(&providers)
+			_ = resp.Body.Close()
+			if decodeErr == nil && len(providers) > 0 {
+				return
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("timeout waiting for %s://%s to be discoverable", svcType, svcName)
+}
+
+func newBoundaryMCPHandler(t *testing.T) http.Handler {
+	t.Helper()
+
+	srv := mcp.NewServer(&mcp.Implementation{Name: "calc", Version: "0.0.1"}, nil)
+	srv.AddTool(&mcp.Tool{
+		Name:        "add",
+		Description: "add two numbers",
+		InputSchema: map[string]any{"type": "object"},
+	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: "fake-result:add"}},
+		}, nil
+	})
+	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil)
 }

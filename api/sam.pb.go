@@ -98,8 +98,7 @@ const (
 	// A destination outside the mesh, reached through a node that enforces
 	// policy on it. The service name is the destination hostname, so a grant
 	// reads egress://api.github.com and the request fact
-	// service("egress", "api.github.com"). Egress names have no .sam.alt form:
-	// a sandboxed agent connects to the destination name itself.
+	// service("egress", "api.github.com").
 	ServiceType_SERVICE_TYPE_EGRESS ServiceType = 4
 )
 
@@ -201,11 +200,6 @@ type AuthFrame struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Biscuit       []byte                 `protobuf:"bytes,1,opt,name=biscuit,proto3" json:"biscuit,omitempty"`
 	TargetService string                 `protobuf:"bytes,2,opt,name=target_service,json=targetService,proto3" json:"target_service,omitempty"` // Optional: specific service requested
-	// The agent this request is made for, as a canonical agent identifier (see
-	// api/agent.go). It is the calling node's claim, carried beside the token
-	// because Biscuit hides an appended block's facts from the authorizer; the
-	// HTTP datapath carries the same claim in HeaderSamAgent.
-	Agent         string `protobuf:"bytes,3,opt,name=agent,proto3" json:"agent,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -250,13 +244,6 @@ func (x *AuthFrame) GetBiscuit() []byte {
 func (x *AuthFrame) GetTargetService() string {
 	if x != nil {
 		return x.TargetService
-	}
-	return ""
-}
-
-func (x *AuthFrame) GetAgent() string {
-	if x != nil {
-		return x.Agent
 	}
 	return ""
 }
@@ -1402,17 +1389,12 @@ type PolicyRole struct {
 	AllowedTargets  []string               `protobuf:"bytes,2,rep,name=allowed_targets,json=allowedTargets,proto3" json:"allowed_targets,omitempty"`
 	AllowedServices []string               `protobuf:"bytes,3,rep,name=allowed_services,json=allowedServices,proto3" json:"allowed_services,omitempty"`
 	CustomDatalog   []string               `protobuf:"bytes,4,rep,name=custom_datalog,json=customDatalog,proto3" json:"custom_datalog,omitempty"`
-	// Agent namespaces the holder may speak for, e.g. "*.prod.acme.example".
-	// An agent claim is the calling node's word, so it is only worth what the
-	// control plane attested about that node. Distinct from allowed_targets:
-	// being allowed to call an agent is not being allowed to impersonate it.
-	AllowedAgents []string `protobuf:"bytes,5,rep,name=allowed_agents,json=allowedAgents,proto3" json:"allowed_agents,omitempty"`
 	// Labels a node with this role may declare at enrollment, as "*", "key=*"
 	// or "key=value". A node declares its own labels, so this is what turns a
 	// declaration into something the control plane is willing to sign.
-	AllowedLabels []string `protobuf:"bytes,6,rep,name=allowed_labels,json=allowedLabels,proto3" json:"allowed_labels,omitempty"`
+	AllowedLabels []string `protobuf:"bytes,5,rep,name=allowed_labels,json=allowedLabels,proto3" json:"allowed_labels,omitempty"`
 	// HTTP narrowing of allowed_services entries; see HTTPGrant.
-	Http          []*HTTPGrant `protobuf:"bytes,7,rep,name=http,proto3" json:"http,omitempty"`
+	Http          []*HTTPGrant `protobuf:"bytes,6,rep,name=http,proto3" json:"http,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1471,13 +1453,6 @@ func (x *PolicyRole) GetAllowedServices() []string {
 func (x *PolicyRole) GetCustomDatalog() []string {
 	if x != nil {
 		return x.CustomDatalog
-	}
-	return nil
-}
-
-func (x *PolicyRole) GetAllowedAgents() []string {
-	if x != nil {
-		return x.AllowedAgents
 	}
 	return nil
 }
@@ -1809,7 +1784,7 @@ func (*PolicyConfigGetRequest) Descriptor() ([]byte, []int) {
 type PolicyConfigGetResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// One rule per entry, rendered by the control plane with api.BuildPolicyRules.
-	DatalogRules  []string `protobuf:"bytes,3,rep,name=datalog_rules,json=datalogRules,proto3" json:"datalog_rules,omitempty"`
+	DatalogRules  []string `protobuf:"bytes,1,rep,name=datalog_rules,json=datalogRules,proto3" json:"datalog_rules,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2330,786 +2305,6 @@ func (x *TokenRevokeResponse) GetError() string {
 	return ""
 }
 
-// AgentSecret configures credential injection for one destination. It carries
-// a path, never a value: secret material must not travel through this API.
-type AgentSecret struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Host          string                 `protobuf:"bytes,1,opt,name=host,proto3" json:"host,omitempty"`
-	Kind          string                 `protobuf:"bytes,2,opt,name=kind,proto3" json:"kind,omitempty"`                               // bearer | basicauth | customheader
-	HeaderName    string                 `protobuf:"bytes,3,opt,name=header_name,json=headerName,proto3" json:"header_name,omitempty"` // customheader only
-	ValuePath     string                 `protobuf:"bytes,4,opt,name=value_path,json=valuePath,proto3" json:"value_path,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *AgentSecret) Reset() {
-	*x = AgentSecret{}
-	mi := &file_api_sam_proto_msgTypes[31]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AgentSecret) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AgentSecret) ProtoMessage() {}
-
-func (x *AgentSecret) ProtoReflect() protoreflect.Message {
-	mi := &file_api_sam_proto_msgTypes[31]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AgentSecret.ProtoReflect.Descriptor instead.
-func (*AgentSecret) Descriptor() ([]byte, []int) {
-	return file_api_sam_proto_rawDescGZIP(), []int{31}
-}
-
-func (x *AgentSecret) GetHost() string {
-	if x != nil {
-		return x.Host
-	}
-	return ""
-}
-
-func (x *AgentSecret) GetKind() string {
-	if x != nil {
-		return x.Kind
-	}
-	return ""
-}
-
-func (x *AgentSecret) GetHeaderName() string {
-	if x != nil {
-		return x.HeaderName
-	}
-	return ""
-}
-
-func (x *AgentSecret) GetValuePath() string {
-	if x != nil {
-		return x.ValuePath
-	}
-	return ""
-}
-
-// AgentEgress is deny-by-default. Patterns are matched against the destination
-// name taken from the sandbox boundary, never against a resolved address.
-type AgentEgress struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Allow         []string               `protobuf:"bytes,1,rep,name=allow,proto3" json:"allow,omitempty"`
-	Secrets       []*AgentSecret         `protobuf:"bytes,2,rep,name=secrets,proto3" json:"secrets,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *AgentEgress) Reset() {
-	*x = AgentEgress{}
-	mi := &file_api_sam_proto_msgTypes[32]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AgentEgress) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AgentEgress) ProtoMessage() {}
-
-func (x *AgentEgress) ProtoReflect() protoreflect.Message {
-	mi := &file_api_sam_proto_msgTypes[32]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AgentEgress.ProtoReflect.Descriptor instead.
-func (*AgentEgress) Descriptor() ([]byte, []int) {
-	return file_api_sam_proto_rawDescGZIP(), []int{32}
-}
-
-func (x *AgentEgress) GetAllow() []string {
-	if x != nil {
-		return x.Allow
-	}
-	return nil
-}
-
-func (x *AgentEgress) GetSecrets() []*AgentSecret {
-	if x != nil {
-		return x.Secrets
-	}
-	return nil
-}
-
-// AgentIngress declares that the agent serves a mesh service. The name is the
-// service half of the mesh host the rest of the mesh dials (see api/names.go);
-// port is where the agent listens inside its sandbox.
-type AgentIngress struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Type          ServiceType            `protobuf:"varint,1,opt,name=type,proto3,enum=sam.v1.ServiceType" json:"type,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	Port          uint32                 `protobuf:"varint,3,opt,name=port,proto3" json:"port,omitempty"`
-	Description   string                 `protobuf:"bytes,4,opt,name=description,proto3" json:"description,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *AgentIngress) Reset() {
-	*x = AgentIngress{}
-	mi := &file_api_sam_proto_msgTypes[33]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AgentIngress) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AgentIngress) ProtoMessage() {}
-
-func (x *AgentIngress) ProtoReflect() protoreflect.Message {
-	mi := &file_api_sam_proto_msgTypes[33]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AgentIngress.ProtoReflect.Descriptor instead.
-func (*AgentIngress) Descriptor() ([]byte, []int) {
-	return file_api_sam_proto_rawDescGZIP(), []int{33}
-}
-
-func (x *AgentIngress) GetType() ServiceType {
-	if x != nil {
-		return x.Type
-	}
-	return ServiceType_SERVICE_TYPE_UNSPECIFIED
-}
-
-func (x *AgentIngress) GetName() string {
-	if x != nil {
-		return x.Name
-	}
-	return ""
-}
-
-func (x *AgentIngress) GetPort() uint32 {
-	if x != nil {
-		return x.Port
-	}
-	return 0
-}
-
-func (x *AgentIngress) GetDescription() string {
-	if x != nil {
-		return x.Description
-	}
-	return ""
-}
-
-// AgentBundle is everything the platform declares about one agent. Its
-// canonical form is a YAML file in the agent's own state directory, so that a
-// suspend/resume onto another host carries it with no extra machinery; this
-// message is the transport mirror of that file.
-type AgentBundle struct {
-	state   protoimpl.MessageState `protogen:"open.v1"`
-	Version string                 `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
-	// Canonical mesh identifier, without the "agent:" prefix. Dot-separated and
-	// DNS-shaped; see api/agent.go for the rules and why they exist.
-	AgentId string `protobuf:"bytes,2,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
-	// The platform's own identifier, verbatim, kept for audit because the
-	// translation into agent_id is not always reversible.
-	ExternalId string `protobuf:"bytes,3,opt,name=external_id,json=externalId,proto3" json:"external_id,omitempty"`
-	// Path to the workload credential the platform already issues: a projected
-	// Kubernetes service-account token, a pod certificate, or an SVID. It is
-	// verified at admission against the platform's issuer and then translated
-	// into agent facts, the same way OIDC claims are translated at node
-	// enrollment. The scheduler needs no mesh credential of its own.
-	CredentialPath string          `protobuf:"bytes,4,opt,name=credential_path,json=credentialPath,proto3" json:"credential_path,omitempty"`
-	Egress         *AgentEgress    `protobuf:"bytes,5,opt,name=egress,proto3" json:"egress,omitempty"`
-	Ingress        []*AgentIngress `protobuf:"bytes,6,rep,name=ingress,proto3" json:"ingress,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
-}
-
-func (x *AgentBundle) Reset() {
-	*x = AgentBundle{}
-	mi := &file_api_sam_proto_msgTypes[34]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AgentBundle) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AgentBundle) ProtoMessage() {}
-
-func (x *AgentBundle) ProtoReflect() protoreflect.Message {
-	mi := &file_api_sam_proto_msgTypes[34]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AgentBundle.ProtoReflect.Descriptor instead.
-func (*AgentBundle) Descriptor() ([]byte, []int) {
-	return file_api_sam_proto_rawDescGZIP(), []int{34}
-}
-
-func (x *AgentBundle) GetVersion() string {
-	if x != nil {
-		return x.Version
-	}
-	return ""
-}
-
-func (x *AgentBundle) GetAgentId() string {
-	if x != nil {
-		return x.AgentId
-	}
-	return ""
-}
-
-func (x *AgentBundle) GetExternalId() string {
-	if x != nil {
-		return x.ExternalId
-	}
-	return ""
-}
-
-func (x *AgentBundle) GetCredentialPath() string {
-	if x != nil {
-		return x.CredentialPath
-	}
-	return ""
-}
-
-func (x *AgentBundle) GetEgress() *AgentEgress {
-	if x != nil {
-		return x.Egress
-	}
-	return nil
-}
-
-func (x *AgentBundle) GetIngress() []*AgentIngress {
-	if x != nil {
-		return x.Ingress
-	}
-	return nil
-}
-
-// AgentAttachRequest admits an agent. It is idempotent on agent_id: resuming
-// after a crash or a migration is another Attach, not a distinct operation.
-type AgentAttachRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Bundle        *AgentBundle           `protobuf:"bytes,1,opt,name=bundle,proto3" json:"bundle,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *AgentAttachRequest) Reset() {
-	*x = AgentAttachRequest{}
-	mi := &file_api_sam_proto_msgTypes[35]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AgentAttachRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AgentAttachRequest) ProtoMessage() {}
-
-func (x *AgentAttachRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_sam_proto_msgTypes[35]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AgentAttachRequest.ProtoReflect.Descriptor instead.
-func (*AgentAttachRequest) Descriptor() ([]byte, []int) {
-	return file_api_sam_proto_rawDescGZIP(), []int{35}
-}
-
-func (x *AgentAttachRequest) GetBundle() *AgentBundle {
-	if x != nil {
-		return x.Bundle
-	}
-	return nil
-}
-
-type AgentAttachResponse struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// Sandbox boundary endpoints to wire into the sandbox: named HTTP tunnels
-	// (CONNECT, connect-udp) for guest to host, and a reverse channel for host
-	// to guest that is empty when the bundle declares no ingress.
-	EgressSocket  string `protobuf:"bytes,1,opt,name=egress_socket,json=egressSocket,proto3" json:"egress_socket,omitempty"`
-	IngressSocket string `protobuf:"bytes,2,opt,name=ingress_socket,json=ingressSocket,proto3" json:"ingress_socket,omitempty"`
-	Error         string `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *AgentAttachResponse) Reset() {
-	*x = AgentAttachResponse{}
-	mi := &file_api_sam_proto_msgTypes[36]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AgentAttachResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AgentAttachResponse) ProtoMessage() {}
-
-func (x *AgentAttachResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_sam_proto_msgTypes[36]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AgentAttachResponse.ProtoReflect.Descriptor instead.
-func (*AgentAttachResponse) Descriptor() ([]byte, []int) {
-	return file_api_sam_proto_rawDescGZIP(), []int{36}
-}
-
-func (x *AgentAttachResponse) GetEgressSocket() string {
-	if x != nil {
-		return x.EgressSocket
-	}
-	return ""
-}
-
-func (x *AgentAttachResponse) GetIngressSocket() string {
-	if x != nil {
-		return x.IngressSocket
-	}
-	return ""
-}
-
-func (x *AgentAttachResponse) GetError() string {
-	if x != nil {
-		return x.Error
-	}
-	return ""
-}
-
-// AgentDetachRequest stops an agent: ingress is unregistered, channels are
-// closed and credentials dropped. It must leave no residual advertisement.
-type AgentDetachRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	AgentId       string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *AgentDetachRequest) Reset() {
-	*x = AgentDetachRequest{}
-	mi := &file_api_sam_proto_msgTypes[37]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AgentDetachRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AgentDetachRequest) ProtoMessage() {}
-
-func (x *AgentDetachRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_sam_proto_msgTypes[37]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AgentDetachRequest.ProtoReflect.Descriptor instead.
-func (*AgentDetachRequest) Descriptor() ([]byte, []int) {
-	return file_api_sam_proto_rawDescGZIP(), []int{37}
-}
-
-func (x *AgentDetachRequest) GetAgentId() string {
-	if x != nil {
-		return x.AgentId
-	}
-	return ""
-}
-
-type AgentDetachResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
-	Error         string                 `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *AgentDetachResponse) Reset() {
-	*x = AgentDetachResponse{}
-	mi := &file_api_sam_proto_msgTypes[38]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AgentDetachResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AgentDetachResponse) ProtoMessage() {}
-
-func (x *AgentDetachResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_sam_proto_msgTypes[38]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AgentDetachResponse.ProtoReflect.Descriptor instead.
-func (*AgentDetachResponse) Descriptor() ([]byte, []int) {
-	return file_api_sam_proto_rawDescGZIP(), []int{38}
-}
-
-func (x *AgentDetachResponse) GetSuccess() bool {
-	if x != nil {
-		return x.Success
-	}
-	return false
-}
-
-func (x *AgentDetachResponse) GetError() string {
-	if x != nil {
-		return x.Error
-	}
-	return ""
-}
-
-// AgentRefreshRequest hands in a rotated workload credential. Platforms rotate
-// these on their own schedule, which is what bounds how long a stale admission
-// stays usable.
-type AgentRefreshRequest struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	AgentId        string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
-	CredentialPath string                 `protobuf:"bytes,2,opt,name=credential_path,json=credentialPath,proto3" json:"credential_path,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
-}
-
-func (x *AgentRefreshRequest) Reset() {
-	*x = AgentRefreshRequest{}
-	mi := &file_api_sam_proto_msgTypes[39]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AgentRefreshRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AgentRefreshRequest) ProtoMessage() {}
-
-func (x *AgentRefreshRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_sam_proto_msgTypes[39]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AgentRefreshRequest.ProtoReflect.Descriptor instead.
-func (*AgentRefreshRequest) Descriptor() ([]byte, []int) {
-	return file_api_sam_proto_rawDescGZIP(), []int{39}
-}
-
-func (x *AgentRefreshRequest) GetAgentId() string {
-	if x != nil {
-		return x.AgentId
-	}
-	return ""
-}
-
-func (x *AgentRefreshRequest) GetCredentialPath() string {
-	if x != nil {
-		return x.CredentialPath
-	}
-	return ""
-}
-
-type AgentRefreshResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
-	Error         string                 `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
-	ExpireTime    *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=expire_time,json=expireTime,proto3" json:"expire_time,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *AgentRefreshResponse) Reset() {
-	*x = AgentRefreshResponse{}
-	mi := &file_api_sam_proto_msgTypes[40]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AgentRefreshResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AgentRefreshResponse) ProtoMessage() {}
-
-func (x *AgentRefreshResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_sam_proto_msgTypes[40]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AgentRefreshResponse.ProtoReflect.Descriptor instead.
-func (*AgentRefreshResponse) Descriptor() ([]byte, []int) {
-	return file_api_sam_proto_rawDescGZIP(), []int{40}
-}
-
-func (x *AgentRefreshResponse) GetSuccess() bool {
-	if x != nil {
-		return x.Success
-	}
-	return false
-}
-
-func (x *AgentRefreshResponse) GetError() string {
-	if x != nil {
-		return x.Error
-	}
-	return ""
-}
-
-func (x *AgentRefreshResponse) GetExpireTime() *timestamppb.Timestamp {
-	if x != nil {
-		return x.ExpireTime
-	}
-	return nil
-}
-
-// AgentStatusRequest reports on one agent, or on all of them when agent_id is
-// empty, for a scheduler's reconcile loop.
-type AgentStatusRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	AgentId       string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *AgentStatusRequest) Reset() {
-	*x = AgentStatusRequest{}
-	mi := &file_api_sam_proto_msgTypes[41]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AgentStatusRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AgentStatusRequest) ProtoMessage() {}
-
-func (x *AgentStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_sam_proto_msgTypes[41]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AgentStatusRequest.ProtoReflect.Descriptor instead.
-func (*AgentStatusRequest) Descriptor() ([]byte, []int) {
-	return file_api_sam_proto_rawDescGZIP(), []int{41}
-}
-
-func (x *AgentStatusRequest) GetAgentId() string {
-	if x != nil {
-		return x.AgentId
-	}
-	return ""
-}
-
-type AgentStatus struct {
-	state                protoimpl.MessageState `protogen:"open.v1"`
-	AgentId              string                 `protobuf:"bytes,1,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
-	Attached             bool                   `protobuf:"varint,2,opt,name=attached,proto3" json:"attached,omitempty"`
-	Ingress              []*AgentIngress        `protobuf:"bytes,3,rep,name=ingress,proto3" json:"ingress,omitempty"`
-	CredentialExpireTime *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=credential_expire_time,json=credentialExpireTime,proto3" json:"credential_expire_time,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
-}
-
-func (x *AgentStatus) Reset() {
-	*x = AgentStatus{}
-	mi := &file_api_sam_proto_msgTypes[42]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AgentStatus) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AgentStatus) ProtoMessage() {}
-
-func (x *AgentStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_api_sam_proto_msgTypes[42]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AgentStatus.ProtoReflect.Descriptor instead.
-func (*AgentStatus) Descriptor() ([]byte, []int) {
-	return file_api_sam_proto_rawDescGZIP(), []int{42}
-}
-
-func (x *AgentStatus) GetAgentId() string {
-	if x != nil {
-		return x.AgentId
-	}
-	return ""
-}
-
-func (x *AgentStatus) GetAttached() bool {
-	if x != nil {
-		return x.Attached
-	}
-	return false
-}
-
-func (x *AgentStatus) GetIngress() []*AgentIngress {
-	if x != nil {
-		return x.Ingress
-	}
-	return nil
-}
-
-func (x *AgentStatus) GetCredentialExpireTime() *timestamppb.Timestamp {
-	if x != nil {
-		return x.CredentialExpireTime
-	}
-	return nil
-}
-
-type AgentStatusResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Agents        []*AgentStatus         `protobuf:"bytes,1,rep,name=agents,proto3" json:"agents,omitempty"`
-	Error         string                 `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *AgentStatusResponse) Reset() {
-	*x = AgentStatusResponse{}
-	mi := &file_api_sam_proto_msgTypes[43]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AgentStatusResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AgentStatusResponse) ProtoMessage() {}
-
-func (x *AgentStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_sam_proto_msgTypes[43]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AgentStatusResponse.ProtoReflect.Descriptor instead.
-func (*AgentStatusResponse) Descriptor() ([]byte, []int) {
-	return file_api_sam_proto_rawDescGZIP(), []int{43}
-}
-
-func (x *AgentStatusResponse) GetAgents() []*AgentStatus {
-	if x != nil {
-		return x.Agents
-	}
-	return nil
-}
-
-func (x *AgentStatusResponse) GetError() string {
-	if x != nil {
-		return x.Error
-	}
-	return ""
-}
-
 type IdentityEvidenceResponse struct {
 	state                   protoimpl.MessageState `protogen:"open.v1"`
 	PeerId                  string                 `protobuf:"bytes,1,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
@@ -3124,7 +2319,7 @@ type IdentityEvidenceResponse struct {
 
 func (x *IdentityEvidenceResponse) Reset() {
 	*x = IdentityEvidenceResponse{}
-	mi := &file_api_sam_proto_msgTypes[44]
+	mi := &file_api_sam_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3136,7 +2331,7 @@ func (x *IdentityEvidenceResponse) String() string {
 func (*IdentityEvidenceResponse) ProtoMessage() {}
 
 func (x *IdentityEvidenceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_sam_proto_msgTypes[44]
+	mi := &file_api_sam_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3149,7 +2344,7 @@ func (x *IdentityEvidenceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IdentityEvidenceResponse.ProtoReflect.Descriptor instead.
 func (*IdentityEvidenceResponse) Descriptor() ([]byte, []int) {
-	return file_api_sam_proto_rawDescGZIP(), []int{44}
+	return file_api_sam_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *IdentityEvidenceResponse) GetPeerId() string {
@@ -3210,7 +2405,7 @@ type PeerEvidenceResponse struct {
 
 func (x *PeerEvidenceResponse) Reset() {
 	*x = PeerEvidenceResponse{}
-	mi := &file_api_sam_proto_msgTypes[45]
+	mi := &file_api_sam_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3222,7 +2417,7 @@ func (x *PeerEvidenceResponse) String() string {
 func (*PeerEvidenceResponse) ProtoMessage() {}
 
 func (x *PeerEvidenceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_sam_proto_msgTypes[45]
+	mi := &file_api_sam_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3235,7 +2430,7 @@ func (x *PeerEvidenceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerEvidenceResponse.ProtoReflect.Descriptor instead.
 func (*PeerEvidenceResponse) Descriptor() ([]byte, []int) {
-	return file_api_sam_proto_rawDescGZIP(), []int{45}
+	return file_api_sam_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *PeerEvidenceResponse) GetPeerId() string {
@@ -3320,7 +2515,7 @@ type MemberCredential struct {
 
 func (x *MemberCredential) Reset() {
 	*x = MemberCredential{}
-	mi := &file_api_sam_proto_msgTypes[46]
+	mi := &file_api_sam_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3332,7 +2527,7 @@ func (x *MemberCredential) String() string {
 func (*MemberCredential) ProtoMessage() {}
 
 func (x *MemberCredential) ProtoReflect() protoreflect.Message {
-	mi := &file_api_sam_proto_msgTypes[46]
+	mi := &file_api_sam_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3345,7 +2540,7 @@ func (x *MemberCredential) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemberCredential.ProtoReflect.Descriptor instead.
 func (*MemberCredential) Descriptor() ([]byte, []int) {
-	return file_api_sam_proto_rawDescGZIP(), []int{46}
+	return file_api_sam_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *MemberCredential) GetControlPlaneUrl() string {
@@ -3410,7 +2605,7 @@ type TrustedSigningKey struct {
 
 func (x *TrustedSigningKey) Reset() {
 	*x = TrustedSigningKey{}
-	mi := &file_api_sam_proto_msgTypes[47]
+	mi := &file_api_sam_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3422,7 +2617,7 @@ func (x *TrustedSigningKey) String() string {
 func (*TrustedSigningKey) ProtoMessage() {}
 
 func (x *TrustedSigningKey) ProtoReflect() protoreflect.Message {
-	mi := &file_api_sam_proto_msgTypes[47]
+	mi := &file_api_sam_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3435,7 +2630,7 @@ func (x *TrustedSigningKey) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TrustedSigningKey.ProtoReflect.Descriptor instead.
 func (*TrustedSigningKey) Descriptor() ([]byte, []int) {
-	return file_api_sam_proto_rawDescGZIP(), []int{47}
+	return file_api_sam_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *TrustedSigningKey) GetPublicKey() []byte {
@@ -3464,7 +2659,7 @@ type OIDCSession struct {
 
 func (x *OIDCSession) Reset() {
 	*x = OIDCSession{}
-	mi := &file_api_sam_proto_msgTypes[48]
+	mi := &file_api_sam_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3476,7 +2671,7 @@ func (x *OIDCSession) String() string {
 func (*OIDCSession) ProtoMessage() {}
 
 func (x *OIDCSession) ProtoReflect() protoreflect.Message {
-	mi := &file_api_sam_proto_msgTypes[48]
+	mi := &file_api_sam_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3489,7 +2684,7 @@ func (x *OIDCSession) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OIDCSession.ProtoReflect.Descriptor instead.
 func (*OIDCSession) Descriptor() ([]byte, []int) {
-	return file_api_sam_proto_rawDescGZIP(), []int{48}
+	return file_api_sam_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *OIDCSession) GetIssuer() string {
@@ -3524,11 +2719,10 @@ var File_api_sam_proto protoreflect.FileDescriptor
 
 const file_api_sam_proto_rawDesc = "" +
 	"\n" +
-	"\rapi/sam.proto\x12\x06sam.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"b\n" +
+	"\rapi/sam.proto\x12\x06sam.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"L\n" +
 	"\tAuthFrame\x12\x18\n" +
 	"\abiscuit\x18\x01 \x01(\fR\abiscuit\x12%\n" +
-	"\x0etarget_service\x18\x02 \x01(\tR\rtargetService\x12\x14\n" +
-	"\x05agent\x18\x03 \x01(\tR\x05agent\"X\n" +
+	"\x0etarget_service\x18\x02 \x01(\tR\rtargetService\"X\n" +
 	"\fAuthResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\x12\x18\n" +
@@ -3637,16 +2831,15 @@ const file_api_sam_proto_rawDesc = "" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\x12;\n" +
 	"\vexpire_time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"expireTime\"\x90\x02\n" +
+	"expireTime\"\xe9\x01\n" +
 	"\n" +
 	"PolicyRole\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12'\n" +
 	"\x0fallowed_targets\x18\x02 \x03(\tR\x0eallowedTargets\x12)\n" +
 	"\x10allowed_services\x18\x03 \x03(\tR\x0fallowedServices\x12%\n" +
 	"\x0ecustom_datalog\x18\x04 \x03(\tR\rcustomDatalog\x12%\n" +
-	"\x0eallowed_agents\x18\x05 \x03(\tR\rallowedAgents\x12%\n" +
-	"\x0eallowed_labels\x18\x06 \x03(\tR\rallowedLabels\x12%\n" +
-	"\x04http\x18\a \x03(\v2\x11.sam.v1.HTTPGrantR\x04http\"U\n" +
+	"\x0eallowed_labels\x18\x05 \x03(\tR\rallowedLabels\x12%\n" +
+	"\x04http\x18\x06 \x03(\v2\x11.sam.v1.HTTPGrantR\x04http\"U\n" +
 	"\tHTTPGrant\x12\x18\n" +
 	"\aservice\x18\x01 \x01(\tR\aservice\x12\x18\n" +
 	"\amethods\x18\x02 \x03(\tR\amethods\x12\x14\n" +
@@ -3666,9 +2859,9 @@ const file_api_sam_proto_rawDesc = "" +
 	"\x05roles\x18\x01 \x03(\v2\x12.sam.v1.PolicyRoleR\x05roles\x121\n" +
 	"\bbindings\x18\x02 \x03(\v2\x15.sam.v1.PolicyBindingR\bbindings\x121\n" +
 	"\x06egress\x18\x03 \x03(\v2\x19.sam.v1.EgressDestinationR\x06egress\"\x18\n" +
-	"\x16PolicyConfigGetRequest\"[\n" +
+	"\x16PolicyConfigGetRequest\">\n" +
 	"\x17PolicyConfigGetResponse\x12#\n" +
-	"\rdatalog_rules\x18\x03 \x03(\tR\fdatalogRulesJ\x04\b\x01\x10\x02J\x04\b\x02\x10\x03R\x05rolesR\bbindings\"L\n" +
+	"\rdatalog_rules\x18\x01 \x03(\tR\fdatalogRules\"L\n" +
 	"\x1aPolicyConfigUpdateResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\"\x1a\n" +
@@ -3697,58 +2890,6 @@ const file_api_sam_proto_rawDesc = "" +
 	"\apeer_id\x18\x01 \x01(\tR\x06peerId\"E\n" +
 	"\x13TokenRevokeResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
-	"\x05error\x18\x02 \x01(\tR\x05error\"u\n" +
-	"\vAgentSecret\x12\x12\n" +
-	"\x04host\x18\x01 \x01(\tR\x04host\x12\x12\n" +
-	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x1f\n" +
-	"\vheader_name\x18\x03 \x01(\tR\n" +
-	"headerName\x12\x1d\n" +
-	"\n" +
-	"value_path\x18\x04 \x01(\tR\tvaluePath\"R\n" +
-	"\vAgentEgress\x12\x14\n" +
-	"\x05allow\x18\x01 \x03(\tR\x05allow\x12-\n" +
-	"\asecrets\x18\x02 \x03(\v2\x13.sam.v1.AgentSecretR\asecrets\"\x81\x01\n" +
-	"\fAgentIngress\x12'\n" +
-	"\x04type\x18\x01 \x01(\x0e2\x13.sam.v1.ServiceTypeR\x04type\x12\x12\n" +
-	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
-	"\x04port\x18\x03 \x01(\rR\x04port\x12 \n" +
-	"\vdescription\x18\x04 \x01(\tR\vdescription\"\xe9\x01\n" +
-	"\vAgentBundle\x12\x18\n" +
-	"\aversion\x18\x01 \x01(\tR\aversion\x12\x19\n" +
-	"\bagent_id\x18\x02 \x01(\tR\aagentId\x12\x1f\n" +
-	"\vexternal_id\x18\x03 \x01(\tR\n" +
-	"externalId\x12'\n" +
-	"\x0fcredential_path\x18\x04 \x01(\tR\x0ecredentialPath\x12+\n" +
-	"\x06egress\x18\x05 \x01(\v2\x13.sam.v1.AgentEgressR\x06egress\x12.\n" +
-	"\aingress\x18\x06 \x03(\v2\x14.sam.v1.AgentIngressR\aingress\"A\n" +
-	"\x12AgentAttachRequest\x12+\n" +
-	"\x06bundle\x18\x01 \x01(\v2\x13.sam.v1.AgentBundleR\x06bundle\"w\n" +
-	"\x13AgentAttachResponse\x12#\n" +
-	"\regress_socket\x18\x01 \x01(\tR\fegressSocket\x12%\n" +
-	"\x0eingress_socket\x18\x02 \x01(\tR\ringressSocket\x12\x14\n" +
-	"\x05error\x18\x03 \x01(\tR\x05error\"/\n" +
-	"\x12AgentDetachRequest\x12\x19\n" +
-	"\bagent_id\x18\x01 \x01(\tR\aagentId\"E\n" +
-	"\x13AgentDetachResponse\x12\x18\n" +
-	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
-	"\x05error\x18\x02 \x01(\tR\x05error\"Y\n" +
-	"\x13AgentRefreshRequest\x12\x19\n" +
-	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12'\n" +
-	"\x0fcredential_path\x18\x02 \x01(\tR\x0ecredentialPath\"\x83\x01\n" +
-	"\x14AgentRefreshResponse\x12\x18\n" +
-	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
-	"\x05error\x18\x02 \x01(\tR\x05error\x12;\n" +
-	"\vexpire_time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"expireTime\"/\n" +
-	"\x12AgentStatusRequest\x12\x19\n" +
-	"\bagent_id\x18\x01 \x01(\tR\aagentId\"\xc6\x01\n" +
-	"\vAgentStatus\x12\x19\n" +
-	"\bagent_id\x18\x01 \x01(\tR\aagentId\x12\x1a\n" +
-	"\battached\x18\x02 \x01(\bR\battached\x12.\n" +
-	"\aingress\x18\x03 \x03(\v2\x14.sam.v1.AgentIngressR\aingress\x12P\n" +
-	"\x16credential_expire_time\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x14credentialExpireTime\"X\n" +
-	"\x13AgentStatusResponse\x12+\n" +
-	"\x06agents\x18\x01 \x03(\v2\x13.sam.v1.AgentStatusR\x06agents\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\"\xbd\x02\n" +
 	"\x18IdentityEvidenceResponse\x12\x17\n" +
 	"\apeer_id\x18\x01 \x01(\tR\x06peerId\x12\x18\n" +
@@ -3815,7 +2956,7 @@ func file_api_sam_proto_rawDescGZIP() []byte {
 }
 
 var file_api_sam_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_api_sam_proto_msgTypes = make([]protoimpl.MessageInfo, 54)
+var file_api_sam_proto_msgTypes = make([]protoimpl.MessageInfo, 41)
 var file_api_sam_proto_goTypes = []any{
 	(EnrollmentStatus)(0),              // 0: sam.v1.EnrollmentStatus
 	(ServiceType)(0),                   // 1: sam.v1.ServiceType
@@ -3851,78 +2992,56 @@ var file_api_sam_proto_goTypes = []any{
 	(*NodeCatalogReport)(nil),          // 31: sam.v1.NodeCatalogReport
 	(*TokenRevokeRequest)(nil),         // 32: sam.v1.TokenRevokeRequest
 	(*TokenRevokeResponse)(nil),        // 33: sam.v1.TokenRevokeResponse
-	(*AgentSecret)(nil),                // 34: sam.v1.AgentSecret
-	(*AgentEgress)(nil),                // 35: sam.v1.AgentEgress
-	(*AgentIngress)(nil),               // 36: sam.v1.AgentIngress
-	(*AgentBundle)(nil),                // 37: sam.v1.AgentBundle
-	(*AgentAttachRequest)(nil),         // 38: sam.v1.AgentAttachRequest
-	(*AgentAttachResponse)(nil),        // 39: sam.v1.AgentAttachResponse
-	(*AgentDetachRequest)(nil),         // 40: sam.v1.AgentDetachRequest
-	(*AgentDetachResponse)(nil),        // 41: sam.v1.AgentDetachResponse
-	(*AgentRefreshRequest)(nil),        // 42: sam.v1.AgentRefreshRequest
-	(*AgentRefreshResponse)(nil),       // 43: sam.v1.AgentRefreshResponse
-	(*AgentStatusRequest)(nil),         // 44: sam.v1.AgentStatusRequest
-	(*AgentStatus)(nil),                // 45: sam.v1.AgentStatus
-	(*AgentStatusResponse)(nil),        // 46: sam.v1.AgentStatusResponse
-	(*IdentityEvidenceResponse)(nil),   // 47: sam.v1.IdentityEvidenceResponse
-	(*PeerEvidenceResponse)(nil),       // 48: sam.v1.PeerEvidenceResponse
-	(*MemberCredential)(nil),           // 49: sam.v1.MemberCredential
-	(*TrustedSigningKey)(nil),          // 50: sam.v1.TrustedSigningKey
-	(*OIDCSession)(nil),                // 51: sam.v1.OIDCSession
-	nil,                                // 52: sam.v1.EnrollRequest.LabelsEntry
-	nil,                                // 53: sam.v1.BootstrapEnrollRequest.LabelsEntry
-	nil,                                // 54: sam.v1.CommandBackend.EnvEntry
-	nil,                                // 55: sam.v1.ServiceAnnounce.LabelsEntry
-	nil,                                // 56: sam.v1.PeerEvidenceResponse.LabelsEntry
-	(*timestamppb.Timestamp)(nil),      // 57: google.protobuf.Timestamp
+	(*IdentityEvidenceResponse)(nil),   // 34: sam.v1.IdentityEvidenceResponse
+	(*PeerEvidenceResponse)(nil),       // 35: sam.v1.PeerEvidenceResponse
+	(*MemberCredential)(nil),           // 36: sam.v1.MemberCredential
+	(*TrustedSigningKey)(nil),          // 37: sam.v1.TrustedSigningKey
+	(*OIDCSession)(nil),                // 38: sam.v1.OIDCSession
+	nil,                                // 39: sam.v1.EnrollRequest.LabelsEntry
+	nil,                                // 40: sam.v1.BootstrapEnrollRequest.LabelsEntry
+	nil,                                // 41: sam.v1.CommandBackend.EnvEntry
+	nil,                                // 42: sam.v1.ServiceAnnounce.LabelsEntry
+	nil,                                // 43: sam.v1.PeerEvidenceResponse.LabelsEntry
+	(*timestamppb.Timestamp)(nil),      // 44: google.protobuf.Timestamp
 }
 var file_api_sam_proto_depIdxs = []int32{
 	2,  // 0: sam.v1.MeshEvent.type:type_name -> sam.v1.MeshEvent.Type
-	57, // 1: sam.v1.MeshEvent.event_time:type_name -> google.protobuf.Timestamp
-	52, // 2: sam.v1.EnrollRequest.labels:type_name -> sam.v1.EnrollRequest.LabelsEntry
-	57, // 3: sam.v1.EnrollResponse.expire_time:type_name -> google.protobuf.Timestamp
-	53, // 4: sam.v1.BootstrapEnrollRequest.labels:type_name -> sam.v1.BootstrapEnrollRequest.LabelsEntry
+	44, // 1: sam.v1.MeshEvent.event_time:type_name -> google.protobuf.Timestamp
+	39, // 2: sam.v1.EnrollRequest.labels:type_name -> sam.v1.EnrollRequest.LabelsEntry
+	44, // 3: sam.v1.EnrollResponse.expire_time:type_name -> google.protobuf.Timestamp
+	40, // 4: sam.v1.BootstrapEnrollRequest.labels:type_name -> sam.v1.BootstrapEnrollRequest.LabelsEntry
 	0,  // 5: sam.v1.BootstrapEnrollResponse.status:type_name -> sam.v1.EnrollmentStatus
-	57, // 6: sam.v1.BootstrapEnrollResponse.expire_time:type_name -> google.protobuf.Timestamp
+	44, // 6: sam.v1.BootstrapEnrollResponse.expire_time:type_name -> google.protobuf.Timestamp
 	1,  // 7: sam.v1.ServiceInfo.type:type_name -> sam.v1.ServiceType
-	54, // 8: sam.v1.CommandBackend.env:type_name -> sam.v1.CommandBackend.EnvEntry
+	41, // 8: sam.v1.CommandBackend.env:type_name -> sam.v1.CommandBackend.EnvEntry
 	10, // 9: sam.v1.RegisterServiceRequest.service:type_name -> sam.v1.ServiceInfo
 	11, // 10: sam.v1.RegisterServiceRequest.command:type_name -> sam.v1.CommandBackend
 	1,  // 11: sam.v1.ServiceAnnounce.type:type_name -> sam.v1.ServiceType
-	55, // 12: sam.v1.ServiceAnnounce.labels:type_name -> sam.v1.ServiceAnnounce.LabelsEntry
-	57, // 13: sam.v1.ServiceAnnounce.announce_time:type_name -> google.protobuf.Timestamp
-	57, // 14: sam.v1.RouterLeaseResponse.expire_time:type_name -> google.protobuf.Timestamp
+	42, // 12: sam.v1.ServiceAnnounce.labels:type_name -> sam.v1.ServiceAnnounce.LabelsEntry
+	44, // 13: sam.v1.ServiceAnnounce.announce_time:type_name -> google.protobuf.Timestamp
+	44, // 14: sam.v1.RouterLeaseResponse.expire_time:type_name -> google.protobuf.Timestamp
 	19, // 15: sam.v1.PolicyRole.http:type_name -> sam.v1.HTTPGrant
 	18, // 16: sam.v1.PolicyConfig.roles:type_name -> sam.v1.PolicyRole
 	21, // 17: sam.v1.PolicyConfig.bindings:type_name -> sam.v1.PolicyBinding
 	20, // 18: sam.v1.PolicyConfig.egress:type_name -> sam.v1.EgressDestination
 	20, // 19: sam.v1.EgressAssignmentsResponse.egress:type_name -> sam.v1.EgressDestination
-	57, // 20: sam.v1.KeysResponse.sign_time:type_name -> google.protobuf.Timestamp
-	57, // 21: sam.v1.TokenRefreshResponse.expire_time:type_name -> google.protobuf.Timestamp
+	44, // 20: sam.v1.KeysResponse.sign_time:type_name -> google.protobuf.Timestamp
+	44, // 21: sam.v1.TokenRefreshResponse.expire_time:type_name -> google.protobuf.Timestamp
 	10, // 22: sam.v1.NodeCatalogReport.services:type_name -> sam.v1.ServiceInfo
-	34, // 23: sam.v1.AgentEgress.secrets:type_name -> sam.v1.AgentSecret
-	1,  // 24: sam.v1.AgentIngress.type:type_name -> sam.v1.ServiceType
-	35, // 25: sam.v1.AgentBundle.egress:type_name -> sam.v1.AgentEgress
-	36, // 26: sam.v1.AgentBundle.ingress:type_name -> sam.v1.AgentIngress
-	37, // 27: sam.v1.AgentAttachRequest.bundle:type_name -> sam.v1.AgentBundle
-	57, // 28: sam.v1.AgentRefreshResponse.expire_time:type_name -> google.protobuf.Timestamp
-	36, // 29: sam.v1.AgentStatus.ingress:type_name -> sam.v1.AgentIngress
-	57, // 30: sam.v1.AgentStatus.credential_expire_time:type_name -> google.protobuf.Timestamp
-	45, // 31: sam.v1.AgentStatusResponse.agents:type_name -> sam.v1.AgentStatus
-	57, // 32: sam.v1.IdentityEvidenceResponse.biscuit_expire_time:type_name -> google.protobuf.Timestamp
-	57, // 33: sam.v1.IdentityEvidenceResponse.check_time:type_name -> google.protobuf.Timestamp
-	56, // 34: sam.v1.PeerEvidenceResponse.labels:type_name -> sam.v1.PeerEvidenceResponse.LabelsEntry
-	57, // 35: sam.v1.PeerEvidenceResponse.expire_time:type_name -> google.protobuf.Timestamp
-	57, // 36: sam.v1.PeerEvidenceResponse.check_time:type_name -> google.protobuf.Timestamp
-	57, // 37: sam.v1.MemberCredential.expire_time:type_name -> google.protobuf.Timestamp
-	50, // 38: sam.v1.MemberCredential.trusted_keys:type_name -> sam.v1.TrustedSigningKey
-	51, // 39: sam.v1.MemberCredential.oidc_session:type_name -> sam.v1.OIDCSession
-	57, // 40: sam.v1.TrustedSigningKey.receive_time:type_name -> google.protobuf.Timestamp
-	41, // [41:41] is the sub-list for method output_type
-	41, // [41:41] is the sub-list for method input_type
-	41, // [41:41] is the sub-list for extension type_name
-	41, // [41:41] is the sub-list for extension extendee
-	0,  // [0:41] is the sub-list for field type_name
+	44, // 23: sam.v1.IdentityEvidenceResponse.biscuit_expire_time:type_name -> google.protobuf.Timestamp
+	44, // 24: sam.v1.IdentityEvidenceResponse.check_time:type_name -> google.protobuf.Timestamp
+	43, // 25: sam.v1.PeerEvidenceResponse.labels:type_name -> sam.v1.PeerEvidenceResponse.LabelsEntry
+	44, // 26: sam.v1.PeerEvidenceResponse.expire_time:type_name -> google.protobuf.Timestamp
+	44, // 27: sam.v1.PeerEvidenceResponse.check_time:type_name -> google.protobuf.Timestamp
+	44, // 28: sam.v1.MemberCredential.expire_time:type_name -> google.protobuf.Timestamp
+	37, // 29: sam.v1.MemberCredential.trusted_keys:type_name -> sam.v1.TrustedSigningKey
+	38, // 30: sam.v1.MemberCredential.oidc_session:type_name -> sam.v1.OIDCSession
+	44, // 31: sam.v1.TrustedSigningKey.receive_time:type_name -> google.protobuf.Timestamp
+	32, // [32:32] is the sub-list for method output_type
+	32, // [32:32] is the sub-list for method input_type
+	32, // [32:32] is the sub-list for extension type_name
+	32, // [32:32] is the sub-list for extension extendee
+	0,  // [0:32] is the sub-list for field type_name
 }
 
 func init() { file_api_sam_proto_init() }
@@ -3940,7 +3059,7 @@ func file_api_sam_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_sam_proto_rawDesc), len(file_api_sam_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   54,
+			NumMessages:   41,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

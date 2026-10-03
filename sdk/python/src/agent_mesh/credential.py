@@ -109,11 +109,11 @@ class MeshCredential:
         )
 
 
-def encode_auth_frame(biscuit: bytes, target_service: str = "", agent: str = "") -> bytes:
+def encode_auth_frame(biscuit: bytes, target_service: str = "") -> bytes:
     """The first frame on every mesh stream (/sam/auth/1.0.0, /sam/mcp/1.0.0):
-    the caller's biscuit, the service it wants and the agent it speaks for.
+    the caller's biscuit and the service it wants.
     Framing (varint length prefix) is the transport's job."""
-    return pb.AuthFrame(biscuit=biscuit, target_service=target_service, agent=agent).SerializeToString()
+    return pb.AuthFrame(biscuit=biscuit, target_service=target_service).SerializeToString()
 
 
 def decode_auth_response(data: bytes) -> pb.AuthResponse:

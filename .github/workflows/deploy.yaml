@@ -119,50 +119,6 @@ jobs:
         tags: ${{ steps.meta-node.outputs.tags }}
         labels: ${{ steps.meta-node.outputs.labels }}
 
-    - name: Extract metadata for nano-init
-      id: meta-nano-init
-      uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-      with:
-        images: ${{ env.REGISTRY }}/google/sam-nano-init
-        tags: |
-          type=ref,event=branch
-          type=ref,event=tag
-          type=raw,value=${{ github.sha }}
-          type=raw,value=latest,enable={{is_default_branch}}
-          type=raw,value=stable,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-
-    - name: Build and push nano-init image
-      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-      with:
-        context: .
-        file: Dockerfile.nano-init
-        platforms: ${{ github.ref_type == 'tag' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
-        push: true
-        tags: ${{ steps.meta-nano-init.outputs.tags }}
-        labels: ${{ steps.meta-nano-init.outputs.labels }}
-
-    - name: Extract metadata for sam-box
-      id: meta-sambox
-      uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-      with:
-        images: ${{ env.REGISTRY }}/google/sam-box
-        tags: |
-          type=ref,event=branch
-          type=ref,event=tag
-          type=raw,value=${{ github.sha }}
-          type=raw,value=latest,enable={{is_default_branch}}
-          type=raw,value=stable,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-
-    - name: Build and push sam-box image
-      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-      with:
-        context: .
-        file: Dockerfile.sam-box
-        platforms: ${{ github.ref_type == 'tag' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
-        push: true
-        tags: ${{ steps.meta-sambox.outputs.tags }}
-        labels: ${{ steps.meta-sambox.outputs.labels }}
-
     - name: Extract metadata for sam-console
       id: meta-console
       uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
@@ -486,13 +442,12 @@ jobs:
             -d '{
               "roles": [
                 {"name": "sam-canary", "allowed_services": ["*"], "allowed_targets": ["*"]},
-                {"name": "sam:role:sambox", "allowed_services": ["*"], "allowed_targets": ["*"]},
                 {"name": "sam:role:router", "allowed_services": ["*"], "allowed_targets": ["*"]},
                 {"name": "sam:role:node"},
                 {"name": "public-mesh", "allowed_services": ["*"], "allowed_targets": ["*"]}
               ],
               "bindings": [
-                {"role": "sam-canary", "members": ["user:system:serviceaccount:sam-canary-'"${ENV_NAME}"':sam-node-sa", "user:system:serviceaccount:sam-canary-'"${ENV_NAME}"':sam-box-sa"]},
+                {"role": "sam-canary", "members": ["user:system:serviceaccount:sam-canary-'"${ENV_NAME}"':sam-node-sa"]},
                 {"role": "sam:role:router", "members": ["group:routers", "user:system:serviceaccount:'"${NAMESPACE}"':sam-router-sa"]},
                 {"role": "sam:role:node", "members": ["sam:system:authenticated"]},
                 {"role": "public-mesh", "members": ["sam:system:authenticated"]}
@@ -619,46 +574,6 @@ jobs:
             --external-addr=/ip4/${EXTERNAL_IP}/tcp/4501 \
             --external-addr=/ip4/${EXTERNAL_IP}/udp/4501/quic-v1 \
             --dht-provider-addr-ttl='"${DHT_PROVIDER_ADDR_TTL}"''
-
-      - name: Deploy SAM Box Canary
-        env:
-          VAR_ENV_NAME: ${{ vars.ENV_NAME }}
-          VAR_IMAGE_TAG: ${{ env.IMAGE_TAG }}
-        run: |
-          print_rollout_diagnostics() {
-            local namespace="$1"
-            local deployment="$2"
-            local selector="$3"
-
-            echo "Collecting diagnostics for deployment/${deployment} in namespace ${namespace}..."
-
-            kubectl describe deployment/${deployment} -n ${namespace} || true
-            kubectl get pods -n ${namespace} -l "${selector}" -o wide || true
-            kubectl describe pods -n ${namespace} -l "${selector}" || true
-            kubectl get events -n ${namespace} --sort-by=.lastTimestamp || true
-
-            for pod in $(kubectl get pods -n ${namespace} -l "${selector}" -o name 2>/dev/null); do
-              echo "==== Describe ${pod} ===="
-              kubectl describe -n ${namespace} "${pod}" || true
-
-              for container in $(kubectl get -n ${namespace} "${pod}" -o jsonpath='{.spec.containers[*].name}' 2>/dev/null); do
-                echo "==== Logs for ${pod} container ${container} ===="
-                kubectl logs -n ${namespace} "${pod#pod/}" -c "${container}" --tail=-1 || true
-              done
-            done
-          }
-
-          export ENV_NAME="${VAR_ENV_NAME}"
-          export CANARY_NAMESPACE="sam-canary-${ENV_NAME}"
-          export NAMESPACE="sam-${ENV_NAME}"
-          export IMAGE_TAG="${VAR_IMAGE_TAG}"
-
-          envsubst '${ENV_NAME} ${NAMESPACE} ${IMAGE_TAG}' < .github/k8s/sam-box-canary-template.yaml | kubectl apply -f -
-          kubectl rollout status deployment/box-canary-${ENV_NAME} -n ${CANARY_NAMESPACE} --timeout=120s || {
-            echo "sam-box Canary Deployment failed!"
-            print_rollout_diagnostics "${CANARY_NAMESPACE}" "box-canary-${ENV_NAME}" "app=box-canary-${ENV_NAME}"
-            exit 1
-          }
 
       - name: Deploy OpenClaw Canary
         env:

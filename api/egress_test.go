@@ -74,19 +74,6 @@ func TestValidateEgressServicePattern(t *testing.T) {
 	}
 }
 
-func TestEgressHasNoMeshHost(t *testing.T) {
-	if _, err := ParseMeshHost("api.github.com.egress.sam.alt"); err == nil || !strings.Contains(err.Error(), "egress") {
-		t.Errorf("ParseMeshHost accepted an egress projection: %v", err)
-	}
-	if _, err := MeshHost(ServiceType_SERVICE_TYPE_EGRESS, "api.github.com"); err == nil {
-		t.Error("MeshHost rendered an egress destination")
-	}
-	// The other types are unaffected.
-	if uri, err := ParseMeshHost("tools.mcp.sam.alt"); err != nil || uri != "mcp://tools" {
-		t.Errorf("ParseMeshHost(tools.mcp.sam.alt) = %q, %v", uri, err)
-	}
-}
-
 func TestValidateEgressDestination(t *testing.T) {
 	roles := map[string]bool{"pep": true}
 	tests := []struct {

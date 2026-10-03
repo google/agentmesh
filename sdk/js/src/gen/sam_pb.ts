@@ -26,7 +26,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file sam.proto.
  */
 export const file_sam: GenFile = /*@__PURE__*/
-  fileDesc("CglzYW0ucHJvdG8SBnNhbS52MSJDCglBdXRoRnJhbWUSDwoHYmlzY3VpdBgBIAEoDBIWCg50YXJnZXRfc2VydmljZRgCIAEoCRINCgVhZ2VudBgDIAEoCSI/CgxBdXRoUmVzcG9uc2USDwoHc3VjY2VzcxgBIAEoCBINCgVlcnJvchgCIAEoCRIPCgdiaXNjdWl0GAMgASgMItYBCglNZXNoRXZlbnQSJAoEdHlwZRgBIAEoDjIWLnNhbS52MS5NZXNoRXZlbnQuVHlwZRIPCgdwZWVyX2lkGAIgASgJEi4KCmV2ZW50X3RpbWUYAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhYKDm5ld19wdWJsaWNfa2V5GAQgASgMEhEKCXNpZ25hdHVyZRgFIAEoDCI3CgRUeXBlEgoKBkJBTk5FRBAAEhAKDEtFWV9ST1RBVElPThABEhEKDVBPTElDWV9VUERBVEUQAiLzAQoNRW5yb2xsUmVxdWVzdBILCgNqd3QYASABKAkSDwoHcGVlcl9pZBgCIAEoCRISCgpwdWJsaWNfa2V5GAMgASgMEhYKDnJlcXVlc3RlZF9yb2xlGAQgASgJEjEKBmxhYmVscxgFIAMoCzIhLnNhbS52MS5FbnJvbGxSZXF1ZXN0LkxhYmVsc0VudHJ5EhkKEWNoYWxsZW5nZV91bml4X21zGAYgASgDEhsKE2NoYWxsZW5nZV9zaWduYXR1cmUYByABKAwaLQoLTGFiZWxzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ASKrAQoORW5yb2xsUmVzcG9uc2USFQoNYmlzY3VpdF90b2tlbhgBIAEoDBIVCg1lcnJvcl9tZXNzYWdlGAIgASgJEiAKGGNvbnRyb2xfcGxhbmVfcHVibGljX2tleRgDIAEoDBIYChByb3V0ZXJfYWRkcmVzc2VzGAQgAygJEi8KC2V4cGlyZV90aW1lGAUgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCKRAgoWQm9vdHN0cmFwRW5yb2xsUmVxdWVzdBIXCg9ib290c3RyYXBfdG9rZW4YASABKAkSDwoHcGVlcl9pZBgCIAEoCRISCgpwdWJsaWNfa2V5GAMgASgMEhYKDnJlcXVlc3RlZF9yb2xlGAQgASgJEjoKBmxhYmVscxgFIAMoCzIqLnNhbS52MS5Cb290c3RyYXBFbnJvbGxSZXF1ZXN0LkxhYmVsc0VudHJ5EhkKEWNoYWxsZW5nZV91bml4X21zGAYgASgDEhsKE2NoYWxsZW5nZV9zaWduYXR1cmUYByABKAwaLQoLTGFiZWxzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ASL9AQoXQm9vdHN0cmFwRW5yb2xsUmVzcG9uc2USKAoGc3RhdHVzGAEgASgOMhguc2FtLnYxLkVucm9sbG1lbnRTdGF0dXMSFQoNYmlzY3VpdF90b2tlbhgCIAEoDBIdChVwb2xsX2ludGVydmFsX3NlY29uZHMYAyABKAUSFQoNZXJyb3JfbWVzc2FnZRgEIAEoCRIgChhjb250cm9sX3BsYW5lX3B1YmxpY19rZXkYBSABKAwSGAoQcm91dGVyX2FkZHJlc3NlcxgGIAMoCRIvCgtleHBpcmVfdGltZRgHIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAiUwoLU2VydmljZUluZm8SIQoEdHlwZRgBIAEoDjITLnNhbS52MS5TZXJ2aWNlVHlwZRIMCgRuYW1lGAIgASgJEhMKC2Rlc2NyaXB0aW9uGAMgASgJInsKDkNvbW1hbmRCYWNrZW5kEg8KB2NvbW1hbmQYASADKAkSLAoDZW52GAIgAygLMh8uc2FtLnYxLkNvbW1hbmRCYWNrZW5kLkVudkVudHJ5GioKCEVudkVudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEiigEKFlJlZ2lzdGVyU2VydmljZVJlcXVlc3QSJAoHc2VydmljZRgBIAEoCzITLnNhbS52MS5TZXJ2aWNlSW5mbxIUCgp0YXJnZXRfdXJsGAIgASgJSAASKQoHY29tbWFuZBgDIAEoCzIWLnNhbS52MS5Db21tYW5kQmFja2VuZEgAQgkKB2JhY2tlbmQiaQoSRGlzY292ZXJlZFByb3ZpZGVyEg8KB3BlZXJfaWQYASABKAkSFwoPbG9jYWxfcHJveHlfdXJsGAIgASgJEhAKCHNydl9uYW1lGAMgASgJEhcKD3Nydl9kZXNjcmlwdGlvbhgEIAEoCSKyAgoPU2VydmljZUFubm91bmNlEg8KB3BlZXJfaWQYASABKAkSIQoEdHlwZRgCIAEoDjITLnNhbS52MS5TZXJ2aWNlVHlwZRIUCgxzZXJ2aWNlX25hbWUYAyABKAkSDAoEa2V5cxgEIAMoCRIzCgZsYWJlbHMYBSADKAsyIy5zYW0udjEuU2VydmljZUFubm91bmNlLkxhYmVsc0VudHJ5EhcKD2FjdGl2ZV9yZXF1ZXN0cxgGIAEoDRIXCg9sYXRlbmN5X2V3bWFfbXMYByABKAESMQoNYW5ub3VuY2VfdGltZRgIIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAaLQoLTGFiZWxzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ASKHAQoYQ29udHJvbFBsYW5lSW5mb1Jlc3BvbnNlEhMKC29pZGNfaXNzdWVyGAEgASgJEhEKCWNsaWVudF9pZBgCIAEoCRIQCghhdWRpZW5jZRgDIAEoCRIYChByb3V0ZXJfYWRkcmVzc2VzGAQgAygJEhcKD2Jhbm5lZF9wZWVyX2lkcxgFIAMoCSKsAQoSUm91dGVyTGVhc2VSZXF1ZXN0Eg8KB3BlZXJfaWQYASABKAkSEQoJYWRkcmVzc2VzGAIgAygJEg8KB2Jpc2N1aXQYAyABKAwSFwoPY29ubmVjdGVkX3BlZXJzGAQgAygJEhAKCGRodF9zaXplGAUgASgFEhkKEWNoYWxsZW5nZV91bml4X21zGAYgASgDEhsKE2NoYWxsZW5nZV9zaWduYXR1cmUYByABKAwiZgoTUm91dGVyTGVhc2VSZXNwb25zZRIPCgdzdWNjZXNzGAEgASgIEg0KBWVycm9yGAIgASgJEi8KC2V4cGlyZV90aW1lGAMgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCK2AQoKUG9saWN5Um9sZRIMCgRuYW1lGAEgASgJEhcKD2FsbG93ZWRfdGFyZ2V0cxgCIAMoCRIYChBhbGxvd2VkX3NlcnZpY2VzGAMgAygJEhYKDmN1c3RvbV9kYXRhbG9nGAQgAygJEhYKDmFsbG93ZWRfYWdlbnRzGAUgAygJEhYKDmFsbG93ZWRfbGFiZWxzGAYgAygJEh8KBGh0dHAYByADKAsyES5zYW0udjEuSFRUUEdyYW50IjwKCUhUVFBHcmFudBIPCgdzZXJ2aWNlGAEgASgJEg8KB21ldGhvZHMYAiADKAkSDQoFcGF0aHMYAyADKAkiXAoRRWdyZXNzRGVzdGluYXRpb24SDAoEbmFtZRgBIAEoCRISCgp0YXJnZXRfdXJsGAIgASgJEhIKCmNyZWRlbnRpYWwYAyABKAkSEQoJc2VydmVkX2J5GAQgAygJIi4KDVBvbGljeUJpbmRpbmcSDAoEcm9sZRgBIAEoCRIPCgdtZW1iZXJzGAIgAygJIoUBCgxQb2xpY3lDb25maWcSIQoFcm9sZXMYASADKAsyEi5zYW0udjEuUG9saWN5Um9sZRInCghiaW5kaW5ncxgCIAMoCzIVLnNhbS52MS5Qb2xpY3lCaW5kaW5nEikKBmVncmVzcxgDIAMoCzIZLnNhbS52MS5FZ3Jlc3NEZXN0aW5hdGlvbiIYChZQb2xpY3lDb25maWdHZXRSZXF1ZXN0Ik0KF1BvbGljeUNvbmZpZ0dldFJlc3BvbnNlEhUKDWRhdGFsb2dfcnVsZXMYAyADKAlKBAgBEAJKBAgCEANSBXJvbGVzUghiaW5kaW5ncyI8ChpQb2xpY3lDb25maWdVcGRhdGVSZXNwb25zZRIPCgdzdWNjZXNzGAEgASgIEg0KBWVycm9yGAIgASgJIhoKGEVncmVzc0Fzc2lnbm1lbnRzUmVxdWVzdCJGChlFZ3Jlc3NBc3NpZ25tZW50c1Jlc3BvbnNlEikKBmVncmVzcxgBIAMoCzIZLnNhbS52MS5FZ3Jlc3NEZXN0aW5hdGlvbiJmCgxLZXlzUmVzcG9uc2USEwoLcHVibGljX2tleXMYASADKAwSLQoJc2lnbl90aW1lGAIgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBISCgpzaWduYXR1cmVzGAMgAygMIl4KE1Rva2VuUmVmcmVzaFJlcXVlc3QSGwoTY2hhbGxlbmdlX3NpZ25hdHVyZRgBIAEoDBIZChFjaGFsbGVuZ2VfdW5peF9tcxgCIAEoAxIPCgdwZWVyX2lkGAMgASgJInUKFFRva2VuUmVmcmVzaFJlc3BvbnNlEhUKDWJpc2N1aXRfdG9rZW4YASABKAwSLwoLZXhwaXJlX3RpbWUYAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhUKDWVycm9yX21lc3NhZ2UYAyABKAkiOgoRTm9kZUNhdGFsb2dSZXBvcnQSJQoIc2VydmljZXMYASADKAsyEy5zYW0udjEuU2VydmljZUluZm8iJQoSVG9rZW5SZXZva2VSZXF1ZXN0Eg8KB3BlZXJfaWQYASABKAkiNQoTVG9rZW5SZXZva2VSZXNwb25zZRIPCgdzdWNjZXNzGAEgASgIEg0KBWVycm9yGAIgASgJIlIKC0FnZW50U2VjcmV0EgwKBGhvc3QYASABKAkSDAoEa2luZBgCIAEoCRITCgtoZWFkZXJfbmFtZRgDIAEoCRISCgp2YWx1ZV9wYXRoGAQgASgJIkIKC0FnZW50RWdyZXNzEg0KBWFsbG93GAEgAygJEiQKB3NlY3JldHMYAiADKAsyEy5zYW0udjEuQWdlbnRTZWNyZXQiYgoMQWdlbnRJbmdyZXNzEiEKBHR5cGUYASABKA4yEy5zYW0udjEuU2VydmljZVR5cGUSDAoEbmFtZRgCIAEoCRIMCgRwb3J0GAMgASgNEhMKC2Rlc2NyaXB0aW9uGAQgASgJIqoBCgtBZ2VudEJ1bmRsZRIPCgd2ZXJzaW9uGAEgASgJEhAKCGFnZW50X2lkGAIgASgJEhMKC2V4dGVybmFsX2lkGAMgASgJEhcKD2NyZWRlbnRpYWxfcGF0aBgEIAEoCRIjCgZlZ3Jlc3MYBSABKAsyEy5zYW0udjEuQWdlbnRFZ3Jlc3MSJQoHaW5ncmVzcxgGIAMoCzIULnNhbS52MS5BZ2VudEluZ3Jlc3MiOQoSQWdlbnRBdHRhY2hSZXF1ZXN0EiMKBmJ1bmRsZRgBIAEoCzITLnNhbS52MS5BZ2VudEJ1bmRsZSJTChNBZ2VudEF0dGFjaFJlc3BvbnNlEhUKDWVncmVzc19zb2NrZXQYASABKAkSFgoOaW5ncmVzc19zb2NrZXQYAiABKAkSDQoFZXJyb3IYAyABKAkiJgoSQWdlbnREZXRhY2hSZXF1ZXN0EhAKCGFnZW50X2lkGAEgASgJIjUKE0FnZW50RGV0YWNoUmVzcG9uc2USDwoHc3VjY2VzcxgBIAEoCBINCgVlcnJvchgCIAEoCSJAChNBZ2VudFJlZnJlc2hSZXF1ZXN0EhAKCGFnZW50X2lkGAEgASgJEhcKD2NyZWRlbnRpYWxfcGF0aBgCIAEoCSJnChRBZ2VudFJlZnJlc2hSZXNwb25zZRIPCgdzdWNjZXNzGAEgASgIEg0KBWVycm9yGAIgASgJEi8KC2V4cGlyZV90aW1lGAMgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCImChJBZ2VudFN0YXR1c1JlcXVlc3QSEAoIYWdlbnRfaWQYASABKAkilAEKC0FnZW50U3RhdHVzEhAKCGFnZW50X2lkGAEgASgJEhAKCGF0dGFjaGVkGAIgASgIEiUKB2luZ3Jlc3MYAyADKAsyFC5zYW0udjEuQWdlbnRJbmdyZXNzEjoKFmNyZWRlbnRpYWxfZXhwaXJlX3RpbWUYBCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wIkkKE0FnZW50U3RhdHVzUmVzcG9uc2USIwoGYWdlbnRzGAEgAygLMhMuc2FtLnYxLkFnZW50U3RhdHVzEg0KBWVycm9yGAIgASgJIuQBChhJZGVudGl0eUV2aWRlbmNlUmVzcG9uc2USDwoHcGVlcl9pZBgBIAEoCRIPCgdiaXNjdWl0GAIgASgMEjcKE2Jpc2N1aXRfZXhwaXJlX3RpbWUYAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhkKEWNvbnRyb2xfcGxhbmVfdXJsGAQgASgJEiIKGnRydXN0ZWRfY29udHJvbF9wbGFuZV9rZXlzGAUgAygMEi4KCmNoZWNrX3RpbWUYBiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wIsACChRQZWVyRXZpZGVuY2VSZXNwb25zZRIPCgdwZWVyX2lkGAEgASgJEg8KB2Jpc2N1aXQYAiABKAwSFQoNdmVyaWZ5aW5nX2tleRgDIAEoDBINCgVyb2xlcxgEIAMoCRI4CgZsYWJlbHMYBSADKAsyKC5zYW0udjEuUGVlckV2aWRlbmNlUmVzcG9uc2UuTGFiZWxzRW50cnkSLwoLZXhwaXJlX3RpbWUYBiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhYKDnJldm9jYXRpb25faWRzGAcgAygJEi4KCmNoZWNrX3RpbWUYCCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wGi0KC0xhYmVsc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEigAIKEE1lbWJlckNyZWRlbnRpYWwSGQoRY29udHJvbF9wbGFuZV91cmwYASABKAkSDwoHYmlzY3VpdBgCIAEoDBIvCgtleHBpcmVfdGltZRgDIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLwoMdHJ1c3RlZF9rZXlzGAQgAygLMhkuc2FtLnYxLlRydXN0ZWRTaWduaW5nS2V5EhkKEWlzc3VlZF91bmRlcl9rZXlzGAUgAygMEhgKEHJvdXRlcl9hZGRyZXNzZXMYBiADKAkSKQoMb2lkY19zZXNzaW9uGAcgASgLMhMuc2FtLnYxLk9JRENTZXNzaW9uIlkKEVRydXN0ZWRTaWduaW5nS2V5EhIKCnB1YmxpY19rZXkYASABKAwSMAoMcmVjZWl2ZV90aW1lGAIgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCJZCgtPSURDU2Vzc2lvbhIOCgZpc3N1ZXIYASABKAkSEQoJY2xpZW50X2lkGAIgASgJEhAKCGF1ZGllbmNlGAMgASgJEhUKDXJlZnJlc2hfdG9rZW4YBCABKAkqlAEKEEVucm9sbG1lbnRTdGF0dXMSIQodRU5ST0xMTUVOVF9TVEFUVVNfVU5TUEVDSUZJRUQQABIdChlFTlJPTExNRU5UX1NUQVRVU19QRU5ESU5HEAESHgoaRU5ST0xMTUVOVF9TVEFUVVNfQVBQUk9WRUQQAhIeChpFTlJPTExNRU5UX1NUQVRVU19SRUpFQ1RFRBADKowBCgtTZXJ2aWNlVHlwZRIcChhTRVJWSUNFX1RZUEVfVU5TUEVDSUZJRUQQABIUChBTRVJWSUNFX1RZUEVfTUNQEAESGgoWU0VSVklDRV9UWVBFX0lORkVSRU5DRRACEhQKEFNFUlZJQ0VfVFlQRV9BMkEQAxIXChNTRVJWSUNFX1RZUEVfRUdSRVNTEARCG1oZZ2l0aHViLmNvbS9nb29nbGUvc2FtL2FwaWIGcHJvdG8z", [file_google_protobuf_timestamp]);
+  fileDesc("CglzYW0ucHJvdG8SBnNhbS52MSI0CglBdXRoRnJhbWUSDwoHYmlzY3VpdBgBIAEoDBIWCg50YXJnZXRfc2VydmljZRgCIAEoCSI/CgxBdXRoUmVzcG9uc2USDwoHc3VjY2VzcxgBIAEoCBINCgVlcnJvchgCIAEoCRIPCgdiaXNjdWl0GAMgASgMItYBCglNZXNoRXZlbnQSJAoEdHlwZRgBIAEoDjIWLnNhbS52MS5NZXNoRXZlbnQuVHlwZRIPCgdwZWVyX2lkGAIgASgJEi4KCmV2ZW50X3RpbWUYAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhYKDm5ld19wdWJsaWNfa2V5GAQgASgMEhEKCXNpZ25hdHVyZRgFIAEoDCI3CgRUeXBlEgoKBkJBTk5FRBAAEhAKDEtFWV9ST1RBVElPThABEhEKDVBPTElDWV9VUERBVEUQAiLzAQoNRW5yb2xsUmVxdWVzdBILCgNqd3QYASABKAkSDwoHcGVlcl9pZBgCIAEoCRISCgpwdWJsaWNfa2V5GAMgASgMEhYKDnJlcXVlc3RlZF9yb2xlGAQgASgJEjEKBmxhYmVscxgFIAMoCzIhLnNhbS52MS5FbnJvbGxSZXF1ZXN0LkxhYmVsc0VudHJ5EhkKEWNoYWxsZW5nZV91bml4X21zGAYgASgDEhsKE2NoYWxsZW5nZV9zaWduYXR1cmUYByABKAwaLQoLTGFiZWxzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ASKrAQoORW5yb2xsUmVzcG9uc2USFQoNYmlzY3VpdF90b2tlbhgBIAEoDBIVCg1lcnJvcl9tZXNzYWdlGAIgASgJEiAKGGNvbnRyb2xfcGxhbmVfcHVibGljX2tleRgDIAEoDBIYChByb3V0ZXJfYWRkcmVzc2VzGAQgAygJEi8KC2V4cGlyZV90aW1lGAUgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCKRAgoWQm9vdHN0cmFwRW5yb2xsUmVxdWVzdBIXCg9ib290c3RyYXBfdG9rZW4YASABKAkSDwoHcGVlcl9pZBgCIAEoCRISCgpwdWJsaWNfa2V5GAMgASgMEhYKDnJlcXVlc3RlZF9yb2xlGAQgASgJEjoKBmxhYmVscxgFIAMoCzIqLnNhbS52MS5Cb290c3RyYXBFbnJvbGxSZXF1ZXN0LkxhYmVsc0VudHJ5EhkKEWNoYWxsZW5nZV91bml4X21zGAYgASgDEhsKE2NoYWxsZW5nZV9zaWduYXR1cmUYByABKAwaLQoLTGFiZWxzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ASL9AQoXQm9vdHN0cmFwRW5yb2xsUmVzcG9uc2USKAoGc3RhdHVzGAEgASgOMhguc2FtLnYxLkVucm9sbG1lbnRTdGF0dXMSFQoNYmlzY3VpdF90b2tlbhgCIAEoDBIdChVwb2xsX2ludGVydmFsX3NlY29uZHMYAyABKAUSFQoNZXJyb3JfbWVzc2FnZRgEIAEoCRIgChhjb250cm9sX3BsYW5lX3B1YmxpY19rZXkYBSABKAwSGAoQcm91dGVyX2FkZHJlc3NlcxgGIAMoCRIvCgtleHBpcmVfdGltZRgHIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAiUwoLU2VydmljZUluZm8SIQoEdHlwZRgBIAEoDjITLnNhbS52MS5TZXJ2aWNlVHlwZRIMCgRuYW1lGAIgASgJEhMKC2Rlc2NyaXB0aW9uGAMgASgJInsKDkNvbW1hbmRCYWNrZW5kEg8KB2NvbW1hbmQYASADKAkSLAoDZW52GAIgAygLMh8uc2FtLnYxLkNvbW1hbmRCYWNrZW5kLkVudkVudHJ5GioKCEVudkVudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEiigEKFlJlZ2lzdGVyU2VydmljZVJlcXVlc3QSJAoHc2VydmljZRgBIAEoCzITLnNhbS52MS5TZXJ2aWNlSW5mbxIUCgp0YXJnZXRfdXJsGAIgASgJSAASKQoHY29tbWFuZBgDIAEoCzIWLnNhbS52MS5Db21tYW5kQmFja2VuZEgAQgkKB2JhY2tlbmQiaQoSRGlzY292ZXJlZFByb3ZpZGVyEg8KB3BlZXJfaWQYASABKAkSFwoPbG9jYWxfcHJveHlfdXJsGAIgASgJEhAKCHNydl9uYW1lGAMgASgJEhcKD3Nydl9kZXNjcmlwdGlvbhgEIAEoCSKyAgoPU2VydmljZUFubm91bmNlEg8KB3BlZXJfaWQYASABKAkSIQoEdHlwZRgCIAEoDjITLnNhbS52MS5TZXJ2aWNlVHlwZRIUCgxzZXJ2aWNlX25hbWUYAyABKAkSDAoEa2V5cxgEIAMoCRIzCgZsYWJlbHMYBSADKAsyIy5zYW0udjEuU2VydmljZUFubm91bmNlLkxhYmVsc0VudHJ5EhcKD2FjdGl2ZV9yZXF1ZXN0cxgGIAEoDRIXCg9sYXRlbmN5X2V3bWFfbXMYByABKAESMQoNYW5ub3VuY2VfdGltZRgIIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAaLQoLTGFiZWxzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ASKHAQoYQ29udHJvbFBsYW5lSW5mb1Jlc3BvbnNlEhMKC29pZGNfaXNzdWVyGAEgASgJEhEKCWNsaWVudF9pZBgCIAEoCRIQCghhdWRpZW5jZRgDIAEoCRIYChByb3V0ZXJfYWRkcmVzc2VzGAQgAygJEhcKD2Jhbm5lZF9wZWVyX2lkcxgFIAMoCSKsAQoSUm91dGVyTGVhc2VSZXF1ZXN0Eg8KB3BlZXJfaWQYASABKAkSEQoJYWRkcmVzc2VzGAIgAygJEg8KB2Jpc2N1aXQYAyABKAwSFwoPY29ubmVjdGVkX3BlZXJzGAQgAygJEhAKCGRodF9zaXplGAUgASgFEhkKEWNoYWxsZW5nZV91bml4X21zGAYgASgDEhsKE2NoYWxsZW5nZV9zaWduYXR1cmUYByABKAwiZgoTUm91dGVyTGVhc2VSZXNwb25zZRIPCgdzdWNjZXNzGAEgASgIEg0KBWVycm9yGAIgASgJEi8KC2V4cGlyZV90aW1lGAMgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCKeAQoKUG9saWN5Um9sZRIMCgRuYW1lGAEgASgJEhcKD2FsbG93ZWRfdGFyZ2V0cxgCIAMoCRIYChBhbGxvd2VkX3NlcnZpY2VzGAMgAygJEhYKDmN1c3RvbV9kYXRhbG9nGAQgAygJEhYKDmFsbG93ZWRfbGFiZWxzGAUgAygJEh8KBGh0dHAYBiADKAsyES5zYW0udjEuSFRUUEdyYW50IjwKCUhUVFBHcmFudBIPCgdzZXJ2aWNlGAEgASgJEg8KB21ldGhvZHMYAiADKAkSDQoFcGF0aHMYAyADKAkiXAoRRWdyZXNzRGVzdGluYXRpb24SDAoEbmFtZRgBIAEoCRISCgp0YXJnZXRfdXJsGAIgASgJEhIKCmNyZWRlbnRpYWwYAyABKAkSEQoJc2VydmVkX2J5GAQgAygJIi4KDVBvbGljeUJpbmRpbmcSDAoEcm9sZRgBIAEoCRIPCgdtZW1iZXJzGAIgAygJIoUBCgxQb2xpY3lDb25maWcSIQoFcm9sZXMYASADKAsyEi5zYW0udjEuUG9saWN5Um9sZRInCghiaW5kaW5ncxgCIAMoCzIVLnNhbS52MS5Qb2xpY3lCaW5kaW5nEikKBmVncmVzcxgDIAMoCzIZLnNhbS52MS5FZ3Jlc3NEZXN0aW5hdGlvbiIYChZQb2xpY3lDb25maWdHZXRSZXF1ZXN0IjAKF1BvbGljeUNvbmZpZ0dldFJlc3BvbnNlEhUKDWRhdGFsb2dfcnVsZXMYASADKAkiPAoaUG9saWN5Q29uZmlnVXBkYXRlUmVzcG9uc2USDwoHc3VjY2VzcxgBIAEoCBINCgVlcnJvchgCIAEoCSIaChhFZ3Jlc3NBc3NpZ25tZW50c1JlcXVlc3QiRgoZRWdyZXNzQXNzaWdubWVudHNSZXNwb25zZRIpCgZlZ3Jlc3MYASADKAsyGS5zYW0udjEuRWdyZXNzRGVzdGluYXRpb24iZgoMS2V5c1Jlc3BvbnNlEhMKC3B1YmxpY19rZXlzGAEgAygMEi0KCXNpZ25fdGltZRgCIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASEgoKc2lnbmF0dXJlcxgDIAMoDCJeChNUb2tlblJlZnJlc2hSZXF1ZXN0EhsKE2NoYWxsZW5nZV9zaWduYXR1cmUYASABKAwSGQoRY2hhbGxlbmdlX3VuaXhfbXMYAiABKAMSDwoHcGVlcl9pZBgDIAEoCSJ1ChRUb2tlblJlZnJlc2hSZXNwb25zZRIVCg1iaXNjdWl0X3Rva2VuGAEgASgMEi8KC2V4cGlyZV90aW1lGAIgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIVCg1lcnJvcl9tZXNzYWdlGAMgASgJIjoKEU5vZGVDYXRhbG9nUmVwb3J0EiUKCHNlcnZpY2VzGAEgAygLMhMuc2FtLnYxLlNlcnZpY2VJbmZvIiUKElRva2VuUmV2b2tlUmVxdWVzdBIPCgdwZWVyX2lkGAEgASgJIjUKE1Rva2VuUmV2b2tlUmVzcG9uc2USDwoHc3VjY2VzcxgBIAEoCBINCgVlcnJvchgCIAEoCSLkAQoYSWRlbnRpdHlFdmlkZW5jZVJlc3BvbnNlEg8KB3BlZXJfaWQYASABKAkSDwoHYmlzY3VpdBgCIAEoDBI3ChNiaXNjdWl0X2V4cGlyZV90aW1lGAMgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIZChFjb250cm9sX3BsYW5lX3VybBgEIAEoCRIiChp0cnVzdGVkX2NvbnRyb2xfcGxhbmVfa2V5cxgFIAMoDBIuCgpjaGVja190aW1lGAYgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCLAAgoUUGVlckV2aWRlbmNlUmVzcG9uc2USDwoHcGVlcl9pZBgBIAEoCRIPCgdiaXNjdWl0GAIgASgMEhUKDXZlcmlmeWluZ19rZXkYAyABKAwSDQoFcm9sZXMYBCADKAkSOAoGbGFiZWxzGAUgAygLMiguc2FtLnYxLlBlZXJFdmlkZW5jZVJlc3BvbnNlLkxhYmVsc0VudHJ5Ei8KC2V4cGlyZV90aW1lGAYgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIWCg5yZXZvY2F0aW9uX2lkcxgHIAMoCRIuCgpjaGVja190aW1lGAggASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBotCgtMYWJlbHNFbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAk6AjgBIoACChBNZW1iZXJDcmVkZW50aWFsEhkKEWNvbnRyb2xfcGxhbmVfdXJsGAEgASgJEg8KB2Jpc2N1aXQYAiABKAwSLwoLZXhwaXJlX3RpbWUYAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEi8KDHRydXN0ZWRfa2V5cxgEIAMoCzIZLnNhbS52MS5UcnVzdGVkU2lnbmluZ0tleRIZChFpc3N1ZWRfdW5kZXJfa2V5cxgFIAMoDBIYChByb3V0ZXJfYWRkcmVzc2VzGAYgAygJEikKDG9pZGNfc2Vzc2lvbhgHIAEoCzITLnNhbS52MS5PSURDU2Vzc2lvbiJZChFUcnVzdGVkU2lnbmluZ0tleRISCgpwdWJsaWNfa2V5GAEgASgMEjAKDHJlY2VpdmVfdGltZRgCIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAiWQoLT0lEQ1Nlc3Npb24SDgoGaXNzdWVyGAEgASgJEhEKCWNsaWVudF9pZBgCIAEoCRIQCghhdWRpZW5jZRgDIAEoCRIVCg1yZWZyZXNoX3Rva2VuGAQgASgJKpQBChBFbnJvbGxtZW50U3RhdHVzEiEKHUVOUk9MTE1FTlRfU1RBVFVTX1VOU1BFQ0lGSUVEEAASHQoZRU5ST0xMTUVOVF9TVEFUVVNfUEVORElORxABEh4KGkVOUk9MTE1FTlRfU1RBVFVTX0FQUFJPVkVEEAISHgoaRU5ST0xMTUVOVF9TVEFUVVNfUkVKRUNURUQQAyqMAQoLU2VydmljZVR5cGUSHAoYU0VSVklDRV9UWVBFX1VOU1BFQ0lGSUVEEAASFAoQU0VSVklDRV9UWVBFX01DUBABEhoKFlNFUlZJQ0VfVFlQRV9JTkZFUkVOQ0UQAhIUChBTRVJWSUNFX1RZUEVfQTJBEAMSFwoTU0VSVklDRV9UWVBFX0VHUkVTUxAEQhtaGWdpdGh1Yi5jb20vZ29vZ2xlL3NhbS9hcGliBnByb3RvMw", [file_google_protobuf_timestamp]);
 
 /**
  * @generated from message sam.v1.AuthFrame
@@ -43,16 +43,6 @@ export type AuthFrame = Message<"sam.v1.AuthFrame"> & {
    * @generated from field: string target_service = 2;
    */
   targetService: string;
-
-  /**
-   * The agent this request is made for, as a canonical agent identifier (see
-   * api/agent.go). It is the calling node's claim, carried beside the token
-   * because Biscuit hides an appended block's facts from the authorizer; the
-   * HTTP datapath carries the same claim in HeaderSamAgent.
-   *
-   * @generated from field: string agent = 3;
-   */
-  agent: string;
 };
 
 /**
@@ -708,28 +698,18 @@ export type PolicyRole = Message<"sam.v1.PolicyRole"> & {
   customDatalog: string[];
 
   /**
-   * Agent namespaces the holder may speak for, e.g. "*.prod.acme.example".
-   * An agent claim is the calling node's word, so it is only worth what the
-   * control plane attested about that node. Distinct from allowed_targets:
-   * being allowed to call an agent is not being allowed to impersonate it.
-   *
-   * @generated from field: repeated string allowed_agents = 5;
-   */
-  allowedAgents: string[];
-
-  /**
    * Labels a node with this role may declare at enrollment, as "*", "key=*"
    * or "key=value". A node declares its own labels, so this is what turns a
    * declaration into something the control plane is willing to sign.
    *
-   * @generated from field: repeated string allowed_labels = 6;
+   * @generated from field: repeated string allowed_labels = 5;
    */
   allowedLabels: string[];
 
   /**
    * HTTP narrowing of allowed_services entries; see HTTPGrant.
    *
-   * @generated from field: repeated sam.v1.HTTPGrant http = 7;
+   * @generated from field: repeated sam.v1.HTTPGrant http = 6;
    */
   http: HTTPGrant[];
 };
@@ -914,7 +894,7 @@ export type PolicyConfigGetResponse = Message<"sam.v1.PolicyConfigGetResponse"> 
   /**
    * One rule per entry, rendered by the control plane with api.BuildPolicyRules.
    *
-   * @generated from field: repeated string datalog_rules = 3;
+   * @generated from field: repeated string datalog_rules = 1;
    */
   datalogRules: string[];
 };
@@ -1150,385 +1130,6 @@ export const TokenRevokeResponseSchema: GenMessage<TokenRevokeResponse> = /*@__P
   messageDesc(file_sam, 30);
 
 /**
- * AgentSecret configures credential injection for one destination. It carries
- * a path, never a value: secret material must not travel through this API.
- *
- * @generated from message sam.v1.AgentSecret
- */
-export type AgentSecret = Message<"sam.v1.AgentSecret"> & {
-  /**
-   * @generated from field: string host = 1;
-   */
-  host: string;
-
-  /**
-   * bearer | basicauth | customheader
-   *
-   * @generated from field: string kind = 2;
-   */
-  kind: string;
-
-  /**
-   * customheader only
-   *
-   * @generated from field: string header_name = 3;
-   */
-  headerName: string;
-
-  /**
-   * @generated from field: string value_path = 4;
-   */
-  valuePath: string;
-};
-
-/**
- * Describes the message sam.v1.AgentSecret.
- * Use `create(AgentSecretSchema)` to create a new message.
- */
-export const AgentSecretSchema: GenMessage<AgentSecret> = /*@__PURE__*/
-  messageDesc(file_sam, 31);
-
-/**
- * AgentEgress is deny-by-default. Patterns are matched against the destination
- * name taken from the sandbox boundary, never against a resolved address.
- *
- * @generated from message sam.v1.AgentEgress
- */
-export type AgentEgress = Message<"sam.v1.AgentEgress"> & {
-  /**
-   * @generated from field: repeated string allow = 1;
-   */
-  allow: string[];
-
-  /**
-   * @generated from field: repeated sam.v1.AgentSecret secrets = 2;
-   */
-  secrets: AgentSecret[];
-};
-
-/**
- * Describes the message sam.v1.AgentEgress.
- * Use `create(AgentEgressSchema)` to create a new message.
- */
-export const AgentEgressSchema: GenMessage<AgentEgress> = /*@__PURE__*/
-  messageDesc(file_sam, 32);
-
-/**
- * AgentIngress declares that the agent serves a mesh service. The name is the
- * service half of the mesh host the rest of the mesh dials (see api/names.go);
- * port is where the agent listens inside its sandbox.
- *
- * @generated from message sam.v1.AgentIngress
- */
-export type AgentIngress = Message<"sam.v1.AgentIngress"> & {
-  /**
-   * @generated from field: sam.v1.ServiceType type = 1;
-   */
-  type: ServiceType;
-
-  /**
-   * @generated from field: string name = 2;
-   */
-  name: string;
-
-  /**
-   * @generated from field: uint32 port = 3;
-   */
-  port: number;
-
-  /**
-   * @generated from field: string description = 4;
-   */
-  description: string;
-};
-
-/**
- * Describes the message sam.v1.AgentIngress.
- * Use `create(AgentIngressSchema)` to create a new message.
- */
-export const AgentIngressSchema: GenMessage<AgentIngress> = /*@__PURE__*/
-  messageDesc(file_sam, 33);
-
-/**
- * AgentBundle is everything the platform declares about one agent. Its
- * canonical form is a YAML file in the agent's own state directory, so that a
- * suspend/resume onto another host carries it with no extra machinery; this
- * message is the transport mirror of that file.
- *
- * @generated from message sam.v1.AgentBundle
- */
-export type AgentBundle = Message<"sam.v1.AgentBundle"> & {
-  /**
-   * @generated from field: string version = 1;
-   */
-  version: string;
-
-  /**
-   * Canonical mesh identifier, without the "agent:" prefix. Dot-separated and
-   * DNS-shaped; see api/agent.go for the rules and why they exist.
-   *
-   * @generated from field: string agent_id = 2;
-   */
-  agentId: string;
-
-  /**
-   * The platform's own identifier, verbatim, kept for audit because the
-   * translation into agent_id is not always reversible.
-   *
-   * @generated from field: string external_id = 3;
-   */
-  externalId: string;
-
-  /**
-   * Path to the workload credential the platform already issues: a projected
-   * Kubernetes service-account token, a pod certificate, or an SVID. It is
-   * verified at admission against the platform's issuer and then translated
-   * into agent facts, the same way OIDC claims are translated at node
-   * enrollment. The scheduler needs no mesh credential of its own.
-   *
-   * @generated from field: string credential_path = 4;
-   */
-  credentialPath: string;
-
-  /**
-   * @generated from field: sam.v1.AgentEgress egress = 5;
-   */
-  egress?: AgentEgress | undefined;
-
-  /**
-   * @generated from field: repeated sam.v1.AgentIngress ingress = 6;
-   */
-  ingress: AgentIngress[];
-};
-
-/**
- * Describes the message sam.v1.AgentBundle.
- * Use `create(AgentBundleSchema)` to create a new message.
- */
-export const AgentBundleSchema: GenMessage<AgentBundle> = /*@__PURE__*/
-  messageDesc(file_sam, 34);
-
-/**
- * AgentAttachRequest admits an agent. It is idempotent on agent_id: resuming
- * after a crash or a migration is another Attach, not a distinct operation.
- *
- * @generated from message sam.v1.AgentAttachRequest
- */
-export type AgentAttachRequest = Message<"sam.v1.AgentAttachRequest"> & {
-  /**
-   * @generated from field: sam.v1.AgentBundle bundle = 1;
-   */
-  bundle?: AgentBundle | undefined;
-};
-
-/**
- * Describes the message sam.v1.AgentAttachRequest.
- * Use `create(AgentAttachRequestSchema)` to create a new message.
- */
-export const AgentAttachRequestSchema: GenMessage<AgentAttachRequest> = /*@__PURE__*/
-  messageDesc(file_sam, 35);
-
-/**
- * @generated from message sam.v1.AgentAttachResponse
- */
-export type AgentAttachResponse = Message<"sam.v1.AgentAttachResponse"> & {
-  /**
-   * Sandbox boundary endpoints to wire into the sandbox: named HTTP tunnels
-   * (CONNECT, connect-udp) for guest to host, and a reverse channel for host
-   * to guest that is empty when the bundle declares no ingress.
-   *
-   * @generated from field: string egress_socket = 1;
-   */
-  egressSocket: string;
-
-  /**
-   * @generated from field: string ingress_socket = 2;
-   */
-  ingressSocket: string;
-
-  /**
-   * @generated from field: string error = 3;
-   */
-  error: string;
-};
-
-/**
- * Describes the message sam.v1.AgentAttachResponse.
- * Use `create(AgentAttachResponseSchema)` to create a new message.
- */
-export const AgentAttachResponseSchema: GenMessage<AgentAttachResponse> = /*@__PURE__*/
-  messageDesc(file_sam, 36);
-
-/**
- * AgentDetachRequest stops an agent: ingress is unregistered, channels are
- * closed and credentials dropped. It must leave no residual advertisement.
- *
- * @generated from message sam.v1.AgentDetachRequest
- */
-export type AgentDetachRequest = Message<"sam.v1.AgentDetachRequest"> & {
-  /**
-   * @generated from field: string agent_id = 1;
-   */
-  agentId: string;
-};
-
-/**
- * Describes the message sam.v1.AgentDetachRequest.
- * Use `create(AgentDetachRequestSchema)` to create a new message.
- */
-export const AgentDetachRequestSchema: GenMessage<AgentDetachRequest> = /*@__PURE__*/
-  messageDesc(file_sam, 37);
-
-/**
- * @generated from message sam.v1.AgentDetachResponse
- */
-export type AgentDetachResponse = Message<"sam.v1.AgentDetachResponse"> & {
-  /**
-   * @generated from field: bool success = 1;
-   */
-  success: boolean;
-
-  /**
-   * @generated from field: string error = 2;
-   */
-  error: string;
-};
-
-/**
- * Describes the message sam.v1.AgentDetachResponse.
- * Use `create(AgentDetachResponseSchema)` to create a new message.
- */
-export const AgentDetachResponseSchema: GenMessage<AgentDetachResponse> = /*@__PURE__*/
-  messageDesc(file_sam, 38);
-
-/**
- * AgentRefreshRequest hands in a rotated workload credential. Platforms rotate
- * these on their own schedule, which is what bounds how long a stale admission
- * stays usable.
- *
- * @generated from message sam.v1.AgentRefreshRequest
- */
-export type AgentRefreshRequest = Message<"sam.v1.AgentRefreshRequest"> & {
-  /**
-   * @generated from field: string agent_id = 1;
-   */
-  agentId: string;
-
-  /**
-   * @generated from field: string credential_path = 2;
-   */
-  credentialPath: string;
-};
-
-/**
- * Describes the message sam.v1.AgentRefreshRequest.
- * Use `create(AgentRefreshRequestSchema)` to create a new message.
- */
-export const AgentRefreshRequestSchema: GenMessage<AgentRefreshRequest> = /*@__PURE__*/
-  messageDesc(file_sam, 39);
-
-/**
- * @generated from message sam.v1.AgentRefreshResponse
- */
-export type AgentRefreshResponse = Message<"sam.v1.AgentRefreshResponse"> & {
-  /**
-   * @generated from field: bool success = 1;
-   */
-  success: boolean;
-
-  /**
-   * @generated from field: string error = 2;
-   */
-  error: string;
-
-  /**
-   * @generated from field: google.protobuf.Timestamp expire_time = 3;
-   */
-  expireTime?: Timestamp | undefined;
-};
-
-/**
- * Describes the message sam.v1.AgentRefreshResponse.
- * Use `create(AgentRefreshResponseSchema)` to create a new message.
- */
-export const AgentRefreshResponseSchema: GenMessage<AgentRefreshResponse> = /*@__PURE__*/
-  messageDesc(file_sam, 40);
-
-/**
- * AgentStatusRequest reports on one agent, or on all of them when agent_id is
- * empty, for a scheduler's reconcile loop.
- *
- * @generated from message sam.v1.AgentStatusRequest
- */
-export type AgentStatusRequest = Message<"sam.v1.AgentStatusRequest"> & {
-  /**
-   * @generated from field: string agent_id = 1;
-   */
-  agentId: string;
-};
-
-/**
- * Describes the message sam.v1.AgentStatusRequest.
- * Use `create(AgentStatusRequestSchema)` to create a new message.
- */
-export const AgentStatusRequestSchema: GenMessage<AgentStatusRequest> = /*@__PURE__*/
-  messageDesc(file_sam, 41);
-
-/**
- * @generated from message sam.v1.AgentStatus
- */
-export type AgentStatus = Message<"sam.v1.AgentStatus"> & {
-  /**
-   * @generated from field: string agent_id = 1;
-   */
-  agentId: string;
-
-  /**
-   * @generated from field: bool attached = 2;
-   */
-  attached: boolean;
-
-  /**
-   * @generated from field: repeated sam.v1.AgentIngress ingress = 3;
-   */
-  ingress: AgentIngress[];
-
-  /**
-   * @generated from field: google.protobuf.Timestamp credential_expire_time = 4;
-   */
-  credentialExpireTime?: Timestamp | undefined;
-};
-
-/**
- * Describes the message sam.v1.AgentStatus.
- * Use `create(AgentStatusSchema)` to create a new message.
- */
-export const AgentStatusSchema: GenMessage<AgentStatus> = /*@__PURE__*/
-  messageDesc(file_sam, 42);
-
-/**
- * @generated from message sam.v1.AgentStatusResponse
- */
-export type AgentStatusResponse = Message<"sam.v1.AgentStatusResponse"> & {
-  /**
-   * @generated from field: repeated sam.v1.AgentStatus agents = 1;
-   */
-  agents: AgentStatus[];
-
-  /**
-   * @generated from field: string error = 2;
-   */
-  error: string;
-};
-
-/**
- * Describes the message sam.v1.AgentStatusResponse.
- * Use `create(AgentStatusResponseSchema)` to create a new message.
- */
-export const AgentStatusResponseSchema: GenMessage<AgentStatusResponse> = /*@__PURE__*/
-  messageDesc(file_sam, 43);
-
-/**
  * @generated from message sam.v1.IdentityEvidenceResponse
  */
 export type IdentityEvidenceResponse = Message<"sam.v1.IdentityEvidenceResponse"> & {
@@ -1570,7 +1171,7 @@ export type IdentityEvidenceResponse = Message<"sam.v1.IdentityEvidenceResponse"
  * Use `create(IdentityEvidenceResponseSchema)` to create a new message.
  */
 export const IdentityEvidenceResponseSchema: GenMessage<IdentityEvidenceResponse> = /*@__PURE__*/
-  messageDesc(file_sam, 44);
+  messageDesc(file_sam, 31);
 
 /**
  * @generated from message sam.v1.PeerEvidenceResponse
@@ -1626,7 +1227,7 @@ export type PeerEvidenceResponse = Message<"sam.v1.PeerEvidenceResponse"> & {
  * Use `create(PeerEvidenceResponseSchema)` to create a new message.
  */
 export const PeerEvidenceResponseSchema: GenMessage<PeerEvidenceResponse> = /*@__PURE__*/
-  messageDesc(file_sam, 45);
+  messageDesc(file_sam, 32);
 
 /**
  * @generated from message sam.v1.MemberCredential
@@ -1691,7 +1292,7 @@ export type MemberCredential = Message<"sam.v1.MemberCredential"> & {
  * Use `create(MemberCredentialSchema)` to create a new message.
  */
 export const MemberCredentialSchema: GenMessage<MemberCredential> = /*@__PURE__*/
-  messageDesc(file_sam, 46);
+  messageDesc(file_sam, 33);
 
 /**
  * @generated from message sam.v1.TrustedSigningKey
@@ -1718,7 +1319,7 @@ export type TrustedSigningKey = Message<"sam.v1.TrustedSigningKey"> & {
  * Use `create(TrustedSigningKeySchema)` to create a new message.
  */
 export const TrustedSigningKeySchema: GenMessage<TrustedSigningKey> = /*@__PURE__*/
-  messageDesc(file_sam, 47);
+  messageDesc(file_sam, 34);
 
 /**
  * @generated from message sam.v1.OIDCSession
@@ -1750,7 +1351,7 @@ export type OIDCSession = Message<"sam.v1.OIDCSession"> & {
  * Use `create(OIDCSessionSchema)` to create a new message.
  */
 export const OIDCSessionSchema: GenMessage<OIDCSession> = /*@__PURE__*/
-  messageDesc(file_sam, 48);
+  messageDesc(file_sam, 35);
 
 /**
  * @generated from enum sam.v1.EnrollmentStatus
@@ -1811,8 +1412,7 @@ export enum ServiceType {
    * A destination outside the mesh, reached through a node that enforces
    * policy on it. The service name is the destination hostname, so a grant
    * reads egress://api.github.com and the request fact
-   * service("egress", "api.github.com"). Egress names have no .sam.alt form:
-   * a sandboxed agent connects to the destination name itself.
+   * service("egress", "api.github.com").
    *
    * @generated from enum value: SERVICE_TYPE_EGRESS = 4;
    */

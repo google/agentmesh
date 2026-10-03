@@ -52,8 +52,6 @@ class AuthorizeRequest:
     target_service: str
     # The stream protocol; names the service when target_service is "".
     protocol: str
-    # The agent the caller says it acts for; its own claim, checked against its grants.
-    agent: str = ""
     # The HTTP method and the path as the backend sees it, when the request is
     # HTTP. Both are injected together; a request without them (a stream that
     # carries no HTTP request) does not match a grant narrowed by
@@ -115,14 +113,6 @@ def authorize_caller(req: AuthorizeRequest, options: ProviderAuthorizerOptions) 
     if req.method is not None:
         b.add_fact(ba.Fact(BASELINE_DATALOG["fact_method"] + "({m})", {"m": req.method}))
         b.add_fact(ba.Fact(BASELINE_DATALOG["fact_path"] + "({p})", {"p": req.path}))
-
-    # The caller's word about which agent it acts for, limited to the agent
-    # namespaces its own token grants.
-    if req.agent:
-        b.add_fact(ba.Fact(BASELINE_DATALOG["fact_agent"] + "({a})", {"a": req.agent}))
-        for r in BASELINE_DATALOG["agent_rules"]:
-            b.add_rule(ba.Rule(r))
-        b.add_check(ba.Check(BASELINE_DATALOG["agent_check"]))
 
     b.add_check(ba.Check(BASELINE_DATALOG["replay_check"]))
     b.add_check(ba.Check(BASELINE_DATALOG["time_check"]))

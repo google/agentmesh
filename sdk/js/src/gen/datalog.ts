@@ -31,13 +31,6 @@ export const BASELINE_DATALOG = {
     "granted_service_all($t) <- service($t, $n), http_granted_service_all($t), http_method_ok($t, \"*\"), http_path_ok($t, \"*\")",
     "granted_service_all_types(true) <- service($t, $n), http_granted_service_all_types(true), http_method_ok(\"*\", \"*\"), http_path_ok(\"*\", \"*\")"
   ],
-  "agent_rules": [
-    "agent_authorized(true) <- agent($a), granted_agent_exact($a)",
-    "agent_authorized(true) <- agent($a), granted_agent_set($set), $set.contains($a)",
-    "agent_authorized(true) <- agent($a), granted_agent_prefix($prefix), $a.starts_with($prefix)",
-    "agent_authorized(true) <- agent($a), granted_agent_suffix($suffix), $a.ends_with($suffix)",
-    "agent_authorized(true) <- agent($a), granted_agent_all(true)"
-  ],
   "target_fact_rules": [
     "target_fact(\"email\", $val) <- email($val)",
     "target_fact(\"group\", $val) <- group($val)",
@@ -47,12 +40,10 @@ export const BASELINE_DATALOG = {
   ],
   "replay_check": "check if client_peer_id($id), connection_peer_id($id)",
   "target_check": "check if allow_network_target($fact, $val) or target_unrestricted(true)",
-  "agent_check": "check if agent_authorized(true)",
   "time_check": "check if time($time), expiration($exp), $time <= $exp",
   "allow_if_true": "allow if true",
   "fact_service": "service",
   "fact_connection_peer_id": "connection_peer_id",
-  "fact_agent": "agent",
   "fact_method": "method",
   "fact_path": "path",
   "fact_time": "time",

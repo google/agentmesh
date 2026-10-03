@@ -793,16 +793,6 @@ func createEgressProxy(node *SamNode) http.Handler {
 
 		r.Header.Set(api.HeaderSamBiscuit, base64.StdEncoding.EncodeToString(biscuitBytes))
 
-		// Forwarded, not stripped: the agent claim is what lets the peer at the
-		// other end authorize and audit the agent rather than just this node.
-		// Replacing it with what the local gateway said also drops any value a
-		// caller that is not the gateway tried to set.
-		if agentID := agentFromLocalGateway(r); agentID != "" {
-			r.Header.Set(api.HeaderSamAgent, agentID)
-		} else {
-			r.Header.Del(api.HeaderSamAgent)
-		}
-
 		// Strip the local sidecar gate header before forwarding off-node; a caller-supplied
 		// "Authorization" header passes straight through untouched as the destination's own credential.
 		r.Header.Del(api.HeaderSamAuthentication)

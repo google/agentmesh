@@ -70,7 +70,7 @@ def main() -> None:
             "reloaded_peer_id": reloaded.peer_id,
             "refreshed_biscuit": b64(refreshed.biscuit),
             "refreshed_expiration": refreshed.expiration,
-            "auth_frame": b64(reloaded.auth_frame("mcp://echo", "agent:example.test:conformance")),
+            "auth_frame": b64(reloaded.auth_frame("mcp://echo")),
         },
         sys.stdout,
     )

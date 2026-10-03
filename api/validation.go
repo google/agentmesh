@@ -136,9 +136,6 @@ func ValidateTargetFormat(target string) error {
 	}
 	// "*" as the fact matches every target_fact (granted_target_all_facts).
 	if fact != "*" && !slices.Contains(TargetFactNames(), fact) {
-		if fact == FactAgent {
-			return fmt.Errorf("invalid target %q: an agent cannot be a target, because a node's identity does not say which agents it hosts. Use allowed_agents to grant the agent namespaces a node may act for", target)
-		}
 		return fmt.Errorf("invalid target %q: %q is not a target fact, so nothing would ever match it (want %s or \"*\")", target, fact, strings.Join(TargetFactNames(), ", "))
 	}
 	return nil

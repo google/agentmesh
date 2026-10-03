@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/sam/api"
@@ -174,13 +173,10 @@ func NewUnauthenticatedMCPHandler(controlPlaneURL string) http.Handler {
 
 // NewMCPHandler creates a new HTTP handler for the MCP server using the official SDK.
 func NewMCPHandler(node *SamNode) http.Handler {
-	servers := &agentMCPServers{node: node}
+	mcpServer := NewMCPServer(node)
 
-	// Per agent, not per node: the SDK gives a tool handler the session's
-	// context rather than the request's, so the only place to bind who the
-	// request belongs to is where its server is chosen.
 	streamableHandler := mcp.NewStreamableHTTPHandler(func(request *http.Request) *mcp.Server {
-		return servers.forAgent(agentFromLocalGateway(request))
+		return mcpServer
 	}, streamableOptions)
 
 	mux := http.NewServeMux()
@@ -193,40 +189,6 @@ func NewMCPHandler(node *SamNode) http.Handler {
 	})
 
 	return wrappedHandler
-}
-
-// agentMCPServers hands out one server per agent, built on first use. A node
-// serves a handful of sandboxes, so this stays small; without it every request
-// would rebuild the whole tool set.
-type agentMCPServers struct {
-	node *SamNode
-
-	mu      sync.Mutex
-	servers map[string]*mcp.Server
-}
-
-func (s *agentMCPServers) forAgent(agentID string) *mcp.Server {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if server, ok := s.servers[agentID]; ok {
-		return server
-	}
-
-	server := NewMCPServer(s.node)
-	if agentID != "" {
-		server.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
-			return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-				return next(contextWithAgent(ctx, agentID), method, req)
-			}
-		})
-	}
-
-	if s.servers == nil {
-		s.servers = make(map[string]*mcp.Server)
-	}
-	s.servers[agentID] = server
-	return server
 }
 
 // CallMCPTool opens a stream to a remote peer, performs the handshake, and calls a tool.
@@ -328,7 +290,6 @@ func (n *SamNode) ConnectMCPSession(ctx context.Context, targetPeer peer.ID, tar
 	authFrame := api.AuthFrame{
 		Biscuit:       biscuitBytes,
 		TargetService: targetService,
-		Agent:         agentFromContext(ctx),
 	}
 	authBytes, _ := proto.Marshal(&authFrame)
 

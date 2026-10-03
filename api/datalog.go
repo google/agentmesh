@@ -74,14 +74,6 @@ const (
 	// Example Datalog: allow if node("12D3KooWP2G8nJCLASp1Kb4TmQS4wCpMH2vpSUz8ug8DYEJiuf1i")
 	FactNode = "node"
 
-	// FactAgent defines the agent on whose behalf a request is made. Unlike
-	// FactNode it does not identify a host: it is appended to the token when an
-	// agent is admitted, and the same identifier is asserted again wherever that
-	// agent is next resumed. See api/agent.go for the identifier rules.
-	// Contains: biscuit.String(agentID)
-	// Example Datalog: allow if agent("reviewer-7.prod.acme.example")
-	FactAgent = "agent"
-
 	// FactClientPeerID defines the client PeerID performing the request, used for replay defense.
 	// Contains: biscuit.String(clientPeerID)
 	// Example Datalog: check if client_peer_id($id), connection_peer_id($id)
@@ -123,7 +115,6 @@ const (
 	// Standard role values
 	RoleRouter = "sam:role:router"
 	RoleNode   = "sam:role:node"
-	RoleSamBox = "sam:role:sambox"
 
 	// FactUser defines the subject (username/userID) claim extracted from the OIDC token.
 	// Contains: biscuit.String(username)
@@ -195,42 +186,6 @@ const (
 	// instead of one fact per entry, which keeps token/world fact counts flat regardless of list length.
 	// Contains: biscuit.String(factName), biscuit.Set of biscuit.String(factValue)
 	FactGrantedTargetSet = "granted_target_set"
-
-	// The granted_agent_* family answers a different question from the
-	// granted_target_* family above. A target grant says which destinations the
-	// holder can reach. An agent grant says which agent identities the holder
-	// can act for. A target grant must never satisfy an agent claim: being
-	// allowed to call an agent is not being allowed to impersonate it.
-
-	// FactGrantedAgentExact allows the holder to act for one exact agent id.
-	// Contains: biscuit.String(agentID)
-	FactGrantedAgentExact = "granted_agent_exact"
-
-	// FactGrantedAgentSet allows the holder to act for a Set of exact agent ids,
-	// so many exact grants cost one fact instead of one fact each.
-	// Contains: biscuit.Set of biscuit.String(agentID)
-	FactGrantedAgentSet = "granted_agent_set"
-
-	// FactGrantedAgentPrefix allows the holder to act for any agent id starting
-	// with the prefix, e.g. "reviewer.*" -> "reviewer.".
-	// Contains: biscuit.String(prefix)
-	FactGrantedAgentPrefix = "granted_agent_prefix"
-
-	// FactGrantedAgentSuffix allows the holder to act for any agent id ending
-	// with the suffix, e.g. "*.prod.acme.example" -> ".prod.acme.example". The
-	// leading dot is kept so the wildcard lands on a label boundary and
-	// "evil-acme.example" cannot match "*.acme.example".
-	// Contains: biscuit.String(suffix)
-	FactGrantedAgentSuffix = "granted_agent_suffix"
-
-	// FactGrantedAgentAll allows the holder to act for any agent at all.
-	// Contains: biscuit.Bool(true) (marker fact)
-	FactGrantedAgentAll = "granted_agent_all"
-
-	// FactAgentAuthorized is derived when an agent claim falls inside one of the
-	// holder's granted_agent_* namespaces.
-	// Contains: biscuit.Bool(true) (marker fact)
-	FactAgentAuthorized = "agent_authorized"
 
 	// FactConnectionPeerID defines the actual PeerID of the remote peer making the connection.
 	// Contains: biscuit.String(connectionPeerID)
@@ -437,13 +392,6 @@ var (
 	// BaselineTargetCheck verifies that the target matches one of the allowed network targets.
 	BaselineTargetCheck biscuit.Check
 
-	// BaselineAgentRules derive agent_authorized from the holder's granted_agent_* facts.
-	BaselineAgentRules []biscuit.Rule
-
-	// BaselineAgentCheck verifies that the holder may speak for the agent it named.
-	// Only added when a request carries an agent claim; see node.SamNode.Authorize.
-	BaselineAgentCheck biscuit.Check
-
 	// TargetFactRules maps node and OIDC claims to target_fact datalog facts.
 	TargetFactRules []biscuit.Rule
 
@@ -470,16 +418,12 @@ type DatalogSources struct {
 	Rules []string `json:"rules"`
 	// HTTPRules derive service grants from narrowed grants (BaselineHTTPRules).
 	HTTPRules []string `json:"http_rules"`
-	// AgentRules derive agent_authorized from agent grants (BaselineAgentRules).
-	AgentRules []string `json:"agent_rules"`
 	// TargetFactRules map identity facts to target_fact (TargetFactRules).
 	TargetFactRules []string `json:"target_fact_rules"`
 	// ReplayCheck is BaselineReplayCheck.
 	ReplayCheck string `json:"replay_check"`
 	// TargetCheck is BaselineTargetCheck.
 	TargetCheck string `json:"target_check"`
-	// AgentCheck is BaselineAgentCheck.
-	AgentCheck string `json:"agent_check"`
 	// TimeCheck is ControlPlaneStaticTimeCheck.
 	TimeCheck string `json:"time_check"`
 	// AllowIfTrue is AllowIfTruePolicy.
@@ -596,33 +540,6 @@ func init() {
 	BaselineTargetCheck, err = parser.FromStringCheck(BaselineSources.TargetCheck)
 	if err != nil {
 		panic(fmt.Sprintf("failed to parse target check: %v", err))
-	}
-
-	// 3. Agent Namespace Rules.
-	// An agent claim is the calling node's word, so it is only worth what the
-	// control plane attested about that node. These derive agent_authorized when
-	// the claim falls inside a namespace the caller's own token grants.
-	BaselineSources.AgentRules = []string{
-		fmt.Sprintf(`%s(true) <- %s($a), %s($a)`, FactAgentAuthorized, FactAgent, FactGrantedAgentExact),
-		fmt.Sprintf(`%s(true) <- %s($a), %s($set), $set.contains($a)`, FactAgentAuthorized, FactAgent, FactGrantedAgentSet),
-		fmt.Sprintf(`%s(true) <- %s($a), %s($prefix), $a.starts_with($prefix)`, FactAgentAuthorized, FactAgent, FactGrantedAgentPrefix),
-		fmt.Sprintf(`%s(true) <- %s($a), %s($suffix), $a.ends_with($suffix)`, FactAgentAuthorized, FactAgent, FactGrantedAgentSuffix),
-		fmt.Sprintf(`%s(true) <- %s($a), %s(true)`, FactAgentAuthorized, FactAgent, FactGrantedAgentAll),
-	}
-	for i, rStr := range BaselineSources.AgentRules {
-		r, err := parser.FromStringRule(rStr)
-		if err != nil {
-			panic(fmt.Sprintf("failed to parse baseline agent rule %d: %v", i, err))
-		}
-		BaselineAgentRules = append(BaselineAgentRules, r)
-	}
-
-	// A token carrying no granted_agent_* fact derives nothing, so this fails
-	// closed: naming an agent you were never granted denies the request.
-	BaselineSources.AgentCheck = fmt.Sprintf(`check if %s(true)`, FactAgentAuthorized)
-	BaselineAgentCheck, err = parser.FromStringCheck(BaselineSources.AgentCheck)
-	if err != nil {
-		panic(fmt.Sprintf("failed to parse agent check: %v", err))
 	}
 
 	// OIDC Claims to Target Facts: Maps dynamically generated OIDC facts (like `user("alice")`)
@@ -826,65 +743,6 @@ func isExactTarget(targetStr string) (tFact, tVal string, exact bool) {
 		tFact = FactNode
 	}
 	return tFact, tVal, BuildTargetDatalogFact(targetStr).Name == FactGrantedTargetExact
-}
-
-// BuildAgentDatalogFact translates one agent namespace pattern into a Datalog fact.
-// Patterns are the agent id shapes of §8.8: "*", "*.suffix", "prefix.*" or an exact id.
-func BuildAgentDatalogFact(pattern string) biscuit.Fact {
-	pattern = strings.TrimPrefix(pattern, FactAgent+":")
-	switch {
-	case pattern == "*":
-		return MarkerFact(FactGrantedAgentAll)
-	case strings.HasPrefix(pattern, "*."):
-		return biscuit.Fact{Predicate: biscuit.Predicate{
-			Name: FactGrantedAgentSuffix,
-			IDs:  []biscuit.Term{biscuit.String(pattern[1:])},
-		}}
-	case strings.HasSuffix(pattern, ".*"):
-		return biscuit.Fact{Predicate: biscuit.Predicate{
-			Name: FactGrantedAgentPrefix,
-			IDs:  []biscuit.Term{biscuit.String(pattern[:len(pattern)-1])},
-		}}
-	}
-	return biscuit.Fact{Predicate: biscuit.Predicate{
-		Name: FactGrantedAgentExact,
-		IDs:  []biscuit.Term{biscuit.String(pattern)},
-	}}
-}
-
-// BuildAgentDatalogFacts translates a list of agent namespace patterns into a
-// minimal set of facts, merging exact ids into one granted_agent_set so a role
-// naming many agents still costs one fact.
-func BuildAgentDatalogFacts(patterns []string) []biscuit.Fact {
-	facts := make([]biscuit.Fact, 0, len(patterns))
-	exact := make(map[string]bool)
-	for _, p := range patterns {
-		trimmed := strings.TrimPrefix(p, FactAgent+":")
-		if trimmed == "" {
-			continue
-		}
-		if trimmed == "*" || strings.HasPrefix(trimmed, "*.") || strings.HasSuffix(trimmed, ".*") {
-			facts = append(facts, BuildAgentDatalogFact(trimmed))
-			continue
-		}
-		exact[trimmed] = true
-	}
-	if len(exact) > 0 {
-		ids := make([]string, 0, len(exact))
-		for id := range exact {
-			ids = append(ids, id)
-		}
-		sort.Strings(ids)
-		bset := make(biscuit.Set, 0, len(ids))
-		for _, id := range ids {
-			bset = append(bset, biscuit.String(id))
-		}
-		facts = append(facts, biscuit.Fact{Predicate: biscuit.Predicate{
-			Name: FactGrantedAgentSet,
-			IDs:  []biscuit.Term{bset},
-		}})
-	}
-	return facts
 }
 
 // BuildServiceDatalogFacts translates a list of service patterns into a minimal set of Datalog facts.

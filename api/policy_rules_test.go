@@ -40,7 +40,6 @@ func TestBuildPolicyRules(t *testing.T) {
 			Name:            "test-role",
 			AllowedTargets:  []string{"*", "node:peer-abc", "custom-fact:custom-val", "legacy-peer"},
 			AllowedServices: []string{"*:*", "mcp:*", "mcp:*.suffix", "mcp:prefix.*", "mcp:exact"},
-			AllowedAgents:   []string{"*"},
 			CustomDatalog: []string{
 				"custom_rule($x) <- fact($x), $x > 3;",
 				"custom_fact(\"hello\")",
@@ -70,7 +69,6 @@ func TestBuildPolicyRules(t *testing.T) {
 		"target_restricted(true) <- role(\"test-role\")":                                       false,
 		"granted_target_set(\"node\", [\"legacy-peer\", \"peer-abc\"]) <- role(\"test-role\")": false,
 		"granted_target_set(\"custom-fact\", [\"custom-val\"]) <- role(\"test-role\")":         false,
-		"granted_agent_all(true) <- role(\"test-role\")":                                       false,
 		"custom_rule($x) <- fact($x), $x > 3":                                                  false,
 		"custom_fact(\"hello\") <- true":                                                       false,
 	}
@@ -93,8 +91,8 @@ func TestBuildPolicyRules(t *testing.T) {
 		}
 	}
 
-	if len(warnings) != 3 {
-		t.Fatalf("warnings = %q, want one for granted_agent_all, one for the unparseable entry and one for the bad peer ID", warnings)
+	if len(warnings) != 2 {
+		t.Fatalf("warnings = %q, want one for the unparseable entry and one for the bad peer ID", warnings)
 	}
 	if !strings.Contains(strings.Join(warnings, "\n"), `"node:not-a-peer-id"`) {
 		t.Errorf("warnings = %q, want one naming the member that is not a peer ID", warnings)

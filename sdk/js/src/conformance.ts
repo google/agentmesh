@@ -60,7 +60,7 @@ async function main(): Promise<void> {
       reloaded_peer_id: reloaded.peerId,
       refreshed_biscuit: b64(refreshed.biscuit),
       refreshed_expiration: refreshed.expiration,
-      auth_frame: b64(reloaded.authFrame("mcp://echo", "agent:example.test:conformance")),
+      auth_frame: b64(reloaded.authFrame("mcp://echo")),
     }) + "\n",
   );
 }

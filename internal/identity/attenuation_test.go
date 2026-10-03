@@ -62,7 +62,7 @@ func TestAttenuationBlockFactsAreInvisibleToTheAuthorizer(t *testing.T) {
 
 	block := token.CreateBlock()
 	if err := block.AddFact(biscuit.Fact{Predicate: biscuit.Predicate{
-		Name: api.FactAgent,
+		Name: "custom_claim",
 		IDs:  []biscuit.Term{biscuit.String("reviewer-7.prod.acme.example")},
 	}}); err != nil {
 		t.Fatalf("AddFact: %v", err)
@@ -92,7 +92,7 @@ func TestAttenuationBlockFactsAreInvisibleToTheAuthorizer(t *testing.T) {
 	}
 
 	// ...but the appended block's fact is not.
-	if got := queryOne(t, authorizer, api.FactAgent); got != "" {
+	if got := queryOne(t, authorizer, "custom_claim"); got != "" {
 		t.Errorf("appended block fact is visible to the authorizer as %q."+
 			" If this now passes, biscuit-go changed its scoping and delegation"+
 			" by attenuation is worth revisiting", got)

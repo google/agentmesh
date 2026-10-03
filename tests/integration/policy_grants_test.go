@@ -84,7 +84,6 @@ func TestPolicyGrantsReachTheMintedToken(t *testing.T) {
 		AllowedServices: []string{"mcp://tool"},
 		AllowedTargets:  []string{"group:backend"},
 		CustomDatalog:   []string{`region("emea")`},
-		AllowedAgents:   []string{"*.prod.acme.example"},
 		AllowedLabels:   []string{"region=*"},
 	}
 	policyBody, err := proto.Marshal(&api.PolicyConfig{
@@ -147,7 +146,6 @@ func TestPolicyGrantsReachTheMintedToken(t *testing.T) {
 			{"allowed_services", wantRole.AllowedServices, r.AllowedServices},
 			{"allowed_targets", wantRole.AllowedTargets, r.AllowedTargets},
 			{"custom_datalog", wantRole.CustomDatalog, r.CustomDatalog},
-			{"allowed_agents", wantRole.AllowedAgents, r.AllowedAgents},
 			{"allowed_labels", wantRole.AllowedLabels, r.AllowedLabels},
 		} {
 			if len(tc.got) != len(tc.want) || (len(tc.want) > 0 && tc.got[0] != tc.want[0]) {
@@ -205,7 +203,7 @@ func TestPolicyGrantsReachTheMintedToken(t *testing.T) {
 		return &enrollResp, resp.StatusCode
 	}
 
-	t.Run("the agent namespace grant reaches the signed token", func(t *testing.T) {
+	t.Run("the role and label grants reach the signed token", func(t *testing.T) {
 		enrollResp, status := enroll(t, map[string]string{"region": "emea"})
 		if status != http.StatusOK {
 			t.Fatalf("enrollment status %d, want %d", status, http.StatusOK)
@@ -213,11 +211,8 @@ func TestPolicyGrantsReachTheMintedToken(t *testing.T) {
 
 		cpPubKey := ed25519.PublicKey(enrollResp.ControlPlanePublicKey)
 
-		// Without this the namespace check in SamNode.Authorize can never pass,
-		// so every agent claim in the mesh is refused and the feature is inert
-		// in exactly the opposite direction from the one it guards.
-		if got := queryTokenFact(t, enrollResp.BiscuitToken, cpPubKey, api.FactGrantedAgentSuffix); got != ".prod.acme.example" {
-			t.Errorf("%s in token = %q, want %q", api.FactGrantedAgentSuffix, got, ".prod.acme.example")
+		if got := queryTokenFact(t, enrollResp.BiscuitToken, cpPubKey, api.FactRole); got != api.RoleNode {
+			t.Errorf("%s in token = %q, want %q", api.FactRole, got, api.RoleNode)
 		}
 
 		// The permitted label is attested, which is what peers gate on.

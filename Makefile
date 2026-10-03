@@ -30,12 +30,8 @@ build:
 	go build -v -ldflags "$(VERSION_LDFLAGS)" -o "$(OUT_DIR)/sam-router" ./cmd/sam-router
 	go build -v -ldflags "$(VERSION_LDFLAGS)" -o "$(OUT_DIR)/sam-one" ./cmd/sam-one
 	go build -v -o "$(OUT_DIR)/mcp-client" ./cmd/mcp-client
-	go build -v -o "$(OUT_DIR)/sam-box" ./cmd/sam-box
 	go build -v -o "$(OUT_DIR)/sam-bench" ./cmd/sam-bench
 	go build -v -o "$(OUT_DIR)/sam-console" ./cmd/sam-console
-	# nano-init is a separate module: it carries a userspace TCP stack, which
-	# has no business in the dependency graph every other binary builds from.
-	go -C cmd/nano-init build -v -o "$(OUT_DIR)/nano-init" .
 
 
 .PHONY: mobile-ffi-host mobile-ffi-android mobile-ffi-android-x86_64 mobile-ffi-ios mobile-ffi mobile-app-apk mobile-app-apk-emulator mobile-app-bundle
@@ -162,7 +158,6 @@ testnet:
 
 test:
 	CGO_ENABLED=1 go test -v -race -count 1 $(if $(WHAT),-run $(WHAT)) ./...
-	CGO_ENABLED=1 go -C cmd/nano-init test -race -count 1 $(if $(WHAT),-run $(WHAT)) ./...
 
 e2e-test: build docker-build
 	bats -j 10 --verbose-run $(if $(WHAT),--filter "$(WHAT)") tests/e2e/
@@ -275,18 +270,9 @@ docker-build-node:
 docker-build-mock-oidc:
 	docker build --load -t sam-mock-oidc:local -f tests/e2e/docker/Dockerfile.mock-oidc .
 
-docker-build-e2e-runtime:
-	docker build --load -t sam-e2e-runtime:local -f tests/e2e/docker/Dockerfile.sam-runtime .
-
-docker-build-nano-init:
-	docker build --load -t sam-nano-init:local -f Dockerfile.nano-init .
-
-docker-build-sam-box:
-	docker build --load -t sam-box:local -f Dockerfile.sam-box .
-
 docker-build-sam-console:
 	docker build --load -t sam-console:local -f Dockerfile.sam-console .
 
-docker-build: docker-build-control-plane docker-build-router docker-build-node docker-build-mock-oidc docker-build-e2e-runtime docker-build-nano-init docker-build-sam-box docker-build-sam-console
+docker-build: docker-build-control-plane docker-build-router docker-build-node docker-build-mock-oidc docker-build-sam-console
 
-.PHONY: docker-build-control-plane docker-build-router docker-build-node docker-build-mock-oidc docker-build-e2e-runtime docker-build-nano-init docker-build-sam-box docker-build-sam-console docker-build
+.PHONY: docker-build-control-plane docker-build-router docker-build-node docker-build-mock-oidc docker-build-sam-console docker-build

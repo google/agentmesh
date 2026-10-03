@@ -2775,8 +2775,8 @@ func (s *Server) HandleUserBootstrapTokens(w http.ResponseWriter, r *http.Reques
 		req.Role = api.RoleNode
 	}
 
-	if user.Role != "admin" && req.Role != api.RoleNode && req.Role != api.RoleSamBox {
-		http.Error(w, "Forbidden: Standard users can only generate tokens for node or box roles", http.StatusForbidden)
+	if user.Role != "admin" && req.Role != api.RoleNode {
+		http.Error(w, "Forbidden: Standard users can only generate tokens for node role", http.StatusForbidden)
 		return
 	}
 	if user.Role != "admin" && req.AutonomousRecovery {
@@ -3110,11 +3110,6 @@ func validatePolicyConfig(req *api.PolicyConfig) error {
 				return fmt.Errorf("invalid allowed_target %q in role %s: %w", target, r.Name, err)
 			}
 		}
-		for _, agent := range r.AllowedAgents {
-			if err := api.ValidateAgentPattern(agent); err != nil {
-				return fmt.Errorf("invalid allowed_agent %q in role %s: %w", agent, r.Name, err)
-			}
-		}
 		for _, label := range r.AllowedLabels {
 			if err := api.ValidateLabelPattern(label); err != nil {
 				return fmt.Errorf("in role %s: %w", r.Name, err)
@@ -3143,7 +3138,6 @@ func validatePolicyConfig(req *api.PolicyConfig) error {
 		// which roles are mutually exclusive for a given identity.
 		factBudget += len(api.BuildServiceDatalogFacts(r.AllowedServices))
 		factBudget += len(api.BuildTargetDatalogFacts(r.AllowedTargets))
-		factBudget += len(api.BuildAgentDatalogFacts(r.AllowedAgents))
 		factBudget += len(r.CustomDatalog)
 		for _, g := range r.Http {
 			factBudget += len(api.BuildHTTPGrantFacts(g))

@@ -478,7 +478,7 @@ export class MeshSession {
    */
   async openMCP(peer: Peer, targetService: string, options: MCPSessionOptions = {}): Promise<MCPSession> {
     const conn = await this.connect(peer, options.signal);
-    return openMCPSession(conn, this.mesh.authFrame(targetService, options.agent ?? ""), this.mesh.credential.controlPlaneKeys, options, this.#egressRequireLabels);
+    return openMCPSession(conn, this.mesh.authFrame(targetService), this.mesh.credential.controlPlaneKeys, options, this.#egressRequireLabels);
   }
 
   /** Lists the tools a provider serves for a service. */
@@ -668,15 +668,12 @@ export class MeshSession {
    * is carried to that peer over /libp2p-http with this member's credential.
    * Response bodies stream, so message/stream works. See MeshSession.meshURL.
    */
-  fetch(options: { agent?: string } = {}): typeof fetch {
+  fetch(): typeof fetch {
     return async (input, init) => {
       const request = new Request(input, init);
       const { peerId } = splitMeshURL(new URL(request.url));
       const conn = await this.#egressConnection(peerId, request.signal);
-      const streamOptions: { agent?: string; signal?: AbortSignal } = {};
-      if (options.agent !== undefined) {
-        streamOptions.agent = options.agent;
-      }
+      const streamOptions: { signal?: AbortSignal } = {};
       if (init?.signal !== undefined && init.signal !== null) {
         streamOptions.signal = init.signal;
       }

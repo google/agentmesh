@@ -23,9 +23,6 @@ REPO_ROOT=$(dirname "${BASH_SOURCE[0]}")/..
 cd $REPO_ROOT
 docker run --rm -v $(pwd):/app -w /app golangci/golangci-lint:v2.14.0 golangci-lint run -v
 
-# nano-init is a separate module, so ./... above does not reach it.
-docker run --rm -v $(pwd):/app -w /app/cmd/nano-init golangci/golangci-lint:v2.14.0 golangci-lint run -v
-
 # golangci-lint has no deadcode linter (removed upstream in v1.49) and its
 # replacement, "unused", ignores exported identifiers. This catches exported
 # code that is unreachable from every binary and test.

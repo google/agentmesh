@@ -147,17 +147,6 @@ const (
 	// same way for locally served requests.
 	HeaderPeerID = "X-Peer-Id"
 
-	// HeaderSamAgent names the agent a request is made on behalf of, as a
-	// canonical agent identifier (see api/agent.go). It is set by the sandbox
-	// gateway on the node's local API socket, and honoured by the node only
-	// there: arriving on that socket is proof the caller is the gateway, which
-	// is the only party that knows which agent a flow belongs to.
-	//
-	// A sandboxed agent can never set it. The gateway overwrites the header on
-	// every request it forwards, so a value an agent supplies is replaced by
-	// the identity the platform bound to its channel, never merged with it.
-	HeaderSamAgent = "X-Sam-Agent"
-
 	// HeaderSamAuthentication is the custom HTTP header used to authenticate a local
 	// process to this node's sidecar API (the shared secret configured via
 	// "--api-token-path" or the SAM_API_TOKEN environment variable). Using a

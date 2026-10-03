@@ -238,10 +238,6 @@ func mintBiscuit(signingKey ed25519.PrivateKey, remotePeer peer.ID, roles []stri
 	// stay siloed per role, and merging keeps fact counts flat regardless of how many roles match.
 	var allServices []string
 	var allTargets []string
-	// Agent namespaces this holder can act for. No grant means no agent claim
-	// is accepted, which is what stops an unconfigured mesh from letting any
-	// peer name any agent.
-	var allAgents []string
 	// Narrowed grants (PolicyRole.http) are minted per entry: they are keyed
 	// by the entry they narrow, so there is nothing to merge across roles.
 	var allHTTP []*api.HTTPGrant
@@ -272,7 +268,6 @@ func mintBiscuit(signingKey ed25519.PrivateKey, remotePeer peer.ID, roles []stri
 			allServices = append(allServices, plainServices...)
 			allHTTP = append(allHTTP, narrowed...)
 			allTargets = append(allTargets, pr.AllowedTargets...)
-			allAgents = append(allAgents, pr.AllowedAgents...)
 
 			for _, customEntry := range pr.CustomDatalog {
 				trimmed := strings.TrimRight(strings.TrimSpace(customEntry), ";")
@@ -312,11 +307,6 @@ func mintBiscuit(signingKey ed25519.PrivateKey, remotePeer peer.ID, roles []stri
 	for _, fact := range api.BuildTargetDatalogFacts(allTargets) {
 		if err := addFact(fact); err != nil {
 			errs = append(errs, fmt.Errorf("failed to add target fact: %w", err))
-		}
-	}
-	for _, fact := range api.BuildAgentDatalogFacts(allAgents) {
-		if err := addFact(fact); err != nil {
-			errs = append(errs, fmt.Errorf("failed to add agent namespace fact: %w", err))
 		}
 	}
 

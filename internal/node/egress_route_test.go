@@ -48,10 +48,9 @@ func TestLocalEgressRoute(t *testing.T) {
 
 	// The node's credential, as the control plane would mint it for a role
 	// selected to serve api.github.com: the serving grant narrowed to GET
-	// under /repos/acme/, and an agent namespace it may speak for.
+	// under /repos/acme/.
 	narrowed := api.BuildHTTPGrantFacts(&api.HTTPGrant{Service: "egress://api.github.com", Methods: []string{"GET"}, Paths: []string{"/repos/acme/*"}})
 	facts := append(narrowed,
-		biscuit.Fact{Predicate: biscuit.Predicate{Name: api.FactGrantedAgentSuffix, IDs: []biscuit.Term{biscuit.String(".acme.example")}}},
 		biscuit.Fact{Predicate: biscuit.Predicate{Name: api.FactGrantedServiceExact, IDs: []biscuit.Term{biscuit.String("egress"), biscuit.String("open.example")}}},
 	)
 	token, pub := mintFor(t, node.Host.ID(), facts...)
@@ -124,8 +123,6 @@ func TestLocalEgressRoute(t *testing.T) {
 		{"method outside the narrowed grant", "POST", "/egress/api.github.com/repos/acme/dubbing/pulls", nil, http.StatusForbidden},
 		{"path outside the narrowed grant", "GET", "/egress/api.github.com/user", nil, http.StatusForbidden},
 		{"local attenuation on path", "GET", "/egress/api.github.com/repos/acme/vault/keys", nil, http.StatusForbidden},
-		{"an agent inside the granted namespace", "GET", "/egress/api.github.com/repos/acme/x", map[string]string{api.HeaderSamAgent: "reviewer.acme.example"}, http.StatusNoContent},
-		{"an agent outside it", "GET", "/egress/api.github.com/repos/acme/x", map[string]string{api.HeaderSamAgent: "intruder.evil.example"}, http.StatusForbidden},
 		{"a destination with a plain grant takes any method", "DELETE", "/egress/open.example/anything", nil, http.StatusNoContent},
 		{"a destination not assigned to this node", "GET", "/egress/other.example/x", nil, http.StatusNotFound},
 		{"a mesh name is not an egress destination", "GET", "/egress/tools.mcp.sam.alt/x", nil, http.StatusNotFound},
@@ -157,8 +154,8 @@ func TestLocalEgressRoute(t *testing.T) {
 	// destination and outcome, so an operator can alert on denials and on
 	// requests for destinations nobody assigned.
 	for k, want := range map[[2]string]float64{
-		{"api.github.com", egressOutcomeAllow}:      2,
-		{"api.github.com", egressOutcomeDeny}:       4,
+		{"api.github.com", egressOutcomeAllow}:      1,
+		{"api.github.com", egressOutcomeDeny}:       3,
 		{"open.example", egressOutcomeAllow}:        1,
 		{"other.example", egressOutcomeNotAssigned}: 1,
 	} {

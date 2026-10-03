@@ -245,10 +245,10 @@ class AgentMesh:
             self.save()
         return ControlPlaneSync(keys_changed=keys_changed, refreshed=refreshed, banned_peer_ids=banned_peer_ids, fetched_at=fetched_at, errors=errors)
 
-    def auth_frame(self, target_service: str = "", agent: str = "") -> bytes:
+    def auth_frame(self, target_service: str = "") -> bytes:
         """The frame that opens every stream to a peer: this member's biscuit plus
-        the service it wants (e.g. "mcp://calculator") and the agent it speaks for."""
-        return encode_auth_frame(self._credential.biscuit, target_service, agent)
+        the service it wants (e.g. "mcp://calculator")."""
+        return encode_auth_frame(self._credential.biscuit, target_service)
 
     def join(self, **options):  # type: ignore[no-untyped-def]
         """Joins the mesh: connects to the routers in the credential, passes the

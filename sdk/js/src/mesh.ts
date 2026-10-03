@@ -274,10 +274,10 @@ export class AgentMesh {
 
   /**
    * The frame that opens every stream to a peer: this member's biscuit plus
-   * the service it wants (e.g. "mcp://calculator") and the agent it speaks for.
+   * the service it wants (e.g. "mcp://calculator").
    */
-  authFrame(targetService = "", agent = ""): Uint8Array {
-    return encodeAuthFrame(this.#credential.biscuit, targetService, agent);
+  authFrame(targetService = ""): Uint8Array {
+    return encodeAuthFrame(this.#credential.biscuit, targetService);
   }
 
   /**

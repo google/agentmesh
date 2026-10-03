@@ -45,7 +45,6 @@ func TestMeshPolicyRoundTripsEveryRoleField(t *testing.T) {
 		AllowedTargets:  []string{"group:backend"},
 		AllowedServices: []string{"mcp://tool"},
 		CustomDatalog:   []string{`region("emea")`},
-		AllowedAgents:   []string{"*.prod.acme.example"},
 		AllowedLabels:   []string{"region=*"},
 		Http:            []*api.HTTPGrant{{Service: "mcp://tool", Methods: []string{"GET"}, Paths: []string{"/v1/*"}}},
 	}

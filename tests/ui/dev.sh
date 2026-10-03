@@ -98,7 +98,7 @@ EOF
 
 # A couple left over so the Bootstrap Tokens table is not empty.
 mint_token "sam:role:node" "spare node token" >/dev/null
-mint_token "sam:role:sambox" "spare box token" >/dev/null
+mint_token "sam:role:router" "spare router token" >/dev/null
 
 cat <<EOF
 

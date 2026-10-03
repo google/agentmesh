@@ -49,8 +49,8 @@ def options(policy_rules: list[str], own_biscuit: bytes | None = None) -> Provid
     return ProviderAuthorizerOptions(trusted_keys=lambda: [CP_KEY], own_biscuit=lambda: own, policy_rules=lambda: policy_rules)
 
 
-def request(biscuit: bytes, target_service: str = "mcp://calc", agent: str = "") -> AuthorizeRequest:
-    return AuthorizeRequest(biscuit=biscuit, peer_id=CALLER, target_service=target_service, protocol="/sam/mcp/1.0.0", agent=agent)
+def request(biscuit: bytes, target_service: str = "mcp://calc") -> AuthorizeRequest:
+    return AuthorizeRequest(biscuit=biscuit, peer_id=CALLER, target_service=target_service, protocol="/sam/mcp/1.0.0")
 
 
 def test_role_granted_by_mesh_policy_is_allowed():
@@ -126,16 +126,6 @@ def test_target_grants_match_the_providers_own_identity():
         authorize_caller(request(node_token(CALLER)), options(rules, provider))
 
 
-def test_agent_claim_only_inside_a_granted_namespace():
-    rules = [*NODE_ROLE_GRANTS, 'granted_agent_suffix(".acme.example") <- role("sam:role:node")']
-    authorize_caller(request(node_token(CALLER), agent="reviewer.acme.example"), options(rules))
-    with pytest.raises(AuthorizationError):
-        authorize_caller(request(node_token(CALLER), agent="reviewer.evil.example"), options(rules))
-    with pytest.raises(AuthorizationError):
-        authorize_caller(request(node_token(CALLER), agent="reviewer.acme.example"), options(NODE_ROLE_GRANTS))
-    authorize_caller(request(node_token(CALLER)), options(NODE_ROLE_GRANTS))
-
-
 def test_narrowed_grant_follows_the_requests_method_and_path():
     # Rendered as the control plane renders a role with
     # http: [{service: "mcp://calc", methods: ["GET"], paths: ["/v1/*"]}]:
@@ -163,9 +153,9 @@ def test_narrowed_grant_follows_the_requests_method_and_path():
 
 
 def test_every_baseline_item_parses_in_biscuit_python():
-    for c in (BASELINE_DATALOG["time_check"], BASELINE_DATALOG["replay_check"], BASELINE_DATALOG["target_check"], BASELINE_DATALOG["agent_check"]):
+    for c in (BASELINE_DATALOG["time_check"], BASELINE_DATALOG["replay_check"], BASELINE_DATALOG["target_check"]):
         ba.Check(c)
-    for r in BASELINE_DATALOG["rules"] + BASELINE_DATALOG["http_rules"] + BASELINE_DATALOG["agent_rules"] + BASELINE_DATALOG["target_fact_rules"]:
+    for r in BASELINE_DATALOG["rules"] + BASELINE_DATALOG["http_rules"] + BASELINE_DATALOG["target_fact_rules"]:
         ba.Rule(r)
     for p in BASELINE_DATALOG["policies"] + [BASELINE_DATALOG["allow_if_true"]]:
         ba.Policy(p)

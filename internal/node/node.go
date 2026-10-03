@@ -2172,7 +2172,6 @@ func (n *SamNode) StartIngressServer(ctx context.Context) error {
 				User:     "", // Extracted implicitly if needed, or left empty
 				Protocol: "/libp2p-http",
 				Target:   target,
-				Agent:    agentClaim(r.Header.Get(api.HeaderSamAgent)),
 				// The path policy sees is the one the backend will see, decided
 				// here so it can never be the routing prefix.
 				HTTP: &HTTPRequestFacts{Method: r.Method, Path: "/" + upstreamPath},
@@ -2198,9 +2197,6 @@ func (n *SamNode) StartIngressServer(ctx context.Context) error {
 
 			// Strip the biscuit header so it doesn't leak to the backend service
 			r.Header.Del(api.HeaderSamBiscuit)
-			// The agent is for policy, not for the backend, which has no way to
-			// judge it.
-			r.Header.Del(api.HeaderSamAgent)
 			// Set, not Add: an inbound value is a spoof attempt, only the
 			// transport-verified identity may reach the backend.
 			r.Header.Del(api.HeaderSamNoTrailingSlash)

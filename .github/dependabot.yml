@@ -17,7 +17,6 @@ updates:
   - package-ecosystem: "gomod"
     directories:
       - "/"
-      - "/cmd/nano-init"
     schedule:
       interval: "weekly"
     cooldown:
