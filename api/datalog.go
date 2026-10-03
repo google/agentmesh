@@ -320,6 +320,14 @@ const (
 	// Contains: biscuit.Date(currentTime)
 	// Example Datalog: check if time($time)
 	FactTime = "time"
+
+	// FactTARBlock is the sole Datalog predicate allowed in a holder-appended
+	// Biscuit attenuation block (block index >= 1). Its single string term is
+	// the unpadded base64url-encoded protobuf serialization of an
+	// api.TaskAuthorizationRule.
+	// Contains: biscuit.String(base64urlProto)
+	// Example Datalog: tar_block("ChB0YXNrLWJxLXJlYWQtMTIz...")
+	FactTARBlock = "tar_block"
 )
 
 // MarkerTerm is the single term every marker fact carries, written `true` in

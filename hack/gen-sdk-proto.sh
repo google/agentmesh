@@ -56,8 +56,8 @@ protoc -I sdk/python/proto \
   --pyi_out="${PY_GEN_DIR}" \
   sdk/python/proto/circuit.proto
 
-echo "Generating baseline Datalog artifact..."
-mkdir -p "${PY_DATALOG_DIR}"
-go run ./hack/gen-sdk-datalog "${PY_DATALOG_DIR}/datalog.json" "${JS_GEN_DIR}/datalog.ts"
+echo "Generating baseline Datalog artifact and TAR conformance vectors..."
+mkdir -p "${PY_DATALOG_DIR}" sdk/testdata
+go run ./hack/gen-sdk-datalog "${PY_DATALOG_DIR}/datalog.json" "${JS_GEN_DIR}/datalog.ts" "sdk/testdata/tar_conformance.json"
 
 echo "SDK protobuf generation complete."

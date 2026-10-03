@@ -29,6 +29,7 @@ import biscuit_auth as ba
 
 from .biscuit import BiscuitVerificationError, VerifiedBiscuit, _limits, verify_peer_biscuit
 from .discovery import parse_service_target
+from .tar import TaskRequestContext, evaluate_task_rules
 
 BASELINE_DATALOG: dict = json.loads(resources.files("agent_mesh._gen").joinpath("datalog.json").read_text())
 
@@ -58,6 +59,8 @@ class AuthorizeRequest:
     # PolicyRole.http.
     method: Optional[str] = None
     path: str = ""
+    # The MCP tool name when evaluating a specific MCP tools/call invocation.
+    mcp_tool: str = ""
 
 
 @dataclass(frozen=True)
@@ -85,7 +88,7 @@ def authorize_caller(req: AuthorizeRequest, options: ProviderAuthorizerOptions) 
     if not keys:
         raise AuthorizationError(req.peer_id, "no trusted control plane key")
 
-    # Signature under a trusted key, authority block only, expiry and binding
+    # Signature under a trusted key, authority block + tar_block chain, expiry and binding
     # to the connection peer: RequireAuthorityBinding and EnforceExpiration.
     try:
         caller = verify_peer_biscuit(req.biscuit, req.peer_id, keys, now)
@@ -136,6 +139,24 @@ def authorize_caller(req: AuthorizeRequest, options: ProviderAuthorizerOptions) 
         b.build(token).authorize()
     except Exception as err:  # noqa: BLE001 - biscuit-python raises several types for a denial
         raise AuthorizationError(req.peer_id, str(err)) from err
+
+    if caller.task_rules:
+        try:
+            evaluate_task_rules(
+                caller.task_rules,
+                TaskRequestContext(
+                    service_type=svc_type,
+                    service_name=svc_name,
+                    has_http=req.method is not None,
+                    method=req.method or "",
+                    path=req.path,
+                    mcp_tool=req.mcp_tool,
+                    allow_mcp_stream_init=req.method is None and not req.mcp_tool and req.protocol == "/sam/mcp/1.0.0",
+                ),
+                now,
+            )
+        except Exception as err:  # noqa: BLE001
+            raise AuthorizationError(req.peer_id, str(err)) from err
     return caller
 
 

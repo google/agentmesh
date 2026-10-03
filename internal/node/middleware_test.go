@@ -19,6 +19,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	cryptorand "crypto/rand"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 
 	"io"
@@ -1024,5 +1026,230 @@ func TestTrackingStream(t *testing.T) {
 	}
 	if ts.bytesRead.Load() != int64(n) {
 		t.Errorf("Expected bytesRead to be %d, got %d", n, ts.bytesRead.Load())
+	}
+}
+
+func TestAuthorize_WithTARBlocks(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(cryptorand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	callerKey, _, err := crypto.GenerateKeyPair(crypto.Ed25519, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	callerPeer, err := peer.IDFromPrivateKey(callerKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Mint an authority Biscuit that grants wildcard services and targets.
+	builder := biscuit.NewBuilder(priv)
+	for _, f := range []biscuit.Fact{
+		{Predicate: biscuit.Predicate{Name: api.FactClientPeerID, IDs: []biscuit.Term{biscuit.String(callerPeer.String())}}},
+		{Predicate: biscuit.Predicate{Name: api.FactNode, IDs: []biscuit.Term{biscuit.String(callerPeer.String())}}},
+		{Predicate: biscuit.Predicate{Name: api.FactExpiration, IDs: []biscuit.Term{biscuit.Date(time.Now().Add(time.Hour))}}},
+		api.MarkerFact(api.FactGrantedServiceAllTypes),
+		api.MarkerFact(api.FactTargetUnrestricted),
+	} {
+		if err := builder.AddAuthorityFact(f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rootBiscuit, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootBytes, err := rootBiscuit.Serialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Attenuate with Hop 1 (allows mcp://weather and egress://api.github.com GET/POST /repos/acme/*)
+	hop1 := &api.TaskAuthorizationRule{
+		Name:       "hop-1",
+		ExpireTime: timestamppb.New(time.Now().Add(10 * time.Minute)),
+		Rules: []*api.TaskRule{
+			{
+				AllowedServices: []string{"mcp://weather"},
+				Operation:       &api.TaskOperation{AllowedTools: []string{"get_weather", "get_forecast"}},
+			},
+			{
+				AllowedServices: []string{"egress://api.github.com"},
+				Operation: &api.TaskOperation{
+					AllowedMethods: []string{"GET", "POST"},
+					AllowedPaths:   []string{"/repos/acme/*"},
+				},
+			},
+		},
+	}
+	att1, err := identity.AttenuateBiscuit(rootBytes, hop1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Attenuate with Hop 2 (narrows to GET /repos/acme/public/* and get_weather) and seal.
+	hop2 := &api.TaskAuthorizationRule{
+		Name:       "hop-2",
+		ExpireTime: timestamppb.New(time.Now().Add(5 * time.Minute)),
+		Rules: []*api.TaskRule{
+			{
+				AllowedServices: []string{"mcp://weather"},
+				Operation:       &api.TaskOperation{AllowedTools: []string{"get_weather"}},
+			},
+			{
+				AllowedServices: []string{"egress://api.github.com"},
+				Operation: &api.TaskOperation{
+					AllowedMethods: []string{"GET"},
+					AllowedPaths:   []string{"/repos/acme/public/*"},
+				},
+			},
+		},
+	}
+	att2, err := identity.AttenuateBiscuit(att1, hop2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := identity.SealBiscuit(att2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	node := &SamNode{
+		trustedKeys:    []TrustedKey{{Key: pub, ReceivedAt: time.Now()}},
+		BiscuitTimeout: 500 * time.Millisecond,
+	}
+
+	// 1. Allowed HTTP GET under narrowed prefix
+	if err := node.Authorize(sealed, RequestContext{
+		PeerID:   callerPeer,
+		Protocol: "/libp2p-http",
+		Target:   "egress://api.github.com",
+		HTTP:     &HTTPRequestFacts{Method: "GET", Path: "/repos/acme/public/readme"},
+	}, pub); err != nil {
+		t.Errorf("expected allowed HTTP GET to succeed, got: %v", err)
+	}
+
+	// 2. Denied HTTP POST (dropped in hop 2)
+	if err := node.Authorize(sealed, RequestContext{
+		PeerID:   callerPeer,
+		Protocol: "/libp2p-http",
+		Target:   "egress://api.github.com",
+		HTTP:     &HTTPRequestFacts{Method: "POST", Path: "/repos/acme/public/readme"},
+	}, pub); err == nil {
+		t.Error("expected HTTP POST to be denied by hop 2 TAR")
+	}
+
+	// 3. Denied service outside TAR (even though standing RBAC grants *)
+	if err := node.Authorize(sealed, RequestContext{
+		PeerID:   callerPeer,
+		Protocol: "/libp2p-http",
+		Target:   "inference://llama3",
+		HTTP:     &HTTPRequestFacts{Method: "POST", Path: "/v1/chat/completions"},
+	}, pub); err == nil {
+		t.Error("expected inference://llama3 to be denied by TAR")
+	}
+
+	// 4. Allowed MCP stream handshake on api.MCPProtocolID
+	if err := node.Authorize(sealed, RequestContext{
+		PeerID:   callerPeer,
+		Protocol: string(api.MCPProtocolID),
+		Target:   "mcp://weather",
+	}, pub); err != nil {
+		t.Errorf("expected MCP stream handshake to mcp://weather to succeed, got: %v", err)
+	}
+}
+
+func TestTARConformanceVectors(t *testing.T) {
+	rawJSON, err := os.ReadFile(filepath.Join("..", "..", "sdk", "testdata", "tar_conformance.json"))
+	if err != nil {
+		t.Fatalf("failed to read tar_conformance.json: %v", err)
+	}
+	var suite struct {
+		PublicKeyB64       string   `json:"public_key_b64"`
+		CallerPeerID       string   `json:"caller_peer_id"`
+		ProviderBiscuitB64 string   `json:"provider_biscuit_b64"`
+		PolicyDatalogRules []string `json:"policy_datalog_rules"`
+		Vectors            []struct {
+			Name                        string  `json:"name"`
+			BiscuitB64                  string  `json:"biscuit_b64"`
+			TargetService               string  `json:"target_service"`
+			Protocol                    string  `json:"protocol"`
+			Method                      *string `json:"method,omitempty"`
+			Path                        string  `json:"path,omitempty"`
+			MCPTool                     string  `json:"mcp_tool,omitempty"`
+			Allow                       bool    `json:"allow"`
+			ExpectedEffectiveExpiration string  `json:"expected_effective_expiration,omitempty"`
+		} `json:"vectors"`
+	}
+	if err := json.Unmarshal(rawJSON, &suite); err != nil {
+		t.Fatalf("failed to unmarshal tar_conformance.json: %v", err)
+	}
+
+	rootPubBytes, err := base64.StdEncoding.DecodeString(suite.PublicKeyB64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootPub := ed25519.PublicKey(rootPubBytes)
+	callerPeer, err := peer.Decode(suite.CallerPeerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerBytes, err := base64.StdEncoding.DecodeString(suite.ProviderBiscuitB64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meshRules, err := api.ParseDatalogRules(suite.PolicyDatalogRules)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	node := &SamNode{
+		trustedKeys:     []TrustedKey{{Key: rootPub, ReceivedAt: time.Now()}},
+		MeshPolicyRules: meshRules,
+		BiscuitTimeout:  500 * time.Millisecond,
+	}
+	node.SetIdentityCache(providerBytes)
+
+	for _, vec := range suite.Vectors {
+		t.Run(vec.Name, func(t *testing.T) {
+			tokenBytes, err := base64.StdEncoding.DecodeString(vec.BiscuitB64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if vec.ExpectedEffectiveExpiration != "" {
+				exp, verifyErr := identity.VerifyBiscuitAndGetExpiry(tokenBytes, callerPeer, []ed25519.PublicKey{rootPub}, 500*time.Millisecond)
+				if verifyErr != nil {
+					t.Fatalf("VerifyBiscuitAndGetExpiry failed: %v", verifyErr)
+				}
+				wantExp, err := time.Parse(time.RFC3339, vec.ExpectedEffectiveExpiration)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !exp.Equal(wantExp) {
+					t.Fatalf("effective expiration = %v, want %v", exp, wantExp)
+				}
+			}
+
+			req := RequestContext{
+				PeerID:   callerPeer,
+				Protocol: vec.Protocol,
+				Target:   vec.TargetService,
+				MCPTool:  vec.MCPTool,
+			}
+			if vec.Method != nil {
+				req.HTTP = &HTTPRequestFacts{
+					Method: *vec.Method,
+					Path:   vec.Path,
+				}
+			}
+			authErr := node.Authorize(tokenBytes, req, rootPub)
+			if vec.Allow && authErr != nil {
+				t.Fatalf("expected allow=true, got error: %v", authErr)
+			}
+			if !vec.Allow && authErr == nil {
+				t.Fatalf("expected allow=false, got nil")
+			}
+		})
 	}
 }

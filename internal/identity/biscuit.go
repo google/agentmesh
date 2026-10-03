@@ -16,8 +16,10 @@ package identity
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"time"
@@ -25,10 +27,12 @@ import (
 	"github.com/biscuit-auth/biscuit-go/v2"
 	"github.com/biscuit-auth/biscuit-go/v2/datalog"
 	"github.com/biscuit-auth/biscuit-go/v2/parser"
+	"github.com/biscuit-auth/biscuit-go/v2/pb"
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/sam/api"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"google.golang.org/protobuf/proto"
 )
 
 // DefaultAuthorizerTimeout bounds Datalog evaluation when no timeout is configured.
@@ -61,29 +65,145 @@ func AuthorizerOptions(timeout time.Duration) []biscuit.AuthorizerOption {
 	)}
 }
 
-// ErrAppendedBlocks is returned for a token that carries attenuation blocks.
-var ErrAppendedBlocks = errors.New("biscuit carries appended blocks; SAM tokens are authority-block only")
+// ErrAppendedBlocks is returned for a token that carries an invalid appended
+// attenuation block (more than api.MaxAttenuationBlocks blocks, or any block
+// that does not consist solely of 0 rules, 0 checks, and 1 valid tar_block fact).
+var ErrAppendedBlocks = errors.New("biscuit carries invalid appended blocks; only tar_block attenuation facts are permitted")
 
 // UnmarshalInbound parses a token received from a peer or a client and
-// refuses one with appended blocks.
+// validates any appended attenuation blocks BEFORE building a Datalog
+// authorizer.
 //
 // Appending needs no root key, so appended blocks are the one place a token
-// holder can put Datalog of their own. SAM reads nothing from them: facts
-// there are invisible to the authorizer and RequireAuthorityBinding ignores
-// them. What they can still do is cost CPU: a block with a self-join rule
-// over a few hundred facts pins a core for the whole evaluation budget on
-// every verifier that evaluates it, and leaks the worker goroutine (see the
-// limits above). The control plane never mints such blocks, so a token that
-// has any is not one SAM issued in its current form.
-func UnmarshalInbound(biscuitData []byte) (*biscuit.Biscuit, error) {
+// holder could otherwise put Datalog of their own (such as a self-join rule or
+// check that pins a core for the evaluation budget and leaks a worker
+// goroutine). UnmarshalInbound inspects the raw pb.Biscuit envelope and block
+// sources first, admitting at most api.MaxAttenuationBlocks blocks and
+// requiring every appended block to contain 0 rules, 0 checks, and exactly 1
+// tar_block("<base64url-proto>") fact encoding a valid
+// api.TaskAuthorizationRule. It returns both the parsed Biscuit and the
+// decoded TaskAuthorizationRule chain so callers never parse twice.
+func UnmarshalInbound(biscuitData []byte) (*biscuit.Biscuit, []*api.TaskAuthorizationRule, error) {
 	b, err := biscuit.Unmarshal(biscuitData)
 	if err != nil {
-		return nil, fmt.Errorf("malformed biscuit: %w", err)
+		return nil, nil, fmt.Errorf("malformed biscuit: %w", err)
 	}
-	if n := b.BlockCount(); n > 0 {
-		return nil, fmt.Errorf("%w (%d)", ErrAppendedBlocks, n)
+	n := b.BlockCount()
+	if n == 0 {
+		return b, nil, nil
 	}
-	return b, nil
+	if n > api.MaxAttenuationBlocks {
+		return nil, nil, fmt.Errorf("%w: block count %d exceeds maximum %d", ErrAppendedBlocks, n, api.MaxAttenuationBlocks)
+	}
+
+	var container pb.Biscuit
+	if err := proto.Unmarshal(biscuitData, &container); err != nil {
+		return nil, nil, fmt.Errorf("malformed biscuit envelope: %w", err)
+	}
+	if len(container.GetBlocks()) != n {
+		return nil, nil, fmt.Errorf("%w: block count mismatch (%d != %d)", ErrAppendedBlocks, len(container.GetBlocks()), n)
+	}
+
+	for i, sb := range container.GetBlocks() {
+		var blk pb.Block
+		if err := proto.Unmarshal(sb.GetBlock(), &blk); err != nil {
+			return nil, nil, fmt.Errorf("%w: block %d malformed: %w", ErrAppendedBlocks, i+1, err)
+		}
+		if len(blk.GetRulesV2()) != 0 {
+			return nil, nil, fmt.Errorf("%w: block %d contains %d rules (0 allowed)", ErrAppendedBlocks, i+1, len(blk.GetRulesV2()))
+		}
+		if len(blk.GetChecksV2()) != 0 {
+			return nil, nil, fmt.Errorf("%w: block %d contains %d checks (0 allowed)", ErrAppendedBlocks, i+1, len(blk.GetChecksV2()))
+		}
+		if len(blk.GetFactsV2()) != 1 {
+			return nil, nil, fmt.Errorf("%w: block %d contains %d facts (1 tar_block fact required)", ErrAppendedBlocks, i+1, len(blk.GetFactsV2()))
+		}
+		pred := blk.GetFactsV2()[0].GetPredicate()
+		if pred == nil || len(pred.GetTerms()) != 1 {
+			return nil, nil, fmt.Errorf("%w: block %d fact must have exactly 1 term", ErrAppendedBlocks, i+1)
+		}
+		if _, ok := pred.GetTerms()[0].GetContent().(*pb.TermV2_String_); !ok {
+			return nil, nil, fmt.Errorf("%w: block %d fact term must be a string", ErrAppendedBlocks, i+1)
+		}
+	}
+
+	codes := b.Code()
+	if len(codes) != n {
+		return nil, nil, fmt.Errorf("%w: block code count mismatch (%d != %d)", ErrAppendedBlocks, len(codes), n)
+	}
+	rules := make([]*api.TaskAuthorizationRule, 0, n)
+	for i, rawCode := range codes {
+		inner := strings.TrimSpace(rawCode)
+		inner = strings.TrimPrefix(inner, "Block {")
+		inner = strings.TrimSuffix(inner, "}")
+		inner = strings.TrimSpace(inner)
+		rule, err := api.ParseTARBlockSource(inner)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%w: block %d: %w", ErrAppendedBlocks, i+1, err)
+		}
+		rules = append(rules, rule)
+	}
+
+	return b, rules, nil
+}
+
+// AttenuateBiscuit appends a validated TaskAuthorizationRule as a single
+// tar_block("<base64url>") fact block (with 0 rules and 0 checks) to an
+// existing Biscuit token.
+func AttenuateBiscuit(biscuitData []byte, rule *api.TaskAuthorizationRule) ([]byte, error) {
+	return AttenuateBiscuitWithRand(rand.Reader, biscuitData, rule)
+}
+
+// AttenuateBiscuitWithRand is AttenuateBiscuit with an explicit random source
+// (used by deterministic conformance vector generators).
+func AttenuateBiscuitWithRand(rng io.Reader, biscuitData []byte, rule *api.TaskAuthorizationRule) ([]byte, error) {
+	b, existingRules, err := UnmarshalInbound(biscuitData)
+	if err != nil {
+		return nil, err
+	}
+	if len(existingRules) >= api.MaxAttenuationBlocks {
+		return nil, fmt.Errorf("%w: cannot append block %d (max %d)", ErrAppendedBlocks, len(existingRules)+1, api.MaxAttenuationBlocks)
+	}
+	fact, err := api.EncodeTARBlockFact(rule)
+	if err != nil {
+		return nil, err
+	}
+	blockBuilder := b.CreateBlock()
+	if err := blockBuilder.AddFact(fact); err != nil {
+		return nil, fmt.Errorf("failed to add tar_block fact: %w", err)
+	}
+	attenuated, err := b.Append(rng, blockBuilder.Build())
+	if err != nil {
+		return nil, fmt.Errorf("failed to append tar_block to biscuit: %w", err)
+	}
+	return attenuated.Serialize()
+}
+
+// SealBiscuit cryptographically seals a Biscuit token so no further blocks can
+// be appended by a downstream holder.
+func SealBiscuit(biscuitData []byte) ([]byte, error) {
+	return SealBiscuitWithRand(rand.Reader, biscuitData)
+}
+
+// SealBiscuitWithRand is SealBiscuit with an explicit random source (used by
+// deterministic conformance vector generators).
+func SealBiscuitWithRand(rng io.Reader, biscuitData []byte) ([]byte, error) {
+	b, _, err := UnmarshalInbound(biscuitData)
+	if err != nil {
+		return nil, err
+	}
+	sealed, err := b.Seal(rng)
+	if err != nil {
+		return nil, fmt.Errorf("failed to seal biscuit: %w", err)
+	}
+	return sealed.Serialize()
+}
+
+// ExtractTaskRules validates an inbound Biscuit's appended blocks and returns
+// its decoded TaskAuthorizationRule chain (nil if authority-only).
+func ExtractTaskRules(biscuitData []byte) ([]*api.TaskAuthorizationRule, error) {
+	_, rules, err := UnmarshalInbound(biscuitData)
+	return rules, err
 }
 
 // EnforceExpiration injects the current time and the expiration check into an
@@ -357,7 +477,7 @@ func VerifyBiscuitAndGetExpiry(biscuitData []byte, expectedPeer peer.ID, trusted
 }
 
 func verifyBiscuit(biscuitData []byte, expectedPeer peer.ID, trustedPublicKeys []ed25519.PublicKey, timeout time.Duration) (*biscuit.Biscuit, ed25519.PublicKey, time.Time, error) {
-	b, err := UnmarshalInbound(biscuitData)
+	b, rules, err := UnmarshalInbound(biscuitData)
 	if err != nil {
 		return nil, nil, time.Time{}, err
 	}
@@ -399,6 +519,10 @@ func verifyBiscuit(biscuitData []byte, expectedPeer peer.ID, trustedPublicKeys [
 	expiry, err := expirationOf(authorizer)
 	if err != nil {
 		return nil, nil, time.Time{}, err
+	}
+	expiry = api.EffectiveTARExpiration(expiry, rules)
+	if !time.Now().Before(expiry) {
+		return nil, nil, time.Time{}, fmt.Errorf("token tar_block expired at %s", expiry.UTC().Format(time.RFC3339))
 	}
 
 	return b, verifyingKey, expiry, nil
@@ -484,9 +608,17 @@ func VerifyAndExtractPeerID(trustedPublicKeys []ed25519.PublicKey, biscuitData [
 }
 
 func extractPeerID(trustedPublicKeys []ed25519.PublicKey, biscuitData []byte, timeout time.Duration, enforceExpiry bool) (peer.ID, error) {
-	b, err := UnmarshalInbound(biscuitData)
+	b, rules, err := UnmarshalInbound(biscuitData)
 	if err != nil {
 		return "", err
+	}
+	if enforceExpiry {
+		now := time.Now()
+		for i, rule := range rules {
+			if exp := rule.GetExpireTime(); exp != nil && now.After(exp.AsTime()) {
+				return "", fmt.Errorf("tar_block[%d] expired at %s", i+1, exp.AsTime().UTC().Format(time.RFC3339))
+			}
+		}
 	}
 
 	authOpts := AuthorizerOptions(timeout)
@@ -559,7 +691,7 @@ func extractPeerID(trustedPublicKeys []ed25519.PublicKey, biscuitData []byte, ti
 // should trigger a refresh rather than refuse to boot. Do not use it to admit a token
 // received from a peer.
 func VerifyBiscuitRole(biscuitData []byte, controlPlanePubKey ed25519.PublicKey, expectedRole string, timeout time.Duration) error {
-	b, err := UnmarshalInbound(biscuitData)
+	b, _, err := UnmarshalInbound(biscuitData)
 	if err != nil {
 		return err
 	}

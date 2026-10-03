@@ -54,6 +54,14 @@ type RequestContext struct {
 	// node, evaluated on its own credential, and the target check is satisfied
 	// because a node is always allowed to reach itself. Never set from the wire.
 	Local bool
+
+	// MCPTool is set when evaluating a specific MCP tools/call invocation.
+	MCPTool string
+
+	// TaskRules holds the verified TaskAuthorizationRule chain extracted from
+	// the caller's Biscuit during stream authentication so downstream stream
+	// handlers (such as MCP pass-through) can enforce tool-level constraints.
+	TaskRules []*api.TaskAuthorizationRule
 }
 
 // HTTPRequestFacts is what an HTTP request contributes to policy.
@@ -160,7 +168,7 @@ func (n *SamNode) WithBiscuitAuth(next func(network.Stream, RequestContext)) net
 
 		writer := msgio.NewVarintWriter(ts)
 
-		err = n.VerifyBiscuitToken(authFrame.Biscuit, reqCtx)
+		taskRules, err := n.verifyBiscuitTokenWithRules(authFrame.Biscuit, reqCtx)
 		if err != nil {
 			logger.Warnf("[Auth] AuthZ Denied %s: %v", remotePeer, err)
 			resp := &api.AuthResponse{Success: false, Error: err.Error()}
@@ -168,6 +176,7 @@ func (n *SamNode) WithBiscuitAuth(next func(network.Stream, RequestContext)) net
 			_ = writer.WriteMsg(respBytes)
 			return
 		}
+		reqCtx.TaskRules = taskRules
 
 		// Valid. Mutual auth: return our control-plane-minted identity so the
 		// caller can verify this node's attested facts (e.g. region) before
@@ -191,13 +200,18 @@ func (n *SamNode) WithBiscuitAuth(next func(network.Stream, RequestContext)) net
 
 // VerifyBiscuitToken checks revocation, cache, and evaluates the token against trusted keys and local policies.
 func (n *SamNode) VerifyBiscuitToken(biscuitBytes []byte, reqCtx RequestContext) error {
+	_, err := n.verifyBiscuitTokenWithRules(biscuitBytes, reqCtx)
+	return err
+}
+
+func (n *SamNode) verifyBiscuitTokenWithRules(biscuitBytes []byte, reqCtx RequestContext) ([]*api.TaskAuthorizationRule, error) {
 	remotePeer := reqCtx.PeerID
 
 	// Check revocation cache
 	if n.revokedPeers != nil {
 		if _, isRevoked := n.revokedPeers.Get(remotePeer.String()); isRevoked {
 			logger.Warnf("[Auth] Peer %s is revoked", remotePeer)
-			return fmt.Errorf("peer is revoked")
+			return nil, fmt.Errorf("peer is revoked")
 		}
 	}
 
@@ -206,11 +220,13 @@ func (n *SamNode) VerifyBiscuitToken(biscuitBytes []byte, reqCtx RequestContext)
 	n.keysMu.RUnlock()
 
 	var authorized bool
+	var taskRules []*api.TaskAuthorizationRule
 	var lastErr error
 	for _, pubKey := range keys {
 		logger.Infof("[Auth] Trying key: %x", pubKey.Key)
-		if err := n.Authorize(biscuitBytes, reqCtx, pubKey.Key); err == nil {
+		if rules, err := n.authorizeWithRules(biscuitBytes, reqCtx, pubKey.Key); err == nil {
 			authorized = true
+			taskRules = rules
 			break
 		} else {
 			lastErr = err
@@ -219,30 +235,35 @@ func (n *SamNode) VerifyBiscuitToken(biscuitBytes []byte, reqCtx RequestContext)
 
 	if !authorized {
 		if lastErr != nil {
-			return lastErr
+			return nil, lastErr
 		}
-		return fmt.Errorf("authorization failed")
+		return nil, fmt.Errorf("authorization failed")
 	}
 
-	return nil
+	return taskRules, nil
 }
 
 func (n *SamNode) Authorize(rawToken []byte, req RequestContext, pubKey ed25519.PublicKey) error {
+	_, err := n.authorizeWithRules(rawToken, req, pubKey)
+	return err
+}
+
+func (n *SamNode) authorizeWithRules(rawToken []byte, req RequestContext, pubKey ed25519.PublicKey) ([]*api.TaskAuthorizationRule, error) {
 	if len(pubKey) != ed25519.PublicKeySize {
-		return fmt.Errorf("invalid public key size: %d", len(pubKey))
+		return nil, fmt.Errorf("invalid public key size: %d", len(pubKey))
 	}
-	b, err := identity.UnmarshalInbound(rawToken)
+	b, taskRules, err := identity.UnmarshalInbound(rawToken)
 	if err != nil {
-		return fmt.Errorf("invalid biscuit: %w", err)
+		return nil, fmt.Errorf("invalid biscuit: %w", err)
 	}
 
 	authorizer, err := b.Authorizer(pubKey, identity.AuthorizerOptions(n.BiscuitTimeout)...)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if err := identity.RequireAuthorityBinding(b, req.PeerID); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Inject the current action context (Standard Vocabulary)
@@ -304,7 +325,7 @@ func (n *SamNode) Authorize(rawToken []byte, req RequestContext, pubKey ed25519.
 
 	// Inject facts from our own identity token to support target matching
 	if err := n.injectIdentityFacts(authorizer, pubKey); err != nil {
-		return fmt.Errorf("failed to inject target facts: %w", err)
+		return nil, fmt.Errorf("failed to inject target facts: %w", err)
 	}
 
 	if n.nodeConfig != nil {
@@ -345,7 +366,25 @@ func (n *SamNode) Authorize(rawToken []byte, req RequestContext, pubKey ed25519.
 		logger.Infow("Audit Traceability", append(req.auditFields(), "decision", "deny", "reason", err.Error())...)
 		logger.Debugf("Authorizer failure: %v, token: %s", err, b.String())
 		logger.Debugf("Authorizer state: %s", authorizer.PrintWorld())
-		return err
+		return nil, err
+	}
+
+	if len(taskRules) > 0 {
+		taskReq := api.TaskRequestContext{
+			ServiceType:        opType,
+			ServiceName:        opName,
+			MCPTool:            req.MCPTool,
+			AllowMCPStreamInit: req.HTTP == nil && req.MCPTool == "" && req.Protocol == string(api.MCPProtocolID),
+		}
+		if req.HTTP != nil {
+			taskReq.HasHTTP = true
+			taskReq.Method = req.HTTP.Method
+			taskReq.Path = req.HTTP.Path
+		}
+		if err := api.EvaluateTaskRules(taskRules, taskReq, time.Now()); err != nil {
+			logger.Infow("Audit Traceability", append(req.auditFields(), "decision", "deny", "reason", err.Error())...)
+			return nil, err
+		}
 	}
 
 	var userStr, emailStr, roleStr string
@@ -377,14 +416,18 @@ func (n *SamNode) Authorize(rawToken []byte, req RequestContext, pubKey ed25519.
 		}
 	}
 
-	logger.Infow("Audit Traceability", append(req.auditFields(),
+	auditFields := append(req.auditFields(),
 		"decision", "allow",
 		"user", userStr,
 		"email", emailStr,
 		"role", roleStr,
-	)...)
+	)
+	if len(taskRules) > 0 {
+		auditFields = append(auditFields, "task", taskRules[len(taskRules)-1].GetName())
+	}
+	logger.Infow("Audit Traceability", auditFields...)
 
-	return nil
+	return taskRules, nil
 }
 
 // auditFields is what every authorization decision logs about the request:
@@ -401,6 +444,9 @@ func (req RequestContext) auditFields() []any {
 	}
 	if req.Egress != nil {
 		fields = append(fields, "host", req.Egress.Host, "port", req.Egress.Port)
+	}
+	if req.MCPTool != "" {
+		fields = append(fields, "mcp_tool", req.MCPTool)
 	}
 	return fields
 }

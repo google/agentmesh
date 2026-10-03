@@ -13,10 +13,14 @@
 // limitations under the License.
 
 // Verification of a peer's biscuit, mirroring internal/identity.verifyBiscuit:
-// signed by a trusted control plane key, authority block only, unexpired,
-// and bound to the peer at the other end of the connection.
+// signed by a trusted control plane key, authority block + validated tar_block
+// chain, unexpired, and bound to the peer at the other end of the connection.
 
+import type { MessageInitShape } from "@bufbuild/protobuf";
+import { BASELINE_DATALOG } from "./gen/datalog.ts";
+import { TaskAuthorizationRuleSchema, type TaskAuthorizationRule } from "./gen/sam_pb.ts";
 import { loadBiscuitWasm, type BiscuitWasm } from "./platform/wasm.ts";
+import { effectiveTARExpiration, encodeTARBlockFact, parseTARBlockSource } from "./tar.ts";
 
 let loading: Promise<BiscuitWasm> | undefined;
 
@@ -69,12 +73,14 @@ export class BiscuitVerificationError extends Error {
 export interface VerifiedBiscuit {
   /** The peer the token is bound to (its node() fact). */
   peerId: string;
-  /** When the token lapses; the earliest expiration() fact. */
+  /** When the token lapses; the minimum of authority expiration() and any tar_block expire_time. */
   expiration: Date;
   /** The trusted key that verified the signature. */
   verifyingKey: Uint8Array;
   roles: string[];
   labels: Record<string, string>;
+  /** Verified TaskAuthorizationRule chain from blocks 1..N (empty for unattenuated tokens). */
+  taskRules: TaskAuthorizationRule[];
 }
 
 function describe(err: unknown): string {
@@ -90,22 +96,14 @@ function describe(err: unknown): string {
 
 type QueriedFact = { terms(): unknown[] };
 
-/**
- * Verifies a biscuit received from expectedPeerId over an authenticated
- * connection. Every trusted key is tried, so a token minted under a
- * retiring key still verifies during rotation.
- */
-export async function verifyPeerBiscuit(
+function parseWithTrustedKeys(
+  wasm: BiscuitWasm,
   biscuitBytes: Uint8Array,
-  expectedPeerId: string,
   trustedKeys: Uint8Array[],
-  now: Date = new Date(),
-): Promise<VerifiedBiscuit> {
-  const wasm = await loadBiscuit();
+): { token: ReturnType<BiscuitWasm["Biscuit"]["fromBytes"]>; verifyingKey: Uint8Array } {
   if (trustedKeys.length === 0) {
     throw new BiscuitVerificationError("no trusted control plane key to verify against");
   }
-
   let token: ReturnType<BiscuitWasm["Biscuit"]["fromBytes"]> | undefined;
   let verifyingKey: Uint8Array | undefined;
   let lastErr: unknown;
@@ -121,12 +119,41 @@ export async function verifyPeerBiscuit(
   if (!token || !verifyingKey) {
     throw new BiscuitVerificationError(`biscuit is not signed by a trusted control plane key: ${describe(lastErr)}`);
   }
+  return { token, verifyingKey };
+}
 
-  // Appending needs no root key, so appended blocks are the one place a
-  // holder can put Datalog of their own. SAM tokens are authority-only.
-  if (token.countBlocks() !== 1) {
-    throw new BiscuitVerificationError(`biscuit carries appended blocks; SAM tokens are authority-block only (${token.countBlocks() - 1})`);
+function extractTARChain(token: ReturnType<BiscuitWasm["Biscuit"]["fromBytes"]>): TaskAuthorizationRule[] {
+  const appendedCount = token.countBlocks() - 1;
+  if (appendedCount > BASELINE_DATALOG.max_attenuation_blocks) {
+    throw new BiscuitVerificationError(
+      `biscuit carries ${appendedCount} appended blocks; maximum is ${BASELINE_DATALOG.max_attenuation_blocks}`,
+    );
   }
+  const taskRules: TaskAuthorizationRule[] = [];
+  for (let i = 1; i <= appendedCount; i++) {
+    try {
+      taskRules.push(parseTARBlockSource(token.getBlockSource(i)));
+    } catch (err) {
+      throw new BiscuitVerificationError(`biscuit block ${i}: ${describe(err)}`);
+    }
+  }
+  return taskRules;
+}
+
+/**
+ * Verifies a biscuit received from expectedPeerId over an authenticated
+ * connection. Every trusted key is tried, so a token minted under a
+ * retiring key still verifies during rotation.
+ */
+export async function verifyPeerBiscuit(
+  biscuitBytes: Uint8Array,
+  expectedPeerId: string,
+  trustedKeys: Uint8Array[],
+  now: Date = new Date(),
+): Promise<VerifiedBiscuit> {
+  const wasm = await loadBiscuit();
+  const { token, verifyingKey } = parseWithTrustedKeys(wasm, biscuitBytes, trustedKeys);
+  const taskRules = extractTARChain(token);
 
   const builder = new wasm.AuthorizerBuilder();
   builder.addFact(wasm.Fact.fromString(`time(${now.toISOString().replace(/\.\d{3}Z$/, "Z")})`));
@@ -153,7 +180,13 @@ export async function verifyPeerBiscuit(
   if (expirations.length === 0) {
     throw new BiscuitVerificationError("biscuit carries no expiration fact");
   }
-  const expiration = new Date(Math.min(...expirations.map((d) => d.getTime())));
+  const authorityExpiration = new Date(Math.min(...expirations.map((d) => d.getTime())));
+  const expiration = effectiveTARExpiration(authorityExpiration, taskRules);
+  if (now.getTime() > expiration.getTime()) {
+    throw new BiscuitVerificationError(
+      `biscuit is expired at ${now.toISOString()} (effective expiration ${expiration.toISOString()})`,
+    );
+  }
 
   const labels: Record<string, string> = {};
   for (const f of query("l($k, $v) <- label($k, $v)")) {
@@ -163,7 +196,56 @@ export async function verifyPeerBiscuit(
     }
   }
 
-  return { peerId: expectedPeerId, expiration, verifyingKey, roles: strings(query("r($r) <- role($r)")), labels };
+  return {
+    peerId: expectedPeerId,
+    expiration,
+    verifyingKey,
+    roles: strings(query("r($r) <- role($r)")),
+    labels,
+    taskRules,
+  };
+}
+
+/**
+ * Appends a non-authority block carrying a single tar_block("<base64url-proto>")
+ * fact to an existing Biscuit token in memory without contacting the control plane.
+ */
+export async function attenuateBiscuit(
+  biscuitBytes: Uint8Array,
+  ruleInput: MessageInitShape<typeof TaskAuthorizationRuleSchema>,
+  trustedKeys: Uint8Array[],
+): Promise<Uint8Array> {
+  const wasm = await loadBiscuit();
+  const { token } = parseWithTrustedKeys(wasm, biscuitBytes, trustedKeys);
+  const appendedCount = token.countBlocks() - 1;
+  if (appendedCount >= BASELINE_DATALOG.max_attenuation_blocks) {
+    throw new BiscuitVerificationError(
+      `biscuit already has ${appendedCount} appended blocks (maximum ${BASELINE_DATALOG.max_attenuation_blocks})`,
+    );
+  }
+  extractTARChain(token);
+  const factStr = encodeTARBlockFact(ruleInput);
+  const block = wasm.Biscuit.block_builder();
+  block.addFact(wasm.Fact.fromString(factStr));
+  try {
+    return token.appendBlock(block).toBytes();
+  } catch (err) {
+    throw new BiscuitVerificationError(`failed to append tar_block to biscuit: ${describe(err)}`);
+  }
+}
+
+/**
+ * Seals a Biscuit token so no further blocks can be appended by downstream holders.
+ */
+export async function sealBiscuit(biscuitBytes: Uint8Array, trustedKeys: Uint8Array[]): Promise<Uint8Array> {
+  const wasm = await loadBiscuit();
+  const { token } = parseWithTrustedKeys(wasm, biscuitBytes, trustedKeys);
+  extractTARChain(token);
+  try {
+    return token.sealToken().toBytes();
+  } catch (err) {
+    throw new BiscuitVerificationError(`failed to seal biscuit: ${describe(err)}`);
+  }
 }
 
 /** Requires role(<role>) on an already verified token, as identity.RequireRole. */
@@ -172,3 +254,4 @@ export function requireRole(verified: VerifiedBiscuit, role: string): void {
     throw new BiscuitVerificationError(`biscuit lacks expected role ${JSON.stringify(role)}`);
   }
 }
+

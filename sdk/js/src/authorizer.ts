@@ -20,6 +20,7 @@
 import { AUTHORIZER_LIMITS, BiscuitVerificationError, loadBiscuit, verifyPeerBiscuit, withinLimits, type VerifiedBiscuit } from "./biscuit.ts";
 import { parseServiceTarget } from "./discovery.ts";
 import { BASELINE_DATALOG } from "./gen/datalog.ts";
+import { evaluateTaskRules } from "./tar.ts";
 
 /** What a caller asks for, as sam-node's RequestContext. */
 export interface AuthorizeRequest {
@@ -39,6 +40,8 @@ export interface AuthorizeRequest {
    */
   method?: string;
   path?: string;
+  /** The MCP tool name when evaluating a specific MCP tools/call invocation. */
+  mcpTool?: string;
 }
 
 export interface ProviderAuthorizerOptions {
@@ -88,7 +91,7 @@ export async function authorizeCaller(req: AuthorizeRequest, options: ProviderAu
     throw new AuthorizationError(req.peerId, "no trusted control plane key");
   }
 
-  // Signature under a trusted key, authority block only, expiry and binding
+  // Signature under a trusted key, authority block + tar_block chain, expiry and binding
   // to the connection peer: RequireAuthorityBinding and EnforceExpiration.
   let caller: VerifiedBiscuit;
   try {
@@ -162,6 +165,27 @@ export async function authorizeCaller(req: AuthorizeRequest, options: ProviderAu
     withinLimits(() => authorizer.authorizeWithLimits(AUTHORIZER_LIMITS));
   } catch (err) {
     throw new AuthorizationError(req.peerId, describe(err));
+  }
+
+  if (caller.taskRules.length > 0) {
+    const mcpTool = req.mcpTool ?? "";
+    try {
+      evaluateTaskRules(
+        caller.taskRules,
+        {
+          serviceType: svcType,
+          serviceName: svcName,
+          hasHttp: req.method !== undefined,
+          method: req.method ?? "",
+          path: req.path ?? "",
+          mcpTool,
+          allowMCPStreamInit: req.method === undefined && mcpTool === "" && req.protocol === "/sam/mcp/1.0.0",
+        },
+        now,
+      );
+    } catch (err) {
+      throw new AuthorizationError(req.peerId, describe(err));
+    }
   }
   return caller;
 }

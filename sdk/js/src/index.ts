@@ -39,7 +39,31 @@ export {
 } from "./credential.ts";
 export { enrollChallenge, enrollStatusChallenge, refreshChallenge, registerChallenge } from "./challenges.ts";
 export { MeshSession, type AdmittedRouter, type DiscoveredProvider, type JoinOptions, type Peer, type ToolCallResult } from "./session.ts";
-export { BiscuitVerificationError, ROLE_ROUTER, requireRole, verifyPeerBiscuit, type VerifiedBiscuit } from "./biscuit.ts";
+export {
+  BiscuitVerificationError,
+  ROLE_ROUTER,
+  attenuateBiscuit,
+  requireRole,
+  sealBiscuit,
+  verifyPeerBiscuit,
+  type VerifiedBiscuit,
+} from "./biscuit.ts";
+export {
+  decodeTARBlockPayload,
+  effectiveTARExpiration,
+  encodeTARBlockFact,
+  encodeTARBlockPayload,
+  evaluateTaskRules,
+  matchHTTPPath,
+  matchServicePattern,
+  matchTaskRule,
+  parseTARBlockSource,
+  validateHTTPGrantPath,
+  validateServicePattern,
+  validateTaskAuthorizationRule,
+  validateTaskRule,
+  type TaskRequestContext,
+} from "./tar.ts";
 export { AUTH_HANDLER_OPTIONS, AUTH_PROTOCOL, MCP_PROTOCOL, AuthRejectedError, authenticateWithPeer, authStreamHandler } from "./auth.ts";
 export { createMeshHost, type MeshHost, type MeshHostOptions } from "./host.ts";
 export { DHT_PROTOCOL, isServiceType, parseServiceTarget, serviceCID, type ServiceType } from "./discovery.ts";

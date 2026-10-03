@@ -42,6 +42,10 @@ export function toBase64Url(bytes: Uint8Array): string {
   return toString(bytes, "base64url");
 }
 
+export function fromBase64Url(text: string): Uint8Array {
+  return fromString(text, "base64url");
+}
+
 export function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i]);
 }

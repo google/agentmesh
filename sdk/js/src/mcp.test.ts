@@ -166,12 +166,12 @@ test("required labels are checked on the provider's credential", async () => {
   const ok = await openMCPSession(conn, frame("mcp://calc"), [cpKey], { requiredLabels: { region: "eu" } });
   await ok.close();
   await assert.rejects(openMCPSession(conn, frame("mcp://calc"), [cpKey], { requiredLabels: { region: "us" } }), LabelsNotSatisfiedError);
-  assert.throws(() => requireLabels({ peerId: "p", expiration: new Date(), verifyingKey: cpKey, roles: [], labels: {} }, { team: "x" }), /team=x/);
+  assert.throws(() => requireLabels({ peerId: "p", expiration: new Date(), verifyingKey: cpKey, roles: [], labels: {}, taskRules: [] }, { team: "x" }), /team=x/);
 });
 
 test("a requirement of several labels is met only by every one of them, as sam-node's checkPeerLabels", () => {
   // The cases of internal/node/labels_gate_test.go, run through the SDK's predicate.
-  const attesting = (labels: Record<string, string>) => ({ peerId: "p", expiration: new Date(), verifyingKey: cpKey, roles: [], labels });
+  const attesting = (labels: Record<string, string>) => ({ peerId: "p", expiration: new Date(), verifyingKey: cpKey, roles: [], labels, taskRules: [] });
   // exact match
   requireLabels(attesting({ region: "us-east-1" }), { region: "us-east-1" });
   // every pair of two attested
@@ -192,7 +192,7 @@ test("a requirement of several labels is met only by every one of them, as sam-n
 });
 
 test("the egress floor is met only by every one of its pairs, as sam-node's api.LabelCheck", () => {
-  const attesting = (labels: Record<string, string>) => ({ peerId: "p", expiration: new Date(), verifyingKey: cpKey, roles: [], labels });
+  const attesting = (labels: Record<string, string>) => ({ peerId: "p", expiration: new Date(), verifyingKey: cpKey, roles: [], labels, taskRules: [] });
   requireEgressLabels(attesting({ region: "eu", team: "platform" }), { region: "eu" });
   requireEgressLabels(attesting({ region: "eu", team: "platform" }), { region: "eu", team: "platform" });
   // one pair short is a refusal that names the whole floor

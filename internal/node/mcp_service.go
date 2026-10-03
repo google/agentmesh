@@ -16,6 +16,7 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -221,7 +222,7 @@ var preflightMethodsUnsupportedByPassThrough = map[string]bool{
 var passThroughDrainTimeout = 5 * time.Second
 
 // HandleStreamPassThrough connects to the backend and proxies JSON-RPC messages.
-func (m *MCPService) HandleStreamPassThrough(s network.Stream) {
+func (m *MCPService) HandleStreamPassThrough(s network.Stream, reqCtx RequestContext) {
 	defer func() {
 		if err := s.Close(); err != nil {
 			logger.Debugf("[MCPService] Failed to close MCP stream: %v", err)
@@ -323,6 +324,16 @@ func (m *MCPService) HandleStreamPassThrough(s network.Stream) {
 				}
 				continue
 			}
+			if req, ok := msg.(*jsonrpc.Request); ok && len(reqCtx.TaskRules) > 0 {
+				if errResp := m.authorizeMCPRequest(req, reqCtx); errResp != nil {
+					if werr := clientConn.Write(ctx, errResp); werr != nil {
+						logger.Debugf("[MCPService] %s: failed to write TAR rejection: %v", m.info.Name, werr)
+						clientErrc <- werr
+						return
+					}
+					continue
+				}
+			}
 			if err := backendConn.Write(ctx, msg); err != nil {
 				logger.Debugf("[MCPService] %s: backend write error: %v", m.info.Name, err)
 				clientErrc <- err
@@ -344,5 +355,52 @@ func (m *MCPService) HandleStreamPassThrough(s network.Stream) {
 	case <-clientErrc:
 	case <-time.After(passThroughDrainTimeout):
 		logger.Debugf("[MCPService] %s: client did not hang up within %v of the backend finishing; closing", m.info.Name, passThroughDrainTimeout)
+	}
+}
+
+// authorizeMCPRequest evaluates reqCtx.TaskRules against an inbound JSON-RPC
+// request on an MCP stream. Returns a JSON-RPC error response when denied, or
+// nil when allowed.
+func (m *MCPService) authorizeMCPRequest(req *jsonrpc.Request, reqCtx RequestContext) *jsonrpc.Response {
+	if !req.IsCall() {
+		return nil
+	}
+	svcName := m.info.GetName()
+	switch req.Method {
+	case "initialize", "ping", "tools/list":
+		if err := api.EvaluateTaskRules(reqCtx.TaskRules, api.TaskRequestContext{
+			ServiceType:        "mcp",
+			ServiceName:        svcName,
+			AllowMCPStreamInit: true,
+		}, time.Now()); err != nil {
+			logger.Warnf("[MCPService] %s: TAR denied %s from %s: %v", svcName, req.Method, reqCtx.PeerID, err)
+			return &jsonrpc.Response{ID: req.ID, Error: &jsonrpc.Error{Code: jsonrpc.CodeInvalidRequest, Message: fmt.Sprintf("task authorization denied %s: %v", req.Method, err)}}
+		}
+		return nil
+	case "tools/call":
+		var params struct {
+			Name string `json:"name"`
+		}
+		if len(req.Params) == 0 || json.Unmarshal(req.Params, &params) != nil || params.Name == "" {
+			return &jsonrpc.Response{ID: req.ID, Error: &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "tools/call requires a non-empty tool name"}}
+		}
+		if err := api.EvaluateTaskRules(reqCtx.TaskRules, api.TaskRequestContext{
+			ServiceType: "mcp",
+			ServiceName: svcName,
+			MCPTool:     params.Name,
+		}, time.Now()); err != nil {
+			logger.Warnf("[MCPService] %s: TAR denied tools/call %q from %s: %v", svcName, params.Name, reqCtx.PeerID, err)
+			return &jsonrpc.Response{ID: req.ID, Error: &jsonrpc.Error{Code: jsonrpc.CodeInvalidRequest, Message: fmt.Sprintf("task authorization denied tool %q: %v", params.Name, err)}}
+		}
+		return nil
+	default:
+		if err := api.EvaluateTaskRules(reqCtx.TaskRules, api.TaskRequestContext{
+			ServiceType: "mcp",
+			ServiceName: svcName,
+		}, time.Now()); err != nil {
+			logger.Warnf("[MCPService] %s: TAR denied %s from %s: %v", svcName, req.Method, reqCtx.PeerID, err)
+			return &jsonrpc.Response{ID: req.ID, Error: &jsonrpc.Error{Code: jsonrpc.CodeInvalidRequest, Message: fmt.Sprintf("task authorization denied %s: %v", req.Method, err)}}
+		}
+		return nil
 	}
 }

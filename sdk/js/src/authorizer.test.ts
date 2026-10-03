@@ -16,10 +16,12 @@
 // mints them and policy rules rendered the way it renders them. The
 // decisions here are the ones internal/node/middleware_test.go pins.
 
+import { timestampFromDate } from "@bufbuild/protobuf/wkt";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { before, test } from "node:test";
 import { AuthorizationError, authorizeCaller, type AuthorizeRequest } from "./authorizer.ts";
-import { loadBiscuit } from "./biscuit.ts";
+import { BiscuitVerificationError, attenuateBiscuit, loadBiscuit, sealBiscuit } from "./biscuit.ts";
 import { BASELINE_DATALOG } from "./gen/datalog.ts";
 
 type Wasm = Awaited<ReturnType<typeof loadBiscuit>>;
@@ -172,3 +174,113 @@ test("every baseline item parses in biscuit-wasm", () => {
     wasm.Policy.fromString(p);
   }
 });
+
+interface TARConformanceVector {
+  name: string;
+  biscuit_b64: string;
+  target_service: string;
+  protocol: string;
+  method?: string;
+  path?: string;
+  mcp_tool?: string;
+  allow: boolean;
+  expected_effective_expiration?: string;
+}
+
+const tarSuite = JSON.parse(readFileSync(new URL("../../testdata/tar_conformance.json", import.meta.url), "utf8")) as {
+  public_key_b64: string;
+  caller_peer_id: string;
+  provider_biscuit_b64: string;
+  evaluation_time: string;
+  policy_datalog_rules: string[];
+  vectors: TARConformanceVector[];
+};
+
+for (const vec of tarSuite.vectors) {
+  test(`tar conformance: ${vec.name}`, async () => {
+    const rootPub = new Uint8Array(Buffer.from(tarSuite.public_key_b64, "base64"));
+    const providerBiscuit = new Uint8Array(Buffer.from(tarSuite.provider_biscuit_b64, "base64"));
+    const biscuitBytes = new Uint8Array(Buffer.from(vec.biscuit_b64, "base64"));
+    const evalNow = new Date(tarSuite.evaluation_time);
+    const req: AuthorizeRequest = {
+      biscuit: biscuitBytes,
+      peerId: tarSuite.caller_peer_id,
+      targetService: vec.target_service,
+      protocol: vec.protocol,
+      ...(vec.method !== undefined ? { method: vec.method, path: vec.path ?? "" } : {}),
+      ...(vec.mcp_tool !== undefined ? { mcpTool: vec.mcp_tool } : {}),
+    };
+    const opts = {
+      trustedKeys: () => [rootPub],
+      ownBiscuit: () => providerBiscuit,
+      policyRules: () => tarSuite.policy_datalog_rules,
+      now: () => evalNow,
+    };
+    if (!vec.allow) {
+      await assert.rejects(authorizeCaller(req, opts), AuthorizationError);
+      return;
+    }
+    const verified = await authorizeCaller(req, opts);
+    assert.equal(verified.peerId, tarSuite.caller_peer_id);
+    if (vec.expected_effective_expiration !== undefined) {
+      assert.equal(verified.expiration.getTime(), new Date(vec.expected_effective_expiration).getTime());
+    }
+  });
+}
+
+test("attenuateBiscuit and sealBiscuit narrow authority across hops", async () => {
+  const root = nodeToken(CALLER, [`granted_service_all_types(true)`, `target_unrestricted(true)`]);
+  const hop1Exp = new Date("2034-05-01T00:00:00Z");
+  const hop2Exp = new Date("2034-02-01T00:00:00Z");
+
+  const att1 = await attenuateBiscuit(
+    root,
+    {
+      name: "hop-1",
+      expireTime: timestampFromDate(hop1Exp),
+      rules: [
+        {
+          allowedServices: ["mcp://calc"],
+          operation: { allowedTools: ["add", "multiply"] },
+        },
+      ],
+    },
+    [cpKey],
+  );
+  const att2 = await attenuateBiscuit(
+    att1,
+    {
+      name: "hop-2",
+      expireTime: timestampFromDate(hop2Exp),
+      rules: [
+        {
+          allowedServices: ["mcp://calc"],
+          operation: { allowedTools: ["add"] },
+        },
+      ],
+    },
+    [cpKey],
+  );
+  const sealed = await sealBiscuit(att2, [cpKey]);
+
+  const verified = await authorizeCaller({ ...request(sealed, "mcp://calc"), mcpTool: "add" }, options([]));
+  assert.equal(verified.expiration.getTime(), hop2Exp.getTime());
+  assert.equal(verified.taskRules.length, 2);
+
+  await assert.rejects(
+    authorizeCaller({ ...request(sealed, "mcp://calc"), mcpTool: "multiply" }, options([])),
+    AuthorizationError,
+  );
+  await assert.rejects(
+    attenuateBiscuit(
+      sealed,
+      {
+        name: "hop-3",
+        rules: [{ allowedServices: ["mcp://calc"] }],
+      },
+      [cpKey],
+    ),
+    BiscuitVerificationError,
+  );
+});
+

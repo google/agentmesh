@@ -6,6 +6,29 @@
 
 ---
 
+## The Picture: a Courier Network for Tasks
+
+![The Agent Mesh as a courier network](site/static/images/agent-mesh-courier.svg)
+
+SAM is not a network proxy that happens to carry agent traffic. It moves tasks between places that trust nothing on arrival, the way a courier network moves parcels between post offices. The animation ([site/static/images/agent-mesh-courier.svg](site/static/images/agent-mesh-courier.svg), SMIL, dark theme for the landing page, plays in any browser or `<img>` tag) follows six parcels: a developer to `inference://claude` and to `inference://gemini`, Kubernetes on premises to `mcp://bigquery`, a sandbox platform to `mcp://github`, a SaaS platform to `egress://generativelanguage.googleapis.com`, and Kubernetes in a cloud, through the gateway it already runs, to `a2a://partner-agent`. The mapping is exact:
+
+| In the picture | In SAM |
+| :--- | :--- |
+| Parcel | One request: an MCP call, a chat completion, a BigQuery query, an A2A message. |
+| Sender | The agent wherever it runs: a developer laptop, Kubernetes on premises, Kubernetes in a cloud, a SaaS platform, a sandbox platform. |
+| Local post office | The `sam-node` next to the agent, or the SDK inside its process. It checks the sender's platform identity (projected service account token, Workload Identity, SPIFFE JWT-SVID, OIDC login) and obtains the waybill from the Registry. |
+| Your gateway | Istio, agentgateway or kgateway where a cluster already runs one. It stays in the data path and asks the `sam-node` office over `ext_proc` (or `ext_authz`, or RFC 8693 token exchange); the office stamps, the gateway carries. This is the row that separates SAM from the gateways: SAM is not another one. |
+| Waybill | The Task Biscuit: who the sender is, through which office (actor), what this task may do, until when. |
+| Stamp | An attenuation block added at a hop (`tar_block`). It can only restrict; a sub-agent's parcel carries one stamp more than its parent's. |
+| Sealed bag | The encrypted libp2p stream between two offices. Routers relay it across NAT, clusters, sites and clouds and cannot open it. |
+| Registry | The control plane: verifies senders, issues waybills, holds the policy, issues the permits foreign borders recognize (OIDC issuer), keeps the receipts. It never touches a parcel. The rubber stamp thumps once per waybill and once per permit. |
+| Destination office | The egress `sam-node` for one destination (`mcp://`, `inference://`, `egress://`, `a2a://`): verifies the waybill and every stamp again, runs customs, obtains the permit, delivers. The operator chooses where it runs, hence where traffic leaves. |
+| Customs | Content inspection at the destination office: policy facts, Model Armor, and any Envoy `ext_proc` processor the operator brings (section 5.6). |
+| Permit | The destination credential: a federated token minted on the Registry's signature for this sender and task, or a key from the office vault. The agent never holds it. |
+| Receipts | Audit logs at the Registry, at both offices and at the destination, joined by task id. |
+
+---
+
 ## 1. Executive Summary & Architectural Positioning
 
 In traditional cloud and service-mesh architectures, permissions are granted **ambiently** to a workload identity (a Kubernetes Service Account, a GCP Service Account, a SPIFFE SVID `spiffe://...`, or Google Cloud **Agent Identity**).
@@ -88,15 +111,21 @@ A critical subtlety in `biscuit-go` v2.2.0 ([`internal/identity/biscuit.go:L40-4
    When a holder (an orchestrator, `sam-node`, or an SDK session) attenuates a Biscuit with a `TaskAuthorizationRule`, the appended block $i \ge 1$ contains:
    * **`0` Datalog `Rules`**
    * **`0` Datalog `Checks`**
-   * **Exactly `1` Datalog `Fact`:** `tar_block("<base64url-serialized api.TaskAuthorizationRule protobuf>")`
+   * **Exactly `1` Datalog `Fact`:** `tar_block("<unpadded-base64url-serialized api.TaskAuthorizationRule protobuf>")`
 2. **How `UnmarshalInbound` Validates & Extracts Blocks:**
-   In [`internal/identity/biscuit.go`](file:///usr/local/google/home/aojea/src/sam/internal/identity/biscuit.go), `UnmarshalInbound(rawToken []byte)` inspects the Biscuit protobuf envelope (`blocks[1..k]`, with `k <= MaxAttenuationBlocks = 8`) **before** building an authorizer:
-   * If any appended block $i \ge 1$ has `len(rules) != 0`, `len(checks) != 0`, or `len(facts) != 1` (or the single fact is not `tar_block(<string>)`), the token is **rejected immediately** (`ErrInvalidAttenuationBlock`) before `b.Authorizer()` is ever called.
-   * `UnmarshalInbound` decodes each `tar_block` into an `*api.TaskAuthorizationRule` and validates it with `api.ValidateTaskAuthorizationRule(tar)`.
+   In [`internal/identity/biscuit.go`](file:///usr/local/google/home/aojea/src/sam/internal/identity/biscuit.go), `UnmarshalInbound(rawToken []byte)` inspects the Biscuit envelope (`blocks[1..k]`, with `k <= MaxAttenuationBlocks = 8`) **before** building an authorizer and returns `(*biscuit.Biscuit, []*api.TaskAuthorizationRule, error)` so nothing parses twice:
+   * **Go (`biscuit-go` v2.2.0):** Unmarshals the outer `pb.Biscuit` protobuf to check structural counts on each `blocks[i-1]` (`len(FactsV2) == 1`, `len(RulesV2) == 0`, `len(ChecksV2) == 0`) and matches block $i$'s rendered source against the strict single-line regex `^tar_block\("([A-Za-z0-9_-]+)"\);?\s*$`.
+   * **TypeScript (`biscuit-wasm` `getBlockSource(i)`) & Python (`biscuit_auth` `block_source(i)`):** Enforce `block_count() - 1 <= MaxAttenuationBlocks` and match each appended block's source string (`i >= 1`) against the identical regex `^tar_block\("([A-Za-z0-9_-]+)"\);?\s*$`, rejecting any block with multiple lines, rules, checks, or non-string terms before building an authorizer.
+   * **Bounds enforced by `api.ValidateTaskAuthorizationRule` and both SDKs:**
+     * `MaxAttenuationBlocks = 8`
+     * `MaxTARBytes = 4096` (serialized protobuf bytes per block, well within the 64 KiB `AuthFrame` reader limit)
+     * `MaxRulesPerTAR = 16`
+     * `MaxEntriesPerTARList = 64` (per `allowed_services`, `allowed_tools`, `allowed_methods`, `allowed_paths`, `allowed_permissions`, `allowed_resources`)
+     * `MaxTARNameLength = 128` (printable ASCII name syntax)
 3. **How the Verifier Enforces the `TaskAuthorizationRule` Chain:**
    Because the **verifier** (not the token holder) decodes the validated `[]*api.TaskAuthorizationRule` slice from the token:
-   * The verifier evaluates each `TaskAuthorizationRule` directly in Go/TS/Python against the verified `RequestContext` (`service`, `method`, `path`, `host`, `port`, `mcp_tool`, `time`)—or compiles it with its own trusted code.
-   * **Result:** Zero attacker-authored Datalog ever runs in the Datalog VM, zero possibility of drift between SAM's PEP decision and the `TaskAuthorizationRule` forwarded to Cloud STS, and trivial $O(1)$ extraction of the `TaskAuthorizationRule` chain!
+   * The verifier evaluates each `TaskAuthorizationRule` directly in Go/TS/Python against the verified `RequestContext` (`service`, `method`, `path`, `mcp_tool`, `time`).
+   * **Result:** Zero attacker-authored Datalog ever runs in the Datalog VM, zero possibility of drift between SAM's PEP decision and the `TaskAuthorizationRule` forwarded to Cloud STS, and single-pass extraction of the `TaskAuthorizationRule` chain.
 
 ---
 
@@ -108,23 +137,26 @@ To avoid polarity bugs when chaining multiple attenuation hops ($\text{Authority
 // TaskAuthorizationRule narrows a credential's authority for a specific task or
 // sub-agent hop. Across multiple appended blocks (1..k), semantics are strict
 // set intersection (logical AND): a request is permitted only if it is allowed
-// by the standing mesh policy AND matches at least one TaskRule in EVERY
-// appended TaskAuthorizationRule block.
+// by the standing mesh policy AND is before every block's expire_time AND
+// matches at least one TaskRule in EVERY appended TaskAuthorizationRule block.
 message TaskAuthorizationRule {
   string name = 1;
   string display_name = 2;
   // Positive allow-list of rules for this hop. Empty rules list denies everything.
   repeated TaskRule rules = 3;
-  // Optional shorter expiration for this task hop.
+  // Optional shorter expiration for this task hop. Effective token expiry is
+  // the minimum across the authority block's expiration() fact and every
+  // appended block's expire_time.
   google.protobuf.Timestamp expire_time = 4;
 }
 
 message TaskRule {
   string description = 1;
 
-  // Allowed mesh services (e.g., "mcp://bigquery", "inference://gemini-*",
-  // "egress://bigquery.googleapis.com"). Supports "*" and prefix/suffix
-  // wildcards matching SAM's service pattern grammar. Required (non-empty).
+  // Allowed mesh services (e.g., "mcp://bigquery", "inference://gemini.*",
+  // "egress://bigquery.googleapis.com"). Uses the dot-anchored grammar of
+  // api.ValidateServiceFormat ("*", "<type>://*", "<type>://*.<suffix>",
+  // "<type>://<prefix>.*", "<type>://<exact>"). Required (non-empty).
   repeated string allowed_services = 2;
 
   // Optional operation-level allow-list. If set, the request must also match
@@ -133,23 +165,38 @@ message TaskRule {
 
   // Optional allowed upstream resource names (e.g. CRM resource prefixes
   // "//bigquery.googleapis.com/projects/my-proj/datasets/sales_2026").
+  // Opaque to the wire PEP; consumed by CloudTokenExchanger at egress.
   repeated string allowed_resources = 4;
 }
 
 message TaskOperation {
-  // Allowed MCP tool names (for mcp:// services) or cloud IAM permissions
-  // (e.g. "bigquery.googleapis.com/datasets.get", "bigquery.googleapis.com/tables.*").
-  repeated string allowed_actions = 1;
-  // Allowed HTTP methods (e.g. ["GET", "POST"]).
+  // Allowed MCP tool names (enforced by the PEP on mcp:// tools/call).
+  repeated string allowed_tools = 1;
+  // Allowed HTTP methods (e.g. ["GET", "POST"]), validated with httpMethodSyntax.
   repeated string allowed_methods = 2;
-  // Allowed HTTP path patterns (e.g. ["/bigquery/v2/projects/my-proj/*"]).
+  // Allowed HTTP path patterns ("/exact" or "/prefix/*"), validated with
+  // validateHTTPGrantPath.
   repeated string allowed_paths = 3;
+  // Allowed cloud IAM permissions (e.g. "bigquery.googleapis.com/datasets.get").
+  // Opaque to the wire PEP; consumed by CloudTokenExchanger at egress.
+  repeated string allowed_permissions = 4;
 }
 ```
 
+#### Per-Service-Type PEP Matching Semantics
+
+Within a single `TaskAuthorizationRule`, a request matches if it satisfies **at least one** `TaskRule`. Across blocks $1 \dots k$, the request must match **every** `TaskAuthorizationRule` block AND have `now < block.expire_time` whenever `expire_time` is set (fail-closed if `now` is unset or `>= expire_time`):
+
+| Service Type | `allowed_services` | `operation.allowed_tools` | `operation.allowed_methods` & `allowed_paths` | `operation.allowed_permissions` & `allowed_resources` |
+| :--- | :--- | :--- | :--- | :--- |
+| **`mcp://<name>`** | Enforced on stream handshake & HTTP | Enforced on `tools/call` (`params.name`). At stream open (`initialize`, `tools/list`), tool name is not yet present so `allowed_tools` does not block opening the stream. | Enforced only if the rule sets `allowed_methods` / `allowed_paths` (a raw stream has no HTTP facts, so a rule with HTTP constraints denies non-HTTP streams). | Ignored by wire PEP (`CloudTokenExchanger` only). |
+| **`inference://<name>`**, **`a2a://<name>`** | Enforced on HTTP request | If non-empty on a rule, that rule requires an MCP tool name and therefore does not match a plain HTTP request. | Enforced against request `Method` and `Path` when non-empty. | Ignored by wire PEP. |
+| **`egress://<name>`** | Enforced on HTTP request & TCP `CONNECT` | Same as above (must be empty for an HTTP/TCP rule to match). | Enforced against request `Method` and `Path` when non-empty (a TCP `CONNECT` tunnel has `Method: "CONNECT", Path: ""`, so any rule with `allowed_paths` denies a tunnel). | Intersected across blocks $1 \dots k$ and translated by `CloudTokenExchanger` at egress. |
+| **`system://<name>`** | Enforced on stream handshake | Enforced if a tool call is made. | Same as `mcp://`. | Ignored by wire PEP. |
+
 * **How Multi-Hop Narrowing Works (CUJ 3):**
-  * **Hop 1 (Orchestrator $\rightarrow$ Analytics Agent):** Appends `TAR_1` with `allowed_resources: ["//bigquery.googleapis.com/projects/my-proj/datasets/sales_2026/*"]` and `allowed_actions: ["bigquery.googleapis.com/datasets.get", "bigquery.googleapis.com/tables.get", "bigquery.googleapis.com/tables.getData"]`.
-  * **Hop 2 (Analytics Agent $\rightarrow$ Sub-Agent):** Appends `TAR_2` with `allowed_resources: ["//bigquery.googleapis.com/projects/my-proj/datasets/sales_2026/tables/q1"]` and `allowed_actions: ["bigquery.googleapis.com/tables.getData"]`.
+  * **Hop 1 (Orchestrator $\rightarrow$ Analytics Agent):** Appends `TAR_1` with `allowed_paths: ["/bigquery/v2/projects/my-proj/datasets/sales_2026/*"]`, `allowed_resources: ["//bigquery.googleapis.com/projects/my-proj/datasets/sales_2026/*"]`, and `allowed_permissions: ["bigquery.googleapis.com/datasets.get", "bigquery.googleapis.com/tables.get", "bigquery.googleapis.com/tables.getData"]`.
+  * **Hop 2 (Analytics Agent $\rightarrow$ Sub-Agent):** Appends `TAR_2` with `allowed_paths: ["/bigquery/v2/projects/my-proj/datasets/sales_2026/tables/q1/*"]`, `allowed_resources: ["//bigquery.googleapis.com/projects/my-proj/datasets/sales_2026/tables/q1"]`, and `allowed_permissions: ["bigquery.googleapis.com/tables.getData"]`.
   * Both SAM PEPs and the Cloud STS adapter compute the **intersection** ($\text{TAR}_1 \cap \text{TAR}_2$), which cleanly narrows access to `tables.getData` on `tables/q1` only.
 * **Where Inversion Happens:** If a downstream cloud API (such as Google's internal TAR spec) uses a `DENY`-with-`excludedPermissions` wire format, the **Google Cloud STS Adapter** in `EgressService` computes the intersection of the allow-lists across blocks $1 \dots k$ and writes that intersected allow-list into Google's `excludedPermissions` / `excludedResources` fields.
 
@@ -163,8 +210,11 @@ When a `sam-node` exchanges a workload's or user's credential on their behalf, t
    * Authority facts: `node("<peer_id>")`, `client_peer_id("<peer_id>")`, `user("<subject>")`, `role("<role>")`, `expiration(<time>)`.
 2. **Delegated Session Biscuit (minted at stateless `POST /token/exchange` on the Control Plane):**
    * Authority facts:
-     * `actor_node("<origin_sam_node_peer_id>")` and `client_peer_id("<origin_sam_node_peer_id>")` — satisfies transport replay defense (`connection_peer_id == client_peer_id`) so only that `sam-node` can present the token over libp2p.
+     * `client_peer_id("<origin_sam_node_peer_id>")` — satisfies transport replay defense (`connection_peer_id == client_peer_id`) so only that `sam-node` can present the token over libp2p.
+     * `actor_node("<origin_sam_node_peer_id>")` — names the channel for the audit log, for `act.sub` in the border JWT (section 3.5) and for `attributes["sam"].actor_node` (section 5.6). It grants nothing: no baseline rule and no policy binding reads it.
      * `user("<caller_subject>")`, `email("<caller_email>")`, `group("<caller_group>")`, `role("<caller_role>")` — resolved from the **caller's `subject_token`**, never from the `sam-node`'s own roles!
+     * **No `node()` fact.** `node:<peer_id>` is a policy binding member (`api.BindingMemberPrefixes`), rendered as `role($r) <- node("<peer_id>")`. A delegated token that carried `node("<origin_sam_node_peer_id>")` would attach the origin node's roles to the subject.
+   * **How verifiers bind each kind:** the Datalog replay check (`check if client_peer_id($id), connection_peer_id($id)`) is the transport binding for both kinds. It reads authority facts only, so a `client_peer_id` in an appended block never satisfies it. [`RequireAuthorityBinding`](file:///usr/local/google/home/aojea/src/sam/internal/identity/biscuit.go#L118-L131) on `node()` remains the check for an identity token presented in the peer handshake (`VerifyBiscuitAndGetExpiry`, the SDKs' `verifyPeerBiscuit`). For a request token, `SamNode.Authorize` binds on `client_peer_id` in the authority block, because a delegated token has no `node()` fact.
    * **Why `POST /token/exchange` is Separate from `POST /register`:**
      * `/register` is for **node enrollment**: it persists a node record (`SaveNode`, `SaveUser`) in the Control Plane store.
      * `POST /token/exchange` is **100% stateless on the Control Plane**: it authenticates the requesting `sam-node` (via its `Authorization: Bearer <node-biscuit>` + `peer_id` challenge PoP), verifies the presented `subject_token` (OIDC JWT, K8s projected SA JWT, or SPIFFE JWT-SVID), resolves the subject's roles against the in-memory policy cache, and signs a short-lived Delegated Session Biscuit (TTL = `min(subject_jwt.exp, MaxSessionTTL)`). It performs **zero database writes**, scaling to high-frequency token exchanges (e.g., 5-minute JWT-SVIDs or 1-hour K8s SA tokens) with per-node rate limiting.
@@ -187,7 +237,8 @@ External parties do not understand Biscuits, and SAM must not forward a caller's
 | Signing key | ES256. Google and AWS federation accept RS256 and ES256 only, not EdDSA; the Ed25519 root key stays for Biscuits. Stored in a KMS or HSM where available; rotated with overlap and `kid`. |
 | Discovery | `/.well-known/openid-configuration` and `/jwks` served by the control plane. For a control plane that is not reachable from the cloud, the operator uploads the JWKS to the provider (Google accepts up to 8 uploaded keys per pool provider). |
 | Mint endpoint | `POST /sts/token` (protobuf, mesh surface): request = Biscuit, destination name; response = JWT, `expire_time`. The control plane verifies the Biscuit and the full `tar_block` chain before minting, exactly as a PEP would, and logs the crossing. |
-| Claims | `iss` = control plane URL; `sub` = the SAM principal (`email`, or `issuer#subject` for workloads); `act` = `{ "sub": "<egress node peer_id>" }`; `aud` = the destination's audience from `EgressDestination` (one per destination, never shared); `sam_task` = the innermost `TaskAuthorizationRule.name`; `sam_task_class` = an operator-mapped label usable in cloud IAM `principalSet` bindings and attribute conditions; `exp` = minutes. |
+| Claims | `iss` = control plane URL; `sub` = the SAM principal (`email`, or `issuer#subject` for workloads); `act` = `{ "sub": "<egress node peer_id>" }`; `aud` = the destination's audience from `EgressDestination` (one per destination, never shared); `sam_roles` = the subject's mesh roles as a JSON array, from the `role()` facts of the authority block, mapped to `google.groups` for `principalSet` bindings; `sam_task` = the innermost `TaskAuthorizationRule.name`, for the audit log; `exp` = minutes. |
+| Holder input | Nothing a holder writes into an appended block reaches the cloud except `sam_task`, which grants nothing. Every claim the cloud binds on (`sub`, `sam_roles`, `act`) comes from the authority block the control plane signed. The JWT carries no task-class claim: cloud IAM bindings are additive, so a class chosen by the holder would select grants rather than narrow them (section 5.5). |
 | Caching | The egress node caches the JWT per Biscuit digest for its lifetime and the destination credential by the same key, so the control plane is off the hot path. |
 | Keys never leave the control plane | Nodes hold nothing a cloud trusts. The control plane is the single issuer and the single audit point for border crossings, which matches the existing rule that the control plane is the authority and the node is the channel. |
 
@@ -278,7 +329,7 @@ message EgressDestination {
   // Keep the destination hostname in Host when target_url is an operator
   // inspection chain that forwards to the real host (section 5.6, tier 4).
   bool preserve_host = 8;
-  // Forward X-Sam-Principal, X-Sam-Task and X-Sam-Task-Class to target_url.
+  // Forward X-Sam-Principal, X-Sam-Roles and X-Sam-Task to target_url.
   // Only for an operator chain; the node strips them for a real destination.
   bool forward_context = 9;
 }
@@ -306,16 +357,16 @@ message Inspector {
 // HTTPS. Model Armor is reached as an egress destination with an
 // oidc_federation broker, so no credential is stored for it.
 message ModelArmor {
-  // projects/P/locations/L/templates/T
+  // projects/P/locations/L/templates/T. One template per destination; a
+  // destination that needs another template is declared as another
+  // EgressDestination.
   string template = 1;
-  // Template override keyed by the JWT's sam_task_class (section 3.5).
-  map<string, string> template_by_task_class = 2;
   // BUFFERED: the whole response is inspected before release and may be
   // rewritten. REQUEST_ONLY: prompts are inspected, responses pass.
-  ResponseInspection response = 3;
+  ResponseInspection response = 2;
   // Default false: an unreachable Model Armor fails the request.
-  bool fail_open = 4;
-  google.protobuf.Duration timeout = 5;
+  bool fail_open = 3;
+  google.protobuf.Duration timeout = 4;
 }
 
 enum ResponseInspection {
@@ -429,14 +480,14 @@ sequenceDiagram
 ### 5.3 Adapters
 
 1. **Google Cloud (`oidc_federation` $\rightarrow$ `sts.googleapis.com/v1/token`):**
-   * **Public today:** the control-plane JWT is exchanged through a **Workload Identity Pool** (workload principals) or a **Workforce Identity Pool** (human principals) whose OIDC provider is the SAM control plane. Attribute mapping `google.subject = assertion.sub`, `attribute.task_class = assertion.sam_task_class`, `attribute.actor = assertion.act.sub`; an attribute condition restricts `act.sub` to enrolled egress nodes. Optional `impersonate` for APIs that need a service account; `scopes` narrowed by the TAR; CAB `accessBoundary` for `storage.googleapis.com`.
-   * **When the task token API is public:** the adapter additionally computes $\text{TAR}_1 \cap \dots \cap \text{TAR}_k$ over `allowed_actions` and `allowed_resources` and emits the provider's wire form (inverting to `excludedPermissions` / `excludedResources` if that is what the API expects).
+   * **Public today:** the control-plane JWT is exchanged through a **Workload Identity Pool** (workload principals) or a **Workforce Identity Pool** (human principals) whose OIDC provider is the SAM control plane. Attribute mapping `google.subject = assertion.sub`, `google.groups = assertion.sam_roles`, `attribute.actor = assertion.act.sub`; an attribute condition restricts `act.sub` to enrolled egress nodes. Optional `impersonate` for APIs that need a service account; `scopes` narrowed by the TAR; CAB `accessBoundary` for `storage.googleapis.com`.
+   * **When the task token API is public:** the adapter additionally computes $\text{TAR}_1 \cap \dots \cap \text{TAR}_k$ over `allowed_permissions` and `allowed_resources` and emits the provider's wire form (inverting to `excludedPermissions` / `excludedResources` if that is what the API expects).
 2. **AWS (`aws_assume_role` $\rightarrow$ `AssumeRoleWithWebIdentity`):**
-   The account trusts the control plane as an IAM OIDC identity provider. The adapter compiles the intersected chain into an inline **session policy** (`Effect: Allow`, `Action` from `allowed_actions`, `Resource` from `allowed_resources`) intersected with the template; AWS evaluates role policy $\cap$ session policy, which is genuine per-task downscoping today. Role chaining is capped at one hour, so a sub-agent hop re-assumes from the egress node instead of chaining.
+   The account trusts the control plane as an IAM OIDC identity provider. The adapter compiles the intersected chain into an inline **session policy** (`Effect: Allow`, `Action` from `allowed_permissions`, `Resource` from `allowed_resources`) intersected with the template; AWS evaluates role policy $\cap$ session policy, which is genuine per-task downscoping today. Role chaining is capped at one hour, so a sub-agent hop re-assumes from the egress node instead of chaining.
 3. **API-key and client-credential destinations (`static_secret`):**
    The existing behaviour: the node injects the stored secret. Gemini Developer API, OpenAI, Anthropic, GitHub tokens, and third-party MCP servers or `a2a://` agents that do not federate with the SAM issuer.
 4. **Generic RFC 8693 / Entra OBO (`oidc_federation` with another `token_endpoint`):**
-   Maps `allowed_services` and `allowed_actions` to OAuth `resource` and `scope`. Entra OBO delegates for user principals only; app-only calls use client credentials.
+   Maps `allowed_services` and `allowed_permissions` to OAuth `resource` and `scope`. Entra OBO delegates for user principals only; app-only calls use client credentials.
 
 ### 5.4 Per-Destination Narrowing, Honestly Stated
 
@@ -444,7 +495,7 @@ Where each layer enforces differs by destination class. The design must not prom
 
 | Destination class | Border credential | Per-task narrowing available today | Residual gap |
 | :--- | :--- | :--- | :--- |
-| Google Cloud APIs (BigQuery, Vertex AI, Cloud Storage) | Control-plane JWT federated through a workload or workforce pool; optional impersonation with narrowed `scope` | Mesh PEP on host, method and path (BigQuery REST paths carry project, dataset and table; Vertex paths carry the model), OAuth scopes, CEL attribute conditions, `principalSet` bindings on `sam_task_class`, CAB for Cloud Storage | A body-level reference (SQL in `jobs.insert` naming another table) is bounded by the principal's standing IAM, not by the task, until a task token API is public |
+| Google Cloud APIs (BigQuery, Vertex AI, Cloud Storage) | Control-plane JWT federated through a workload or workforce pool; optional impersonation with narrowed `scope` | Mesh PEP on host, method and path (BigQuery REST paths carry project, dataset and table; Vertex paths carry the model), OAuth scopes, CEL attribute conditions, `principalSet` bindings on `google.groups` (the subject's mesh roles), CAB for Cloud Storage | A body-level reference (SQL in `jobs.insert` naming another table) is bounded by the principal's standing IAM, not by the task, until a task token API is public |
 | AWS | Control-plane JWT, `AssumeRoleWithWebIdentity` | Session policy compiled from the TAR: fine-grained, intersection semantics | One-hour role chaining limit; packed session policy size limit |
 | API-key services (Gemini Developer API, OpenAI, Anthropic, GitHub tokens) | Static secret from the node's secrets directory | Mesh PEP only: path (which carries the model), method, TTL | The key cannot be downscoped; a leaked key is the full key |
 | External agents (`a2a://`) and third-party MCP servers | Control-plane JWT if the party federates with the SAM issuer; otherwise a stored client credential | Mesh PEP plus whatever the party's authorization server supports | Depends on the party |
@@ -466,9 +517,9 @@ Operators want to inspect what agents send and receive: prompts and completions 
 **Four tiers, combinable per destination:**
 
 1. **Policy facts (built in).** `host()`, `port()`, `method()`, `path()` and the MCP tool name from `tools/call`. Google API paths carry the model (`.../models/M:generateContent`), the project, the dataset and the table, so a large part of what operators call inspection is a path rule. This tier is the PEP and runs on every request.
-2. **Model Armor, called directly (`inspectors[].model_armor`).** For payload shapes the node understands (Gemini `generateContent`, the OpenAI-compatible chat shape served by the `/v1` facade, MCP `tools/call` arguments and results, A2A messages) the egress node calls `sanitizeUserPrompt` on the request and `sanitizeModelResponse` on the response over HTTPS with the standard library. The template is chosen per destination with an override per `sam_task_class`, so a code-review task class and a customer-data task class run different templates. A finding blocks the request with `403` and a `Proxy-Status` reason; a Sensitive Data Protection de-identification result replaces the text. Streamed responses are handled in `BUFFERED` mode (inspected whole, then released; higher latency, no incremental display) or `REQUEST_ONLY` mode (prompt inspected, response passed), chosen per destination; Model Armor's bidirectional streaming methods are a follow-up (section 8, item 22). The inspector is unreachable: the request fails unless `fail_open` is set.
-3. **Envoy `ext_proc` processors (`inspectors[].ext_proc`), the standard interface.** The egress node is the client side of `envoy.service.ext_proc.v3.ExternalProcessor`: one bidirectional gRPC stream per request, carrying `request_headers`, `request_body`, `request_trailers`, `response_headers`, `response_body` and `response_trailers` according to the processing mode; the processor answers with header and body mutations, an `immediate_response` that blocks, or a mode override. Any processor written for Envoy, agentgateway or Google Service Extensions callouts runs unchanged against `sam-node`: a customer's own DLP or guardrail service, a vendor product that exposes `ext_proc`, or the Service Extensions callout SDK examples. The node fills `ProcessingRequest.attributes["sam"]` with `principal`, `actor_node`, `task`, `task_class`, `service` and `destination`, so the processor applies per-task policy without SAM headers on the wire. Body modes map to Envoy's: `BUFFERED` for whole-body decisions and rewriting (bounded by `max_buffered_bytes`), `STREAMED` for chunked bodies such as SSE where the processor can stop a stream but cannot rewrite what was already forwarded, `FULL_DUPLEX_STREAMED` for processors that rewrite chunks as they pass. A processor runs before the broker injects the destination credential and after `X-Sam-*` and the caller's `Authorization` are stripped, so it sees neither token; its mutations to `Authorization`, `Host`, `:authority` and `X-Sam-*` are refused, which keeps the invariant that an inspector narrows or blocks and never selects a credential or a destination. `failure_mode_allow` defaults to false; `message_timeout` defaults to 200ms; mTLS to the processor uses names from the node's secrets directory.
-4. **Operator inspection chain.** `target_url` points at the operator's inspection proxy with `preserve_host` set: agentgateway with its Model Armor or webhook guard, or Secure Web Proxy in explicit mode. The egress node hands over plaintext HTTP with the brokered credential already injected; the chain inspects and forwards to the real host. With `forward_context`, the node also sends `X-Sam-Principal`, `X-Sam-Task` and `X-Sam-Task-Class`, so the chain applies per-task policy and the chain's log joins the control plane's. The other form of this tier needs no SAM configuration: the egress node runs in a VPC whose outbound path is Secure Web Proxy next-hop or Cloud NGFW Enterprise with TLS inspection, and the node trusts the inspection CA through `--egress-ca-bundle`. The node is then an ordinary workload to the network inspection product. This tier remains for proxies that are not `ext_proc` servers.
+2. **Model Armor, called directly (`inspectors[].model_armor`).** For payload shapes the node understands (Gemini `generateContent`, the OpenAI-compatible chat shape served by the `/v1` facade, MCP `tools/call` arguments and results, A2A messages) the egress node calls `sanitizeUserPrompt` on the request and `sanitizeModelResponse` on the response over HTTPS with the standard library. The template is chosen per destination. A finding blocks the request with `403` and a `Proxy-Status` reason; a Sensitive Data Protection de-identification result replaces the text. Streamed responses are handled in `BUFFERED` mode (inspected whole, then released; higher latency, no incremental display) or `REQUEST_ONLY` mode (prompt inspected, response passed), chosen per destination; Model Armor's bidirectional streaming methods are a follow-up (section 8, item 22). The inspector is unreachable: the request fails unless `fail_open` is set.
+3. **Envoy `ext_proc` processors (`inspectors[].ext_proc`), the standard interface.** The egress node is the client side of `envoy.service.ext_proc.v3.ExternalProcessor`: one bidirectional gRPC stream per request, carrying `request_headers`, `request_body`, `request_trailers`, `response_headers`, `response_body` and `response_trailers` according to the processing mode; the processor answers with header and body mutations, an `immediate_response` that blocks, or a mode override. Any processor written for Envoy, agentgateway or Google Service Extensions callouts runs unchanged against `sam-node`: a customer's own DLP or guardrail service, a vendor product that exposes `ext_proc`, or the Service Extensions callout SDK examples. The node fills `ProcessingRequest.attributes["sam"]` with `principal`, `roles`, `actor_node`, `task`, `service` and `destination`, so the processor applies per-task policy without SAM headers on the wire. Body modes map to Envoy's: `BUFFERED` for whole-body decisions and rewriting (bounded by `max_buffered_bytes`), `STREAMED` for chunked bodies such as SSE where the processor can stop a stream but cannot rewrite what was already forwarded, `FULL_DUPLEX_STREAMED` for processors that rewrite chunks as they pass. A processor runs before the broker injects the destination credential and after `X-Sam-*` and the caller's `Authorization` are stripped, so it sees neither token; its mutations to `Authorization`, `Host`, `:authority` and `X-Sam-*` are refused, which keeps the invariant that an inspector narrows or blocks and never selects a credential or a destination. `failure_mode_allow` defaults to false; `message_timeout` defaults to 200ms; mTLS to the processor uses names from the node's secrets directory.
+4. **Operator inspection chain.** `target_url` points at the operator's inspection proxy with `preserve_host` set: agentgateway with its Model Armor or webhook guard, or Secure Web Proxy in explicit mode. The egress node hands over plaintext HTTP with the brokered credential already injected; the chain inspects and forwards to the real host. With `forward_context`, the node also sends `X-Sam-Principal`, `X-Sam-Roles` and `X-Sam-Task`, so the chain applies per-task policy and the chain's log joins the control plane's. The other form of this tier needs no SAM configuration: the egress node runs in a VPC whose outbound path is Secure Web Proxy next-hop or Cloud NGFW Enterprise with TLS inspection, and the node trusts the inspection CA through `--egress-ca-bundle`. The node is then an ordinary workload to the network inspection product. This tier remains for proxies that are not `ext_proc` servers.
 
 **Dependencies for tier 3: none in the root module.** `ext_proc` is being donated as an independent open-source project, so SAM depends on the protocol and not on Envoy's Go ecosystem. Three decisions keep `go.mod` unchanged:
 
@@ -541,7 +592,7 @@ flowchart LR
 
 **Threat Model & Mitigations When the Sandbox Holds a Token:**
 1. **Sealed Leaf Token (`b.Seal()`):** The orchestrator hands the sandbox a **sealed, task-attenuated Biscuit** (`OPENAI_API_KEY=$SAM_TASK_TOKEN`). The sandbox cannot append blocks or widen permissions.
-2. **Channel Binding (`actor_node(peer_id)`):** Because the Biscuit's authority block binds `client_peer_id` to the local/cluster `sam-node`'s `peer_id` ([`RequireAuthorityBinding`](file:///usr/local/google/home/aojea/src/sam/internal/identity/biscuit.go#L118-L131)), if a prompt-injected agent exfiltrates `$SAM_TASK_TOKEN` to an external attacker, **the attacker cannot use it from another machine or another mesh node**.
+2. **Channel Binding (`client_peer_id`):** Because the Biscuit's authority block binds `client_peer_id` to the local/cluster `sam-node`'s `peer_id` (section 3.3), if a prompt-injected agent exfiltrates `$SAM_TASK_TOKEN` to an external attacker, **the attacker cannot use it from another machine or another mesh node**.
 3. **Short Task TTL & Explicit Revocation:** The token is scoped to the single task's services/tools with a short `expire_time` (e.g., 15 minutes) and is revoked at the local `sam-node` (`POST /oauth/revoke`) as soon as the sandbox container exits.
 4. **No `/dev/net/tun` or `nano-init`:** `Sandbox` pods on GKE run cleanly under `RuntimeClass: gvisor` with a standard K8s `NetworkPolicy` allowing egress only to the cluster `sam-node` (or `agentgateway`) Service.
 
@@ -555,7 +606,7 @@ flowchart LR
    * `agentgateway` is configured with `sam-node`'s `ext_authz` gRPC service (or RFC 8693 backend token exchange at `http://sam-node:8080/oauth/token`).
    * Workloads in the cluster authenticate via Istio mTLS (SPIFFE XFCC) or present a SAM Task Biscuit.
 2. **Multi-Hop Sub-Agent Delegation Across Clusters:**
-   * When an orchestrator agent in Cluster A spawns a sub-agent or calls a remote MCP tool in Cluster B, it attenuates its SAM Task Biscuit offline (`tar_block` narrowing `allowed_services` and `allowed_actions`) and sends the request through `agentgateway` $\rightarrow$ `sam-node`.
+   * When an orchestrator agent in Cluster A spawns a sub-agent or calls a remote MCP tool in Cluster B, it attenuates its SAM Task Biscuit offline (`tar_block` narrowing `allowed_services` and `allowed_tools` / `allowed_permissions`) and sends the request through `agentgateway` $\rightarrow$ `sam-node`.
    * The remote `sam-node` in Cluster B verifies the Control Plane signature, the standing policy, and every appended `TaskAuthorizationRule` block before forwarding to the MCP server or exchanging via `CloudTokenExchanger`.
 
 ---
@@ -563,8 +614,8 @@ flowchart LR
 ### Blueprint 4: End-to-End Cloud Egress (BigQuery Read-Only Task & Sub-Agent Hop)
 
 **Setup, once per cloud project (no Google credential in the customer environment):**
-* The cloud administrator creates a workload identity pool (workload principals) and, for human principals, a workforce identity pool, each with an OIDC provider whose issuer is the SAM control plane, or whose JWKS is uploaded when the control plane is not reachable from the internet. Attribute mapping: `google.subject = assertion.sub`, `attribute.task_class = assertion.sam_task_class`, `attribute.actor = assertion.act.sub`. Attribute condition: `assertion.act.sub` is one of the enrolled egress node peer IDs.
-* IAM grants the ceiling: `roles/bigquery.dataViewer` on `projects/my-proj/datasets/sales_2026` to `principal://iam.googleapis.com/.../subject/alice@customer.example`, or to `principalSet://.../attribute.task_class/bq-read`.
+* The cloud administrator creates a workload identity pool (workload principals) and, for human principals, a workforce identity pool, each with an OIDC provider whose issuer is the SAM control plane, or whose JWKS is uploaded when the control plane is not reachable from the internet. Attribute mapping: `google.subject = assertion.sub`, `google.groups = assertion.sam_roles`, `attribute.actor = assertion.act.sub`. Attribute condition: `assertion.act.sub` is one of the enrolled egress node peer IDs.
+* IAM grants the ceiling: `roles/bigquery.dataViewer` on `projects/my-proj/datasets/sales_2026` to `principal://iam.googleapis.com/.../subject/alice@customer.example`, or to `principalSet://.../group/analyst` for every subject the mesh policy binds to the `analyst` role.
 * The mesh policy declares the destination:
   ```yaml
   egress:
@@ -582,21 +633,30 @@ flowchart LR
    ```json
    {
      "name": "tasks/session-bq-read-sales",
-     "rules": [{
-       "allowed_services": ["egress://bigquery.googleapis.com", "mcp://bigquery"],
-       "operation": {
-         "allowed_actions": [
-           "bigquery.googleapis.com/datasets.get",
-           "bigquery.googleapis.com/tables.get",
-           "bigquery.googleapis.com/tables.getData",
-           "bigquery.googleapis.com/jobs.create"
-         ],
-         "allowed_methods": ["GET", "POST"]
+     "rules": [
+       {
+         "allowed_services": ["egress://bigquery.googleapis.com"],
+         "operation": {
+           "allowed_methods": ["GET", "POST"],
+           "allowed_paths": ["/bigquery/v2/projects/my-proj/datasets/sales_2026/*"],
+           "allowed_permissions": [
+             "bigquery.googleapis.com/datasets.get",
+             "bigquery.googleapis.com/tables.get",
+             "bigquery.googleapis.com/tables.getData",
+             "bigquery.googleapis.com/jobs.create"
+           ]
+         },
+         "allowed_resources": [
+           "//bigquery.googleapis.com/projects/my-proj/datasets/sales_2026/*"
+         ]
        },
-       "allowed_resources": [
-         "//bigquery.googleapis.com/projects/my-proj/datasets/sales_2026/*"
-       ]
-     }]
+       {
+         "allowed_services": ["mcp://bigquery"],
+         "operation": {
+           "allowed_tools": ["list_tables", "query_sales"]
+         }
+       }
+     ]
    }
    ```
 2. **Hop 2 (Analytics Agent $\rightarrow$ Ephemeral Sub-Agent, CUJ 3):**
@@ -607,8 +667,9 @@ flowchart LR
      "rules": [{
        "allowed_services": ["egress://bigquery.googleapis.com"],
        "operation": {
-         "allowed_actions": ["bigquery.googleapis.com/tables.getData"],
-         "allowed_methods": ["GET"]
+         "allowed_methods": ["GET"],
+         "allowed_paths": ["/bigquery/v2/projects/my-proj/datasets/sales_2026/tables/q1/*"],
+         "allowed_permissions": ["bigquery.googleapis.com/tables.getData"]
        },
        "allowed_resources": [
          "//bigquery.googleapis.com/projects/my-proj/datasets/sales_2026/tables/q1"
@@ -617,10 +678,10 @@ flowchart LR
    }
    ```
 3. **Egress Enforcement, Issuer Mint & Cloud STS Exchange:**
-   * The egress `sam-node` (`egress-eu`, serving `egress://bigquery.googleapis.com`) verifies the Biscuit signature chain, the `actor_node` binding to the connection peer, the standing policy for `alice@customer.example`, and confirms the HTTP request (`GET /bigquery/v2/projects/my-proj/datasets/sales_2026/tables/q1/data`) satisfies **both** `TAR_1` and `TAR_2`.
-   * On a cache miss for this Biscuit digest it calls `POST /sts/token` on the control plane and receives an ES256 JWT (`sub=alice@customer.example`, `act.sub=<egress-eu peer id>`, `aud=<pool provider>`, `sam_task=tasks/subagent-q1-only`, `sam_task_class=bq-read`, `exp` in minutes).
-   * `CloudTokenExchanger` exchanges the JWT at `sts.googleapis.com/v1/token` with `scope` narrowed to `bigquery.readonly`, caches the federated access token by Biscuit digest, and injects it as `Authorization: Bearer ...`. When the task token API is public it also forwards $\text{TAR}_1 \cap \text{TAR}_2$ (`allowed_actions: ["bigquery.googleapis.com/tables.getData"]`, `allowed_resources: [".../tables/q1"]`) in the provider's form; on AWS the same intersection becomes an `Effect: Allow` session policy.
-   * BigQuery's audit log records `principal://.../subject/alice@customer.example` with `attribute.task_class=bq-read`; the control plane's log records the same `sam_task`, so the two logs join.
+   * The egress `sam-node` (`egress-eu`, serving `egress://bigquery.googleapis.com`) verifies the Biscuit signature chain, the `client_peer_id` binding to the connection peer, the standing policy for `alice@customer.example`, and confirms the HTTP request (`GET /bigquery/v2/projects/my-proj/datasets/sales_2026/tables/q1/data`) satisfies **both** `TAR_1` and `TAR_2` (`allowed_services`, `allowed_methods`, and `allowed_paths`).
+   * On a cache miss for this Biscuit digest it calls `POST /sts/token` on the control plane and receives an ES256 JWT (`sub=alice@customer.example`, `act.sub=<egress-eu peer id>`, `aud=<pool provider>`, `sam_roles=["analyst"]`, `sam_task=tasks/subagent-q1-only`, `exp` in minutes).
+   * `CloudTokenExchanger` exchanges the JWT at `sts.googleapis.com/v1/token` with `scope` narrowed to `bigquery.readonly`, caches the federated access token by Biscuit digest, and injects it as `Authorization: Bearer ...`. When the task token API is public it also forwards $\text{TAR}_1 \cap \text{TAR}_2$ (`allowed_permissions: ["bigquery.googleapis.com/tables.getData"]`, `allowed_resources: [".../tables/q1"]`) in the provider's form; on AWS the same intersection becomes an `Effect: Allow` session policy.
+   * BigQuery's audit log records `principal://.../subject/alice@customer.example` as a member of group `analyst`; the control plane's log records the same principal and `sam_task`, so the two logs join.
 
 ---
 
@@ -628,12 +689,13 @@ flowchart LR
 
 1. **The control plane becomes an identity provider the customer's cloud trusts.** That is the right place for it (the customer owns it), and it raises the bar: KMS- or HSM-backed ES256 key; JWT lifetime of minutes; one audience per destination; a CEL attribute condition on the cloud side that accepts only JWTs whose `act.sub` is an enrolled SAM egress node; detailed audit logging on the pool provider. A compromised issuer key exposes the IAM ceiling of every federated principal, the same as any IdP compromise; rotation with overlap and replacing the uploaded JWKS are the recovery path.
 2. **The control plane is on the egress path.** Caching per Biscuit digest for the JWT lifetime keeps it off the hot path, but it now needs HA and rate limits sized for egress and token exchange, not only enrollment. Kubernetes projected tokens rotate hourly and SPIRE JWT-SVIDs default to five minutes, so `POST /token/exchange` runs at the caller rotation rate.
-3. **A task Biscuit is a bearer token at the local hop.** In blueprint 2 the sandbox holds it. Mitigations: lifetime of minutes to an hour; `actor_node` binds it to one origin node, so an exfiltrated token is useless to anyone who cannot reach that node's local socket or facade; `Seal()` for leaf tokens; the destination verifies the binding against the libp2p connection peer.
+3. **A task Biscuit is a bearer token at the local hop.** In blueprint 2 the sandbox holds it. Mitigations: lifetime of minutes to an hour; `client_peer_id` binds it to one origin node, so an exfiltrated token is useless to anyone who cannot reach that node's local socket or facade; `Seal()` for leaf tokens; the destination verifies the binding against the libp2p connection peer.
 4. **Appended blocks are attacker-controlled bytes.** Structural validation (block count, one fact per block, no rules, no checks, payload size) runs before any authorizer is built; the TAR evaluator is trusted code with its own tests; limits are the same in all three verifiers.
 5. **Confused deputy at the egress node.** The node must never forward a caller-supplied `Authorization` to a destination (it strips it today) and must never let a TAR select a broker, a role or an audience. Both are unit-tested invariants.
 6. **Revocation and audit.** Revocation works on the authority block's revocation ID (section 3.4). Every border crossing is logged at the control plane (`/token/exchange`, `/sts/token`) with subject, actor, destination and `sam_task`; the cloud audit log carries the same principal, so the two logs join.
 7. **Per-task narrowing on Google Cloud is coarse today.** Paths, model names, scopes and attribute conditions; AWS session policies are the only fine-grained case. CUJ 1 and CUJ 2 must not be described as cloud-enforced per-task IAM on Google Cloud until the task token API is public.
 8. **Cross-organization reach of workforce principals.** Workforce pool principals cannot access resources outside their organization unless they may impersonate a service account; `impersonate` in the broker therefore widens reach and must be granted deliberately.
+9. **Mesh role names are visible to the cloud.** `sam_roles` carries them as group names, and the cloud audit log records them. Role names are therefore not secrets, and a cloud administrator who binds a role to `principalSet://.../group/<role>` grants to every subject the mesh policy binds to that role, now and later.
 
 ---
 
@@ -645,24 +707,24 @@ A one-week spike settles the items marked **spike**; the others are checks again
 | :--- | :--- | :--- |
 | 1 | Google Workload and Workforce Identity Federation accept a control-plane-issued ES256 JWT (`aud` = pool provider, `exp - iat` ≤ 24h), including the uploaded-JWKS path for a control plane that is not reachable from the internet. | **spike** |
 | 2 | BigQuery and Vertex AI accept the federated principal directly or need service account impersonation (the "federated identity supported services" page, then a call against each API). | **spike** + docs |
-| 3 | Cloud Audit Logs show the SAM principal (`google.subject`) and `attribute.task_class` for a BigQuery call made through the egress node. | **spike** |
-| 4 | Workforce vs. workload pool: a human principal (`email`) federates through a workforce pool, a workload principal through a workload pool. Confirm one issuer can serve both and what `sub` each expects. | docs |
+| 3 | Cloud Audit Logs show the SAM principal (`google.subject`) and the `google.groups` membership for a BigQuery call made through the egress node. | **spike** |
+| 4 | Workforce vs. workload pool: a human principal (`email`) federates through a workforce pool, a workload principal through a workload pool. Confirm one issuer can serve both, what `sub` each expects, and that `google.groups` accepts the mesh role name syntax (`sam:role:node` carries colons) in both pool kinds. | docs |
 | 5 | AWS `AssumeRoleWithWebIdentity` with a session policy compiled from a realistic TAR stays under the packed policy size limit; behaviour at the one-hour chaining limit. | test |
 | 6 | Control-plane throughput and latency for `/token/exchange` and `/sts/token` with caching; cache hit rate with 5-minute JWT-SVIDs and 1-hour projected tokens. | `sam-bench` |
-| 7 | biscuit-go v2.2.0: reading the facts of block $i$ through the `pb` package vs. parsing `Code()`; `Seal()` on a token with appended blocks; whether `check if` queries are bounded by `WithMaxDuration` (section 3.1 assumes they are not) and whether the worker goroutine outlives a timeout. | **spike** |
-| 8 | biscuit-wasm and biscuit-python expose block inspection and equivalent limits; conformance vectors in `sdk/testdata` pass in all three verifiers. | test |
+| 7 | biscuit-go v2.2.0: reading the facts of block $i$ through the `pb` package vs. parsing `Code()`; `Seal()` on a token with appended blocks; whether `check if` queries are bounded by `WithMaxDuration` (section 3.1 assumes they are not) and whether the worker goroutine outlives a timeout. **Resolved (Phase 2):** structural counts come from `pb.Biscuit.Blocks[i-1]` (`FactsV2`/`RulesV2`/`ChecksV2`) and the fact string from `b.Code()` matched against `^tar_block\("([A-Za-z0-9_-]+)"\);?\s*$`; `Seal()` works on tokens with appended blocks. | **resolved** |
+| 8 | biscuit-wasm and biscuit-python expose block inspection and equivalent limits; conformance vectors in `sdk/testdata` pass in all three verifiers. **Note:** `biscuit-wasm` 0.6 exposes `getBlockSource(i)` and `sealToken()`; `biscuit-python` 0.4 exposes `block_count`, `block_source`, `append` and `revocation_ids` (sufficient to verify sealed tokens in Phase 2; Phase 4's Python `.seal()` will upgrade `biscuit-python`). | **resolved (Phase 2)** |
 | 9 | Off-the-shelf MCP clients (Claude Code, Gemini CLI, Cursor, VS Code) complete authorization code + PKCE against the control plane as authorization server, with client ID metadata documents and without dynamic client registration. | **spike** |
 | 10 | agentgateway's token-exchange backend authentication works against `sam-node`'s `/oauth/token` with a Biscuit as the issued token (opaque to the gateway); ext_authz response header size limits for an injected cloud credential. | test |
 | 11 | Publication status of the Google task token API; until public, the adapter interface is the only coupling. | track |
 | 12 | Path shapes for model-level PEP: Vertex AI (`/v1/projects/P/locations/L/publishers/google/models/M:generateContent`) and Gemini Developer API (`/v1beta/models/M:generateContent`), including streaming variants. | docs |
 | 13 | Google APIs that reject federated identities under VPC Service Controls, and the egress rule needed for `sts.googleapis.com` when the pool is organization-level. | docs |
-| 14 | Which sections of `AGENTS.md`, `site/content/docs/preview/agent-architecture.md` and `sandboxed-agents.md` change, and whether `AgentBundle` / `AgentAttach*` messages are removed or repurposed as "attach = mint task token". | review |
-| 15 | Whether `internal/tunnel` (Cloudflare and Codespaces mesh reachability) is removed with the sandbox code or kept; it has no sandbox dependency. | review |
+| 14 | Which sections of `AGENTS.md`, `site/content/docs/preview/agent-architecture.md` and `sandboxed-agents.md` change, and whether `AgentBundle` / `AgentAttach*` messages are removed or repurposed as "attach = mint task token". **Resolved:** `AgentBundle`/`AgentAttach*` removed in Phase 1; docs rewritten in Phase 5. | **resolved** |
+| 15 | Whether `internal/tunnel` (Cloudflare and Codespaces mesh reachability) is removed with the sandbox code or kept; it has no sandbox dependency. **Resolved:** kept. | **resolved** |
 | 16 | Istio: the `ext_authz` `CheckRequest` carries `source.principal` from ambient waypoints as it does from sidecars; XFCC is trusted only on the proxy path. | test |
-| 17 | Model Armor: `sanitizeUserPrompt` / `sanitizeModelResponse` accept a federated principal; per-call latency and quota at the egress node's request rate; template selection per `sam_task_class`; which payload shapes (Gemini, OpenAI-compatible, MCP `tools/call`, A2A) the public API sanitizes and which it passes. | **spike** |
+| 17 | Model Armor: `sanitizeUserPrompt` / `sanitizeModelResponse` accept a federated principal; per-call latency and quota at the egress node's request rate; which payload shapes (Gemini, OpenAI-compatible, MCP `tools/call`, A2A) the public API sanitizes and which it passes. | **spike** |
 | 18 | gRPC over the mesh: whether the libp2p HTTP stream can carry HTTP/2 framing and trailers end to end so `httputil.ReverseProxy` forwards gRPC; otherwise tunnel mode plus REST-transport guidance for Google client libraries. | **spike** |
 | 19 | Operator chain: Secure Web Proxy explicit mode and agentgateway as `target_url` with `preserve_host`; Cloud NGFW Enterprise TLS inspection with the egress node trusting the inspection CA, and agents trusting it for tunnel mode. | test |
-| 20 | `ext_proc` with no new root-module dependency: the trimmed protos under `third_party/envoy/` (with `LICENSE` and `METADATA` as Google's third-party policy requires) generate with the pinned `protoc-gen-go` and produce bytes identical to `go-control-plane`'s for a captured `ProcessingRequest` and `ProcessingResponse`; the standard-library gRPC client interoperates with a grpc-go reference processor and a Service Extensions callout example (trailers-only responses, `grpc-timeout`, cancellation from either side, `unix:` and h2c through `Protocols.SetUnencryptedHTTP2`, TLS with ALPN `h2`, a processor behind a gRPC-aware load balancer); `immediate_response` after response headers were sent resets the stream as in Envoy; the conformance module under `tests/extproc/` runs in the integration suite within its time budget. Track the package name the donated project publishes. Decide whether the `ext_proc` *server* (section 4.1) ships with the first release. | **spike** + decision |
+| 20 | `ext_proc` with no new root-module dependency: the trimmed protos under `third_party/envoy/` (with `LICENSE` and `METADATA` as Google's third-party policy requires) generate with the pinned `protoc-gen-go` and produce bytes identical to `go-control-plane`'s for a captured `ProcessingRequest` and `ProcessingResponse`; the standard-library gRPC client interoperates with a grpc-go reference processor and a Service Extensions callout example (trailers-only responses, `grpc-timeout`, cancellation from either side, `unix:` and h2c through `Protocols.SetUnencryptedHTTP2`, TLS with ALPN `h2`, a processor behind a gRPC-aware load balancer); `immediate_response` after response headers were sent resets the stream as in Envoy; the conformance module under `tests/extproc/` runs in the integration suite within its time budget. Track the package name the donated project publishes. **Decision:** ship both the `ext_proc` egress client (section 5.6) and the `ext_proc` gateway server (section 4.1) using the shared stdlib gRPC stream and vendored protos. | **spike** + **decided** |
 | 21 | Tunnel SNI check: behaviour for destinations that send no SNI (IP literals, some database drivers) and for Encrypted Client Hello; the `ports` allow-list is enforced before any dial. | test |
 | 22 | Model Armor streaming: whether `StreamSanitizeUserPrompt` / `StreamSanitizeModelResponse` are worth vendoring the Model Armor protos (they import `google/api` annotations that would need the same trimming) on top of the standard-library gRPC transport, or whether `BUFFERED` and `REQUEST_ONLY` over the REST API suffice; whether Model Armor itself is reachable as an `ext_proc` processor outside Google's managed Service Extensions. | decision + docs |
 
@@ -675,11 +737,11 @@ A one-week spike settles the items marked **spike**; the others are checks again
    * Update [`AGENTS.md`](file:///usr/local/google/home/aojea/src/sam/AGENTS.md) to reflect the retired sandbox dataplane and the RFC 8693 / OAuth 2.1 surface carve-out.
    * Validate the clean baseline with `make`, `make lint`, `make test`, and `make sdk-test`.
 2. **Phase 2 — Protobuf & Safe `tar_block` Biscuit Attenuation (`api/`, `internal/identity/`, `sdk/`):**
-   * Add `TaskAuthorizationRule`, `TaskRule`, `TaskOperation`, and token exchange messages to [`api/sam.proto`](file:///usr/local/google/home/aojea/src/sam/api/sam.proto).
+   * Add `TaskAuthorizationRule`, `TaskRule` and `TaskOperation` to [`api/sam.proto`](file:///usr/local/google/home/aojea/src/sam/api/sam.proto). The exchange and mint messages (`TokenExchangeRequest`/`Response`, `STSTokenRequest`/`Response`) and the `actor_node` fact land in Phase 3 with the handlers that give them their shape.
    * Implement `AttenuateBiscuit`, `SealBiscuit`, and `ExtractTaskRules` in `internal/identity/biscuit.go`.
    * Update [`UnmarshalInbound`](file:///usr/local/google/home/aojea/src/sam/internal/identity/biscuit.go#L78-L87) (and JS/Python SDK verifiers, backed by conformance vectors in `sdk/testdata/`) to accept appended blocks containing **0 rules, 0 checks, and 1 `tar_block(<base64-proto>)` fact**, evaluating the decoded `TaskAuthorizationRule` chain in the verifier.
 3. **Phase 3 — Stateless Control-Plane Exchange & `sam-node` Origin STS / `ext_authz` (`internal/controlplane/`, `internal/node/`):**
-   * Add stateless `POST /token/exchange` (`actor_node` + `subject_token` verification) and OAuth 2.1 AS endpoints to `sam-control-plane`.
+   * Add stateless `POST /token/exchange` (`actor_node` + `subject_token` verification) and OAuth 2.1 AS endpoints to `sam-control-plane`, with their messages in `api/sam.proto` (instants as `*_time`, the proof-of-possession value as `challenge_unix_ms`). `SamNode.Authorize` binds a request token on `client_peer_id` in the authority block (section 3.3), with a conformance vector for a delegated token that carries no `node()` fact.
    * Make the control plane an OIDC issuer (section 3.5): ES256 key with a KMS/HSM option and overlap rotation, `/.well-known/openid-configuration`, `/jwks`, stateless `POST /sts/token` (Biscuit $\rightarrow$ JWT), `GET /revocations`, rate limits from `internal/ratelimit`, an audit log line for every crossing. Section 8 items 1–4 run against a test project before this phase is considered done.
    * Add RFC 8693 `POST /oauth/token`, `POST /oauth/revoke`, `/.well-known/oauth-protected-resource`, and Envoy `ext_authz` check support to `sam-node`.
    * Update `withAuth` (scoping transparent JWT exchange on `Authorization` strictly to `/mcp` and `/v1/*`) and `createEgressProxy` / `mcp.go` to forward caller Task Biscuits.

@@ -2715,6 +2715,234 @@ func (x *OIDCSession) GetRefreshToken() string {
 	return ""
 }
 
+// TaskAuthorizationRule narrows a credential's authority for a specific task or
+// sub-agent hop. Across multiple appended blocks (1..k), semantics are strict
+// set intersection (logical AND): a request is permitted only if it is allowed
+// by the standing mesh policy AND is before every block's expire_time AND
+// matches at least one TaskRule in EVERY appended TaskAuthorizationRule block.
+type TaskAuthorizationRule struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Name        string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	DisplayName string                 `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	// Positive allow-list of rules for this hop. Empty rules list denies everything.
+	Rules []*TaskRule `protobuf:"bytes,3,rep,name=rules,proto3" json:"rules,omitempty"`
+	// Optional shorter expiration for this task hop. Effective token expiry is
+	// the minimum across the authority block's expiration() fact and every
+	// appended block's expire_time.
+	ExpireTime    *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=expire_time,json=expireTime,proto3" json:"expire_time,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TaskAuthorizationRule) Reset() {
+	*x = TaskAuthorizationRule{}
+	mi := &file_api_sam_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TaskAuthorizationRule) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TaskAuthorizationRule) ProtoMessage() {}
+
+func (x *TaskAuthorizationRule) ProtoReflect() protoreflect.Message {
+	mi := &file_api_sam_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TaskAuthorizationRule.ProtoReflect.Descriptor instead.
+func (*TaskAuthorizationRule) Descriptor() ([]byte, []int) {
+	return file_api_sam_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *TaskAuthorizationRule) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *TaskAuthorizationRule) GetDisplayName() string {
+	if x != nil {
+		return x.DisplayName
+	}
+	return ""
+}
+
+func (x *TaskAuthorizationRule) GetRules() []*TaskRule {
+	if x != nil {
+		return x.Rules
+	}
+	return nil
+}
+
+func (x *TaskAuthorizationRule) GetExpireTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ExpireTime
+	}
+	return nil
+}
+
+type TaskRule struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Description string                 `protobuf:"bytes,1,opt,name=description,proto3" json:"description,omitempty"`
+	// Allowed mesh services (e.g., "mcp://bigquery", "inference://gemini.*",
+	// "egress://bigquery.googleapis.com"). Uses the dot-anchored grammar of
+	// api.ValidateServiceFormat ("*", "<type>://*", "<type>://*.<suffix>",
+	// "<type>://<prefix>.*", "<type>://<exact>"). Required (non-empty).
+	AllowedServices []string `protobuf:"bytes,2,rep,name=allowed_services,json=allowedServices,proto3" json:"allowed_services,omitempty"`
+	// Optional operation-level allow-list. If set, the request must also match
+	// the specified MCP tools, HTTP methods/paths, or cloud permissions.
+	Operation *TaskOperation `protobuf:"bytes,3,opt,name=operation,proto3" json:"operation,omitempty"`
+	// Optional allowed upstream resource names (e.g. CRM resource prefixes
+	// "//bigquery.googleapis.com/projects/my-proj/datasets/sales_2026").
+	// Opaque to the wire PEP; consumed by CloudTokenExchanger at egress.
+	AllowedResources []string `protobuf:"bytes,4,rep,name=allowed_resources,json=allowedResources,proto3" json:"allowed_resources,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *TaskRule) Reset() {
+	*x = TaskRule{}
+	mi := &file_api_sam_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TaskRule) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TaskRule) ProtoMessage() {}
+
+func (x *TaskRule) ProtoReflect() protoreflect.Message {
+	mi := &file_api_sam_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TaskRule.ProtoReflect.Descriptor instead.
+func (*TaskRule) Descriptor() ([]byte, []int) {
+	return file_api_sam_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *TaskRule) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *TaskRule) GetAllowedServices() []string {
+	if x != nil {
+		return x.AllowedServices
+	}
+	return nil
+}
+
+func (x *TaskRule) GetOperation() *TaskOperation {
+	if x != nil {
+		return x.Operation
+	}
+	return nil
+}
+
+func (x *TaskRule) GetAllowedResources() []string {
+	if x != nil {
+		return x.AllowedResources
+	}
+	return nil
+}
+
+type TaskOperation struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Allowed MCP tool names (enforced by the PEP on mcp:// tools/call).
+	AllowedTools []string `protobuf:"bytes,1,rep,name=allowed_tools,json=allowedTools,proto3" json:"allowed_tools,omitempty"`
+	// Allowed HTTP methods (e.g. ["GET", "POST"]), validated with httpMethodSyntax.
+	AllowedMethods []string `protobuf:"bytes,2,rep,name=allowed_methods,json=allowedMethods,proto3" json:"allowed_methods,omitempty"`
+	// Allowed HTTP path patterns ("/exact" or "/prefix/*"), validated with
+	// validateHTTPGrantPath.
+	AllowedPaths []string `protobuf:"bytes,3,rep,name=allowed_paths,json=allowedPaths,proto3" json:"allowed_paths,omitempty"`
+	// Allowed cloud IAM permissions (e.g. "bigquery.googleapis.com/datasets.get").
+	// Opaque to the wire PEP; consumed by CloudTokenExchanger at egress.
+	AllowedPermissions []string `protobuf:"bytes,4,rep,name=allowed_permissions,json=allowedPermissions,proto3" json:"allowed_permissions,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *TaskOperation) Reset() {
+	*x = TaskOperation{}
+	mi := &file_api_sam_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TaskOperation) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TaskOperation) ProtoMessage() {}
+
+func (x *TaskOperation) ProtoReflect() protoreflect.Message {
+	mi := &file_api_sam_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TaskOperation.ProtoReflect.Descriptor instead.
+func (*TaskOperation) Descriptor() ([]byte, []int) {
+	return file_api_sam_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *TaskOperation) GetAllowedTools() []string {
+	if x != nil {
+		return x.AllowedTools
+	}
+	return nil
+}
+
+func (x *TaskOperation) GetAllowedMethods() []string {
+	if x != nil {
+		return x.AllowedMethods
+	}
+	return nil
+}
+
+func (x *TaskOperation) GetAllowedPaths() []string {
+	if x != nil {
+		return x.AllowedPaths
+	}
+	return nil
+}
+
+func (x *TaskOperation) GetAllowedPermissions() []string {
+	if x != nil {
+		return x.AllowedPermissions
+	}
+	return nil
+}
+
 var File_api_sam_proto protoreflect.FileDescriptor
 
 const file_api_sam_proto_rawDesc = "" +
@@ -2930,7 +3158,23 @@ const file_api_sam_proto_rawDesc = "" +
 	"\x06issuer\x18\x01 \x01(\tR\x06issuer\x12\x1b\n" +
 	"\tclient_id\x18\x02 \x01(\tR\bclientId\x12\x1a\n" +
 	"\baudience\x18\x03 \x01(\tR\baudience\x12#\n" +
-	"\rrefresh_token\x18\x04 \x01(\tR\frefreshToken*\x94\x01\n" +
+	"\rrefresh_token\x18\x04 \x01(\tR\frefreshToken\"\xb3\x01\n" +
+	"\x15TaskAuthorizationRule\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12!\n" +
+	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12&\n" +
+	"\x05rules\x18\x03 \x03(\v2\x10.sam.v1.TaskRuleR\x05rules\x12;\n" +
+	"\vexpire_time\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"expireTime\"\xb9\x01\n" +
+	"\bTaskRule\x12 \n" +
+	"\vdescription\x18\x01 \x01(\tR\vdescription\x12)\n" +
+	"\x10allowed_services\x18\x02 \x03(\tR\x0fallowedServices\x123\n" +
+	"\toperation\x18\x03 \x01(\v2\x15.sam.v1.TaskOperationR\toperation\x12+\n" +
+	"\x11allowed_resources\x18\x04 \x03(\tR\x10allowedResources\"\xb3\x01\n" +
+	"\rTaskOperation\x12#\n" +
+	"\rallowed_tools\x18\x01 \x03(\tR\fallowedTools\x12'\n" +
+	"\x0fallowed_methods\x18\x02 \x03(\tR\x0eallowedMethods\x12#\n" +
+	"\rallowed_paths\x18\x03 \x03(\tR\fallowedPaths\x12/\n" +
+	"\x13allowed_permissions\x18\x04 \x03(\tR\x12allowedPermissions*\x94\x01\n" +
 	"\x10EnrollmentStatus\x12!\n" +
 	"\x1dENROLLMENT_STATUS_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19ENROLLMENT_STATUS_PENDING\x10\x01\x12\x1e\n" +
@@ -2956,7 +3200,7 @@ func file_api_sam_proto_rawDescGZIP() []byte {
 }
 
 var file_api_sam_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_api_sam_proto_msgTypes = make([]protoimpl.MessageInfo, 41)
+var file_api_sam_proto_msgTypes = make([]protoimpl.MessageInfo, 44)
 var file_api_sam_proto_goTypes = []any{
 	(EnrollmentStatus)(0),              // 0: sam.v1.EnrollmentStatus
 	(ServiceType)(0),                   // 1: sam.v1.ServiceType
@@ -2997,51 +3241,57 @@ var file_api_sam_proto_goTypes = []any{
 	(*MemberCredential)(nil),           // 36: sam.v1.MemberCredential
 	(*TrustedSigningKey)(nil),          // 37: sam.v1.TrustedSigningKey
 	(*OIDCSession)(nil),                // 38: sam.v1.OIDCSession
-	nil,                                // 39: sam.v1.EnrollRequest.LabelsEntry
-	nil,                                // 40: sam.v1.BootstrapEnrollRequest.LabelsEntry
-	nil,                                // 41: sam.v1.CommandBackend.EnvEntry
-	nil,                                // 42: sam.v1.ServiceAnnounce.LabelsEntry
-	nil,                                // 43: sam.v1.PeerEvidenceResponse.LabelsEntry
-	(*timestamppb.Timestamp)(nil),      // 44: google.protobuf.Timestamp
+	(*TaskAuthorizationRule)(nil),      // 39: sam.v1.TaskAuthorizationRule
+	(*TaskRule)(nil),                   // 40: sam.v1.TaskRule
+	(*TaskOperation)(nil),              // 41: sam.v1.TaskOperation
+	nil,                                // 42: sam.v1.EnrollRequest.LabelsEntry
+	nil,                                // 43: sam.v1.BootstrapEnrollRequest.LabelsEntry
+	nil,                                // 44: sam.v1.CommandBackend.EnvEntry
+	nil,                                // 45: sam.v1.ServiceAnnounce.LabelsEntry
+	nil,                                // 46: sam.v1.PeerEvidenceResponse.LabelsEntry
+	(*timestamppb.Timestamp)(nil),      // 47: google.protobuf.Timestamp
 }
 var file_api_sam_proto_depIdxs = []int32{
 	2,  // 0: sam.v1.MeshEvent.type:type_name -> sam.v1.MeshEvent.Type
-	44, // 1: sam.v1.MeshEvent.event_time:type_name -> google.protobuf.Timestamp
-	39, // 2: sam.v1.EnrollRequest.labels:type_name -> sam.v1.EnrollRequest.LabelsEntry
-	44, // 3: sam.v1.EnrollResponse.expire_time:type_name -> google.protobuf.Timestamp
-	40, // 4: sam.v1.BootstrapEnrollRequest.labels:type_name -> sam.v1.BootstrapEnrollRequest.LabelsEntry
+	47, // 1: sam.v1.MeshEvent.event_time:type_name -> google.protobuf.Timestamp
+	42, // 2: sam.v1.EnrollRequest.labels:type_name -> sam.v1.EnrollRequest.LabelsEntry
+	47, // 3: sam.v1.EnrollResponse.expire_time:type_name -> google.protobuf.Timestamp
+	43, // 4: sam.v1.BootstrapEnrollRequest.labels:type_name -> sam.v1.BootstrapEnrollRequest.LabelsEntry
 	0,  // 5: sam.v1.BootstrapEnrollResponse.status:type_name -> sam.v1.EnrollmentStatus
-	44, // 6: sam.v1.BootstrapEnrollResponse.expire_time:type_name -> google.protobuf.Timestamp
+	47, // 6: sam.v1.BootstrapEnrollResponse.expire_time:type_name -> google.protobuf.Timestamp
 	1,  // 7: sam.v1.ServiceInfo.type:type_name -> sam.v1.ServiceType
-	41, // 8: sam.v1.CommandBackend.env:type_name -> sam.v1.CommandBackend.EnvEntry
+	44, // 8: sam.v1.CommandBackend.env:type_name -> sam.v1.CommandBackend.EnvEntry
 	10, // 9: sam.v1.RegisterServiceRequest.service:type_name -> sam.v1.ServiceInfo
 	11, // 10: sam.v1.RegisterServiceRequest.command:type_name -> sam.v1.CommandBackend
 	1,  // 11: sam.v1.ServiceAnnounce.type:type_name -> sam.v1.ServiceType
-	42, // 12: sam.v1.ServiceAnnounce.labels:type_name -> sam.v1.ServiceAnnounce.LabelsEntry
-	44, // 13: sam.v1.ServiceAnnounce.announce_time:type_name -> google.protobuf.Timestamp
-	44, // 14: sam.v1.RouterLeaseResponse.expire_time:type_name -> google.protobuf.Timestamp
+	45, // 12: sam.v1.ServiceAnnounce.labels:type_name -> sam.v1.ServiceAnnounce.LabelsEntry
+	47, // 13: sam.v1.ServiceAnnounce.announce_time:type_name -> google.protobuf.Timestamp
+	47, // 14: sam.v1.RouterLeaseResponse.expire_time:type_name -> google.protobuf.Timestamp
 	19, // 15: sam.v1.PolicyRole.http:type_name -> sam.v1.HTTPGrant
 	18, // 16: sam.v1.PolicyConfig.roles:type_name -> sam.v1.PolicyRole
 	21, // 17: sam.v1.PolicyConfig.bindings:type_name -> sam.v1.PolicyBinding
 	20, // 18: sam.v1.PolicyConfig.egress:type_name -> sam.v1.EgressDestination
 	20, // 19: sam.v1.EgressAssignmentsResponse.egress:type_name -> sam.v1.EgressDestination
-	44, // 20: sam.v1.KeysResponse.sign_time:type_name -> google.protobuf.Timestamp
-	44, // 21: sam.v1.TokenRefreshResponse.expire_time:type_name -> google.protobuf.Timestamp
+	47, // 20: sam.v1.KeysResponse.sign_time:type_name -> google.protobuf.Timestamp
+	47, // 21: sam.v1.TokenRefreshResponse.expire_time:type_name -> google.protobuf.Timestamp
 	10, // 22: sam.v1.NodeCatalogReport.services:type_name -> sam.v1.ServiceInfo
-	44, // 23: sam.v1.IdentityEvidenceResponse.biscuit_expire_time:type_name -> google.protobuf.Timestamp
-	44, // 24: sam.v1.IdentityEvidenceResponse.check_time:type_name -> google.protobuf.Timestamp
-	43, // 25: sam.v1.PeerEvidenceResponse.labels:type_name -> sam.v1.PeerEvidenceResponse.LabelsEntry
-	44, // 26: sam.v1.PeerEvidenceResponse.expire_time:type_name -> google.protobuf.Timestamp
-	44, // 27: sam.v1.PeerEvidenceResponse.check_time:type_name -> google.protobuf.Timestamp
-	44, // 28: sam.v1.MemberCredential.expire_time:type_name -> google.protobuf.Timestamp
+	47, // 23: sam.v1.IdentityEvidenceResponse.biscuit_expire_time:type_name -> google.protobuf.Timestamp
+	47, // 24: sam.v1.IdentityEvidenceResponse.check_time:type_name -> google.protobuf.Timestamp
+	46, // 25: sam.v1.PeerEvidenceResponse.labels:type_name -> sam.v1.PeerEvidenceResponse.LabelsEntry
+	47, // 26: sam.v1.PeerEvidenceResponse.expire_time:type_name -> google.protobuf.Timestamp
+	47, // 27: sam.v1.PeerEvidenceResponse.check_time:type_name -> google.protobuf.Timestamp
+	47, // 28: sam.v1.MemberCredential.expire_time:type_name -> google.protobuf.Timestamp
 	37, // 29: sam.v1.MemberCredential.trusted_keys:type_name -> sam.v1.TrustedSigningKey
 	38, // 30: sam.v1.MemberCredential.oidc_session:type_name -> sam.v1.OIDCSession
-	44, // 31: sam.v1.TrustedSigningKey.receive_time:type_name -> google.protobuf.Timestamp
-	32, // [32:32] is the sub-list for method output_type
-	32, // [32:32] is the sub-list for method input_type
-	32, // [32:32] is the sub-list for extension type_name
-	32, // [32:32] is the sub-list for extension extendee
-	0,  // [0:32] is the sub-list for field type_name
+	47, // 31: sam.v1.TrustedSigningKey.receive_time:type_name -> google.protobuf.Timestamp
+	40, // 32: sam.v1.TaskAuthorizationRule.rules:type_name -> sam.v1.TaskRule
+	47, // 33: sam.v1.TaskAuthorizationRule.expire_time:type_name -> google.protobuf.Timestamp
+	41, // 34: sam.v1.TaskRule.operation:type_name -> sam.v1.TaskOperation
+	35, // [35:35] is the sub-list for method output_type
+	35, // [35:35] is the sub-list for method input_type
+	35, // [35:35] is the sub-list for extension type_name
+	35, // [35:35] is the sub-list for extension extendee
+	0,  // [0:35] is the sub-list for field type_name
 }
 
 func init() { file_api_sam_proto_init() }
@@ -3059,7 +3309,7 @@ func file_api_sam_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_sam_proto_rawDesc), len(file_api_sam_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   41,
+			NumMessages:   44,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

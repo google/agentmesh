@@ -441,5 +441,54 @@ message OIDCSession {
   string refresh_token = 4;
 }
 
+// ============================================================================
+// Task-Scoped Authorization (TAR)
+// ============================================================================
 
+// TaskAuthorizationRule narrows a credential's authority for a specific task or
+// sub-agent hop. Across multiple appended blocks (1..k), semantics are strict
+// set intersection (logical AND): a request is permitted only if it is allowed
+// by the standing mesh policy AND is before every block's expire_time AND
+// matches at least one TaskRule in EVERY appended TaskAuthorizationRule block.
+message TaskAuthorizationRule {
+  string name = 1;
+  string display_name = 2;
+  // Positive allow-list of rules for this hop. Empty rules list denies everything.
+  repeated TaskRule rules = 3;
+  // Optional shorter expiration for this task hop. Effective token expiry is
+  // the minimum across the authority block's expiration() fact and every
+  // appended block's expire_time.
+  google.protobuf.Timestamp expire_time = 4;
+}
 
+message TaskRule {
+  string description = 1;
+
+  // Allowed mesh services (e.g., "mcp://bigquery", "inference://gemini.*",
+  // "egress://bigquery.googleapis.com"). Uses the dot-anchored grammar of
+  // api.ValidateServiceFormat ("*", "<type>://*", "<type>://*.<suffix>",
+  // "<type>://<prefix>.*", "<type>://<exact>"). Required (non-empty).
+  repeated string allowed_services = 2;
+
+  // Optional operation-level allow-list. If set, the request must also match
+  // the specified MCP tools, HTTP methods/paths, or cloud permissions.
+  TaskOperation operation = 3;
+
+  // Optional allowed upstream resource names (e.g. CRM resource prefixes
+  // "//bigquery.googleapis.com/projects/my-proj/datasets/sales_2026").
+  // Opaque to the wire PEP; consumed by CloudTokenExchanger at egress.
+  repeated string allowed_resources = 4;
+}
+
+message TaskOperation {
+  // Allowed MCP tool names (enforced by the PEP on mcp:// tools/call).
+  repeated string allowed_tools = 1;
+  // Allowed HTTP methods (e.g. ["GET", "POST"]), validated with httpMethodSyntax.
+  repeated string allowed_methods = 2;
+  // Allowed HTTP path patterns ("/exact" or "/prefix/*"), validated with
+  // validateHTTPGrantPath.
+  repeated string allowed_paths = 3;
+  // Allowed cloud IAM permissions (e.g. "bigquery.googleapis.com/datasets.get").
+  // Opaque to the wire PEP; consumed by CloudTokenExchanger at egress.
+  repeated string allowed_permissions = 4;
+}

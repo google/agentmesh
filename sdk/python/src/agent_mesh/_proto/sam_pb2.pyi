@@ -424,6 +424,42 @@ class ServiceInfo(_message.Message):
     type: ServiceType
     def __init__(self, type: _Optional[_Union[ServiceType, str]] = ..., name: _Optional[str] = ..., description: _Optional[str] = ...) -> None: ...
 
+class TaskAuthorizationRule(_message.Message):
+    __slots__ = ["display_name", "expire_time", "name", "rules"]
+    DISPLAY_NAME_FIELD_NUMBER: _ClassVar[int]
+    EXPIRE_TIME_FIELD_NUMBER: _ClassVar[int]
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    RULES_FIELD_NUMBER: _ClassVar[int]
+    display_name: str
+    expire_time: _timestamp_pb2.Timestamp
+    name: str
+    rules: _containers.RepeatedCompositeFieldContainer[TaskRule]
+    def __init__(self, name: _Optional[str] = ..., display_name: _Optional[str] = ..., rules: _Optional[_Iterable[_Union[TaskRule, _Mapping]]] = ..., expire_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+
+class TaskOperation(_message.Message):
+    __slots__ = ["allowed_methods", "allowed_paths", "allowed_permissions", "allowed_tools"]
+    ALLOWED_METHODS_FIELD_NUMBER: _ClassVar[int]
+    ALLOWED_PATHS_FIELD_NUMBER: _ClassVar[int]
+    ALLOWED_PERMISSIONS_FIELD_NUMBER: _ClassVar[int]
+    ALLOWED_TOOLS_FIELD_NUMBER: _ClassVar[int]
+    allowed_methods: _containers.RepeatedScalarFieldContainer[str]
+    allowed_paths: _containers.RepeatedScalarFieldContainer[str]
+    allowed_permissions: _containers.RepeatedScalarFieldContainer[str]
+    allowed_tools: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, allowed_tools: _Optional[_Iterable[str]] = ..., allowed_methods: _Optional[_Iterable[str]] = ..., allowed_paths: _Optional[_Iterable[str]] = ..., allowed_permissions: _Optional[_Iterable[str]] = ...) -> None: ...
+
+class TaskRule(_message.Message):
+    __slots__ = ["allowed_resources", "allowed_services", "description", "operation"]
+    ALLOWED_RESOURCES_FIELD_NUMBER: _ClassVar[int]
+    ALLOWED_SERVICES_FIELD_NUMBER: _ClassVar[int]
+    DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    OPERATION_FIELD_NUMBER: _ClassVar[int]
+    allowed_resources: _containers.RepeatedScalarFieldContainer[str]
+    allowed_services: _containers.RepeatedScalarFieldContainer[str]
+    description: str
+    operation: TaskOperation
+    def __init__(self, description: _Optional[str] = ..., allowed_services: _Optional[_Iterable[str]] = ..., operation: _Optional[_Union[TaskOperation, _Mapping]] = ..., allowed_resources: _Optional[_Iterable[str]] = ...) -> None: ...
+
 class TokenRefreshRequest(_message.Message):
     __slots__ = ["challenge_signature", "challenge_unix_ms", "peer_id"]
     CHALLENGE_SIGNATURE_FIELD_NUMBER: _ClassVar[int]

@@ -16,7 +16,7 @@
 
 from .auth import AUTH_PROTOCOL, MCP_PROTOCOL, AuthRejectedError, auth_stream_handler, authenticate_with_peer
 from .authorizer import BASELINE_DATALOG, AuthorizationError, AuthorizeRequest, ProviderAuthorizerOptions, authorize_caller
-from .biscuit import ROLE_ROUTER, BiscuitVerificationError, VerifiedBiscuit, require_role, verify_peer_biscuit
+from .biscuit import ROLE_ROUTER, BiscuitVerificationError, VerifiedBiscuit, attenuate_biscuit, require_role, verify_peer_biscuit
 from .challenges import enroll_challenge, enroll_status_challenge, refresh_challenge, register_challenge
 from .controlplane import (
     ROLE_NODE,
@@ -55,6 +55,22 @@ from .mesh import AgentMesh, ControlPlaneSync
 from .relay import dial_through_relay, reserve_relay
 from .session import AdmittedRouter, MeshSession, Peer
 from .sync import GOSSIP_EVENTS_TOPIC, BanSet, verify_mesh_event
+from .tar import (
+    TaskRequestContext,
+    decode_tar_block_payload,
+    effective_tar_expiration,
+    encode_tar_block_fact,
+    encode_tar_block_payload,
+    evaluate_task_rules,
+    match_http_path,
+    match_service_pattern,
+    match_task_rule,
+    parse_tar_block_source,
+    validate_http_grant_path,
+    validate_service_pattern,
+    validate_task_authorization_rule,
+    validate_task_rule,
+)
 
 __version__ = "0.1.0"
 
@@ -98,27 +114,38 @@ __all__ = [
     "ROLE_ROUTER",
     "RefreshResult",
     "StreamedResponse",
+    "TaskRequestContext",
     "ToolCallResult",
     "ToolInfo",
     "VerifiedBiscuit",
+    "attenuate_biscuit",
     "auth_stream_handler",
     "authenticate_with_peer",
     "authorize_caller",
     "canonical_peer_id",
     "decode_auth_response",
+    "decode_tar_block_payload",
     "dial_through_relay",
+    "effective_tar_expiration",
     "encode_auth_frame",
+    "encode_tar_block_fact",
+    "encode_tar_block_payload",
     "enroll_challenge",
     "enroll_status_challenge",
+    "evaluate_task_rules",
     "find_providers",
     "http_ingress_handler",
     "http_request_over_stream",
     "libp2p_public_key",
+    "match_http_path",
+    "match_service_pattern",
+    "match_task_rule",
     "mesh_http_target",
     "mesh_url",
     "open_http_request",
     "open_mcp_session",
     "parse_service_target",
+    "parse_tar_block_source",
     "peer_id_from_public_key",
     "refresh_challenge",
     "register_challenge",
@@ -130,6 +157,10 @@ __all__ = [
     "rewrite_agent_card",
     "split_mesh_url",
     "validate_control_plane_url",
+    "validate_http_grant_path",
+    "validate_service_pattern",
+    "validate_task_authorization_rule",
+    "validate_task_rule",
     "verify_ed25519",
     "verify_keys_response",
     "verify_mesh_event",

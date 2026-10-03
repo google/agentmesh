@@ -16,10 +16,18 @@
 mints them and policy rules rendered the way it renders them. The decisions
 here are the ones internal/node/middleware_test.go pins."""
 
+import base64
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+
 import biscuit_auth as ba
 import pytest
+from google.protobuf.timestamp_pb2 import Timestamp
 
+from agent_mesh._proto import sam_pb2
 from agent_mesh.authorizer import BASELINE_DATALOG, AuthorizationError, AuthorizeRequest, ProviderAuthorizerOptions, authorize_caller
+from agent_mesh.biscuit import attenuate_biscuit
 
 from .test_session import CP, CP_KEY
 
@@ -159,3 +167,92 @@ def test_every_baseline_item_parses_in_biscuit_python():
         ba.Rule(r)
     for p in BASELINE_DATALOG["policies"] + [BASELINE_DATALOG["allow_if_true"]]:
         ba.Policy(p)
+
+
+_TAR_SUITE = json.loads((Path(__file__).resolve().parents[2] / "testdata" / "tar_conformance.json").read_text())
+
+
+@pytest.mark.parametrize("vec", _TAR_SUITE["vectors"], ids=lambda v: v["name"])
+def test_tar_conformance_vector(vec: dict):
+    root_pub = base64.b64decode(_TAR_SUITE["public_key_b64"])
+    provider_biscuit = base64.b64decode(_TAR_SUITE["provider_biscuit_b64"])
+    biscuit_bytes = base64.b64decode(vec["biscuit_b64"])
+    eval_now = datetime.fromisoformat(_TAR_SUITE["evaluation_time"])
+    req = AuthorizeRequest(
+        biscuit=biscuit_bytes,
+        peer_id=_TAR_SUITE["caller_peer_id"],
+        target_service=vec["target_service"],
+        protocol=vec["protocol"],
+        method=vec.get("method"),
+        path=vec.get("path", ""),
+        mcp_tool=vec.get("mcp_tool", ""),
+    )
+    opts = ProviderAuthorizerOptions(
+        trusted_keys=lambda: [root_pub],
+        own_biscuit=lambda: provider_biscuit,
+        policy_rules=lambda: _TAR_SUITE["policy_datalog_rules"],
+        now=lambda: eval_now,
+    )
+    if not vec["allow"]:
+        with pytest.raises(AuthorizationError):
+            authorize_caller(req, opts)
+        return
+    verified = authorize_caller(req, opts)
+    assert verified.peer_id == _TAR_SUITE["caller_peer_id"]
+    if "expected_effective_expiration" in vec:
+        want_exp = datetime.fromisoformat(vec["expected_effective_expiration"])
+        assert verified.expiration == want_exp
+
+
+def test_attenuate_biscuit_narrows_authority_across_hops():
+    root = node_token(CALLER, ["granted_service_all_types(true)", "target_unrestricted(true)"])
+    hop1_exp = datetime(2034, 5, 1, 0, 0, 0, tzinfo=timezone.utc)
+    hop2_exp = datetime(2034, 2, 1, 0, 0, 0, tzinfo=timezone.utc)
+
+    ts1 = Timestamp()
+    ts1.FromDatetime(hop1_exp)
+    att1 = attenuate_biscuit(
+        root,
+        sam_pb2.TaskAuthorizationRule(
+            name="hop-1",
+            expire_time=ts1,
+            rules=[
+                sam_pb2.TaskRule(
+                    allowed_services=["mcp://calc"],
+                    operation=sam_pb2.TaskOperation(allowed_tools=["add", "multiply"]),
+                )
+            ],
+        ),
+        [CP_KEY],
+    )
+
+    ts2 = Timestamp()
+    ts2.FromDatetime(hop2_exp)
+    att2 = attenuate_biscuit(
+        att1,
+        sam_pb2.TaskAuthorizationRule(
+            name="hop-2",
+            expire_time=ts2,
+            rules=[
+                sam_pb2.TaskRule(
+                    allowed_services=["mcp://calc"],
+                    operation=sam_pb2.TaskOperation(allowed_tools=["add"]),
+                )
+            ],
+        ),
+        [CP_KEY],
+    )
+
+    verified = authorize_caller(
+        AuthorizeRequest(biscuit=att2, peer_id=CALLER, target_service="mcp://calc", protocol="/sam/mcp/1.0.0", mcp_tool="add"),
+        options([]),
+    )
+    assert verified.expiration == hop2_exp
+    assert len(verified.task_rules) == 2
+
+    with pytest.raises(AuthorizationError):
+        authorize_caller(
+            AuthorizeRequest(biscuit=att2, peer_id=CALLER, target_service="mcp://calc", protocol="/sam/mcp/1.0.0", mcp_tool="multiply"),
+            options([]),
+        )
+

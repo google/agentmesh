@@ -26,7 +26,7 @@ set -o pipefail
 REPO_ROOT=$(git rev-parse --show-toplevel)
 cd "${REPO_ROOT}"
 
-GENERATED=(sdk/js/src/gen sdk/python/src/agent_mesh/_proto sdk/python/src/agent_mesh/_gen)
+GENERATED=(sdk/js/src/gen sdk/python/src/agent_mesh/_proto sdk/python/src/agent_mesh/_gen sdk/testdata)
 
 ./hack/gen-sdk-proto.sh
 
