@@ -313,7 +313,7 @@ func handleLocalEgress(node *SamNode, w http.ResponseWriter, r *http.Request) {
 		refuse(w, http.StatusNotFound, fmt.Sprintf("no egress destination %q is assigned to this node", host), proxyStatusDestinationNotFound)
 		return
 	}
-	identity := node.GetIdentity()
+	identity := node.GetRequestIdentity(r.Context())
 	if len(identity) == 0 {
 		http.Error(w, "node has no credential yet", http.StatusServiceUnavailable)
 		return

@@ -195,6 +195,23 @@
       "protocol": "/sam/mcp/1.0.0",
       "mcp_tool": "get_weather",
       "allow": false
+    },
+    {
+      "name": "delegated_token_no_node_fact_allowed",
+      "biscuit_b64": "EoMDCpgCCgpleHBpcmF0aW9uCjQxMkQzS29vV0FHQkRGVm1kSFVveERxUE5QTk1BOEFhVFFkWEFHZ1FKM0xhTHFxRndVcURDCgphY3Rvcl9ub2RlCg5jbGllbnRfcGVlcl9pZAoRYWxpY2VAZXhhbXBsZS5jb20KBWFsaWNlCgdhbmFseXN0ChlncmFudGVkX3NlcnZpY2VfYWxsX3R5cGVzChhncmFudGVkX3RhcmdldF9hbGxfZmFjdHMSABgDIg0KCwiACBIGIIDXjNIHIgoKCAiCCBIDGIEIIgoKCAiDCBIDGIEIIgkKBwgOEgMYhAgiCQoHCAoSAxiFCCIJCgcIBhIDGIYIIgkKBwiHCBICMAEiCQoHCIgIEgIwARIkCAASILbMbqLs7S/MNUxxdSQyxdy0fmV7eikjJdOF/vP9vqUMGkDV9r4B5SgKQepmB0ZNKUBFf1eupQV6j2ZUbJZhpIyyc8sGMhkrQzrKjhaAeAuCzdw58rK4Ra+2T1zuGmdS4FsFGugDCv0CCt8CQ2hCdmNtTm9aWE4wY21GMGIzSXRhRzl3RWhkUGNtTm9aWE4wY21GMGIzSWdWR0Z6YXlCVFkyOXdaUm9fQ2hGWFpXRjBhR1Z5SUUxRFVDQjBiMjlzY3hJTmJXTndPaTh2ZDJWaGRHaGxjaG9iQ2d0blpYUmZkMlZoZEdobGNnb01aMlYwWDJadmNtVmpZWE4wR21BS0tVZHBkRWgxWWlCQlVFa2djbVZoWkM5M2NtbDBaU0IxYm1SbGNpQXZjbVZ3YjNNdllXTnRaUzhxRWhkbFozSmxjM002THk5aGNHa3VaMmwwYUhWaUxtTnZiUm9hRWdOSFJWUVNCRkJQVTFRYURTOXlaWEJ2Y3k5aFkyMWxMeW9hTHdvWFIyVnRhVzVwSUdsdVptVnlaVzVqWlNCd2NtVm1hWGdTRkdsdVptVnlaVzVqWlRvdkwyZGxiV2x1YVM0cUlnWUlnSldreVFjCgl0YXJfYmxvY2sSABgDIgoKCAiKCBIDGIkIEiQIABIgyMkwaG0ipvNYQtUAoVjQ7+Koof6kFICCkMpW5lyivbkaQKqCWX8oRaOd4Y/X8opSrQ+Orjf8PJjg1RlnKK2jroBTjvtjOznHpXXBu20ttRfwZ0YMgRC8Ty6mF5KgoQ+Y/wciQhJA7LYlGFIS30VUUEWoCbNE2cy0zNEd30szIwI5NnokpSuRoXeAMLrX/Py4746cAq+fh/C4f9MfDUcuhenx0abzCw==",
+      "target_service": "mcp://weather",
+      "protocol": "/sam/mcp/1.0.0",
+      "mcp_tool": "get_weather",
+      "allow": true,
+      "expected_effective_expiration": "2034-06-01T00:00:00Z"
+    },
+    {
+      "name": "delegated_token_wrong_actor_rejected",
+      "biscuit_b64": "EoMDCpgCCgpleHBpcmF0aW9uCjQxMkQzS29vV01YcWNaWENWazc4bkhjczRiTGpYZENaRFZwOUVQYVpDcWtMeVFMTXRQak1YCgphY3Rvcl9ub2RlCg5jbGllbnRfcGVlcl9pZAoRYWxpY2VAZXhhbXBsZS5jb20KBWFsaWNlCgdhbmFseXN0ChlncmFudGVkX3NlcnZpY2VfYWxsX3R5cGVzChhncmFudGVkX3RhcmdldF9hbGxfZmFjdHMSABgDIg0KCwiACBIGIIDXjNIHIgoKCAiCCBIDGIEIIgoKCAiDCBIDGIEIIgkKBwgOEgMYhAgiCQoHCAoSAxiFCCIJCgcIBhIDGIYIIgkKBwiHCBICMAEiCQoHCIgIEgIwARIkCAASIBTNtY8uXx8MUP0HL3J4snDARlENL8afG3SFGzj8mjvyGkD3ravwly4/hhdC6NoJTD71etVKI268K+DH71ADto2b/BN4nvClJmhlnXMUx1NtrokUKWFttg5xqB73ZJ5mH6EFGugDCv0CCt8CQ2hCdmNtTm9aWE4wY21GMGIzSXRhRzl3RWhkUGNtTm9aWE4wY21GMGIzSWdWR0Z6YXlCVFkyOXdaUm9fQ2hGWFpXRjBhR1Z5SUUxRFVDQjBiMjlzY3hJTmJXTndPaTh2ZDJWaGRHaGxjaG9iQ2d0blpYUmZkMlZoZEdobGNnb01aMlYwWDJadmNtVmpZWE4wR21BS0tVZHBkRWgxWWlCQlVFa2djbVZoWkM5M2NtbDBaU0IxYm1SbGNpQXZjbVZ3YjNNdllXTnRaUzhxRWhkbFozSmxjM002THk5aGNHa3VaMmwwYUhWaUxtTnZiUm9hRWdOSFJWUVNCRkJQVTFRYURTOXlaWEJ2Y3k5aFkyMWxMeW9hTHdvWFIyVnRhVzVwSUdsdVptVnlaVzVqWlNCd2NtVm1hWGdTRkdsdVptVnlaVzVqWlRvdkwyZGxiV2x1YVM0cUlnWUlnSldreVFjCgl0YXJfYmxvY2sSABgDIgoKCAiKCBIDGIkIEiQIABIgjWfu1jbf2FAZ5u7DzJCw++MS8TEJR3kTqMWwR8T8SZcaQHYLptOauiTs8YlbrLtGlI9QlOizbN6osUoPYQG8XtKB5IUkStCssvW/43CzYFSc6PJBTOK9sEY3EAnJR+fyhAUiIgogrTiAvUeC8RC237jw942MXsf/Uk6sW4xDtEuKBr7porw=",
+      "target_service": "mcp://weather",
+      "protocol": "/sam/mcp/1.0.0",
+      "mcp_tool": "get_weather",
+      "allow": false
     }
   ]
 }

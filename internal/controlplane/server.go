@@ -41,6 +41,7 @@ import (
 	jwt "github.com/golang-jwt/jwt/v5"
 	"github.com/google/sam/api"
 	"github.com/google/sam/internal/identity"
+	"github.com/google/sam/internal/ratelimit"
 	"github.com/google/sam/internal/storage"
 	golog "github.com/ipfs/go-log/v2"
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -97,6 +98,14 @@ type Server struct {
 	httpServer *http.Server
 	listener   net.Listener
 	limiter    *rate.Limiter
+	stsLimiter *ratelimit.PeerRateLimiter
+	oidcSigner OIDCSigner
+
+	revokedBiscuitsMu sync.RWMutex
+	revokedBiscuits   map[string]time.Time
+
+	oauthCodesMu sync.Mutex
+	oauthCodes   map[string]*oauthAuthCode
 
 	meshMu sync.RWMutex
 	mesh   MeshAdapter
@@ -128,6 +137,19 @@ func NewServer(config Options, store storage.Store) (*Server, error) {
 		return nil, err
 	}
 
+	signer := config.OIDCSigner
+	if signer == nil {
+		var err error
+		signer, err = NewLocalES256Signer()
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize OIDC signer: %w", err)
+		}
+	}
+	stsLimiter, err := ratelimit.NewPeerRateLimiter(1000)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize STS rate limiter: %w", err)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	reg := prometheus.NewRegistry()
@@ -138,6 +160,10 @@ func NewServer(config Options, store storage.Store) (*Server, error) {
 		store:           store,
 		mesh:            NewNopMeshAdapter(),
 		limiter:         rate.NewLimiter(rate.Limit(EnrollRateLimit), EnrollBurst),
+		stsLimiter:      stsLimiter,
+		oidcSigner:      signer,
+		revokedBiscuits: make(map[string]time.Time),
+		oauthCodes:      make(map[string]*oauthAuthCode),
 		providers:       make(map[string]*oidc.Provider),
 		catalog:         make(map[string]nodeCatalogEntry),
 		metricsRegistry: reg,
@@ -256,6 +282,14 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	handle("/enroll", meshSurface(noStore(s.HandleEnroll)))
 	handle("/enroll/status", meshSurface(noStore(s.HandleEnrollStatus)))
 	handle("/refresh", meshSurface(noStore(s.HandleRefresh)))
+	handle("/token/exchange", meshSurface(noStore(s.HandleTokenExchange)))
+	handle("/sts/token", meshSurface(noStore(s.HandleSTSToken)))
+	handle("/revocations", meshSurface(noStore(s.HandleRevocations)))
+	handle("/.well-known/openid-configuration", meshSurface(s.HandleOpenIDConfiguration))
+	handle("/.well-known/oauth-authorization-server", meshSurface(s.HandleOAuthAuthorizationServer))
+	handle("/jwks", meshSurface(s.HandleJWKS))
+	handle("/oauth/authorize", noStore(s.HandleOAuthAuthorize))
+	handle("/oauth/token", meshSurface(noStore(s.HandleOAuthToken)))
 	handle("/nodes/catalog", s.HandleNodeCatalog)
 	handle("/admin/bootstrap-tokens", noStore(s.HandleAdminBootstrapTokens))
 	handle("/admin/bootstrap-tokens/", noStore(s.HandleAdminBootstrapTokenAction))

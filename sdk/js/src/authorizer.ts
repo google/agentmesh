@@ -92,10 +92,10 @@ export async function authorizeCaller(req: AuthorizeRequest, options: ProviderAu
   }
 
   // Signature under a trusted key, authority block + tar_block chain, expiry and binding
-  // to the connection peer: RequireAuthorityBinding and EnforceExpiration.
+  // to the connection peer: RequireAuthorityRequestBinding and EnforceExpiration.
   let caller: VerifiedBiscuit;
   try {
-    caller = await verifyPeerBiscuit(req.biscuit, req.peerId, keys, now);
+    caller = await verifyPeerBiscuit(req.biscuit, req.peerId, keys, now, { allowDelegated: true });
   } catch (err) {
     throw new AuthorizationError(req.peerId, describe(err));
   }

@@ -256,13 +256,17 @@ func (n *SamNode) authorizeWithRules(rawToken []byte, req RequestContext, pubKey
 	if err != nil {
 		return nil, fmt.Errorf("invalid biscuit: %w", err)
 	}
+	if n.IsBiscuitRevoked(b) {
+		logger.Infow("Audit Traceability", append(req.auditFields(), "decision", "deny", "reason", "biscuit is revoked")...)
+		return nil, fmt.Errorf("biscuit is revoked")
+	}
 
 	authorizer, err := b.Authorizer(pubKey, identity.AuthorizerOptions(n.BiscuitTimeout)...)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := identity.RequireAuthorityBinding(b, req.PeerID); err != nil {
+	if err := identity.RequireAuthorityRequestBinding(b, req.PeerID); err != nil {
 		return nil, err
 	}
 
@@ -387,7 +391,7 @@ func (n *SamNode) authorizeWithRules(rawToken []byte, req RequestContext, pubKey
 		}
 	}
 
-	var userStr, emailStr, roleStr string
+	var userStr, emailStr, roleStr, actorNodeStr string
 
 	if facts, _ := authorizer.Query(biscuit.Rule{
 		Head: biscuit.Predicate{Name: "get_user", IDs: []biscuit.Term{biscuit.Variable("u")}},
@@ -416,12 +420,24 @@ func (n *SamNode) authorizeWithRules(rawToken []byte, req RequestContext, pubKey
 		}
 	}
 
+	if facts, _ := authorizer.Query(biscuit.Rule{
+		Head: biscuit.Predicate{Name: "get_actor_node", IDs: []biscuit.Term{biscuit.Variable("a")}},
+		Body: []biscuit.Predicate{{Name: api.FactActorNode, IDs: []biscuit.Term{biscuit.Variable("a")}}},
+	}); len(facts) > 0 && len(facts[0].IDs) > 0 {
+		if s, ok := facts[0].IDs[0].(biscuit.String); ok {
+			actorNodeStr = string(s)
+		}
+	}
+
 	auditFields := append(req.auditFields(),
 		"decision", "allow",
 		"user", userStr,
 		"email", emailStr,
 		"role", roleStr,
 	)
+	if actorNodeStr != "" {
+		auditFields = append(auditFields, "actor_node", actorNodeStr)
+	}
 	if len(taskRules) > 0 {
 		auditFields = append(auditFields, "task", taskRules[len(taskRules)-1].GetName())
 	}

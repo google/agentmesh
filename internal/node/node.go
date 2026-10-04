@@ -23,6 +23,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -154,24 +155,27 @@ func (n *SamNode) isAdmitted(p peer.ID) bool {
 }
 
 type SamNode struct {
-	config               Options
-	Host                 host.Host
-	DHT                  *dht.IpfsDHT
-	PubSub               *pubsub.PubSub
-	Discovery            *samdiscovery.Discovery
-	Store                *Store
-	RouterPeerID         peer.ID
-	authenticatedRouters map[peer.ID]bool
-	peerLastEventTime    map[string]int64
-	mu                   sync.Mutex
-	nodeConfig           *NodeConfigComplete
-	revokedPeers         *lru.Cache[string, int64]
-	peerLabelGate        *lru.Cache[string, time.Time]
-	authPeers            sync.Map
-	trustedKeys          []TrustedKey
-	keysMu               sync.RWMutex
-	MeshPolicyRules      []biscuit.Rule
-	MeshPolicyMu         sync.RWMutex
+	config                Options
+	Host                  host.Host
+	DHT                   *dht.IpfsDHT
+	PubSub                *pubsub.PubSub
+	Discovery             *samdiscovery.Discovery
+	Store                 *Store
+	RouterPeerID          peer.ID
+	authenticatedRouters  map[peer.ID]bool
+	peerLastEventTime     map[string]int64
+	mu                    sync.Mutex
+	nodeConfig            *NodeConfigComplete
+	revokedPeers          *lru.Cache[string, int64]
+	revokedTokens         *lru.Cache[string, time.Time]
+	delegatedBiscuitCache *lru.Cache[string, *api.TokenExchangeResponse]
+	stsTokenCache         *lru.Cache[string, *api.STSTokenResponse]
+	peerLabelGate         *lru.Cache[string, time.Time]
+	authPeers             sync.Map
+	trustedKeys           []TrustedKey
+	keysMu                sync.RWMutex
+	MeshPolicyRules       []biscuit.Rule
+	MeshPolicyMu          sync.RWMutex
 	// pendingEgress holds assignments that arrived before Start created the
 	// service registry (SyncControlPlane runs first); Start applies them.
 	pendingEgress   []*api.EgressDestination
@@ -247,6 +251,64 @@ func (n *SamNode) SetIdentityCache(b []byte) {
 	if len(b) > 0 {
 		n.cachedIdentity.Store(b)
 	}
+}
+
+// RevokeBiscuitID records a Biscuit revocation ID (base64url- or hex-encoded) as revoked until expiry.
+func (n *SamNode) RevokeBiscuitID(revocationID string, expiry time.Time) {
+	if revocationID == "" {
+		return
+	}
+	if n.revokedTokens == nil {
+		n.mu.Lock()
+		if n.revokedTokens == nil {
+			n.revokedTokens, _ = lru.New[string, time.Time](RevocationCacheSize)
+		}
+		n.mu.Unlock()
+	}
+	if expiry.IsZero() {
+		expiry = time.Now().Add(api.BiscuitTokenTTL)
+	}
+	if n.revokedTokens != nil {
+		n.revokedTokens.Add(revocationID, expiry)
+		if raw, err := hex.DecodeString(revocationID); err == nil && len(raw) > 0 {
+			n.revokedTokens.Add(base64.RawURLEncoding.EncodeToString(raw), expiry)
+		}
+	}
+}
+
+// RevokeBiscuitToken revokes the outermost block of a Biscuit token locally.
+// Revoking the final block's RevocationId invalidates that task token and any
+// further attenuated descendants without revoking the parent token.
+func (n *SamNode) RevokeBiscuitToken(rawToken []byte, expiry time.Time) (string, error) {
+	b, _, err := identity.UnmarshalInbound(rawToken)
+	if err != nil {
+		return "", err
+	}
+	ids := b.RevocationIds()
+	if len(ids) == 0 {
+		return "", fmt.Errorf("biscuit has no revocation IDs")
+	}
+	revID := base64.RawURLEncoding.EncodeToString(ids[len(ids)-1])
+	n.RevokeBiscuitID(revID, expiry)
+	return revID, nil
+}
+
+// IsBiscuitRevoked checks whether any block of b has been revoked.
+func (n *SamNode) IsBiscuitRevoked(b *biscuit.Biscuit) bool {
+	if n == nil || n.revokedTokens == nil || b == nil {
+		return false
+	}
+	now := time.Now()
+	for _, id := range b.RevocationIds() {
+		key := base64.RawURLEncoding.EncodeToString(id)
+		if exp, ok := n.revokedTokens.Get(key); ok {
+			if now.Before(exp) {
+				return true
+			}
+			n.revokedTokens.Remove(key)
+		}
+	}
+	return false
 }
 
 func stripP2pFromDnsaddr(addr multiaddr.Multiaddr) multiaddr.Multiaddr {
@@ -330,6 +392,10 @@ func NewSamNode(cfg Options) (*SamNode, error) {
 	node.revokedPeers, err = lru.New[string, int64](RevocationCacheSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create revocation cache: %w", err)
+	}
+	node.revokedTokens, err = lru.New[string, time.Time](RevocationCacheSize)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create token revocation cache: %w", err)
 	}
 	node.peerLabelGate, err = lru.New[string, time.Time](labelGateCacheSize)
 	if err != nil {

@@ -1218,16 +1218,16 @@ func TestTARConformanceVectors(t *testing.T) {
 				t.Fatal(err)
 			}
 			if vec.ExpectedEffectiveExpiration != "" {
-				exp, verifyErr := identity.VerifyBiscuitAndGetExpiry(tokenBytes, callerPeer, []ed25519.PublicKey{rootPub}, 500*time.Millisecond)
+				claims, verifyErr := identity.InspectVerifiedBiscuit(tokenBytes, []ed25519.PublicKey{rootPub}, 500*time.Millisecond)
 				if verifyErr != nil {
-					t.Fatalf("VerifyBiscuitAndGetExpiry failed: %v", verifyErr)
+					t.Fatalf("InspectVerifiedBiscuit failed: %v", verifyErr)
 				}
 				wantExp, err := time.Parse(time.RFC3339, vec.ExpectedEffectiveExpiration)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if !exp.Equal(wantExp) {
-					t.Fatalf("effective expiration = %v, want %v", exp, wantExp)
+				if !claims.Expiration.Equal(wantExp) {
+					t.Fatalf("effective expiration = %v, want %v", claims.Expiration, wantExp)
 				}
 			}
 

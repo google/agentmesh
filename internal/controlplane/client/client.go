@@ -19,6 +19,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
@@ -155,6 +156,38 @@ func (c *Client) FetchEgress(ctx context.Context, biscuit []byte) (*api.EgressAs
 	return &egress, nil
 }
 
+// FetchRevocations is GET /revocations, authenticated with the caller's biscuit:
+// the revoked Biscuit IDs and banned peer IDs currently tracked by the control plane.
+func (c *Client) FetchRevocations(ctx context.Context, biscuit []byte) (*api.RevocationsResponse, error) {
+	var revocations api.RevocationsResponse
+	if err := c.get(ctx, "/revocations", biscuit, &revocations); err != nil {
+		return nil, err
+	}
+	return &revocations, nil
+}
+
+// ExchangeToken is POST /token/exchange, authenticated with the calling node's
+// biscuit: verifies an external OIDC/K8s/SPIFFE JWT and mints a short-lived
+// Delegated Session Biscuit bound to the calling node.
+func (c *Client) ExchangeToken(ctx context.Context, biscuit []byte, req *api.TokenExchangeRequest) (*api.TokenExchangeResponse, error) {
+	var resp api.TokenExchangeResponse
+	if err := c.post(ctx, "/token/exchange", biscuit, req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// MintSTSToken is POST /sts/token, authenticated with the egress node's
+// biscuit: verifies a caller Biscuit for an egress destination and mints a
+// short-lived ES256 JWT for cloud STS federation.
+func (c *Client) MintSTSToken(ctx context.Context, biscuit []byte, req *api.STSTokenRequest) (*api.STSTokenResponse, error) {
+	var resp api.STSTokenResponse
+	if err := c.post(ctx, "/sts/token", biscuit, req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 func (c *Client) get(ctx context.Context, path string, biscuit []byte, msg proto.Message) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
@@ -180,6 +213,41 @@ func (c *Client) get(ctx context.Context, path string, biscuit []byte, msg proto
 		return fmt.Errorf("control plane returned status %s: %s", resp.Status, string(body))
 	}
 	if err := proto.Unmarshal(body, msg); err != nil {
+		return fmt.Errorf("failed to decode %s response: %w", path, err)
+	}
+	return nil
+}
+
+func (c *Client) post(ctx context.Context, path string, biscuit []byte, reqMsg, respMsg proto.Message) error {
+	payload, err := proto.Marshal(reqMsg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal %s request: %w", path, err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("failed to create HTTP request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-protobuf")
+	if len(biscuit) > 0 {
+		req.Header.Set("Authorization", "Bearer "+base64.StdEncoding.EncodeToString(biscuit))
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := ReadBody(resp.Body)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("%w: %s", ErrNotFound, path)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("control plane returned status %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	if err := proto.Unmarshal(body, respMsg); err != nil {
 		return fmt.Errorf("failed to decode %s response: %w", path, err)
 	}
 	return nil

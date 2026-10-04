@@ -79,6 +79,12 @@ const (
 	// Example Datalog: check if client_peer_id($id), connection_peer_id($id)
 	FactClientPeerID = "client_peer_id"
 
+	// FactActorNode names the origin sam-node PeerID that exchanged a delegated
+	// subject credential at POST /token/exchange, for audit logs, for act.sub in
+	// border JWTs, and for ext_proc attributes["sam"].actor_node. It grants
+	// nothing: no baseline rule and no policy binding reads it.
+	FactActorNode = "actor_node"
+
 	// FactGroup defines the group claim extracted from the OIDC token.
 	// Contains: biscuit.String(groupName)
 	// Example Datalog: allow if group("data-science")

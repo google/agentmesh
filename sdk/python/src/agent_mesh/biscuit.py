@@ -45,7 +45,7 @@ class BiscuitVerificationError(Exception):
 class VerifiedBiscuit:
     """What a verified peer biscuit says about its holder."""
 
-    # The peer the token is bound to (its node() fact).
+    # The peer the token is bound to (its node() or actor_node()/client_peer_id() fact).
     peer_id: str
     # When the token lapses; the minimum of authority expiration() and any tar_block expire_time.
     expiration: datetime
@@ -54,6 +54,7 @@ class VerifiedBiscuit:
     roles: list[str] = field(default_factory=list)
     labels: dict[str, str] = field(default_factory=dict)
     task_rules: list[sam_pb2.TaskAuthorizationRule] = field(default_factory=list)
+    actor_node: Optional[str] = None
 
 
 def _limits() -> ba.AuthorizerLimits:
@@ -101,6 +102,8 @@ def verify_peer_biscuit(
     expected_peer_id: str,
     trusted_keys: Sequence[bytes],
     now: Optional[datetime] = None,
+    *,
+    allow_delegated: bool = False,
 ) -> VerifiedBiscuit:
     """Verifies a biscuit received from expected_peer_id over an authenticated
     connection. Every trusted key is tried, so a token minted under a retiring
@@ -123,7 +126,12 @@ def verify_peer_biscuit(
     def strings(rule: str) -> list[str]:
         return [f.terms[0] for f in authorizer.query(ba.Rule(rule)) if isinstance(f.terms[0], str)]
 
-    if expected_peer_id not in strings("p($p) <- node($p)"):
+    bound_nodes = strings("p($p) <- node($p)")
+    actor_nodes = strings("a($a) <- actor_node($a)")
+    client_peers = strings("c($c) <- client_peer_id($c)")
+    is_bound_node = expected_peer_id in bound_nodes
+    is_bound_delegated = allow_delegated and expected_peer_id in actor_nodes and expected_peer_id in client_peers
+    if not is_bound_node and not is_bound_delegated:
         raise BiscuitVerificationError(f"biscuit is not bound to peer {expected_peer_id}")
 
     expirations = [f.terms[0] for f in authorizer.query(ba.Rule("e($e) <- expiration($e)")) if isinstance(f.terms[0], datetime)]
@@ -146,6 +154,7 @@ def verify_peer_biscuit(
         roles=strings("r($r) <- role($r)"),
         labels=labels,
         task_rules=task_rules,
+        actor_node=actor_nodes[0] if actor_nodes else None,
     )
 
 

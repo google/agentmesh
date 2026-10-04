@@ -236,16 +236,39 @@ const authorityBlockID = 0
 // TestAttenuationBlockFactsAreInvisibleToTheAuthorizer), so this lookup is the
 // only place the distinction has to be made by hand.
 func RequireAuthorityBinding(b *biscuit.Biscuit, expectedPeer peer.ID) error {
+	return requireAuthorityFact(b, api.FactNode, expectedPeer.String())
+}
+
+// RequireAuthorityRequestBinding checks that a request token is bound to
+// expectedPeer in the authority block: either as a direct member token
+// carrying node(expectedPeer), or as a delegated session token (minted at
+// POST /token/exchange) carrying both actor_node(expectedPeer) and
+// client_peer_id(expectedPeer) in the authority block without node().
+func RequireAuthorityRequestBinding(b *biscuit.Biscuit, expectedPeer peer.ID) error {
+	if err := RequireAuthorityBinding(b, expectedPeer); err == nil {
+		return nil
+	}
+	peerStr := expectedPeer.String()
+	if err := requireAuthorityFact(b, api.FactActorNode, peerStr); err != nil {
+		return fmt.Errorf("token is not bound to peer %s (neither %s nor %s in authority block): %w", expectedPeer, api.FactNode, api.FactActorNode, err)
+	}
+	if err := requireAuthorityFact(b, api.FactClientPeerID, peerStr); err != nil {
+		return fmt.Errorf("delegated token is not bound to client peer %s: %w", expectedPeer, err)
+	}
+	return nil
+}
+
+func requireAuthorityFact(b *biscuit.Biscuit, factName, value string) error {
 	boundFact := biscuit.Fact{Predicate: biscuit.Predicate{
-		Name: api.FactNode,
-		IDs:  []biscuit.Term{biscuit.String(expectedPeer.String())},
+		Name: factName,
+		IDs:  []biscuit.Term{biscuit.String(value)},
 	}}
 	blockID, err := b.GetBlockID(boundFact)
 	if err != nil {
-		return fmt.Errorf("token is not bound to peer %s: %w", expectedPeer, err)
+		return fmt.Errorf("token is not bound to peer %s via %s: %w", value, factName, err)
 	}
 	if blockID != authorityBlockID {
-		return fmt.Errorf("token is not bound to peer %s: %s fact comes from appended block %d, not the authority block", expectedPeer, api.FactNode, blockID)
+		return fmt.Errorf("token is not bound to peer %s: %s fact comes from appended block %d, not the authority block", value, factName, blockID)
 	}
 	return nil
 }
@@ -287,15 +310,58 @@ func MintBiscuitToken(signingKey ed25519.PrivateKey, claims jwt.MapClaims, token
 		return nil, nil, fmt.Errorf("claims cannot be nil")
 	}
 
-	biscuitBytes, err := mintBiscuit(signingKey, remotePeer, roles, biscuitExpiry, claims, policyRoles, labels)
+	biscuitBytes, err := mintBiscuitWithBinding(signingKey, remotePeer, false, roles, biscuitExpiry, claims, policyRoles, labels)
 	if err != nil {
 		return nil, nil, err
 	}
 	return biscuitBytes, roles, nil
 }
 
+// MintDelegatedBiscuitToken generates a stateless Delegated Session Biscuit for
+// a subject whose credential was exchanged by actorPeer at POST /token/exchange.
+// The authority block carries client_peer_id(actorPeer) and
+// actor_node(actorPeer), and deliberately omits node(actorPeer) so policy
+// bindings targeting node:<actorPeer> never attach the node's roles to the
+// delegated subject.
+func MintDelegatedBiscuitToken(signingKey ed25519.PrivateKey, claims jwt.MapClaims, actorPeer peer.ID, biscuitExpiry time.Time, roles []string, policyRoles []*api.PolicyRole, taskRule *api.TaskAuthorizationRule, seal bool) ([]byte, error) {
+	return MintDelegatedBiscuitTokenWithRand(rand.Reader, signingKey, claims, actorPeer, biscuitExpiry, roles, policyRoles, taskRule, seal)
+}
+
+// MintDelegatedBiscuitTokenWithRand is MintDelegatedBiscuitToken with an
+// explicit random source (used by deterministic conformance vector generators).
+func MintDelegatedBiscuitTokenWithRand(rng io.Reader, signingKey ed25519.PrivateKey, claims jwt.MapClaims, actorPeer peer.ID, biscuitExpiry time.Time, roles []string, policyRoles []*api.PolicyRole, taskRule *api.TaskAuthorizationRule, seal bool) ([]byte, error) {
+	if claims == nil {
+		return nil, fmt.Errorf("claims cannot be nil")
+	}
+	biscuitBytes, err := mintBiscuitWithBindingAndRand(rng, signingKey, actorPeer, true, roles, biscuitExpiry, claims, policyRoles, nil)
+	if err != nil {
+		return nil, err
+	}
+	if taskRule != nil {
+		biscuitBytes, err = AttenuateBiscuitWithRand(rng, biscuitBytes, taskRule)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if seal {
+		biscuitBytes, err = SealBiscuitWithRand(rng, biscuitBytes)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return biscuitBytes, nil
+}
+
 func mintBiscuit(signingKey ed25519.PrivateKey, remotePeer peer.ID, roles []string, expiration time.Time, claims jwt.MapClaims, policyRoles []*api.PolicyRole, labels map[string]string) ([]byte, error) {
-	builder := biscuit.NewBuilder(signingKey)
+	return mintBiscuitWithBinding(signingKey, remotePeer, false, roles, expiration, claims, policyRoles, labels)
+}
+
+func mintBiscuitWithBinding(signingKey ed25519.PrivateKey, remotePeer peer.ID, delegated bool, roles []string, expiration time.Time, claims jwt.MapClaims, policyRoles []*api.PolicyRole, labels map[string]string) ([]byte, error) {
+	return mintBiscuitWithBindingAndRand(rand.Reader, signingKey, remotePeer, delegated, roles, expiration, claims, policyRoles, labels)
+}
+
+func mintBiscuitWithBindingAndRand(rng io.Reader, signingKey ed25519.PrivateKey, remotePeer peer.ID, delegated bool, roles []string, expiration time.Time, claims jwt.MapClaims, policyRoles []*api.PolicyRole, labels map[string]string) ([]byte, error) {
+	builder := biscuit.NewBuilder(signingKey, biscuit.WithRandom(rng))
 	addedFacts := make(map[string]bool)
 	addFact := func(fact biscuit.Fact) error {
 		factStr := fact.String()
@@ -316,11 +382,20 @@ func mintBiscuit(signingKey ed25519.PrivateKey, remotePeer peer.ID, roles []stri
 		return nil, fmt.Errorf("failed to add expiration fact: %w", err)
 	}
 
-	if err := addFact(biscuit.Fact{Predicate: biscuit.Predicate{
-		Name: api.FactNode,
-		IDs:  []biscuit.Term{biscuit.String(remotePeer.String())},
-	}}); err != nil {
-		return nil, fmt.Errorf("failed to add node fact: %w", err)
+	if delegated {
+		if err := addFact(biscuit.Fact{Predicate: biscuit.Predicate{
+			Name: api.FactActorNode,
+			IDs:  []biscuit.Term{biscuit.String(remotePeer.String())},
+		}}); err != nil {
+			return nil, fmt.Errorf("failed to add actor_node fact: %w", err)
+		}
+	} else {
+		if err := addFact(biscuit.Fact{Predicate: biscuit.Predicate{
+			Name: api.FactNode,
+			IDs:  []biscuit.Term{biscuit.String(remotePeer.String())},
+		}}); err != nil {
+			return nil, fmt.Errorf("failed to add node fact: %w", err)
+		}
 	}
 
 	if err := addFact(biscuit.Fact{Predicate: biscuit.Predicate{
@@ -721,4 +796,133 @@ func RequireRole(b *biscuit.Biscuit, key ed25519.PublicKey, expectedRole string,
 		return fmt.Errorf("biscuit lacks expected role %q: %w", expectedRole, err)
 	}
 	return nil
+}
+
+// VerifiedBiscuitClaims holds the authority facts, effective expiration,
+// revocation IDs, and TaskAuthorizationRule chain extracted from a verified
+// Biscuit token.
+type VerifiedBiscuitClaims struct {
+	Biscuit         *biscuit.Biscuit
+	VerifyingKey    ed25519.PublicKey
+	User            string
+	Email           string
+	Roles           []string
+	NodePeerID      string
+	ActorNodePeerID string
+	ClientPeerID    string
+	Expiration      time.Time
+	RevocationIDs   [][]byte
+	TaskRules       []*api.TaskAuthorizationRule
+}
+
+// Principal returns the primary subject identifier for audit logs and border
+// JWTs: Email when present, otherwise User, otherwise "node:<NodePeerID>" or
+// "peer:<ClientPeerID>".
+func (c *VerifiedBiscuitClaims) Principal() string {
+	if c.Email != "" {
+		return c.Email
+	}
+	if c.User != "" {
+		return c.User
+	}
+	if c.NodePeerID != "" {
+		return "node:" + c.NodePeerID
+	}
+	if c.ClientPeerID != "" {
+		return "peer:" + c.ClientPeerID
+	}
+	return ""
+}
+
+// InnermostTaskName returns the name of the last appended TaskAuthorizationRule
+// block, or "" if the token carries no appended blocks.
+func (c *VerifiedBiscuitClaims) InnermostTaskName() string {
+	if len(c.TaskRules) == 0 {
+		return ""
+	}
+	return c.TaskRules[len(c.TaskRules)-1].GetName()
+}
+
+// InspectVerifiedBiscuit parses a Biscuit, validates its appended tar_block
+// chain, verifies its signature and expiration against trustedPublicKeys, and
+// extracts its authority claims and effective expiration.
+func InspectVerifiedBiscuit(biscuitData []byte, trustedPublicKeys []ed25519.PublicKey, timeout time.Duration) (*VerifiedBiscuitClaims, error) {
+	b, rules, err := UnmarshalInbound(biscuitData)
+	if err != nil {
+		return nil, err
+	}
+
+	authOpts := AuthorizerOptions(timeout)
+	var authorizer biscuit.Authorizer
+	var verifyingKey ed25519.PublicKey
+	var lastErr error
+	for _, pubKey := range trustedPublicKeys {
+		candidate, err := b.Authorizer(pubKey, authOpts...)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		EnforceExpiration(candidate)
+		candidate.AddPolicy(api.AllowIfTruePolicy)
+		if err := candidate.Authorize(); err == nil {
+			authorizer = candidate
+			verifyingKey = pubKey
+			break
+		} else {
+			lastErr = err
+		}
+	}
+	if authorizer == nil {
+		return nil, fmt.Errorf("signature or expiration verification failed: %v", lastErr)
+	}
+
+	expiry, err := expirationOf(authorizer)
+	if err != nil {
+		return nil, err
+	}
+	expiry = api.EffectiveTARExpiration(expiry, rules)
+	if !time.Now().Before(expiry) {
+		return nil, fmt.Errorf("token tar_block expired at %s", expiry.UTC().Format(time.RFC3339))
+	}
+
+	queryStrings := func(factName string) []string {
+		facts, err := authorizer.Query(biscuit.Rule{
+			Head: biscuit.Predicate{Name: "q", IDs: []biscuit.Term{biscuit.Variable("v")}},
+			Body: []biscuit.Predicate{{Name: factName, IDs: []biscuit.Term{biscuit.Variable("v")}}},
+		})
+		if err != nil {
+			return nil
+		}
+		var out []string
+		for _, f := range facts {
+			if len(f.IDs) == 1 {
+				if s, ok := f.IDs[0].(biscuit.String); ok {
+					out = append(out, string(s))
+				}
+			}
+		}
+		sort.Strings(out)
+		return out
+	}
+	firstString := func(factName string) string {
+		vals := queryStrings(factName)
+		if len(vals) == 0 {
+			return ""
+		}
+		return vals[0]
+	}
+
+	return &VerifiedBiscuitClaims{
+		Biscuit:         b,
+		VerifyingKey:    verifyingKey,
+		User:            firstString(api.FactUser),
+		Email:           firstString(api.FactEmail),
+		Roles:           queryStrings(api.FactRole),
+		NodePeerID:      firstString(api.FactNode),
+		ActorNodePeerID: firstString(api.FactActorNode),
+		ClientPeerID:    firstString(api.FactClientPeerID),
+		Expiration:      expiry,
+		RevocationIDs:   b.RevocationIds(),
+		TaskRules:       rules,
+	}, nil
 }

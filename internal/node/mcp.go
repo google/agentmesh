@@ -279,11 +279,19 @@ func (n *SamNode) ConnectMCPSession(ctx context.Context, targetPeer peer.ID, tar
 		}
 	}
 
-	// Load this node's biscuit
-	biscuitBytes, err := n.Store.LoadIdentity()
-	if err != nil {
+	// Load caller's task biscuit from ctx when present, falling back to this node's biscuit
+	biscuitBytes := n.GetRequestIdentity(ctx)
+	if len(biscuitBytes) == 0 && n.Store != nil {
+		var loadErr error
+		biscuitBytes, loadErr = n.Store.LoadIdentity()
+		if loadErr != nil {
+			cleanup()
+			return nil, nil, fmt.Errorf("failed to load identity biscuit: %w", loadErr)
+		}
+	}
+	if len(biscuitBytes) == 0 {
 		cleanup()
-		return nil, nil, fmt.Errorf("failed to load identity biscuit: %w", err)
+		return nil, nil, fmt.Errorf("failed to load identity biscuit: empty credential")
 	}
 
 	// Marshal AuthFrame

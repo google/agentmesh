@@ -89,9 +89,9 @@ def authorize_caller(req: AuthorizeRequest, options: ProviderAuthorizerOptions) 
         raise AuthorizationError(req.peer_id, "no trusted control plane key")
 
     # Signature under a trusted key, authority block + tar_block chain, expiry and binding
-    # to the connection peer: RequireAuthorityBinding and EnforceExpiration.
+    # to the connection peer: RequireAuthorityRequestBinding and EnforceExpiration.
     try:
-        caller = verify_peer_biscuit(req.biscuit, req.peer_id, keys, now)
+        caller = verify_peer_biscuit(req.biscuit, req.peer_id, keys, now, allow_delegated=True)
     except BiscuitVerificationError as err:
         raise AuthorizationError(req.peer_id, str(err)) from err
     token = _token(req.biscuit, caller.verifying_key)

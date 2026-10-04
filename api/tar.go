@@ -23,7 +23,9 @@ import (
 	"time"
 
 	"github.com/biscuit-auth/biscuit-go/v2"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Structural bounds for holder-appended TaskAuthorizationRule (tar_block)
@@ -447,6 +449,50 @@ func EvaluateTaskRules(blocks []*TaskAuthorizationRule, req TaskRequestContext, 
 	return nil
 }
 
+// EvaluateTaskRulesForDestination verifies that every appended
+// TaskAuthorizationRule block in blocks is unexpired at now and contains at
+// least one TaskRule whose allowed_services matches (serviceType, serviceName).
+// Used by control-plane destination-level checks (e.g. POST /sts/token) where
+// per-request HTTP method and path constraints have already been enforced by
+// the egress node PEP.
+func EvaluateTaskRulesForDestination(blocks []*TaskAuthorizationRule, serviceType, serviceName string, now time.Time) error {
+	for i, block := range blocks {
+		if block == nil {
+			return fmt.Errorf("tar_block[%d] is nil", i+1)
+		}
+		if exp := block.GetExpireTime(); exp != nil {
+			if !exp.IsValid() {
+				return fmt.Errorf("tar_block[%d] has invalid expire_time", i+1)
+			}
+			if now.After(exp.AsTime()) {
+				return fmt.Errorf("tar_block[%d] (%q) expired at %s", i+1, block.GetName(), exp.AsTime().UTC().Format(time.RFC3339))
+			}
+		}
+		matched := false
+		for _, r := range block.GetRules() {
+			if r == nil {
+				continue
+			}
+			if op := r.GetOperation(); op != nil && len(op.GetAllowedTools()) > 0 && serviceType != "mcp" {
+				continue
+			}
+			for _, pattern := range r.GetAllowedServices() {
+				if MatchServicePattern(pattern, serviceType, serviceName) {
+					matched = true
+					break
+				}
+			}
+			if matched {
+				break
+			}
+		}
+		if !matched {
+			return fmt.Errorf("tar_block[%d] (%q) denied request to %s://%s", i+1, block.GetName(), serviceType, serviceName)
+		}
+	}
+	return nil
+}
+
 // EffectiveTARExpiration returns the earliest expiration time across the
 // authority block's expiration and every appended TaskAuthorizationRule's
 // expire_time.
@@ -462,4 +508,102 @@ func EffectiveTARExpiration(authorityExp time.Time, blocks []*TaskAuthorizationR
 		}
 	}
 	return effective
+}
+
+// BuildTARFromOAuthParams constructs and validates a TaskAuthorizationRule from
+// OAuth 2.1 / RFC 8693 / RFC 8707 request parameters:
+//   - optionsParam: optional base64url-serialized TaskAuthorizationRule protobuf
+//     (or JSON object when starting with '{').
+//   - resources: optional RFC 8707 resource indicators (e.g. "mcp://weather").
+//   - scope: optional space-delimited scope tokens ("mcp://...", "tool:<name>",
+//     "method:<HTTP_METHOD>", "path:<prefix>", "perm:<permission>").
+//
+// Returns (nil, nil) if none of optionsParam, resources, or scope narrow the token.
+func BuildTARFromOAuthParams(defaultName, optionsParam string, resources []string, scope string, expireTime *timestamppb.Timestamp) (*TaskAuthorizationRule, error) {
+	optionsParam = strings.TrimSpace(optionsParam)
+	var tar *TaskAuthorizationRule
+	if optionsParam != "" {
+		if strings.HasPrefix(optionsParam, "{") {
+			var parsed TaskAuthorizationRule
+			if err := (protojson.UnmarshalOptions{DiscardUnknown: false}).Unmarshal([]byte(optionsParam), &parsed); err != nil {
+				return nil, fmt.Errorf("invalid options JSON: %w", err)
+			}
+			tar = &parsed
+		} else {
+			decoded, err := DecodeTARBlockPayload(optionsParam)
+			if err != nil {
+				return nil, fmt.Errorf("invalid options tar_block: %w", err)
+			}
+			tar = decoded
+		}
+	}
+
+	var services []string
+	for _, r := range resources {
+		r = strings.TrimSpace(r)
+		if r != "" {
+			services = append(services, r)
+		}
+	}
+	var tools, methods, paths, perms []string
+	for _, tok := range strings.Fields(scope) {
+		switch {
+		case strings.HasPrefix(tok, "tool:"):
+			tools = append(tools, strings.TrimPrefix(tok, "tool:"))
+		case strings.HasPrefix(tok, "method:"):
+			methods = append(methods, strings.TrimPrefix(tok, "method:"))
+		case strings.HasPrefix(tok, "path:"):
+			paths = append(paths, strings.TrimPrefix(tok, "path:"))
+		case strings.HasPrefix(tok, "perm:"):
+			perms = append(perms, strings.TrimPrefix(tok, "perm:"))
+		case strings.HasPrefix(tok, "permission:"):
+			perms = append(perms, strings.TrimPrefix(tok, "permission:"))
+		case strings.Contains(tok, "://") || tok == "*":
+			services = append(services, tok)
+		}
+	}
+
+	if tar == nil {
+		if len(services) == 0 && len(tools) == 0 && len(methods) == 0 && len(paths) == 0 && len(perms) == 0 {
+			return nil, nil
+		}
+		if len(services) == 0 {
+			return nil, fmt.Errorf("resource or service scope is required when specifying operation scopes")
+		}
+		name := strings.TrimSpace(defaultName)
+		if name == "" {
+			name = "oauth-task"
+		}
+		rule := &TaskRule{
+			AllowedServices: services,
+		}
+		if len(tools) > 0 || len(methods) > 0 || len(paths) > 0 || len(perms) > 0 {
+			rule.Operation = &TaskOperation{
+				AllowedTools:       tools,
+				AllowedMethods:     methods,
+				AllowedPaths:       paths,
+				AllowedPermissions: perms,
+			}
+		}
+		tar = &TaskAuthorizationRule{
+			Name:       name,
+			ExpireTime: expireTime,
+			Rules:      []*TaskRule{rule},
+		}
+	} else {
+		if tar.Name == "" && defaultName != "" {
+			tar.Name = defaultName
+		}
+		if tar.ExpireTime == nil && expireTime != nil {
+			tar.ExpireTime = expireTime
+		}
+	}
+
+	if err := ValidateTaskAuthorizationRule(tar); err != nil {
+		return nil, err
+	}
+	if len(tar.GetRules()) == 0 {
+		return nil, fmt.Errorf("task authorization rule must contain at least one rule")
+	}
+	return tar, nil
 }

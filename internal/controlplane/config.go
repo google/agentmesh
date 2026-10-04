@@ -43,6 +43,19 @@ type Options struct {
 	NodeRetention         time.Duration
 	AdminToken            string // Optional: administrative bearer token for protecting policy and enrollment queue REST APIs
 	AutoApproveEnrollment bool   // If true, valid bootstrap token enrollment requests are immediately approved without administrative manual gate
+	// STSIssuerURL is the public issuer URL advertised in
+	// /.well-known/openid-configuration and minted as the "iss" claim in
+	// outbound /sts/token JWTs. If empty, derived from the incoming HTTP request.
+	STSIssuerURL string
+	// DelegatedBiscuitTTL bounds the lifespan of Delegated Session Biscuits
+	// minted by POST /token/exchange and OAuth 2.1 flows (defaults to 1h).
+	DelegatedBiscuitTTL time.Duration
+	// STSTokenTTL is the default lifespan of short-lived ES256 border JWTs
+	// minted by POST /sts/token (defaults to 5m, capped at 15m).
+	STSTokenTTL time.Duration
+	// OIDCSigner signs outbound border JWTs and serves /jwks. If nil, a
+	// LocalES256Signer is initialized automatically.
+	OIDCSigner OIDCSigner
 }
 
 // Default sets default values for control plane options.
@@ -68,6 +81,12 @@ func (o *Options) Default() {
 	}
 	if o.OIDCSessionTTL <= 0 {
 		o.OIDCSessionTTL = api.OIDCSessionTTL
+	}
+	if o.DelegatedBiscuitTTL <= 0 {
+		o.DelegatedBiscuitTTL = 1 * time.Hour
+	}
+	if o.STSTokenTTL <= 0 {
+		o.STSTokenTTL = 5 * time.Minute
 	}
 }
 

@@ -22,6 +22,7 @@ import (
 	"math/rand"
 	"time"
 
+	cpclient "github.com/google/sam/internal/controlplane/client"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 )
@@ -64,7 +65,33 @@ func (n *SamNode) SyncControlPlane(ctx context.Context) error {
 	if err := n.syncEgressAssignments(ctx, controlPlaneURL); err != nil {
 		errs = append(errs, fmt.Errorf("egress: %w", err))
 	}
+	if err := n.syncRevocations(ctx, controlPlaneURL); err != nil {
+		errs = append(errs, fmt.Errorf("revocations: %w", err))
+	}
 	return errors.Join(errs...)
+}
+
+func (n *SamNode) syncRevocations(ctx context.Context, controlPlaneURL string) error {
+	token := n.GetIdentity()
+	if len(token) == 0 {
+		return nil
+	}
+	fetchedAt := time.Now()
+	resp, err := controlPlaneClient(controlPlaneURL).FetchRevocations(ctx, token)
+	if errors.Is(err, cpclient.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	expiry := fetchedAt.Add(24 * time.Hour)
+	for _, revID := range resp.GetRevocationIds() {
+		n.RevokeBiscuitID(revID, expiry)
+	}
+	if len(resp.GetBannedPeerIds()) > 0 {
+		n.reconcileBannedPeers(resp.GetBannedPeerIds(), fetchedAt)
+	}
+	return nil
 }
 
 // syncTrustedKeys replaces the trust set with the control plane's current

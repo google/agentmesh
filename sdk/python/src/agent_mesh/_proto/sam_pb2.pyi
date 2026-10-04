@@ -359,6 +359,14 @@ class RegisterServiceRequest(_message.Message):
     target_url: str
     def __init__(self, service: _Optional[_Union[ServiceInfo, _Mapping]] = ..., target_url: _Optional[str] = ..., command: _Optional[_Union[CommandBackend, _Mapping]] = ...) -> None: ...
 
+class RevocationsResponse(_message.Message):
+    __slots__ = ["banned_peer_ids", "revocation_ids"]
+    BANNED_PEER_IDS_FIELD_NUMBER: _ClassVar[int]
+    REVOCATION_IDS_FIELD_NUMBER: _ClassVar[int]
+    banned_peer_ids: _containers.RepeatedScalarFieldContainer[str]
+    revocation_ids: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, revocation_ids: _Optional[_Iterable[str]] = ..., banned_peer_ids: _Optional[_Iterable[str]] = ...) -> None: ...
+
 class RouterLeaseRequest(_message.Message):
     __slots__ = ["addresses", "biscuit", "challenge_signature", "challenge_unix_ms", "connected_peers", "dht_size", "peer_id"]
     ADDRESSES_FIELD_NUMBER: _ClassVar[int]
@@ -386,6 +394,34 @@ class RouterLeaseResponse(_message.Message):
     expire_time: _timestamp_pb2.Timestamp
     success: bool
     def __init__(self, success: bool = ..., error: _Optional[str] = ..., expire_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+
+class STSTokenRequest(_message.Message):
+    __slots__ = ["audience", "biscuit", "challenge_signature", "challenge_unix_ms", "destination"]
+    AUDIENCE_FIELD_NUMBER: _ClassVar[int]
+    BISCUIT_FIELD_NUMBER: _ClassVar[int]
+    CHALLENGE_SIGNATURE_FIELD_NUMBER: _ClassVar[int]
+    CHALLENGE_UNIX_MS_FIELD_NUMBER: _ClassVar[int]
+    DESTINATION_FIELD_NUMBER: _ClassVar[int]
+    audience: str
+    biscuit: bytes
+    challenge_signature: bytes
+    challenge_unix_ms: int
+    destination: str
+    def __init__(self, biscuit: _Optional[bytes] = ..., destination: _Optional[str] = ..., audience: _Optional[str] = ..., challenge_unix_ms: _Optional[int] = ..., challenge_signature: _Optional[bytes] = ...) -> None: ...
+
+class STSTokenResponse(_message.Message):
+    __slots__ = ["expire_time", "jwt", "roles", "subject", "task_name"]
+    EXPIRE_TIME_FIELD_NUMBER: _ClassVar[int]
+    JWT_FIELD_NUMBER: _ClassVar[int]
+    ROLES_FIELD_NUMBER: _ClassVar[int]
+    SUBJECT_FIELD_NUMBER: _ClassVar[int]
+    TASK_NAME_FIELD_NUMBER: _ClassVar[int]
+    expire_time: _timestamp_pb2.Timestamp
+    jwt: str
+    roles: _containers.RepeatedScalarFieldContainer[str]
+    subject: str
+    task_name: str
+    def __init__(self, jwt: _Optional[str] = ..., expire_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., subject: _Optional[str] = ..., roles: _Optional[_Iterable[str]] = ..., task_name: _Optional[str] = ...) -> None: ...
 
 class ServiceAnnounce(_message.Message):
     __slots__ = ["active_requests", "announce_time", "keys", "labels", "latency_ewma_ms", "peer_id", "service_name", "type"]
@@ -459,6 +495,32 @@ class TaskRule(_message.Message):
     description: str
     operation: TaskOperation
     def __init__(self, description: _Optional[str] = ..., allowed_services: _Optional[_Iterable[str]] = ..., operation: _Optional[_Union[TaskOperation, _Mapping]] = ..., allowed_resources: _Optional[_Iterable[str]] = ...) -> None: ...
+
+class TokenExchangeRequest(_message.Message):
+    __slots__ = ["challenge_signature", "challenge_unix_ms", "seal", "subject_token", "task_rule"]
+    CHALLENGE_SIGNATURE_FIELD_NUMBER: _ClassVar[int]
+    CHALLENGE_UNIX_MS_FIELD_NUMBER: _ClassVar[int]
+    SEAL_FIELD_NUMBER: _ClassVar[int]
+    SUBJECT_TOKEN_FIELD_NUMBER: _ClassVar[int]
+    TASK_RULE_FIELD_NUMBER: _ClassVar[int]
+    challenge_signature: bytes
+    challenge_unix_ms: int
+    seal: bool
+    subject_token: str
+    task_rule: TaskAuthorizationRule
+    def __init__(self, subject_token: _Optional[str] = ..., task_rule: _Optional[_Union[TaskAuthorizationRule, _Mapping]] = ..., seal: bool = ..., challenge_unix_ms: _Optional[int] = ..., challenge_signature: _Optional[bytes] = ...) -> None: ...
+
+class TokenExchangeResponse(_message.Message):
+    __slots__ = ["biscuit_token", "expire_time", "roles", "subject"]
+    BISCUIT_TOKEN_FIELD_NUMBER: _ClassVar[int]
+    EXPIRE_TIME_FIELD_NUMBER: _ClassVar[int]
+    ROLES_FIELD_NUMBER: _ClassVar[int]
+    SUBJECT_FIELD_NUMBER: _ClassVar[int]
+    biscuit_token: bytes
+    expire_time: _timestamp_pb2.Timestamp
+    roles: _containers.RepeatedScalarFieldContainer[str]
+    subject: str
+    def __init__(self, biscuit_token: _Optional[bytes] = ..., expire_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., roles: _Optional[_Iterable[str]] = ..., subject: _Optional[str] = ...) -> None: ...
 
 class TokenRefreshRequest(_message.Message):
     __slots__ = ["challenge_signature", "challenge_unix_ms", "peer_id"]

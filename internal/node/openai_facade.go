@@ -91,6 +91,7 @@ type openAIFacade struct {
 	// control-plane-attested labels before any request data is sent
 	// (see labels_gate.go).
 	verifyPeerLabels func(ctx context.Context, peerID string, required map[string]string) error
+	authorizeLocal   func(ctx context.Context, serviceName, method, path string) error
 
 	ttl     time.Duration
 	mu      sync.Mutex
@@ -160,6 +161,20 @@ func newOpenAIFacade(node *SamNode, egress http.Handler) *openAIFacade {
 			}
 			return node.VerifyPeerLabels(ctx, pid, required)
 		},
+		authorizeLocal: func(ctx context.Context, serviceName, method, path string) error {
+			callerBiscuit := CallerBiscuitFromContext(ctx)
+			if len(callerBiscuit) == 0 {
+				return nil
+			}
+			pid, _ := node.localPeerID()
+			return node.VerifyBiscuitToken(callerBiscuit, RequestContext{
+				PeerID:   pid,
+				Protocol: "local-api",
+				Target:   api.InferenceServicePrefix + serviceName,
+				HTTP:     &HTTPRequestFacts{Method: method, Path: path},
+				Local:    true,
+			})
+		},
 	}
 }
 
@@ -170,7 +185,7 @@ func fetchRemoteModels(ctx context.Context, node *SamNode, client *http.Client, 
 	if err != nil {
 		return nil, fmt.Errorf("invalid peer ID %q: %w", peerID, err)
 	}
-	identity := node.GetIdentity()
+	identity := node.GetRequestIdentity(ctx)
 	if identity == nil {
 		return nil, fmt.Errorf("missing node identity")
 	}
@@ -452,6 +467,12 @@ func (f *openAIFacade) handleCompletions(w http.ResponseWriter, r *http.Request)
 }
 
 func (f *openAIFacade) serveLocal(w http.ResponseWriter, r *http.Request, serviceName string) {
+	if f.authorizeLocal != nil {
+		if err := f.authorizeLocal(r.Context(), serviceName, r.Method, r.URL.Path); err != nil {
+			writeOpenAIError(w, http.StatusForbidden, "permission_denied", fmt.Sprintf("authorization failed: %v", err))
+			return
+		}
+	}
 	for _, svc := range f.localServices() {
 		if svc.Info().GetName() != serviceName || svc.Handler() == nil {
 			continue

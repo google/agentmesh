@@ -119,6 +119,44 @@ func RouterLeaseChallenge(peerID string, ts int64) []byte {
 	return []byte("sam:routers-lease:" + peerID + ":" + strconv.FormatInt(ts, 10))
 }
 
+// TokenExchangeChallenge is the payload an enrolled sam-node signs with its
+// identity key at POST /token/exchange to prove possession of the channel key
+// that will carry the minted Delegated Session Biscuit.
+func TokenExchangeChallenge(peerID string, ts int64) []byte {
+	return []byte("sam:token-exchange:" + peerID + ":" + strconv.FormatInt(ts, 10))
+}
+
+// STSTokenChallenge is the payload an enrolled egress sam-node signs with its
+// identity key at POST /sts/token when asking the control plane to mint an
+// ES256 border JWT for an outbound destination.
+func STSTokenChallenge(peerID string, ts int64) []byte {
+	return []byte("sam:sts-token:" + peerID + ":" + strconv.FormatInt(ts, 10))
+}
+
+// ============================================================================
+// OAuth 2.1 & RFC 8693 Token Exchange Constants
+// ============================================================================
+
+const (
+	// GrantTypeTokenExchange is the RFC 8693 OAuth 2.0 Token Exchange grant type URI.
+	GrantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
+
+	// GrantTypeAuthorizationCode is the standard OAuth 2.1 authorization_code grant type.
+	GrantTypeAuthorizationCode = "authorization_code"
+
+	// TokenTypeBiscuit is the token type URI identifying a SAM Biscuit token in RFC 8693 exchanges.
+	TokenTypeBiscuit = "urn:sam-mesh:params:oauth:token-type:biscuit"
+
+	// TokenTypeJWT is the RFC 8693 JWT token type URI.
+	TokenTypeJWT = "urn:ietf:params:oauth:token-type:jwt"
+
+	// TokenTypeIDToken is the RFC 8693 OIDC ID token type URI.
+	TokenTypeIDToken = "urn:ietf:params:oauth:token-type:id_token"
+
+	// TokenTypeAccessToken is the RFC 8693 OAuth access token type URI.
+	TokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token"
+)
+
 // ============================================================================
 // SAM Custom HTTP Headers
 // ============================================================================
@@ -180,6 +218,15 @@ const (
 	// scorer. Label declarations are routing hints until attested via the
 	// node's Biscuit (see api/labels.go).
 	HeaderSamRequiredLabels = "X-Sam-Required-Labels"
+
+	// HeaderSamPrincipal, HeaderSamRoles, HeaderSamTask, and HeaderSamTaskID carry
+	// verified caller attribution injected by ext_authz or forwarded to an
+	// operator inspection chain when forward_context is enabled.
+	HeaderSamPrincipal     = "X-Sam-Principal"
+	HeaderSamRoles         = "X-Sam-Roles"
+	HeaderSamTask          = "X-Sam-Task"
+	HeaderSamTaskID        = "X-Sam-Task-Id"
+	HeaderSamTargetService = "X-Sam-Target-Service"
 )
 
 // ============================================================================

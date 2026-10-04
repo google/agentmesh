@@ -492,3 +492,75 @@ message TaskOperation {
   // Opaque to the wire PEP; consumed by CloudTokenExchanger at egress.
   repeated string allowed_permissions = 4;
 }
+
+// ============================================================================
+// Stateless Token Exchange & Border STS (Two-Token Model)
+// ============================================================================
+
+// TokenExchangeRequest is the body of POST /token/exchange on the control
+// plane: an enrolled sam-node (authenticated via its own Biscuit in
+// Authorization: Bearer and proof of possession below) exchanges a caller's
+// platform JWT (OIDC ID token, K8s projected SA JWT, or SPIFFE JWT-SVID) into
+// a short-lived Delegated Session Biscuit bound to the calling node's
+// transport channel (client_peer_id + actor_node, without node()).
+message TokenExchangeRequest {
+  // The subject's platform JWT to verify against the control plane's OIDC
+  // providers and allowed audiences.
+  string subject_token = 1;
+  // Optional initial task narrowing to append as block 1 on the minted
+  // Biscuit.
+  TaskAuthorizationRule task_rule = 2;
+  // If true, the minted Biscuit is sealed (b.Seal()) before returning so
+  // downstream holders cannot append further blocks.
+  bool seal = 3;
+  // Proof of possession of the calling node's enrolled key:
+  // challenge_unix_ms is the caller's clock in unix milliseconds and
+  // challenge_signature signs the UTF-8 bytes of
+  // "sam:token-exchange:<peer_id>:<challenge_unix_ms>".
+  int64 challenge_unix_ms = 4;
+  bytes challenge_signature = 5;
+}
+
+message TokenExchangeResponse {
+  bytes biscuit_token = 1;
+  google.protobuf.Timestamp expire_time = 2;
+  repeated string roles = 3;
+  string subject = 4;
+}
+
+// STSTokenRequest is the body of POST /sts/token on the control plane: an
+// enrolled egress sam-node asks the control plane (acting as OIDC issuer) to
+// verify a caller's Biscuit and TaskAuthorizationRule chain for an egress
+// destination and mint a short-lived ES256 border JWT for cloud STS federation.
+message STSTokenRequest {
+  // The caller's Biscuit token (authority block + any tar_block chain).
+  bytes biscuit = 1;
+  // The egress destination hostname (e.g. "bigquery.googleapis.com").
+  string destination = 2;
+  // Optional explicit audience for the border JWT when not derived from the
+  // destination's broker configuration.
+  string audience = 3;
+  // Proof of possession of the calling egress node's enrolled key:
+  // challenge_unix_ms is the caller's clock in unix milliseconds and
+  // challenge_signature signs the UTF-8 bytes of
+  // "sam:sts-token:<peer_id>:<challenge_unix_ms>".
+  int64 challenge_unix_ms = 4;
+  bytes challenge_signature = 5;
+}
+
+message STSTokenResponse {
+  string jwt = 1;
+  google.protobuf.Timestamp expire_time = 2;
+  string subject = 3;
+  repeated string roles = 4;
+  string task_name = 5;
+}
+
+// RevocationsResponse answers GET /revocations on the control plane: the set of
+// revoked Biscuit authority revocation IDs (hex-encoded RevocationIds()[0]) and
+// banned peer IDs.
+message RevocationsResponse {
+  repeated string revocation_ids = 1;
+  repeated string banned_peer_ids = 2;
+}
+

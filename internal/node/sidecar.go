@@ -47,6 +47,28 @@ func StartSidecarServer(node *SamNode, addr, socketPath, token, certFile, keyFil
 	// Public endpoints
 	mux.HandleFunc("/healthz", handleHealthz)
 	mux.HandleFunc("/readyz", handleReadyz)
+	mux.HandleFunc("/.well-known/oauth-protected-resource", func(w http.ResponseWriter, r *http.Request) {
+		handleOAuthProtectedResource(node, w, r)
+	})
+	mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
+		handleNodeOAuthToken(node, token, w, r)
+	})
+	mux.HandleFunc("/oauth/revoke", func(w http.ResponseWriter, r *http.Request) {
+		handleNodeOAuthRevoke(node, token, w, r)
+	})
+	mux.HandleFunc("/ext_authz", func(w http.ResponseWriter, r *http.Request) {
+		handleExtAuthzHTTP(node, w, r)
+	})
+	mux.HandleFunc("/ext_authz/", func(w http.ResponseWriter, r *http.Request) {
+		handleExtAuthzHTTP(node, w, r)
+	})
+	mux.HandleFunc("/envoy.service.auth.v3.Authorization/Check", func(w http.ResponseWriter, r *http.Request) {
+		handleExtAuthzGRPC(node, w, r)
+	})
+	mux.HandleFunc("/envoy.service.auth.v2.Authorization/Check", func(w http.ResponseWriter, r *http.Request) {
+		handleExtAuthzGRPC(node, w, r)
+	})
+
 	// Gated like the rest: the labels carry peer IDs and per-peer request counts,
 	// and this mux is reachable by any local process over TCP. Socket callers are
 	// unaffected, which is how every scrape in this repo reads it.
@@ -58,7 +80,7 @@ func StartSidecarServer(node *SamNode, addr, socketPath, token, certFile, keyFil
 	// startup; there is deliberately no runtime registration surface, so no
 	// credential held by an agent can point the mesh at a new backend or
 	// withdraw a sibling service.
-	mux.Handle("/sam/service/discover", withAuth(token, true, withMeshConnection(node, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("/sam/service/discover", withCallerOrTokenAuth(node, token, true, withMeshConnection(node, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handleDiscoverService(node, w, r)
 	}))))
 
@@ -81,30 +103,30 @@ func StartSidecarServer(node *SamNode, addr, socketPath, token, certFile, keyFil
 	// handler forwards Authorization to the destination service, so it must never
 	// also accept it as the local gate credential (would leak the sidecar token off-node).
 	egress := createEgressProxy(node)
-	mux.Handle("/sam/", withAuth(token, false, withMeshConnection(node, egress)))
+	mux.Handle("/sam/", withCallerOrTokenAuth(node, token, false, withMeshConnection(node, egress)))
 
 	// OpenAI-compatible facade: point any OpenAI SDK at the sidecar.
 	// allowAuthorizationFallback=true lets SDKs send the sidecar token as their
-	// api_key; withAuth strips whichever header carried it, so an Authorization
-	// header that survives the gate is the backend's own credential and is
-	// forwarded like on the egress path.
+	// api_key; withCallerOrTokenAuth strips whichever header carried it, so an
+	// Authorization header that survives the gate is the backend's own credential
+	// and is forwarded like on the egress path.
 	facade := newOpenAIFacade(node, egress)
-	mux.Handle("/v1/models", withAuth(token, true, withMeshConnection(node, http.HandlerFunc(facade.handleModels))))
-	mux.Handle("/v1/chat/completions", withAuth(token, true, withMeshConnection(node, http.HandlerFunc(facade.handleCompletions))))
-	mux.Handle("/v1/completions", withAuth(token, true, withMeshConnection(node, http.HandlerFunc(facade.handleCompletions))))
+	mux.Handle("/v1/models", withCallerOrTokenAuth(node, token, true, withMeshConnection(node, http.HandlerFunc(facade.handleModels))))
+	mux.Handle("/v1/chat/completions", withCallerOrTokenAuth(node, token, true, withMeshConnection(node, http.HandlerFunc(facade.handleCompletions))))
+	mux.Handle("/v1/completions", withCallerOrTokenAuth(node, token, true, withMeshConnection(node, http.HandlerFunc(facade.handleCompletions))))
 
 	// Egress destinations this node serves, for local clients. Same gate as
 	// the facade: an SDK sends the sidecar token as its api_key. Whatever
 	// Authorization survives the gate is dropped by the egress handler, which
 	// presents the node's own credential to the destination. Not behind
 	// withMeshConnection: the destination is outside the mesh.
-	mux.Handle("/egress/", withAuth(token, true, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("/egress/", withCallerOrTokenAuth(node, token, true, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handleLocalEgress(node, w, r)
 	})))
 
 	// Mount MCP handler
 	mcpHandler := NewMCPHandler(node)
-	mux.Handle("/", withAuth(token, true, withMeshConnection(node, mcpHandler)))
+	mux.Handle("/", withCallerOrTokenAuth(node, token, true, withMeshConnection(node, mcpHandler)))
 
 	server := &http.Server{
 		Handler: observeRequests(mux),
@@ -737,7 +759,7 @@ func createEgressProxy(node *SamNode) http.Handler {
 			http.Error(w, "Service Unavailable: Node Not Initialized", http.StatusServiceUnavailable)
 			return
 		}
-		biscuitBytes := node.GetIdentity()
+		biscuitBytes := node.GetRequestIdentity(r.Context())
 		if biscuitBytes == nil {
 			logger.Errorf("[Proxy] Failed to load node identity for egress request, rejecting.")
 			http.Error(w, "Service Unavailable: Missing Node Identity", http.StatusServiceUnavailable)

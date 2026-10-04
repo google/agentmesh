@@ -71,8 +71,10 @@ export class BiscuitVerificationError extends Error {
 
 /** What a verified peer biscuit says about its holder. */
 export interface VerifiedBiscuit {
-  /** The peer the token is bound to (its node() fact). */
+  /** The peer the token is bound to (its node() or actor_node()/client_peer_id() fact). */
   peerId: string;
+  /** The origin node channel when the token is a delegated session biscuit (actor_node()). */
+  actorNode?: string;
   /** When the token lapses; the minimum of authority expiration() and any tar_block expire_time. */
   expiration: Date;
   /** The trusted key that verified the signature. */
@@ -144,12 +146,18 @@ function extractTARChain(token: ReturnType<BiscuitWasm["Biscuit"]["fromBytes"]>)
  * Verifies a biscuit received from expectedPeerId over an authenticated
  * connection. Every trusted key is tried, so a token minted under a
  * retiring key still verifies during rotation.
+ *
+ * By default (peer handshakes on /sam/auth/1.0.0), the authority block must
+ * carry node(expectedPeerId). When allowDelegated is true (request tokens in
+ * authorizeCaller), the authority block may alternatively carry both
+ * actor_node(expectedPeerId) and client_peer_id(expectedPeerId) without node().
  */
 export async function verifyPeerBiscuit(
   biscuitBytes: Uint8Array,
   expectedPeerId: string,
   trustedKeys: Uint8Array[],
   now: Date = new Date(),
+  options?: { allowDelegated?: boolean },
 ): Promise<VerifiedBiscuit> {
   const wasm = await loadBiscuit();
   const { token, verifyingKey } = parseWithTrustedKeys(wasm, biscuitBytes, trustedKeys);
@@ -170,7 +178,14 @@ export async function verifyPeerBiscuit(
   const strings = (facts: QueriedFact[]) => facts.map((f) => f.terms()[0]).filter((t): t is string => typeof t === "string");
 
   const bound = strings(query("p($p) <- node($p)"));
-  if (!bound.includes(expectedPeerId)) {
+  const actorNodes = strings(query("a($a) <- actor_node($a)"));
+  const clientPeers = strings(query("c($c) <- client_peer_id($c)"));
+  const isBoundNode = bound.includes(expectedPeerId);
+  const isBoundDelegated =
+    options?.allowDelegated === true &&
+    actorNodes.includes(expectedPeerId) &&
+    clientPeers.includes(expectedPeerId);
+  if (!isBoundNode && !isBoundDelegated) {
     throw new BiscuitVerificationError(`biscuit is not bound to peer ${expectedPeerId}`);
   }
 
@@ -198,6 +213,7 @@ export async function verifyPeerBiscuit(
 
   return {
     peerId: expectedPeerId,
+    ...(actorNodes[0] !== undefined ? { actorNode: actorNodes[0] } : {}),
     expiration,
     verifyingKey,
     roles: strings(query("r($r) <- role($r)")),

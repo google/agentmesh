@@ -172,6 +172,48 @@ EOF
   [[ "$status" -eq 0 ]]
   [[ "$output" == *"hello from the mesh"* ]]
 
+  # STS CUJ: Mint a task-scoped Biscuit on node B narrowed to inference://laptop-llm
+  # via RFC 8693 POST /oauth/token and forward it across B -> router -> A.
+  task_biscuit="$(curl -sf --unix-socket "$sock_b" "http://localhost/oauth/token" \
+    -d 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' \
+    -d 'resource=inference://laptop-llm' |
+    python3 -c 'import json, sys; print(json.load(sys.stdin)["access_token"])')"
+  [[ -n "$task_biscuit" ]]
+
+  run curl -sf --unix-socket "$sock_b" "http://localhost/v1/chat/completions" \
+    -H "Authorization: Bearer $task_biscuit" \
+    -H 'Content-Type: application/json' \
+    -d '{"model":"e2e-model","messages":[{"role":"user","content":"hi with task biscuit"}]}'
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == *"hello from the mesh"* ]]
+
+  # A Task Biscuit narrowed to a different resource (mcp://other) is rejected by node A's verifier.
+  wrong_biscuit="$(curl -sf --unix-socket "$sock_b" "http://localhost/oauth/token" \
+    -d 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' \
+    -d 'resource=mcp://other' |
+    python3 -c 'import json, sys; print(json.load(sys.stdin)["access_token"])')"
+  [[ -n "$wrong_biscuit" ]]
+
+  http_code="$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$sock_b" \
+    "http://localhost/v1/chat/completions" \
+    -H "Authorization: Bearer $wrong_biscuit" \
+    -H 'Content-Type: application/json' \
+    -d '{"model":"e2e-model","messages":[{"role":"user","content":"should fail"}]}')"
+  [[ "$http_code" -ne 200 ]]
+
+  # Revoking the task Biscuit via RFC 7009 POST /oauth/revoke immediately blocks
+  # reuse of that task Biscuit without revoking node B's standing identity.
+  run curl -sf --unix-socket "$sock_b" "http://localhost/oauth/revoke" \
+    --data-urlencode "token=$task_biscuit"
+  [[ "$status" -eq 0 ]]
+
+  revoked_code="$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "$sock_b" \
+    "http://localhost/v1/chat/completions" \
+    -H "Authorization: Bearer $task_biscuit" \
+    -H 'Content-Type: application/json' \
+    -d '{"model":"e2e-model","messages":[{"role":"user","content":"revoked task"}]}')"
+  [[ "$revoked_code" -eq 403 ]]
+
   # The plain HTTP server never shows up as an MCP provider: node A had
   # registered every configured service before its API came up, so its
   # absence here is a verdict, not a race.
