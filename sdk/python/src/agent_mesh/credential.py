@@ -15,13 +15,14 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 from google.protobuf import json_format
 from google.protobuf.timestamp_pb2 import Timestamp
 
 from ._proto import sam_pb2 as pb
+from .biscuit import attenuate_biscuit, seal_biscuit
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,21 @@ class MeshCredential:
     # session. Carried through so a state directory survives a round trip.
     receive_times: dict[bytes, Timestamp] = field(default_factory=dict, compare=False)
     oidc_session: Optional[pb.OIDCSession] = field(default=None, compare=False)
+
+    def attenuate(self, rule: pb.TaskAuthorizationRule) -> "MeshCredential":
+        """Returns a new MeshCredential whose biscuit is attenuated offline in memory with rule."""
+        attenuated = attenuate_biscuit(self.biscuit, rule, self.control_plane_keys)
+        expiration = self.expiration
+        if rule.HasField("expire_time"):
+            rule_exp = rule.expire_time.ToSeconds()
+            if rule_exp < expiration:
+                expiration = rule_exp
+        return replace(self, biscuit=attenuated, expiration=expiration)
+
+    def seal(self) -> "MeshCredential":
+        """Returns a new MeshCredential whose biscuit is sealed against further attenuation."""
+        sealed = seal_biscuit(self.biscuit, self.control_plane_keys)
+        return replace(self, biscuit=sealed)
 
     def time_to_live_seconds(self, now: float | None = None) -> int:
         """Seconds of validity left on the biscuit; negative once expired."""

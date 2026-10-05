@@ -56,7 +56,21 @@ type Options struct {
 	// OIDCSigner signs outbound border JWTs and serves /jwks. If nil, a
 	// LocalES256Signer is initialized automatically.
 	OIDCSigner OIDCSigner
+	// STSRateLimit is the per-node request rate limit (requests/second) for
+	// /token/exchange and /sts/token (defaults to STSRateLimitDefault).
+	STSRateLimit float64
+	// STSRateBurst is the per-node burst size for /token/exchange and
+	// /sts/token (defaults to STSRateBurstDefault).
+	STSRateBurst int
 }
+
+const (
+	// STSRateLimitDefault sizes per-node STS throughput for workload JWT
+	// rotation and egress border JWT minting.
+	STSRateLimitDefault = 100
+	// STSRateBurstDefault sizes per-node STS burst capacity.
+	STSRateBurstDefault = 200
+)
 
 // Default sets default values for control plane options.
 func (o *Options) Default() {
@@ -87,6 +101,12 @@ func (o *Options) Default() {
 	}
 	if o.STSTokenTTL <= 0 {
 		o.STSTokenTTL = 5 * time.Minute
+	}
+	if o.STSRateLimit <= 0 {
+		o.STSRateLimit = STSRateLimitDefault
+	}
+	if o.STSRateBurst <= 0 {
+		o.STSRateBurst = STSRateBurstDefault
 	}
 }
 

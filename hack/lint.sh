@@ -26,8 +26,8 @@ docker run --rm -v $(pwd):/app -w /app golangci/golangci-lint:v2.14.0 golangci-l
 # golangci-lint has no deadcode linter (removed upstream in v1.49) and its
 # replacement, "unused", ignores exported identifiers. This catches exported
 # code that is unreachable from every binary and test.
-# mobile/ is exported to Android over cgo/FFI and development/examples/ is sample code.
-DEADCODE_EXCLUDES='^(mobile/|development/examples/)'
+# mobile/ is exported to Android over cgo/FFI, development/examples/ is sample code, and third_party/ holds vendored protos.
+DEADCODE_EXCLUDES='^(mobile/|development/examples/|third_party/)'
 deadcode_report=$(go run golang.org/x/tools/cmd/deadcode@v0.50.0 -test ./... | grep -Ev "${DEADCODE_EXCLUDES}" || true)
 if [[ -n "${deadcode_report}" ]]; then
   echo "Dead code detected (unreachable from any binary or test):"

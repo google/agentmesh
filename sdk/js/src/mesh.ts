@@ -12,9 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import type { MessageInitShape } from "@bufbuild/protobuf";
 import { toHex } from "./bytes.ts";
 import { ControlPlaneClient, ROLE_NODE, type Enrollment } from "./controlplane.ts";
-import { credentialFromJSON, credentialPredatesRotation, credentialTimeToLiveSeconds, credentialToJSON, encodeAuthFrame, type MeshCredential } from "./credential.ts";
+import {
+  attenuateCredential,
+  credentialFromJSON,
+  credentialPredatesRotation,
+  credentialTimeToLiveSeconds,
+  credentialToJSON,
+  encodeAuthFrame,
+  sealCredential,
+  withCredentialMethods,
+  type MeshCredential,
+} from "./credential.ts";
+import type { TaskAuthorizationRuleSchema } from "./gen/sam_pb.ts";
 import { Identity } from "./identity.ts";
 import { openState, readTextFile } from "./platform/state.ts";
 import type { StateStore } from "./platform/types.ts";
@@ -93,7 +105,7 @@ export class AgentMesh {
   private constructor(identity: Identity, controlPlane: ControlPlaneClient, credential: MeshCredential, state: StateStore | undefined) {
     this.identity = identity;
     this.controlPlane = controlPlane;
-    this.#credential = credential;
+    this.#credential = withCredentialMethods(credential);
     this.#state = state;
   }
 
@@ -103,6 +115,16 @@ export class AgentMesh {
 
   get credential(): MeshCredential {
     return this.#credential;
+  }
+
+  /** Returns a new MeshCredential with a tar_block appended offline in memory. */
+  attenuate(rule: MessageInitShape<typeof TaskAuthorizationRuleSchema>): Promise<MeshCredential> {
+    return attenuateCredential(this.#credential, rule);
+  }
+
+  /** Returns a new MeshCredential with its biscuit sealed against further attenuation. */
+  seal(): Promise<MeshCredential> {
+    return sealCredential(this.#credential);
   }
 
   /**
@@ -207,7 +229,13 @@ export class AgentMesh {
     } catch {
       // Keep the previous set; a failed /keys sync must not cost the new biscuit.
     }
-    this.#credential = { ...this.#credential, biscuit: result.biscuit, expiration: result.expiration, controlPlaneKeys, issuedUnderKeys: controlPlaneKeys };
+    this.#credential = withCredentialMethods({
+      ...this.#credential,
+      biscuit: result.biscuit,
+      expiration: result.expiration,
+      controlPlaneKeys,
+      issuedUnderKeys: controlPlaneKeys,
+    });
     await this.save();
     return this.#credential;
   }
@@ -221,7 +249,7 @@ export class AgentMesh {
     if (this.#credential.controlPlaneKeys.some((k) => toHex(k) === hex)) {
       return false;
     }
-    this.#credential = { ...this.#credential, controlPlaneKeys: [...this.#credential.controlPlaneKeys, key] };
+    this.#credential = withCredentialMethods({ ...this.#credential, controlPlaneKeys: [...this.#credential.controlPlaneKeys, key] });
     return true;
   }
 
@@ -244,7 +272,7 @@ export class AgentMesh {
         throw new Error("/keys returned no keys");
       }
       keysChanged = !sameKeySet(keys, this.#credential.controlPlaneKeys);
-      this.#credential = { ...this.#credential, controlPlaneKeys: keys };
+      this.#credential = withCredentialMethods({ ...this.#credential, controlPlaneKeys: keys });
       if (credentialPredatesRotation(this.#credential)) {
         await this.refresh();
         refreshed = true;
@@ -260,7 +288,7 @@ export class AgentMesh {
     try {
       const info = await this.controlPlane.info();
       if (info.routerAddresses.length > 0) {
-        this.#credential = { ...this.#credential, routerAddresses: info.routerAddresses };
+        this.#credential = withCredentialMethods({ ...this.#credential, routerAddresses: info.routerAddresses });
       }
       bannedPeerIds = info.bannedPeerIds;
     } catch (err) {

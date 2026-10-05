@@ -219,6 +219,26 @@ func evaluateExtAuthz(ctx context.Context, node *SamNode, in extAuthzCheckInput)
 		if taskJSON, mErr := (protojson.MarshalOptions{UseProtoNames: true}).Marshal(lastRule); mErr == nil {
 			respHeaders[api.HeaderSamTask] = string(taskJSON)
 		}
+		if lastRule.GetName() != "" {
+			respHeaders["X-Sam-Task-Id"] = lastRule.GetName()
+		}
+	}
+	if after, ok := strings.CutPrefix(target, api.EgressServicePrefix); ok && node.services != nil {
+		if svc, ok := node.services.GetTyped(api.ServiceType_SERVICE_TYPE_EGRESS, after); ok {
+			if es, ok := svc.(*EgressService); ok && es.exchanger != nil {
+				authHdr, _, bErr := es.resolveAuthorization(WithCallerBiscuit(ctx, rawBiscuit))
+				if bErr != nil {
+					return extAuthzCheckResult{
+						Allowed:    false,
+						HTTPStatus: http.StatusBadGateway,
+						Message:    fmt.Sprintf("egress credential broker failed: %v", bErr),
+					}
+				}
+				if authHdr != "" {
+					respHeaders["Authorization"] = authHdr
+				}
+			}
+		}
 	}
 
 	return extAuthzCheckResult{
@@ -266,6 +286,15 @@ func extractAndVerifyExtAuthzBiscuit(ctx context.Context, node *SamNode, headers
 	return nil, http.StatusForbidden, errors.New("forbidden: unrecognizable credential")
 }
 
+func isExtAuthzServiceScheme(scheme string) bool {
+	switch scheme {
+	case api.ServiceTypeStringMCP, api.ServiceTypeStringInference, api.ServiceTypeStringA2A, api.ServiceTypeStringEgress, "http":
+		return true
+	default:
+		return false
+	}
+}
+
 func resolveExtAuthzTarget(in extAuthzCheckInput) (target, reqPath string) {
 	path := in.Path
 	if idx := strings.IndexByte(path, '?'); idx >= 0 {
@@ -274,30 +303,29 @@ func resolveExtAuthzTarget(in extAuthzCheckInput) (target, reqPath string) {
 	if explicit := strings.TrimSpace(in.Headers[strings.ToLower(api.HeaderSamTargetService)]); explicit != "" {
 		return explicit, path
 	}
-	if strings.HasPrefix(path, "/sam/") {
-		if route, ok := parseEgressRoute(path); ok {
-			up := "/" + route.upstreamPath
-			return route.serviceType + "://" + route.serviceName, up
-		}
-	}
-	if after, ok := strings.CutPrefix(path, "/egress/"); ok {
-		host, rest, _ := strings.Cut(after, "/")
-		host = api.NormalizeMeshHost(host)
-		if host != "" {
-			return api.EgressServicePrefix + host, "/" + rest
-		}
-	}
-	trimmed := strings.TrimPrefix(path, "/")
+	trimmed := strings.TrimPrefix(path, "/sam/")
+	trimmed = strings.TrimPrefix(trimmed, "/")
 	parts := strings.SplitN(trimmed, "/", 3)
 	if len(parts) >= 2 {
 		scheme := strings.ToLower(parts[0])
-		switch scheme {
-		case api.ServiceTypeStringMCP, api.ServiceTypeStringInference, api.ServiceTypeStringA2A, api.ServiceTypeStringEgress, "http":
+		if isExtAuthzServiceScheme(scheme) {
+			name := parts[1]
+			if scheme == api.ServiceTypeStringEgress {
+				name = api.NormalizeMeshHost(name)
+			}
 			rest := "/"
 			if len(parts) == 3 {
 				rest = "/" + parts[2]
 			}
-			return scheme + "://" + parts[1], rest
+			if name != "" {
+				return scheme + "://" + name, rest
+			}
+		}
+	}
+	if strings.HasPrefix(path, "/sam/") {
+		if route, ok := parseEgressRoute(path); ok && isExtAuthzServiceScheme(route.serviceType) {
+			up := "/" + route.upstreamPath
+			return route.serviceType + "://" + route.serviceName, up
 		}
 	}
 	return "", path

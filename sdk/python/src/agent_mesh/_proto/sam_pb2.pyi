@@ -1,3 +1,4 @@
+from google.protobuf import duration_pb2 as _duration_pb2
 from google.protobuf import timestamp_pb2 as _timestamp_pb2
 from google.protobuf.internal import containers as _containers
 from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
@@ -6,15 +7,27 @@ from google.protobuf import message as _message
 from typing import ClassVar as _ClassVar, Iterable as _Iterable, Mapping as _Mapping, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
+EGRESS_MODE_HTTP: EgressMode
+EGRESS_MODE_TCP: EgressMode
 ENROLLMENT_STATUS_APPROVED: EnrollmentStatus
 ENROLLMENT_STATUS_PENDING: EnrollmentStatus
 ENROLLMENT_STATUS_REJECTED: EnrollmentStatus
 ENROLLMENT_STATUS_UNSPECIFIED: EnrollmentStatus
+RESPONSE_INSPECTION_BUFFERED: ResponseInspection
+RESPONSE_INSPECTION_REQUEST_ONLY: ResponseInspection
 SERVICE_TYPE_A2A: ServiceType
 SERVICE_TYPE_EGRESS: ServiceType
 SERVICE_TYPE_INFERENCE: ServiceType
 SERVICE_TYPE_MCP: ServiceType
 SERVICE_TYPE_UNSPECIFIED: ServiceType
+
+class AWSAssumeRole(_message.Message):
+    __slots__ = ["role_arn", "session_policy"]
+    ROLE_ARN_FIELD_NUMBER: _ClassVar[int]
+    SESSION_POLICY_FIELD_NUMBER: _ClassVar[int]
+    role_arn: str
+    session_policy: str
+    def __init__(self, role_arn: _Optional[str] = ..., session_policy: _Optional[str] = ...) -> None: ...
 
 class AuthFrame(_message.Message):
     __slots__ = ["biscuit", "target_service"]
@@ -106,6 +119,18 @@ class ControlPlaneInfoResponse(_message.Message):
     router_addresses: _containers.RepeatedScalarFieldContainer[str]
     def __init__(self, oidc_issuer: _Optional[str] = ..., client_id: _Optional[str] = ..., audience: _Optional[str] = ..., router_addresses: _Optional[_Iterable[str]] = ..., banned_peer_ids: _Optional[_Iterable[str]] = ...) -> None: ...
 
+class CredentialBroker(_message.Message):
+    __slots__ = ["aws_assume_role", "oidc_federation", "platform_identity", "static_secret"]
+    AWS_ASSUME_ROLE_FIELD_NUMBER: _ClassVar[int]
+    OIDC_FEDERATION_FIELD_NUMBER: _ClassVar[int]
+    PLATFORM_IDENTITY_FIELD_NUMBER: _ClassVar[int]
+    STATIC_SECRET_FIELD_NUMBER: _ClassVar[int]
+    aws_assume_role: AWSAssumeRole
+    oidc_federation: OIDCFederation
+    platform_identity: PlatformIdentity
+    static_secret: str
+    def __init__(self, static_secret: _Optional[str] = ..., oidc_federation: _Optional[_Union[OIDCFederation, _Mapping]] = ..., aws_assume_role: _Optional[_Union[AWSAssumeRole, _Mapping]] = ..., platform_identity: _Optional[_Union[PlatformIdentity, _Mapping]] = ...) -> None: ...
+
 class DiscoveredProvider(_message.Message):
     __slots__ = ["local_proxy_url", "peer_id", "srv_description", "srv_name"]
     LOCAL_PROXY_URL_FIELD_NUMBER: _ClassVar[int]
@@ -129,16 +154,28 @@ class EgressAssignmentsResponse(_message.Message):
     def __init__(self, egress: _Optional[_Iterable[_Union[EgressDestination, _Mapping]]] = ...) -> None: ...
 
 class EgressDestination(_message.Message):
-    __slots__ = ["credential", "name", "served_by", "target_url"]
+    __slots__ = ["broker", "credential", "forward_context", "inspection", "mode", "name", "ports", "preserve_host", "served_by", "target_url"]
+    BROKER_FIELD_NUMBER: _ClassVar[int]
     CREDENTIAL_FIELD_NUMBER: _ClassVar[int]
+    FORWARD_CONTEXT_FIELD_NUMBER: _ClassVar[int]
+    INSPECTION_FIELD_NUMBER: _ClassVar[int]
+    MODE_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
+    PORTS_FIELD_NUMBER: _ClassVar[int]
+    PRESERVE_HOST_FIELD_NUMBER: _ClassVar[int]
     SERVED_BY_FIELD_NUMBER: _ClassVar[int]
     TARGET_URL_FIELD_NUMBER: _ClassVar[int]
+    broker: CredentialBroker
     credential: str
+    forward_context: bool
+    inspection: Inspection
+    mode: EgressMode
     name: str
+    ports: _containers.RepeatedScalarFieldContainer[int]
+    preserve_host: bool
     served_by: _containers.RepeatedScalarFieldContainer[str]
     target_url: str
-    def __init__(self, name: _Optional[str] = ..., target_url: _Optional[str] = ..., credential: _Optional[str] = ..., served_by: _Optional[_Iterable[str]] = ...) -> None: ...
+    def __init__(self, name: _Optional[str] = ..., target_url: _Optional[str] = ..., credential: _Optional[str] = ..., served_by: _Optional[_Iterable[str]] = ..., broker: _Optional[_Union[CredentialBroker, _Mapping]] = ..., inspection: _Optional[_Union[Inspection, _Mapping]] = ..., mode: _Optional[_Union[EgressMode, str]] = ..., ports: _Optional[_Iterable[int]] = ..., preserve_host: bool = ..., forward_context: bool = ...) -> None: ...
 
 class EnrollRequest(_message.Message):
     __slots__ = ["challenge_signature", "challenge_unix_ms", "jwt", "labels", "peer_id", "public_key", "requested_role"]
@@ -179,6 +216,54 @@ class EnrollResponse(_message.Message):
     router_addresses: _containers.RepeatedScalarFieldContainer[str]
     def __init__(self, biscuit_token: _Optional[bytes] = ..., error_message: _Optional[str] = ..., control_plane_public_key: _Optional[bytes] = ..., router_addresses: _Optional[_Iterable[str]] = ..., expire_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
 
+class ExtProc(_message.Message):
+    __slots__ = ["allow_mode_override", "ca", "client_certificate", "failure_mode_allow", "max_buffered_bytes", "message_timeout", "processing_mode", "target"]
+    ALLOW_MODE_OVERRIDE_FIELD_NUMBER: _ClassVar[int]
+    CA_FIELD_NUMBER: _ClassVar[int]
+    CLIENT_CERTIFICATE_FIELD_NUMBER: _ClassVar[int]
+    FAILURE_MODE_ALLOW_FIELD_NUMBER: _ClassVar[int]
+    MAX_BUFFERED_BYTES_FIELD_NUMBER: _ClassVar[int]
+    MESSAGE_TIMEOUT_FIELD_NUMBER: _ClassVar[int]
+    PROCESSING_MODE_FIELD_NUMBER: _ClassVar[int]
+    TARGET_FIELD_NUMBER: _ClassVar[int]
+    allow_mode_override: bool
+    ca: str
+    client_certificate: str
+    failure_mode_allow: bool
+    max_buffered_bytes: int
+    message_timeout: _duration_pb2.Duration
+    processing_mode: ExtProcProcessingMode
+    target: str
+    def __init__(self, target: _Optional[str] = ..., ca: _Optional[str] = ..., client_certificate: _Optional[str] = ..., processing_mode: _Optional[_Union[ExtProcProcessingMode, _Mapping]] = ..., allow_mode_override: bool = ..., message_timeout: _Optional[_Union[_duration_pb2.Duration, _Mapping]] = ..., failure_mode_allow: bool = ..., max_buffered_bytes: _Optional[int] = ...) -> None: ...
+
+class ExtProcProcessingMode(_message.Message):
+    __slots__ = ["request_body_mode", "request_header_mode", "request_trailer_mode", "response_body_mode", "response_header_mode", "response_trailer_mode"]
+    class BodyMode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+        __slots__ = []
+    class HeaderMode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+        __slots__ = []
+    BUFFERED: ExtProcProcessingMode.BodyMode
+    BUFFERED_PARTIAL: ExtProcProcessingMode.BodyMode
+    FULL_DUPLEX_STREAMED: ExtProcProcessingMode.BodyMode
+    HEADER_MODE_DEFAULT: ExtProcProcessingMode.HeaderMode
+    NONE: ExtProcProcessingMode.BodyMode
+    REQUEST_BODY_MODE_FIELD_NUMBER: _ClassVar[int]
+    REQUEST_HEADER_MODE_FIELD_NUMBER: _ClassVar[int]
+    REQUEST_TRAILER_MODE_FIELD_NUMBER: _ClassVar[int]
+    RESPONSE_BODY_MODE_FIELD_NUMBER: _ClassVar[int]
+    RESPONSE_HEADER_MODE_FIELD_NUMBER: _ClassVar[int]
+    RESPONSE_TRAILER_MODE_FIELD_NUMBER: _ClassVar[int]
+    SEND: ExtProcProcessingMode.HeaderMode
+    SKIP: ExtProcProcessingMode.HeaderMode
+    STREAMED: ExtProcProcessingMode.BodyMode
+    request_body_mode: ExtProcProcessingMode.BodyMode
+    request_header_mode: ExtProcProcessingMode.HeaderMode
+    request_trailer_mode: ExtProcProcessingMode.HeaderMode
+    response_body_mode: ExtProcProcessingMode.BodyMode
+    response_header_mode: ExtProcProcessingMode.HeaderMode
+    response_trailer_mode: ExtProcProcessingMode.HeaderMode
+    def __init__(self, request_header_mode: _Optional[_Union[ExtProcProcessingMode.HeaderMode, str]] = ..., response_header_mode: _Optional[_Union[ExtProcProcessingMode.HeaderMode, str]] = ..., request_body_mode: _Optional[_Union[ExtProcProcessingMode.BodyMode, str]] = ..., response_body_mode: _Optional[_Union[ExtProcProcessingMode.BodyMode, str]] = ..., request_trailer_mode: _Optional[_Union[ExtProcProcessingMode.HeaderMode, str]] = ..., response_trailer_mode: _Optional[_Union[ExtProcProcessingMode.HeaderMode, str]] = ...) -> None: ...
+
 class HTTPGrant(_message.Message):
     __slots__ = ["methods", "paths", "service"]
     METHODS_FIELD_NUMBER: _ClassVar[int]
@@ -204,6 +289,20 @@ class IdentityEvidenceResponse(_message.Message):
     peer_id: str
     trusted_control_plane_keys: _containers.RepeatedScalarFieldContainer[bytes]
     def __init__(self, peer_id: _Optional[str] = ..., biscuit: _Optional[bytes] = ..., biscuit_expire_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., control_plane_url: _Optional[str] = ..., trusted_control_plane_keys: _Optional[_Iterable[bytes]] = ..., check_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+
+class Inspection(_message.Message):
+    __slots__ = ["inspectors"]
+    INSPECTORS_FIELD_NUMBER: _ClassVar[int]
+    inspectors: _containers.RepeatedCompositeFieldContainer[Inspector]
+    def __init__(self, inspectors: _Optional[_Iterable[_Union[Inspector, _Mapping]]] = ...) -> None: ...
+
+class Inspector(_message.Message):
+    __slots__ = ["ext_proc", "model_armor"]
+    EXT_PROC_FIELD_NUMBER: _ClassVar[int]
+    MODEL_ARMOR_FIELD_NUMBER: _ClassVar[int]
+    ext_proc: ExtProc
+    model_armor: ModelArmor
+    def __init__(self, model_armor: _Optional[_Union[ModelArmor, _Mapping]] = ..., ext_proc: _Optional[_Union[ExtProc, _Mapping]] = ...) -> None: ...
 
 class KeysResponse(_message.Message):
     __slots__ = ["public_keys", "sign_time", "signatures"]
@@ -252,11 +351,35 @@ class MeshEvent(_message.Message):
     type: MeshEvent.Type
     def __init__(self, type: _Optional[_Union[MeshEvent.Type, str]] = ..., peer_id: _Optional[str] = ..., event_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., new_public_key: _Optional[bytes] = ..., signature: _Optional[bytes] = ...) -> None: ...
 
+class ModelArmor(_message.Message):
+    __slots__ = ["fail_open", "response", "template", "timeout"]
+    FAIL_OPEN_FIELD_NUMBER: _ClassVar[int]
+    RESPONSE_FIELD_NUMBER: _ClassVar[int]
+    TEMPLATE_FIELD_NUMBER: _ClassVar[int]
+    TIMEOUT_FIELD_NUMBER: _ClassVar[int]
+    fail_open: bool
+    response: ResponseInspection
+    template: str
+    timeout: _duration_pb2.Duration
+    def __init__(self, template: _Optional[str] = ..., response: _Optional[_Union[ResponseInspection, str]] = ..., fail_open: bool = ..., timeout: _Optional[_Union[_duration_pb2.Duration, _Mapping]] = ...) -> None: ...
+
 class NodeCatalogReport(_message.Message):
     __slots__ = ["services"]
     SERVICES_FIELD_NUMBER: _ClassVar[int]
     services: _containers.RepeatedCompositeFieldContainer[ServiceInfo]
     def __init__(self, services: _Optional[_Iterable[_Union[ServiceInfo, _Mapping]]] = ...) -> None: ...
+
+class OIDCFederation(_message.Message):
+    __slots__ = ["audience", "impersonate", "scopes", "token_endpoint"]
+    AUDIENCE_FIELD_NUMBER: _ClassVar[int]
+    IMPERSONATE_FIELD_NUMBER: _ClassVar[int]
+    SCOPES_FIELD_NUMBER: _ClassVar[int]
+    TOKEN_ENDPOINT_FIELD_NUMBER: _ClassVar[int]
+    audience: str
+    impersonate: str
+    scopes: _containers.RepeatedScalarFieldContainer[str]
+    token_endpoint: str
+    def __init__(self, token_endpoint: _Optional[str] = ..., audience: _Optional[str] = ..., impersonate: _Optional[str] = ..., scopes: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class OIDCSession(_message.Message):
     __slots__ = ["audience", "client_id", "issuer", "refresh_token"]
@@ -296,6 +419,12 @@ class PeerEvidenceResponse(_message.Message):
     roles: _containers.RepeatedScalarFieldContainer[str]
     verifying_key: bytes
     def __init__(self, peer_id: _Optional[str] = ..., biscuit: _Optional[bytes] = ..., verifying_key: _Optional[bytes] = ..., roles: _Optional[_Iterable[str]] = ..., labels: _Optional[_Mapping[str, str]] = ..., expire_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., revocation_ids: _Optional[_Iterable[str]] = ..., check_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+
+class PlatformIdentity(_message.Message):
+    __slots__ = ["scopes"]
+    SCOPES_FIELD_NUMBER: _ClassVar[int]
+    scopes: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, scopes: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class PolicyBinding(_message.Message):
     __slots__ = ["members", "role"]
@@ -568,4 +697,10 @@ class EnrollmentStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = []
 
 class ServiceType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = []
+
+class EgressMode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = []
+
+class ResponseInspection(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = []

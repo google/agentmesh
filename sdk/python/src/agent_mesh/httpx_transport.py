@@ -80,10 +80,11 @@ class MeshTransport(httpx.AsyncBaseTransport):
         peer_id = await self._session._egress_peer(peer_text)  # noqa: SLF001 - the session's verified egress path, not a caller option
         body = await request.aread()
         headers = {k.decode("latin-1"): v.decode("latin-1") for k, v in request.headers.raw}
+        biscuit = getattr(self._session, "biscuit", None) or self._session.mesh.credential.biscuit
         response = await open_http_request(
             self._session.host,
             peer_id,
-            self._session.mesh.credential.biscuit,
+            biscuit,
             request.method,
             target,
             headers=headers,

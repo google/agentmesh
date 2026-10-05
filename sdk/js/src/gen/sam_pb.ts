@@ -18,15 +18,15 @@
 
 import type { GenEnum, GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
 import { enumDesc, fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
-import type { Timestamp } from "@bufbuild/protobuf/wkt";
-import { file_google_protobuf_timestamp } from "@bufbuild/protobuf/wkt";
+import type { Duration, Timestamp } from "@bufbuild/protobuf/wkt";
+import { file_google_protobuf_duration, file_google_protobuf_timestamp } from "@bufbuild/protobuf/wkt";
 import type { Message } from "@bufbuild/protobuf";
 
 /**
  * Describes the file sam.proto.
  */
 export const file_sam: GenFile = /*@__PURE__*/
-  fileDesc("CglzYW0ucHJvdG8SBnNhbS52MSI0CglBdXRoRnJhbWUSDwoHYmlzY3VpdBgBIAEoDBIWCg50YXJnZXRfc2VydmljZRgCIAEoCSI/CgxBdXRoUmVzcG9uc2USDwoHc3VjY2VzcxgBIAEoCBINCgVlcnJvchgCIAEoCRIPCgdiaXNjdWl0GAMgASgMItYBCglNZXNoRXZlbnQSJAoEdHlwZRgBIAEoDjIWLnNhbS52MS5NZXNoRXZlbnQuVHlwZRIPCgdwZWVyX2lkGAIgASgJEi4KCmV2ZW50X3RpbWUYAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhYKDm5ld19wdWJsaWNfa2V5GAQgASgMEhEKCXNpZ25hdHVyZRgFIAEoDCI3CgRUeXBlEgoKBkJBTk5FRBAAEhAKDEtFWV9ST1RBVElPThABEhEKDVBPTElDWV9VUERBVEUQAiLzAQoNRW5yb2xsUmVxdWVzdBILCgNqd3QYASABKAkSDwoHcGVlcl9pZBgCIAEoCRISCgpwdWJsaWNfa2V5GAMgASgMEhYKDnJlcXVlc3RlZF9yb2xlGAQgASgJEjEKBmxhYmVscxgFIAMoCzIhLnNhbS52MS5FbnJvbGxSZXF1ZXN0LkxhYmVsc0VudHJ5EhkKEWNoYWxsZW5nZV91bml4X21zGAYgASgDEhsKE2NoYWxsZW5nZV9zaWduYXR1cmUYByABKAwaLQoLTGFiZWxzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ASKrAQoORW5yb2xsUmVzcG9uc2USFQoNYmlzY3VpdF90b2tlbhgBIAEoDBIVCg1lcnJvcl9tZXNzYWdlGAIgASgJEiAKGGNvbnRyb2xfcGxhbmVfcHVibGljX2tleRgDIAEoDBIYChByb3V0ZXJfYWRkcmVzc2VzGAQgAygJEi8KC2V4cGlyZV90aW1lGAUgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCKRAgoWQm9vdHN0cmFwRW5yb2xsUmVxdWVzdBIXCg9ib290c3RyYXBfdG9rZW4YASABKAkSDwoHcGVlcl9pZBgCIAEoCRISCgpwdWJsaWNfa2V5GAMgASgMEhYKDnJlcXVlc3RlZF9yb2xlGAQgASgJEjoKBmxhYmVscxgFIAMoCzIqLnNhbS52MS5Cb290c3RyYXBFbnJvbGxSZXF1ZXN0LkxhYmVsc0VudHJ5EhkKEWNoYWxsZW5nZV91bml4X21zGAYgASgDEhsKE2NoYWxsZW5nZV9zaWduYXR1cmUYByABKAwaLQoLTGFiZWxzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ASL9AQoXQm9vdHN0cmFwRW5yb2xsUmVzcG9uc2USKAoGc3RhdHVzGAEgASgOMhguc2FtLnYxLkVucm9sbG1lbnRTdGF0dXMSFQoNYmlzY3VpdF90b2tlbhgCIAEoDBIdChVwb2xsX2ludGVydmFsX3NlY29uZHMYAyABKAUSFQoNZXJyb3JfbWVzc2FnZRgEIAEoCRIgChhjb250cm9sX3BsYW5lX3B1YmxpY19rZXkYBSABKAwSGAoQcm91dGVyX2FkZHJlc3NlcxgGIAMoCRIvCgtleHBpcmVfdGltZRgHIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAiUwoLU2VydmljZUluZm8SIQoEdHlwZRgBIAEoDjITLnNhbS52MS5TZXJ2aWNlVHlwZRIMCgRuYW1lGAIgASgJEhMKC2Rlc2NyaXB0aW9uGAMgASgJInsKDkNvbW1hbmRCYWNrZW5kEg8KB2NvbW1hbmQYASADKAkSLAoDZW52GAIgAygLMh8uc2FtLnYxLkNvbW1hbmRCYWNrZW5kLkVudkVudHJ5GioKCEVudkVudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEiigEKFlJlZ2lzdGVyU2VydmljZVJlcXVlc3QSJAoHc2VydmljZRgBIAEoCzITLnNhbS52MS5TZXJ2aWNlSW5mbxIUCgp0YXJnZXRfdXJsGAIgASgJSAASKQoHY29tbWFuZBgDIAEoCzIWLnNhbS52MS5Db21tYW5kQmFja2VuZEgAQgkKB2JhY2tlbmQiaQoSRGlzY292ZXJlZFByb3ZpZGVyEg8KB3BlZXJfaWQYASABKAkSFwoPbG9jYWxfcHJveHlfdXJsGAIgASgJEhAKCHNydl9uYW1lGAMgASgJEhcKD3Nydl9kZXNjcmlwdGlvbhgEIAEoCSKyAgoPU2VydmljZUFubm91bmNlEg8KB3BlZXJfaWQYASABKAkSIQoEdHlwZRgCIAEoDjITLnNhbS52MS5TZXJ2aWNlVHlwZRIUCgxzZXJ2aWNlX25hbWUYAyABKAkSDAoEa2V5cxgEIAMoCRIzCgZsYWJlbHMYBSADKAsyIy5zYW0udjEuU2VydmljZUFubm91bmNlLkxhYmVsc0VudHJ5EhcKD2FjdGl2ZV9yZXF1ZXN0cxgGIAEoDRIXCg9sYXRlbmN5X2V3bWFfbXMYByABKAESMQoNYW5ub3VuY2VfdGltZRgIIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAaLQoLTGFiZWxzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ASKHAQoYQ29udHJvbFBsYW5lSW5mb1Jlc3BvbnNlEhMKC29pZGNfaXNzdWVyGAEgASgJEhEKCWNsaWVudF9pZBgCIAEoCRIQCghhdWRpZW5jZRgDIAEoCRIYChByb3V0ZXJfYWRkcmVzc2VzGAQgAygJEhcKD2Jhbm5lZF9wZWVyX2lkcxgFIAMoCSKsAQoSUm91dGVyTGVhc2VSZXF1ZXN0Eg8KB3BlZXJfaWQYASABKAkSEQoJYWRkcmVzc2VzGAIgAygJEg8KB2Jpc2N1aXQYAyABKAwSFwoPY29ubmVjdGVkX3BlZXJzGAQgAygJEhAKCGRodF9zaXplGAUgASgFEhkKEWNoYWxsZW5nZV91bml4X21zGAYgASgDEhsKE2NoYWxsZW5nZV9zaWduYXR1cmUYByABKAwiZgoTUm91dGVyTGVhc2VSZXNwb25zZRIPCgdzdWNjZXNzGAEgASgIEg0KBWVycm9yGAIgASgJEi8KC2V4cGlyZV90aW1lGAMgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCKeAQoKUG9saWN5Um9sZRIMCgRuYW1lGAEgASgJEhcKD2FsbG93ZWRfdGFyZ2V0cxgCIAMoCRIYChBhbGxvd2VkX3NlcnZpY2VzGAMgAygJEhYKDmN1c3RvbV9kYXRhbG9nGAQgAygJEhYKDmFsbG93ZWRfbGFiZWxzGAUgAygJEh8KBGh0dHAYBiADKAsyES5zYW0udjEuSFRUUEdyYW50IjwKCUhUVFBHcmFudBIPCgdzZXJ2aWNlGAEgASgJEg8KB21ldGhvZHMYAiADKAkSDQoFcGF0aHMYAyADKAkiXAoRRWdyZXNzRGVzdGluYXRpb24SDAoEbmFtZRgBIAEoCRISCgp0YXJnZXRfdXJsGAIgASgJEhIKCmNyZWRlbnRpYWwYAyABKAkSEQoJc2VydmVkX2J5GAQgAygJIi4KDVBvbGljeUJpbmRpbmcSDAoEcm9sZRgBIAEoCRIPCgdtZW1iZXJzGAIgAygJIoUBCgxQb2xpY3lDb25maWcSIQoFcm9sZXMYASADKAsyEi5zYW0udjEuUG9saWN5Um9sZRInCghiaW5kaW5ncxgCIAMoCzIVLnNhbS52MS5Qb2xpY3lCaW5kaW5nEikKBmVncmVzcxgDIAMoCzIZLnNhbS52MS5FZ3Jlc3NEZXN0aW5hdGlvbiIYChZQb2xpY3lDb25maWdHZXRSZXF1ZXN0IjAKF1BvbGljeUNvbmZpZ0dldFJlc3BvbnNlEhUKDWRhdGFsb2dfcnVsZXMYASADKAkiPAoaUG9saWN5Q29uZmlnVXBkYXRlUmVzcG9uc2USDwoHc3VjY2VzcxgBIAEoCBINCgVlcnJvchgCIAEoCSIaChhFZ3Jlc3NBc3NpZ25tZW50c1JlcXVlc3QiRgoZRWdyZXNzQXNzaWdubWVudHNSZXNwb25zZRIpCgZlZ3Jlc3MYASADKAsyGS5zYW0udjEuRWdyZXNzRGVzdGluYXRpb24iZgoMS2V5c1Jlc3BvbnNlEhMKC3B1YmxpY19rZXlzGAEgAygMEi0KCXNpZ25fdGltZRgCIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASEgoKc2lnbmF0dXJlcxgDIAMoDCJeChNUb2tlblJlZnJlc2hSZXF1ZXN0EhsKE2NoYWxsZW5nZV9zaWduYXR1cmUYASABKAwSGQoRY2hhbGxlbmdlX3VuaXhfbXMYAiABKAMSDwoHcGVlcl9pZBgDIAEoCSJ1ChRUb2tlblJlZnJlc2hSZXNwb25zZRIVCg1iaXNjdWl0X3Rva2VuGAEgASgMEi8KC2V4cGlyZV90aW1lGAIgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIVCg1lcnJvcl9tZXNzYWdlGAMgASgJIjoKEU5vZGVDYXRhbG9nUmVwb3J0EiUKCHNlcnZpY2VzGAEgAygLMhMuc2FtLnYxLlNlcnZpY2VJbmZvIiUKElRva2VuUmV2b2tlUmVxdWVzdBIPCgdwZWVyX2lkGAEgASgJIjUKE1Rva2VuUmV2b2tlUmVzcG9uc2USDwoHc3VjY2VzcxgBIAEoCBINCgVlcnJvchgCIAEoCSLkAQoYSWRlbnRpdHlFdmlkZW5jZVJlc3BvbnNlEg8KB3BlZXJfaWQYASABKAkSDwoHYmlzY3VpdBgCIAEoDBI3ChNiaXNjdWl0X2V4cGlyZV90aW1lGAMgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIZChFjb250cm9sX3BsYW5lX3VybBgEIAEoCRIiChp0cnVzdGVkX2NvbnRyb2xfcGxhbmVfa2V5cxgFIAMoDBIuCgpjaGVja190aW1lGAYgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCLAAgoUUGVlckV2aWRlbmNlUmVzcG9uc2USDwoHcGVlcl9pZBgBIAEoCRIPCgdiaXNjdWl0GAIgASgMEhUKDXZlcmlmeWluZ19rZXkYAyABKAwSDQoFcm9sZXMYBCADKAkSOAoGbGFiZWxzGAUgAygLMiguc2FtLnYxLlBlZXJFdmlkZW5jZVJlc3BvbnNlLkxhYmVsc0VudHJ5Ei8KC2V4cGlyZV90aW1lGAYgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIWCg5yZXZvY2F0aW9uX2lkcxgHIAMoCRIuCgpjaGVja190aW1lGAggASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBotCgtMYWJlbHNFbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAk6AjgBIoACChBNZW1iZXJDcmVkZW50aWFsEhkKEWNvbnRyb2xfcGxhbmVfdXJsGAEgASgJEg8KB2Jpc2N1aXQYAiABKAwSLwoLZXhwaXJlX3RpbWUYAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEi8KDHRydXN0ZWRfa2V5cxgEIAMoCzIZLnNhbS52MS5UcnVzdGVkU2lnbmluZ0tleRIZChFpc3N1ZWRfdW5kZXJfa2V5cxgFIAMoDBIYChByb3V0ZXJfYWRkcmVzc2VzGAYgAygJEikKDG9pZGNfc2Vzc2lvbhgHIAEoCzITLnNhbS52MS5PSURDU2Vzc2lvbiJZChFUcnVzdGVkU2lnbmluZ0tleRISCgpwdWJsaWNfa2V5GAEgASgMEjAKDHJlY2VpdmVfdGltZRgCIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAiWQoLT0lEQ1Nlc3Npb24SDgoGaXNzdWVyGAEgASgJEhEKCWNsaWVudF9pZBgCIAEoCRIQCghhdWRpZW5jZRgDIAEoCRIVCg1yZWZyZXNoX3Rva2VuGAQgASgJIo0BChVUYXNrQXV0aG9yaXphdGlvblJ1bGUSDAoEbmFtZRgBIAEoCRIUCgxkaXNwbGF5X25hbWUYAiABKAkSHwoFcnVsZXMYAyADKAsyEC5zYW0udjEuVGFza1J1bGUSLwoLZXhwaXJlX3RpbWUYBCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wIn4KCFRhc2tSdWxlEhMKC2Rlc2NyaXB0aW9uGAEgASgJEhgKEGFsbG93ZWRfc2VydmljZXMYAiADKAkSKAoJb3BlcmF0aW9uGAMgASgLMhUuc2FtLnYxLlRhc2tPcGVyYXRpb24SGQoRYWxsb3dlZF9yZXNvdXJjZXMYBCADKAkicwoNVGFza09wZXJhdGlvbhIVCg1hbGxvd2VkX3Rvb2xzGAEgAygJEhcKD2FsbG93ZWRfbWV0aG9kcxgCIAMoCRIVCg1hbGxvd2VkX3BhdGhzGAMgAygJEhsKE2FsbG93ZWRfcGVybWlzc2lvbnMYBCADKAkipQEKFFRva2VuRXhjaGFuZ2VSZXF1ZXN0EhUKDXN1YmplY3RfdG9rZW4YASABKAkSMAoJdGFza19ydWxlGAIgASgLMh0uc2FtLnYxLlRhc2tBdXRob3JpemF0aW9uUnVsZRIMCgRzZWFsGAMgASgIEhkKEWNoYWxsZW5nZV91bml4X21zGAQgASgDEhsKE2NoYWxsZW5nZV9zaWduYXR1cmUYBSABKAwifwoVVG9rZW5FeGNoYW5nZVJlc3BvbnNlEhUKDWJpc2N1aXRfdG9rZW4YASABKAwSLwoLZXhwaXJlX3RpbWUYAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEg0KBXJvbGVzGAMgAygJEg8KB3N1YmplY3QYBCABKAkigQEKD1NUU1Rva2VuUmVxdWVzdBIPCgdiaXNjdWl0GAEgASgMEhMKC2Rlc3RpbmF0aW9uGAIgASgJEhAKCGF1ZGllbmNlGAMgASgJEhkKEWNoYWxsZW5nZV91bml4X21zGAQgASgDEhsKE2NoYWxsZW5nZV9zaWduYXR1cmUYBSABKAwigwEKEFNUU1Rva2VuUmVzcG9uc2USCwoDand0GAEgASgJEi8KC2V4cGlyZV90aW1lGAIgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIPCgdzdWJqZWN0GAMgASgJEg0KBXJvbGVzGAQgAygJEhEKCXRhc2tfbmFtZRgFIAEoCSJGChNSZXZvY2F0aW9uc1Jlc3BvbnNlEhYKDnJldm9jYXRpb25faWRzGAEgAygJEhcKD2Jhbm5lZF9wZWVyX2lkcxgCIAMoCSqUAQoQRW5yb2xsbWVudFN0YXR1cxIhCh1FTlJPTExNRU5UX1NUQVRVU19VTlNQRUNJRklFRBAAEh0KGUVOUk9MTE1FTlRfU1RBVFVTX1BFTkRJTkcQARIeChpFTlJPTExNRU5UX1NUQVRVU19BUFBST1ZFRBACEh4KGkVOUk9MTE1FTlRfU1RBVFVTX1JFSkVDVEVEEAMqjAEKC1NlcnZpY2VUeXBlEhwKGFNFUlZJQ0VfVFlQRV9VTlNQRUNJRklFRBAAEhQKEFNFUlZJQ0VfVFlQRV9NQ1AQARIaChZTRVJWSUNFX1RZUEVfSU5GRVJFTkNFEAISFAoQU0VSVklDRV9UWVBFX0EyQRADEhcKE1NFUlZJQ0VfVFlQRV9FR1JFU1MQBEIbWhlnaXRodWIuY29tL2dvb2dsZS9zYW0vYXBpYgZwcm90bzM", [file_google_protobuf_timestamp]);
+  fileDesc("CglzYW0ucHJvdG8SBnNhbS52MSI0CglBdXRoRnJhbWUSDwoHYmlzY3VpdBgBIAEoDBIWCg50YXJnZXRfc2VydmljZRgCIAEoCSI/CgxBdXRoUmVzcG9uc2USDwoHc3VjY2VzcxgBIAEoCBINCgVlcnJvchgCIAEoCRIPCgdiaXNjdWl0GAMgASgMItYBCglNZXNoRXZlbnQSJAoEdHlwZRgBIAEoDjIWLnNhbS52MS5NZXNoRXZlbnQuVHlwZRIPCgdwZWVyX2lkGAIgASgJEi4KCmV2ZW50X3RpbWUYAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhYKDm5ld19wdWJsaWNfa2V5GAQgASgMEhEKCXNpZ25hdHVyZRgFIAEoDCI3CgRUeXBlEgoKBkJBTk5FRBAAEhAKDEtFWV9ST1RBVElPThABEhEKDVBPTElDWV9VUERBVEUQAiLzAQoNRW5yb2xsUmVxdWVzdBILCgNqd3QYASABKAkSDwoHcGVlcl9pZBgCIAEoCRISCgpwdWJsaWNfa2V5GAMgASgMEhYKDnJlcXVlc3RlZF9yb2xlGAQgASgJEjEKBmxhYmVscxgFIAMoCzIhLnNhbS52MS5FbnJvbGxSZXF1ZXN0LkxhYmVsc0VudHJ5EhkKEWNoYWxsZW5nZV91bml4X21zGAYgASgDEhsKE2NoYWxsZW5nZV9zaWduYXR1cmUYByABKAwaLQoLTGFiZWxzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ASKrAQoORW5yb2xsUmVzcG9uc2USFQoNYmlzY3VpdF90b2tlbhgBIAEoDBIVCg1lcnJvcl9tZXNzYWdlGAIgASgJEiAKGGNvbnRyb2xfcGxhbmVfcHVibGljX2tleRgDIAEoDBIYChByb3V0ZXJfYWRkcmVzc2VzGAQgAygJEi8KC2V4cGlyZV90aW1lGAUgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCKRAgoWQm9vdHN0cmFwRW5yb2xsUmVxdWVzdBIXCg9ib290c3RyYXBfdG9rZW4YASABKAkSDwoHcGVlcl9pZBgCIAEoCRISCgpwdWJsaWNfa2V5GAMgASgMEhYKDnJlcXVlc3RlZF9yb2xlGAQgASgJEjoKBmxhYmVscxgFIAMoCzIqLnNhbS52MS5Cb290c3RyYXBFbnJvbGxSZXF1ZXN0LkxhYmVsc0VudHJ5EhkKEWNoYWxsZW5nZV91bml4X21zGAYgASgDEhsKE2NoYWxsZW5nZV9zaWduYXR1cmUYByABKAwaLQoLTGFiZWxzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ASL9AQoXQm9vdHN0cmFwRW5yb2xsUmVzcG9uc2USKAoGc3RhdHVzGAEgASgOMhguc2FtLnYxLkVucm9sbG1lbnRTdGF0dXMSFQoNYmlzY3VpdF90b2tlbhgCIAEoDBIdChVwb2xsX2ludGVydmFsX3NlY29uZHMYAyABKAUSFQoNZXJyb3JfbWVzc2FnZRgEIAEoCRIgChhjb250cm9sX3BsYW5lX3B1YmxpY19rZXkYBSABKAwSGAoQcm91dGVyX2FkZHJlc3NlcxgGIAMoCRIvCgtleHBpcmVfdGltZRgHIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAiUwoLU2VydmljZUluZm8SIQoEdHlwZRgBIAEoDjITLnNhbS52MS5TZXJ2aWNlVHlwZRIMCgRuYW1lGAIgASgJEhMKC2Rlc2NyaXB0aW9uGAMgASgJInsKDkNvbW1hbmRCYWNrZW5kEg8KB2NvbW1hbmQYASADKAkSLAoDZW52GAIgAygLMh8uc2FtLnYxLkNvbW1hbmRCYWNrZW5kLkVudkVudHJ5GioKCEVudkVudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEiigEKFlJlZ2lzdGVyU2VydmljZVJlcXVlc3QSJAoHc2VydmljZRgBIAEoCzITLnNhbS52MS5TZXJ2aWNlSW5mbxIUCgp0YXJnZXRfdXJsGAIgASgJSAASKQoHY29tbWFuZBgDIAEoCzIWLnNhbS52MS5Db21tYW5kQmFja2VuZEgAQgkKB2JhY2tlbmQiaQoSRGlzY292ZXJlZFByb3ZpZGVyEg8KB3BlZXJfaWQYASABKAkSFwoPbG9jYWxfcHJveHlfdXJsGAIgASgJEhAKCHNydl9uYW1lGAMgASgJEhcKD3Nydl9kZXNjcmlwdGlvbhgEIAEoCSKyAgoPU2VydmljZUFubm91bmNlEg8KB3BlZXJfaWQYASABKAkSIQoEdHlwZRgCIAEoDjITLnNhbS52MS5TZXJ2aWNlVHlwZRIUCgxzZXJ2aWNlX25hbWUYAyABKAkSDAoEa2V5cxgEIAMoCRIzCgZsYWJlbHMYBSADKAsyIy5zYW0udjEuU2VydmljZUFubm91bmNlLkxhYmVsc0VudHJ5EhcKD2FjdGl2ZV9yZXF1ZXN0cxgGIAEoDRIXCg9sYXRlbmN5X2V3bWFfbXMYByABKAESMQoNYW5ub3VuY2VfdGltZRgIIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAaLQoLTGFiZWxzRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4ASKHAQoYQ29udHJvbFBsYW5lSW5mb1Jlc3BvbnNlEhMKC29pZGNfaXNzdWVyGAEgASgJEhEKCWNsaWVudF9pZBgCIAEoCRIQCghhdWRpZW5jZRgDIAEoCRIYChByb3V0ZXJfYWRkcmVzc2VzGAQgAygJEhcKD2Jhbm5lZF9wZWVyX2lkcxgFIAMoCSKsAQoSUm91dGVyTGVhc2VSZXF1ZXN0Eg8KB3BlZXJfaWQYASABKAkSEQoJYWRkcmVzc2VzGAIgAygJEg8KB2Jpc2N1aXQYAyABKAwSFwoPY29ubmVjdGVkX3BlZXJzGAQgAygJEhAKCGRodF9zaXplGAUgASgFEhkKEWNoYWxsZW5nZV91bml4X21zGAYgASgDEhsKE2NoYWxsZW5nZV9zaWduYXR1cmUYByABKAwiZgoTUm91dGVyTGVhc2VSZXNwb25zZRIPCgdzdWNjZXNzGAEgASgIEg0KBWVycm9yGAIgASgJEi8KC2V4cGlyZV90aW1lGAMgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCKeAQoKUG9saWN5Um9sZRIMCgRuYW1lGAEgASgJEhcKD2FsbG93ZWRfdGFyZ2V0cxgCIAMoCRIYChBhbGxvd2VkX3NlcnZpY2VzGAMgAygJEhYKDmN1c3RvbV9kYXRhbG9nGAQgAygJEhYKDmFsbG93ZWRfbGFiZWxzGAUgAygJEh8KBGh0dHAYBiADKAsyES5zYW0udjEuSFRUUEdyYW50IjwKCUhUVFBHcmFudBIPCgdzZXJ2aWNlGAEgASgJEg8KB21ldGhvZHMYAiADKAkSDQoFcGF0aHMYAyADKAkijwIKEUVncmVzc0Rlc3RpbmF0aW9uEgwKBG5hbWUYASABKAkSEgoKdGFyZ2V0X3VybBgCIAEoCRISCgpjcmVkZW50aWFsGAMgASgJEhEKCXNlcnZlZF9ieRgEIAMoCRIoCgZicm9rZXIYBSABKAsyGC5zYW0udjEuQ3JlZGVudGlhbEJyb2tlchImCgppbnNwZWN0aW9uGAYgASgLMhIuc2FtLnYxLkluc3BlY3Rpb24SIAoEbW9kZRgHIAEoDjISLnNhbS52MS5FZ3Jlc3NNb2RlEg0KBXBvcnRzGAggAygNEhUKDXByZXNlcnZlX2hvc3QYCSABKAgSFwoPZm9yd2FyZF9jb250ZXh0GAogASgIIjMKCkluc3BlY3Rpb24SJQoKaW5zcGVjdG9ycxgBIAMoCzIRLnNhbS52MS5JbnNwZWN0b3IiYwoJSW5zcGVjdG9yEikKC21vZGVsX2FybW9yGAEgASgLMhIuc2FtLnYxLk1vZGVsQXJtb3JIABIjCghleHRfcHJvYxgCIAEoCzIPLnNhbS52MS5FeHRQcm9jSABCBgoEa2luZCKLAQoKTW9kZWxBcm1vchIQCgh0ZW1wbGF0ZRgBIAEoCRIsCghyZXNwb25zZRgCIAEoDjIaLnNhbS52MS5SZXNwb25zZUluc3BlY3Rpb24SEQoJZmFpbF9vcGVuGAMgASgIEioKB3RpbWVvdXQYBCABKAsyGS5nb29nbGUucHJvdG9idWYuRHVyYXRpb24iggIKB0V4dFByb2MSDgoGdGFyZ2V0GAEgASgJEgoKAmNhGAIgASgJEhoKEmNsaWVudF9jZXJ0aWZpY2F0ZRgDIAEoCRI2Cg9wcm9jZXNzaW5nX21vZGUYBCABKAsyHS5zYW0udjEuRXh0UHJvY1Byb2Nlc3NpbmdNb2RlEhsKE2FsbG93X21vZGVfb3ZlcnJpZGUYBSABKAgSMgoPbWVzc2FnZV90aW1lb3V0GAYgASgLMhkuZ29vZ2xlLnByb3RvYnVmLkR1cmF0aW9uEhoKEmZhaWx1cmVfbW9kZV9hbGxvdxgHIAEoCBIaChJtYXhfYnVmZmVyZWRfYnl0ZXMYCCABKA0i2wQKFUV4dFByb2NQcm9jZXNzaW5nTW9kZRJFChNyZXF1ZXN0X2hlYWRlcl9tb2RlGAEgASgOMiguc2FtLnYxLkV4dFByb2NQcm9jZXNzaW5nTW9kZS5IZWFkZXJNb2RlEkYKFHJlc3BvbnNlX2hlYWRlcl9tb2RlGAIgASgOMiguc2FtLnYxLkV4dFByb2NQcm9jZXNzaW5nTW9kZS5IZWFkZXJNb2RlEkEKEXJlcXVlc3RfYm9keV9tb2RlGAMgASgOMiYuc2FtLnYxLkV4dFByb2NQcm9jZXNzaW5nTW9kZS5Cb2R5TW9kZRJCChJyZXNwb25zZV9ib2R5X21vZGUYBCABKA4yJi5zYW0udjEuRXh0UHJvY1Byb2Nlc3NpbmdNb2RlLkJvZHlNb2RlEkYKFHJlcXVlc3RfdHJhaWxlcl9tb2RlGAUgASgOMiguc2FtLnYxLkV4dFByb2NQcm9jZXNzaW5nTW9kZS5IZWFkZXJNb2RlEkcKFXJlc3BvbnNlX3RyYWlsZXJfbW9kZRgGIAEoDjIoLnNhbS52MS5FeHRQcm9jUHJvY2Vzc2luZ01vZGUuSGVhZGVyTW9kZSI5CgpIZWFkZXJNb2RlEhcKE0hFQURFUl9NT0RFX0RFRkFVTFQQABIICgRTRU5EEAESCAoEU0tJUBACImAKCEJvZHlNb2RlEggKBE5PTkUQABIMCghTVFJFQU1FRBABEgwKCEJVRkZFUkVEEAISFAoQQlVGRkVSRURfUEFSVElBTBADEhgKFEZVTExfRFVQTEVYX1NUUkVBTUVEEAQizwEKEENyZWRlbnRpYWxCcm9rZXISFwoNc3RhdGljX3NlY3JldBgBIAEoCUgAEjEKD29pZGNfZmVkZXJhdGlvbhgCIAEoCzIWLnNhbS52MS5PSURDRmVkZXJhdGlvbkgAEjAKD2F3c19hc3N1bWVfcm9sZRgDIAEoCzIVLnNhbS52MS5BV1NBc3N1bWVSb2xlSAASNQoRcGxhdGZvcm1faWRlbnRpdHkYBCABKAsyGC5zYW0udjEuUGxhdGZvcm1JZGVudGl0eUgAQgYKBGtpbmQiXwoOT0lEQ0ZlZGVyYXRpb24SFgoOdG9rZW5fZW5kcG9pbnQYASABKAkSEAoIYXVkaWVuY2UYAiABKAkSEwoLaW1wZXJzb25hdGUYAyABKAkSDgoGc2NvcGVzGAQgAygJIjkKDUFXU0Fzc3VtZVJvbGUSEAoIcm9sZV9hcm4YASABKAkSFgoOc2Vzc2lvbl9wb2xpY3kYAiABKAkiIgoQUGxhdGZvcm1JZGVudGl0eRIOCgZzY29wZXMYASADKAkiLgoNUG9saWN5QmluZGluZxIMCgRyb2xlGAEgASgJEg8KB21lbWJlcnMYAiADKAkihQEKDFBvbGljeUNvbmZpZxIhCgVyb2xlcxgBIAMoCzISLnNhbS52MS5Qb2xpY3lSb2xlEicKCGJpbmRpbmdzGAIgAygLMhUuc2FtLnYxLlBvbGljeUJpbmRpbmcSKQoGZWdyZXNzGAMgAygLMhkuc2FtLnYxLkVncmVzc0Rlc3RpbmF0aW9uIhgKFlBvbGljeUNvbmZpZ0dldFJlcXVlc3QiMAoXUG9saWN5Q29uZmlnR2V0UmVzcG9uc2USFQoNZGF0YWxvZ19ydWxlcxgBIAMoCSI8ChpQb2xpY3lDb25maWdVcGRhdGVSZXNwb25zZRIPCgdzdWNjZXNzGAEgASgIEg0KBWVycm9yGAIgASgJIhoKGEVncmVzc0Fzc2lnbm1lbnRzUmVxdWVzdCJGChlFZ3Jlc3NBc3NpZ25tZW50c1Jlc3BvbnNlEikKBmVncmVzcxgBIAMoCzIZLnNhbS52MS5FZ3Jlc3NEZXN0aW5hdGlvbiJmCgxLZXlzUmVzcG9uc2USEwoLcHVibGljX2tleXMYASADKAwSLQoJc2lnbl90aW1lGAIgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBISCgpzaWduYXR1cmVzGAMgAygMIl4KE1Rva2VuUmVmcmVzaFJlcXVlc3QSGwoTY2hhbGxlbmdlX3NpZ25hdHVyZRgBIAEoDBIZChFjaGFsbGVuZ2VfdW5peF9tcxgCIAEoAxIPCgdwZWVyX2lkGAMgASgJInUKFFRva2VuUmVmcmVzaFJlc3BvbnNlEhUKDWJpc2N1aXRfdG9rZW4YASABKAwSLwoLZXhwaXJlX3RpbWUYAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhUKDWVycm9yX21lc3NhZ2UYAyABKAkiOgoRTm9kZUNhdGFsb2dSZXBvcnQSJQoIc2VydmljZXMYASADKAsyEy5zYW0udjEuU2VydmljZUluZm8iJQoSVG9rZW5SZXZva2VSZXF1ZXN0Eg8KB3BlZXJfaWQYASABKAkiNQoTVG9rZW5SZXZva2VSZXNwb25zZRIPCgdzdWNjZXNzGAEgASgIEg0KBWVycm9yGAIgASgJIuQBChhJZGVudGl0eUV2aWRlbmNlUmVzcG9uc2USDwoHcGVlcl9pZBgBIAEoCRIPCgdiaXNjdWl0GAIgASgMEjcKE2Jpc2N1aXRfZXhwaXJlX3RpbWUYAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhkKEWNvbnRyb2xfcGxhbmVfdXJsGAQgASgJEiIKGnRydXN0ZWRfY29udHJvbF9wbGFuZV9rZXlzGAUgAygMEi4KCmNoZWNrX3RpbWUYBiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wIsACChRQZWVyRXZpZGVuY2VSZXNwb25zZRIPCgdwZWVyX2lkGAEgASgJEg8KB2Jpc2N1aXQYAiABKAwSFQoNdmVyaWZ5aW5nX2tleRgDIAEoDBINCgVyb2xlcxgEIAMoCRI4CgZsYWJlbHMYBSADKAsyKC5zYW0udjEuUGVlckV2aWRlbmNlUmVzcG9uc2UuTGFiZWxzRW50cnkSLwoLZXhwaXJlX3RpbWUYBiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEhYKDnJldm9jYXRpb25faWRzGAcgAygJEi4KCmNoZWNrX3RpbWUYCCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wGi0KC0xhYmVsc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEigAIKEE1lbWJlckNyZWRlbnRpYWwSGQoRY29udHJvbF9wbGFuZV91cmwYASABKAkSDwoHYmlzY3VpdBgCIAEoDBIvCgtleHBpcmVfdGltZRgDIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLwoMdHJ1c3RlZF9rZXlzGAQgAygLMhkuc2FtLnYxLlRydXN0ZWRTaWduaW5nS2V5EhkKEWlzc3VlZF91bmRlcl9rZXlzGAUgAygMEhgKEHJvdXRlcl9hZGRyZXNzZXMYBiADKAkSKQoMb2lkY19zZXNzaW9uGAcgASgLMhMuc2FtLnYxLk9JRENTZXNzaW9uIlkKEVRydXN0ZWRTaWduaW5nS2V5EhIKCnB1YmxpY19rZXkYASABKAwSMAoMcmVjZWl2ZV90aW1lGAIgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCJZCgtPSURDU2Vzc2lvbhIOCgZpc3N1ZXIYASABKAkSEQoJY2xpZW50X2lkGAIgASgJEhAKCGF1ZGllbmNlGAMgASgJEhUKDXJlZnJlc2hfdG9rZW4YBCABKAkijQEKFVRhc2tBdXRob3JpemF0aW9uUnVsZRIMCgRuYW1lGAEgASgJEhQKDGRpc3BsYXlfbmFtZRgCIAEoCRIfCgVydWxlcxgDIAMoCzIQLnNhbS52MS5UYXNrUnVsZRIvCgtleHBpcmVfdGltZRgEIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAifgoIVGFza1J1bGUSEwoLZGVzY3JpcHRpb24YASABKAkSGAoQYWxsb3dlZF9zZXJ2aWNlcxgCIAMoCRIoCglvcGVyYXRpb24YAyABKAsyFS5zYW0udjEuVGFza09wZXJhdGlvbhIZChFhbGxvd2VkX3Jlc291cmNlcxgEIAMoCSJzCg1UYXNrT3BlcmF0aW9uEhUKDWFsbG93ZWRfdG9vbHMYASADKAkSFwoPYWxsb3dlZF9tZXRob2RzGAIgAygJEhUKDWFsbG93ZWRfcGF0aHMYAyADKAkSGwoTYWxsb3dlZF9wZXJtaXNzaW9ucxgEIAMoCSKlAQoUVG9rZW5FeGNoYW5nZVJlcXVlc3QSFQoNc3ViamVjdF90b2tlbhgBIAEoCRIwCgl0YXNrX3J1bGUYAiABKAsyHS5zYW0udjEuVGFza0F1dGhvcml6YXRpb25SdWxlEgwKBHNlYWwYAyABKAgSGQoRY2hhbGxlbmdlX3VuaXhfbXMYBCABKAMSGwoTY2hhbGxlbmdlX3NpZ25hdHVyZRgFIAEoDCJ/ChVUb2tlbkV4Y2hhbmdlUmVzcG9uc2USFQoNYmlzY3VpdF90b2tlbhgBIAEoDBIvCgtleHBpcmVfdGltZRgCIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASDQoFcm9sZXMYAyADKAkSDwoHc3ViamVjdBgEIAEoCSKBAQoPU1RTVG9rZW5SZXF1ZXN0Eg8KB2Jpc2N1aXQYASABKAwSEwoLZGVzdGluYXRpb24YAiABKAkSEAoIYXVkaWVuY2UYAyABKAkSGQoRY2hhbGxlbmdlX3VuaXhfbXMYBCABKAMSGwoTY2hhbGxlbmdlX3NpZ25hdHVyZRgFIAEoDCKDAQoQU1RTVG9rZW5SZXNwb25zZRILCgNqd3QYASABKAkSLwoLZXhwaXJlX3RpbWUYAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEg8KB3N1YmplY3QYAyABKAkSDQoFcm9sZXMYBCADKAkSEQoJdGFza19uYW1lGAUgASgJIkYKE1Jldm9jYXRpb25zUmVzcG9uc2USFgoOcmV2b2NhdGlvbl9pZHMYASADKAkSFwoPYmFubmVkX3BlZXJfaWRzGAIgAygJKpQBChBFbnJvbGxtZW50U3RhdHVzEiEKHUVOUk9MTE1FTlRfU1RBVFVTX1VOU1BFQ0lGSUVEEAASHQoZRU5ST0xMTUVOVF9TVEFUVVNfUEVORElORxABEh4KGkVOUk9MTE1FTlRfU1RBVFVTX0FQUFJPVkVEEAISHgoaRU5ST0xMTUVOVF9TVEFUVVNfUkVKRUNURUQQAyqMAQoLU2VydmljZVR5cGUSHAoYU0VSVklDRV9UWVBFX1VOU1BFQ0lGSUVEEAASFAoQU0VSVklDRV9UWVBFX01DUBABEhoKFlNFUlZJQ0VfVFlQRV9JTkZFUkVOQ0UQAhIUChBTRVJWSUNFX1RZUEVfQTJBEAMSFwoTU0VSVklDRV9UWVBFX0VHUkVTUxAEKjcKCkVncmVzc01vZGUSFAoQRUdSRVNTX01PREVfSFRUUBAAEhMKD0VHUkVTU19NT0RFX1RDUBABKlwKElJlc3BvbnNlSW5zcGVjdGlvbhIgChxSRVNQT05TRV9JTlNQRUNUSU9OX0JVRkZFUkVEEAASJAogUkVTUE9OU0VfSU5TUEVDVElPTl9SRVFVRVNUX09OTFkQAUIbWhlnaXRodWIuY29tL2dvb2dsZS9zYW0vYXBpYgZwcm90bzM", [file_google_protobuf_duration, file_google_protobuf_timestamp]);
 
 /**
  * @generated from message sam.v1.AuthFrame
@@ -790,8 +790,8 @@ export type EgressDestination = Message<"sam.v1.EgressDestination"> & {
 
   /**
    * Name of the credential the serving node presents upstream, resolved by
-   * the node from its secrets directory. Never a value: secret material does
-   * not travel through this API.
+   * the node from its secrets directory. Shorthand for broker.static_secret.
+   * Never a value: secret material does not travel through this API.
    *
    * @generated from field: string credential = 3;
    */
@@ -807,6 +807,52 @@ export type EgressDestination = Message<"sam.v1.EgressDestination"> & {
    * @generated from field: repeated string served_by = 4;
    */
   servedBy: string[];
+
+  /**
+   * Pluggable credential broker for the destination.
+   *
+   * @generated from field: sam.v1.CredentialBroker broker = 5;
+   */
+  broker?: CredentialBroker | undefined;
+
+  /**
+   * Content inspection the egress node applies. Destination policy: a TAR
+   * cannot disable it or choose another inspector.
+   *
+   * @generated from field: sam.v1.Inspection inspection = 6;
+   */
+  inspection?: Inspection | undefined;
+
+  /**
+   * HTTP (default): the node terminates TLS, brokers the credential and
+   * inspects. TCP: a named CONNECT tunnel, L4 policy only.
+   *
+   * @generated from field: sam.v1.EgressMode mode = 7;
+   */
+  mode: EgressMode;
+
+  /**
+   * TCP mode: destination ports a tunnel may open. Empty denies every tunnel.
+   *
+   * @generated from field: repeated uint32 ports = 8;
+   */
+  ports: number[];
+
+  /**
+   * Keep the destination hostname in Host when target_url is an operator
+   * inspection chain that forwards to the real host.
+   *
+   * @generated from field: bool preserve_host = 9;
+   */
+  preserveHost: boolean;
+
+  /**
+   * Forward X-Sam-Principal, X-Sam-Roles and X-Sam-Task to target_url.
+   * Only for an operator chain; the node strips them for a real destination.
+   *
+   * @generated from field: bool forward_context = 10;
+   */
+  forwardContext: boolean;
 };
 
 /**
@@ -815,6 +861,407 @@ export type EgressDestination = Message<"sam.v1.EgressDestination"> & {
  */
 export const EgressDestinationSchema: GenMessage<EgressDestination> = /*@__PURE__*/
   messageDesc(file_sam, 17);
+
+/**
+ * Inspection lists the inspectors the egress node runs, in order; the first
+ * block wins. Inspectors run before the broker injects the destination
+ * credential, so a processor never sees it.
+ *
+ * @generated from message sam.v1.Inspection
+ */
+export type Inspection = Message<"sam.v1.Inspection"> & {
+  /**
+   * @generated from field: repeated sam.v1.Inspector inspectors = 1;
+   */
+  inspectors: Inspector[];
+};
+
+/**
+ * Describes the message sam.v1.Inspection.
+ * Use `create(InspectionSchema)` to create a new message.
+ */
+export const InspectionSchema: GenMessage<Inspection> = /*@__PURE__*/
+  messageDesc(file_sam, 18);
+
+/**
+ * @generated from message sam.v1.Inspector
+ */
+export type Inspector = Message<"sam.v1.Inspector"> & {
+  /**
+   * @generated from oneof sam.v1.Inspector.kind
+   */
+  kind: {
+    /**
+     * @generated from field: sam.v1.ModelArmor model_armor = 1;
+     */
+    value: ModelArmor;
+    case: "modelArmor";
+  } | {
+    /**
+     * @generated from field: sam.v1.ExtProc ext_proc = 2;
+     */
+    value: ExtProc;
+    case: "extProc";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message sam.v1.Inspector.
+ * Use `create(InspectorSchema)` to create a new message.
+ */
+export const InspectorSchema: GenMessage<Inspector> = /*@__PURE__*/
+  messageDesc(file_sam, 19);
+
+/**
+ * ModelArmor calls sanitizeUserPrompt / sanitizeModelResponse directly over
+ * HTTPS. Model Armor is reached as an egress destination with an
+ * oidc_federation broker, so no credential is stored for it.
+ *
+ * @generated from message sam.v1.ModelArmor
+ */
+export type ModelArmor = Message<"sam.v1.ModelArmor"> & {
+  /**
+   * projects/P/locations/L/templates/T. One template per destination; a
+   * destination that needs another template is declared as another
+   * EgressDestination.
+   *
+   * @generated from field: string template = 1;
+   */
+  template: string;
+
+  /**
+   * BUFFERED: the whole response is inspected before release and may be
+   * rewritten. REQUEST_ONLY: prompts are inspected, responses pass.
+   *
+   * @generated from field: sam.v1.ResponseInspection response = 2;
+   */
+  response: ResponseInspection;
+
+  /**
+   * Default false: an unreachable Model Armor fails the request.
+   *
+   * @generated from field: bool fail_open = 3;
+   */
+  failOpen: boolean;
+
+  /**
+   * @generated from field: google.protobuf.Duration timeout = 4;
+   */
+  timeout?: Duration | undefined;
+};
+
+/**
+ * Describes the message sam.v1.ModelArmor.
+ * Use `create(ModelArmorSchema)` to create a new message.
+ */
+export const ModelArmorSchema: GenMessage<ModelArmor> = /*@__PURE__*/
+  messageDesc(file_sam, 20);
+
+/**
+ * ExtProc runs an Envoy external processor (envoy.service.ext_proc.v3
+ * ExternalProcessor) over one bidirectional gRPC stream per request. Field
+ * names follow Envoy's ext_proc filter configuration so a processor's
+ * settings carry over unchanged.
+ *
+ * @generated from message sam.v1.ExtProc
+ */
+export type ExtProc = Message<"sam.v1.ExtProc"> & {
+  /**
+   * host:port, or unix:/path for a processor on the same host.
+   *
+   * @generated from field: string target = 1;
+   */
+  target: string;
+
+  /**
+   * Names in the node's secrets directory for mTLS to the processor: the CA
+   * bundle and the client certificate with its key. Never values.
+   *
+   * @generated from field: string ca = 2;
+   */
+  ca: string;
+
+  /**
+   * @generated from field: string client_certificate = 3;
+   */
+  clientCertificate: string;
+
+  /**
+   * @generated from field: sam.v1.ExtProcProcessingMode processing_mode = 4;
+   */
+  processingMode?: ExtProcProcessingMode | undefined;
+
+  /**
+   * Let the processor change the mode mid-request (Envoy allow_mode_override).
+   *
+   * @generated from field: bool allow_mode_override = 5;
+   */
+  allowModeOverride: boolean;
+
+  /**
+   * Per-message deadline; 200ms when unset, as in Envoy.
+   *
+   * @generated from field: google.protobuf.Duration message_timeout = 6;
+   */
+  messageTimeout?: Duration | undefined;
+
+  /**
+   * Default false: a processor error fails the request (Envoy failure_mode_allow).
+   *
+   * @generated from field: bool failure_mode_allow = 7;
+   */
+  failureModeAllow: boolean;
+
+  /**
+   * Upper bound for BUFFERED and BUFFERED_PARTIAL bodies.
+   *
+   * @generated from field: uint32 max_buffered_bytes = 8;
+   */
+  maxBufferedBytes: number;
+};
+
+/**
+ * Describes the message sam.v1.ExtProc.
+ * Use `create(ExtProcSchema)` to create a new message.
+ */
+export const ExtProcSchema: GenMessage<ExtProc> = /*@__PURE__*/
+  messageDesc(file_sam, 21);
+
+/**
+ * @generated from message sam.v1.ExtProcProcessingMode
+ */
+export type ExtProcProcessingMode = Message<"sam.v1.ExtProcProcessingMode"> & {
+  /**
+   * @generated from field: sam.v1.ExtProcProcessingMode.HeaderMode request_header_mode = 1;
+   */
+  requestHeaderMode: ExtProcProcessingMode_HeaderMode;
+
+  /**
+   * @generated from field: sam.v1.ExtProcProcessingMode.HeaderMode response_header_mode = 2;
+   */
+  responseHeaderMode: ExtProcProcessingMode_HeaderMode;
+
+  /**
+   * @generated from field: sam.v1.ExtProcProcessingMode.BodyMode request_body_mode = 3;
+   */
+  requestBodyMode: ExtProcProcessingMode_BodyMode;
+
+  /**
+   * @generated from field: sam.v1.ExtProcProcessingMode.BodyMode response_body_mode = 4;
+   */
+  responseBodyMode: ExtProcProcessingMode_BodyMode;
+
+  /**
+   * @generated from field: sam.v1.ExtProcProcessingMode.HeaderMode request_trailer_mode = 5;
+   */
+  requestTrailerMode: ExtProcProcessingMode_HeaderMode;
+
+  /**
+   * @generated from field: sam.v1.ExtProcProcessingMode.HeaderMode response_trailer_mode = 6;
+   */
+  responseTrailerMode: ExtProcProcessingMode_HeaderMode;
+};
+
+/**
+ * Describes the message sam.v1.ExtProcProcessingMode.
+ * Use `create(ExtProcProcessingModeSchema)` to create a new message.
+ */
+export const ExtProcProcessingModeSchema: GenMessage<ExtProcProcessingMode> = /*@__PURE__*/
+  messageDesc(file_sam, 22);
+
+/**
+ * @generated from enum sam.v1.ExtProcProcessingMode.HeaderMode
+ */
+export enum ExtProcProcessingMode_HeaderMode {
+  /**
+   * @generated from enum value: HEADER_MODE_DEFAULT = 0;
+   */
+  HEADER_MODE_DEFAULT = 0,
+
+  /**
+   * @generated from enum value: SEND = 1;
+   */
+  SEND = 1,
+
+  /**
+   * @generated from enum value: SKIP = 2;
+   */
+  SKIP = 2,
+}
+
+/**
+ * Describes the enum sam.v1.ExtProcProcessingMode.HeaderMode.
+ */
+export const ExtProcProcessingMode_HeaderModeSchema: GenEnum<ExtProcProcessingMode_HeaderMode> = /*@__PURE__*/
+  enumDesc(file_sam, 22, 0);
+
+/**
+ * @generated from enum sam.v1.ExtProcProcessingMode.BodyMode
+ */
+export enum ExtProcProcessingMode_BodyMode {
+  /**
+   * @generated from enum value: NONE = 0;
+   */
+  NONE = 0,
+
+  /**
+   * @generated from enum value: STREAMED = 1;
+   */
+  STREAMED = 1,
+
+  /**
+   * @generated from enum value: BUFFERED = 2;
+   */
+  BUFFERED = 2,
+
+  /**
+   * @generated from enum value: BUFFERED_PARTIAL = 3;
+   */
+  BUFFERED_PARTIAL = 3,
+
+  /**
+   * @generated from enum value: FULL_DUPLEX_STREAMED = 4;
+   */
+  FULL_DUPLEX_STREAMED = 4,
+}
+
+/**
+ * Describes the enum sam.v1.ExtProcProcessingMode.BodyMode.
+ */
+export const ExtProcProcessingMode_BodyModeSchema: GenEnum<ExtProcProcessingMode_BodyMode> = /*@__PURE__*/
+  enumDesc(file_sam, 22, 1);
+
+/**
+ * @generated from message sam.v1.CredentialBroker
+ */
+export type CredentialBroker = Message<"sam.v1.CredentialBroker"> & {
+  /**
+   * @generated from oneof sam.v1.CredentialBroker.kind
+   */
+  kind: {
+    /**
+     * Name of a file in the node's secrets directory ("TOKEN" or "user:pass").
+     *
+     * @generated from field: string static_secret = 1;
+     */
+    value: string;
+    case: "staticSecret";
+  } | {
+    /**
+     * @generated from field: sam.v1.OIDCFederation oidc_federation = 2;
+     */
+    value: OIDCFederation;
+    case: "oidcFederation";
+  } | {
+    /**
+     * @generated from field: sam.v1.AWSAssumeRole aws_assume_role = 3;
+     */
+    value: AWSAssumeRole;
+    case: "awsAssumeRole";
+  } | {
+    /**
+     * The node's own platform identity (GKE Workload Identity, instance
+     * metadata). Only for nodes that run inside the provider.
+     *
+     * @generated from field: sam.v1.PlatformIdentity platform_identity = 4;
+     */
+    value: PlatformIdentity;
+    case: "platformIdentity";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message sam.v1.CredentialBroker.
+ * Use `create(CredentialBrokerSchema)` to create a new message.
+ */
+export const CredentialBrokerSchema: GenMessage<CredentialBroker> = /*@__PURE__*/
+  messageDesc(file_sam, 23);
+
+/**
+ * OIDCFederation exchanges the control plane's JWT at a provider STS.
+ *
+ * @generated from message sam.v1.OIDCFederation
+ */
+export type OIDCFederation = Message<"sam.v1.OIDCFederation"> & {
+  /**
+   * Google: https://sts.googleapis.com/v1/token. Other providers: their RFC 8693 endpoint.
+   *
+   * @generated from field: string token_endpoint = 1;
+   */
+  tokenEndpoint: string;
+
+  /**
+   * The audience the provider expects, e.g. the Google workload or workforce
+   * pool provider resource name. One per destination.
+   *
+   * @generated from field: string audience = 2;
+   */
+  audience: string;
+
+  /**
+   * Optional service account to impersonate when the API does not accept the
+   * federated principal directly (Google iamcredentials.generateAccessToken).
+   *
+   * @generated from field: string impersonate = 3;
+   */
+  impersonate: string;
+
+  /**
+   * OAuth scopes requested for the destination credential; the TAR may narrow
+   * them further, never widen them.
+   *
+   * @generated from field: repeated string scopes = 4;
+   */
+  scopes: string[];
+};
+
+/**
+ * Describes the message sam.v1.OIDCFederation.
+ * Use `create(OIDCFederationSchema)` to create a new message.
+ */
+export const OIDCFederationSchema: GenMessage<OIDCFederation> = /*@__PURE__*/
+  messageDesc(file_sam, 24);
+
+/**
+ * @generated from message sam.v1.AWSAssumeRole
+ */
+export type AWSAssumeRole = Message<"sam.v1.AWSAssumeRole"> & {
+  /**
+   * @generated from field: string role_arn = 1;
+   */
+  roleArn: string;
+
+  /**
+   * Session policy template; the adapter intersects it with the TAR.
+   *
+   * @generated from field: string session_policy = 2;
+   */
+  sessionPolicy: string;
+};
+
+/**
+ * Describes the message sam.v1.AWSAssumeRole.
+ * Use `create(AWSAssumeRoleSchema)` to create a new message.
+ */
+export const AWSAssumeRoleSchema: GenMessage<AWSAssumeRole> = /*@__PURE__*/
+  messageDesc(file_sam, 25);
+
+/**
+ * @generated from message sam.v1.PlatformIdentity
+ */
+export type PlatformIdentity = Message<"sam.v1.PlatformIdentity"> & {
+  /**
+   * @generated from field: repeated string scopes = 1;
+   */
+  scopes: string[];
+};
+
+/**
+ * Describes the message sam.v1.PlatformIdentity.
+ * Use `create(PlatformIdentitySchema)` to create a new message.
+ */
+export const PlatformIdentitySchema: GenMessage<PlatformIdentity> = /*@__PURE__*/
+  messageDesc(file_sam, 26);
 
 /**
  * @generated from message sam.v1.PolicyBinding
@@ -836,7 +1283,7 @@ export type PolicyBinding = Message<"sam.v1.PolicyBinding"> & {
  * Use `create(PolicyBindingSchema)` to create a new message.
  */
 export const PolicyBindingSchema: GenMessage<PolicyBinding> = /*@__PURE__*/
-  messageDesc(file_sam, 18);
+  messageDesc(file_sam, 27);
 
 /**
  * PolicyConfig is the mesh policy as the operator writes it: roles and
@@ -868,7 +1315,7 @@ export type PolicyConfig = Message<"sam.v1.PolicyConfig"> & {
  * Use `create(PolicyConfigSchema)` to create a new message.
  */
 export const PolicyConfigSchema: GenMessage<PolicyConfig> = /*@__PURE__*/
-  messageDesc(file_sam, 19);
+  messageDesc(file_sam, 28);
 
 /**
  * @generated from message sam.v1.PolicyConfigGetRequest
@@ -881,7 +1328,7 @@ export type PolicyConfigGetRequest = Message<"sam.v1.PolicyConfigGetRequest"> & 
  * Use `create(PolicyConfigGetRequestSchema)` to create a new message.
  */
 export const PolicyConfigGetRequestSchema: GenMessage<PolicyConfigGetRequest> = /*@__PURE__*/
-  messageDesc(file_sam, 20);
+  messageDesc(file_sam, 29);
 
 /**
  * PolicyConfigGetResponse answers GET /policies for a mesh member holding a
@@ -904,7 +1351,7 @@ export type PolicyConfigGetResponse = Message<"sam.v1.PolicyConfigGetResponse"> 
  * Use `create(PolicyConfigGetResponseSchema)` to create a new message.
  */
 export const PolicyConfigGetResponseSchema: GenMessage<PolicyConfigGetResponse> = /*@__PURE__*/
-  messageDesc(file_sam, 21);
+  messageDesc(file_sam, 30);
 
 /**
  * @generated from message sam.v1.PolicyConfigUpdateResponse
@@ -926,7 +1373,7 @@ export type PolicyConfigUpdateResponse = Message<"sam.v1.PolicyConfigUpdateRespo
  * Use `create(PolicyConfigUpdateResponseSchema)` to create a new message.
  */
 export const PolicyConfigUpdateResponseSchema: GenMessage<PolicyConfigUpdateResponse> = /*@__PURE__*/
-  messageDesc(file_sam, 22);
+  messageDesc(file_sam, 31);
 
 /**
  * @generated from message sam.v1.EgressAssignmentsRequest
@@ -939,7 +1386,7 @@ export type EgressAssignmentsRequest = Message<"sam.v1.EgressAssignmentsRequest"
  * Use `create(EgressAssignmentsRequestSchema)` to create a new message.
  */
 export const EgressAssignmentsRequestSchema: GenMessage<EgressAssignmentsRequest> = /*@__PURE__*/
-  messageDesc(file_sam, 23);
+  messageDesc(file_sam, 32);
 
 /**
  * EgressAssignmentsResponse answers GET /egress for a mesh member holding a
@@ -961,7 +1408,7 @@ export type EgressAssignmentsResponse = Message<"sam.v1.EgressAssignmentsRespons
  * Use `create(EgressAssignmentsResponseSchema)` to create a new message.
  */
 export const EgressAssignmentsResponseSchema: GenMessage<EgressAssignmentsResponse> = /*@__PURE__*/
-  messageDesc(file_sam, 24);
+  messageDesc(file_sam, 33);
 
 /**
  * @generated from message sam.v1.KeysResponse
@@ -996,7 +1443,7 @@ export type KeysResponse = Message<"sam.v1.KeysResponse"> & {
  * Use `create(KeysResponseSchema)` to create a new message.
  */
 export const KeysResponseSchema: GenMessage<KeysResponse> = /*@__PURE__*/
-  messageDesc(file_sam, 25);
+  messageDesc(file_sam, 34);
 
 /**
  * @generated from message sam.v1.TokenRefreshRequest
@@ -1039,7 +1486,7 @@ export type TokenRefreshRequest = Message<"sam.v1.TokenRefreshRequest"> & {
  * Use `create(TokenRefreshRequestSchema)` to create a new message.
  */
 export const TokenRefreshRequestSchema: GenMessage<TokenRefreshRequest> = /*@__PURE__*/
-  messageDesc(file_sam, 26);
+  messageDesc(file_sam, 35);
 
 /**
  * @generated from message sam.v1.TokenRefreshResponse
@@ -1066,7 +1513,7 @@ export type TokenRefreshResponse = Message<"sam.v1.TokenRefreshResponse"> & {
  * Use `create(TokenRefreshResponseSchema)` to create a new message.
  */
 export const TokenRefreshResponseSchema: GenMessage<TokenRefreshResponse> = /*@__PURE__*/
-  messageDesc(file_sam, 27);
+  messageDesc(file_sam, 36);
 
 /**
  * NodeCatalogReport is the body of POST /nodes/catalog: a node's
@@ -1088,7 +1535,7 @@ export type NodeCatalogReport = Message<"sam.v1.NodeCatalogReport"> & {
  * Use `create(NodeCatalogReportSchema)` to create a new message.
  */
 export const NodeCatalogReportSchema: GenMessage<NodeCatalogReport> = /*@__PURE__*/
-  messageDesc(file_sam, 28);
+  messageDesc(file_sam, 37);
 
 /**
  * @generated from message sam.v1.TokenRevokeRequest
@@ -1105,7 +1552,7 @@ export type TokenRevokeRequest = Message<"sam.v1.TokenRevokeRequest"> & {
  * Use `create(TokenRevokeRequestSchema)` to create a new message.
  */
 export const TokenRevokeRequestSchema: GenMessage<TokenRevokeRequest> = /*@__PURE__*/
-  messageDesc(file_sam, 29);
+  messageDesc(file_sam, 38);
 
 /**
  * @generated from message sam.v1.TokenRevokeResponse
@@ -1127,7 +1574,7 @@ export type TokenRevokeResponse = Message<"sam.v1.TokenRevokeResponse"> & {
  * Use `create(TokenRevokeResponseSchema)` to create a new message.
  */
 export const TokenRevokeResponseSchema: GenMessage<TokenRevokeResponse> = /*@__PURE__*/
-  messageDesc(file_sam, 30);
+  messageDesc(file_sam, 39);
 
 /**
  * @generated from message sam.v1.IdentityEvidenceResponse
@@ -1171,7 +1618,7 @@ export type IdentityEvidenceResponse = Message<"sam.v1.IdentityEvidenceResponse"
  * Use `create(IdentityEvidenceResponseSchema)` to create a new message.
  */
 export const IdentityEvidenceResponseSchema: GenMessage<IdentityEvidenceResponse> = /*@__PURE__*/
-  messageDesc(file_sam, 31);
+  messageDesc(file_sam, 40);
 
 /**
  * @generated from message sam.v1.PeerEvidenceResponse
@@ -1227,7 +1674,7 @@ export type PeerEvidenceResponse = Message<"sam.v1.PeerEvidenceResponse"> & {
  * Use `create(PeerEvidenceResponseSchema)` to create a new message.
  */
 export const PeerEvidenceResponseSchema: GenMessage<PeerEvidenceResponse> = /*@__PURE__*/
-  messageDesc(file_sam, 32);
+  messageDesc(file_sam, 41);
 
 /**
  * @generated from message sam.v1.MemberCredential
@@ -1292,7 +1739,7 @@ export type MemberCredential = Message<"sam.v1.MemberCredential"> & {
  * Use `create(MemberCredentialSchema)` to create a new message.
  */
 export const MemberCredentialSchema: GenMessage<MemberCredential> = /*@__PURE__*/
-  messageDesc(file_sam, 33);
+  messageDesc(file_sam, 42);
 
 /**
  * @generated from message sam.v1.TrustedSigningKey
@@ -1319,7 +1766,7 @@ export type TrustedSigningKey = Message<"sam.v1.TrustedSigningKey"> & {
  * Use `create(TrustedSigningKeySchema)` to create a new message.
  */
 export const TrustedSigningKeySchema: GenMessage<TrustedSigningKey> = /*@__PURE__*/
-  messageDesc(file_sam, 34);
+  messageDesc(file_sam, 43);
 
 /**
  * @generated from message sam.v1.OIDCSession
@@ -1351,7 +1798,7 @@ export type OIDCSession = Message<"sam.v1.OIDCSession"> & {
  * Use `create(OIDCSessionSchema)` to create a new message.
  */
 export const OIDCSessionSchema: GenMessage<OIDCSession> = /*@__PURE__*/
-  messageDesc(file_sam, 35);
+  messageDesc(file_sam, 44);
 
 /**
  * TaskAuthorizationRule narrows a credential's authority for a specific task or
@@ -1395,7 +1842,7 @@ export type TaskAuthorizationRule = Message<"sam.v1.TaskAuthorizationRule"> & {
  * Use `create(TaskAuthorizationRuleSchema)` to create a new message.
  */
 export const TaskAuthorizationRuleSchema: GenMessage<TaskAuthorizationRule> = /*@__PURE__*/
-  messageDesc(file_sam, 36);
+  messageDesc(file_sam, 45);
 
 /**
  * @generated from message sam.v1.TaskRule
@@ -1439,7 +1886,7 @@ export type TaskRule = Message<"sam.v1.TaskRule"> & {
  * Use `create(TaskRuleSchema)` to create a new message.
  */
 export const TaskRuleSchema: GenMessage<TaskRule> = /*@__PURE__*/
-  messageDesc(file_sam, 37);
+  messageDesc(file_sam, 46);
 
 /**
  * @generated from message sam.v1.TaskOperation
@@ -1481,7 +1928,7 @@ export type TaskOperation = Message<"sam.v1.TaskOperation"> & {
  * Use `create(TaskOperationSchema)` to create a new message.
  */
 export const TaskOperationSchema: GenMessage<TaskOperation> = /*@__PURE__*/
-  messageDesc(file_sam, 38);
+  messageDesc(file_sam, 47);
 
 /**
  * TokenExchangeRequest is the body of POST /token/exchange on the control
@@ -1539,7 +1986,7 @@ export type TokenExchangeRequest = Message<"sam.v1.TokenExchangeRequest"> & {
  * Use `create(TokenExchangeRequestSchema)` to create a new message.
  */
 export const TokenExchangeRequestSchema: GenMessage<TokenExchangeRequest> = /*@__PURE__*/
-  messageDesc(file_sam, 39);
+  messageDesc(file_sam, 48);
 
 /**
  * @generated from message sam.v1.TokenExchangeResponse
@@ -1571,7 +2018,7 @@ export type TokenExchangeResponse = Message<"sam.v1.TokenExchangeResponse"> & {
  * Use `create(TokenExchangeResponseSchema)` to create a new message.
  */
 export const TokenExchangeResponseSchema: GenMessage<TokenExchangeResponse> = /*@__PURE__*/
-  messageDesc(file_sam, 40);
+  messageDesc(file_sam, 49);
 
 /**
  * STSTokenRequest is the body of POST /sts/token on the control plane: an
@@ -1625,7 +2072,7 @@ export type STSTokenRequest = Message<"sam.v1.STSTokenRequest"> & {
  * Use `create(STSTokenRequestSchema)` to create a new message.
  */
 export const STSTokenRequestSchema: GenMessage<STSTokenRequest> = /*@__PURE__*/
-  messageDesc(file_sam, 41);
+  messageDesc(file_sam, 50);
 
 /**
  * @generated from message sam.v1.STSTokenResponse
@@ -1662,7 +2109,7 @@ export type STSTokenResponse = Message<"sam.v1.STSTokenResponse"> & {
  * Use `create(STSTokenResponseSchema)` to create a new message.
  */
 export const STSTokenResponseSchema: GenMessage<STSTokenResponse> = /*@__PURE__*/
-  messageDesc(file_sam, 42);
+  messageDesc(file_sam, 51);
 
 /**
  * RevocationsResponse answers GET /revocations on the control plane: the set of
@@ -1688,7 +2135,7 @@ export type RevocationsResponse = Message<"sam.v1.RevocationsResponse"> & {
  * Use `create(RevocationsResponseSchema)` to create a new message.
  */
 export const RevocationsResponseSchema: GenMessage<RevocationsResponse> = /*@__PURE__*/
-  messageDesc(file_sam, 43);
+  messageDesc(file_sam, 52);
 
 /**
  * @generated from enum sam.v1.EnrollmentStatus
@@ -1761,4 +2208,46 @@ export enum ServiceType {
  */
 export const ServiceTypeSchema: GenEnum<ServiceType> = /*@__PURE__*/
   enumDesc(file_sam, 1);
+
+/**
+ * @generated from enum sam.v1.EgressMode
+ */
+export enum EgressMode {
+  /**
+   * @generated from enum value: EGRESS_MODE_HTTP = 0;
+   */
+  HTTP = 0,
+
+  /**
+   * @generated from enum value: EGRESS_MODE_TCP = 1;
+   */
+  TCP = 1,
+}
+
+/**
+ * Describes the enum sam.v1.EgressMode.
+ */
+export const EgressModeSchema: GenEnum<EgressMode> = /*@__PURE__*/
+  enumDesc(file_sam, 2);
+
+/**
+ * @generated from enum sam.v1.ResponseInspection
+ */
+export enum ResponseInspection {
+  /**
+   * @generated from enum value: RESPONSE_INSPECTION_BUFFERED = 0;
+   */
+  BUFFERED = 0,
+
+  /**
+   * @generated from enum value: RESPONSE_INSPECTION_REQUEST_ONLY = 1;
+   */
+  REQUEST_ONLY = 1,
+}
+
+/**
+ * Describes the enum sam.v1.ResponseInspection.
+ */
+export const ResponseInspectionSchema: GenEnum<ResponseInspection> = /*@__PURE__*/
+  enumDesc(file_sam, 3);
 

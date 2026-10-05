@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package envoy.config.core.v3;
+
+option go_package = "github.com/google/sam/third_party/envoy/envoy/config/core/v3;corev3";
+
+import "google/protobuf/any.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/wrappers.proto";
+
+message HeaderValue {
+  string key = 1;
+  string value = 2;
+  bytes raw_value = 3;
+}
+
+message HeaderValueOption {
+  enum HeaderAppendAction {
+    APPEND_IF_EXISTS_OR_ADD = 0;
+    ADD_IF_ABSENT = 1;
+    OVERWRITE_IF_EXISTS_OR_ADD = 2;
+    OVERWRITE_IF_EXISTS = 3;
+  }
+
+  HeaderValue header = 1;
+  google.protobuf.BoolValue append = 2;
+  HeaderAppendAction append_action = 3;
+  bool keep_empty_value = 4;
+}
+
+message HeaderMap {
+  repeated HeaderValue headers = 1;
+}
+
+message Metadata {
+  map<string, google.protobuf.Struct> filter_metadata = 1;
+  map<string, google.protobuf.Any> typed_filter_metadata = 2;
+}

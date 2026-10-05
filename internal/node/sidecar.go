@@ -126,15 +126,24 @@ func StartSidecarServer(node *SamNode, addr, socketPath, token, certFile, keyFil
 
 	// Mount MCP handler
 	mcpHandler := NewMCPHandler(node)
+	mux.Handle(ExtProcMethodPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handleGatewayExtProc(node, w, r)
+	}))
 	mux.Handle("/", withCallerOrTokenAuth(node, token, true, withMeshConnection(node, mcpHandler)))
 
+	var protocols http.Protocols
+	protocols.SetHTTP1(true)
+	protocols.SetHTTP2(true)
+	protocols.SetUnencryptedHTTP2(true)
+
 	server := &http.Server{
-		Handler: observeRequests(mux),
+		Handler: observeRequests(withConnectTunnel(node, token, mux)),
 		// Bound header-read time only: bodies/responses can legitimately stream
 		// (MCP sessions, inference completions), so no ReadTimeout/WriteTimeout.
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		ConnContext:       markLocalSocketConn,
+		Protocols:         &protocols,
 	}
 
 	if addr == "" && socketPath == "" {

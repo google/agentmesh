@@ -145,7 +145,7 @@ func NewServer(config Options, store storage.Store) (*Server, error) {
 			return nil, fmt.Errorf("failed to initialize OIDC signer: %w", err)
 		}
 	}
-	stsLimiter, err := ratelimit.NewPeerRateLimiter(1000)
+	stsLimiter, err := ratelimit.NewPeerRateLimiterWithRate(1000, config.STSRateLimit, config.STSRateBurst)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize STS rate limiter: %w", err)
 	}

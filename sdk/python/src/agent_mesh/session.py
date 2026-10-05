@@ -39,8 +39,9 @@ from ._proto import circuit_pb2 as circuit
 from ._proto import sam_pb2 as pb
 from .auth import AUTH_PROTOCOL, auth_stream_handler, authenticate_with_peer
 from .authorizer import ProviderAuthorizerOptions
-from .biscuit import ROLE_ROUTER, VerifiedBiscuit, require_role
+from .biscuit import ROLE_ROUTER, VerifiedBiscuit, attenuate_biscuit, require_role, seal_biscuit
 from .controlplane import ROLE_NODE
+from .credential import encode_auth_frame
 from .discovery import DiscoveredProvider, find_peer, find_providers, parse_service_target, service_key
 from .host import create_mesh_host, dial, dial_addrs, peer_info
 from .identity import canonical_peer_id
@@ -162,10 +163,29 @@ class MeshSession:
     _sync_trigger: trio.Event = field(default_factory=trio.Event, repr=False)
     # Peers verified as enrolled and holding the floor, until when; misses are never kept.
     _egress_verdicts: dict[str, float] = field(default_factory=dict, repr=False)
+    _task_biscuit: Optional[bytes] = field(default=None, repr=False)
 
     @property
     def peer_id(self) -> str:
         return str(self.host.get_id())
+
+    @property
+    def biscuit(self) -> bytes:
+        """The Biscuit presented on outbound service calls (task-attenuated when derived via attenuate())."""
+        return self._task_biscuit if self._task_biscuit is not None else self.mesh.credential.biscuit
+
+    def attenuate(self, rule: pb.TaskAuthorizationRule) -> "MeshSession":
+        """Returns a task-scoped MeshSession view sharing the underlying libp2p host
+        whose outbound MCP and HTTP service calls carry a Biscuit attenuated offline
+        in memory with rule."""
+        next_biscuit = attenuate_biscuit(self.biscuit, rule, self.mesh.credential.control_plane_keys)
+        return replace(self, _task_biscuit=next_biscuit)
+
+    def seal(self) -> "MeshSession":
+        """Returns a MeshSession view whose outbound Biscuit is sealed so downstream
+        holders cannot append any further blocks."""
+        sealed = seal_biscuit(self.biscuit, self.mesh.credential.control_plane_keys)
+        return replace(self, _task_biscuit=sealed)
 
     @staticmethod
     def mesh_url(peer_id: str, target_service: str, path: str = "") -> str:
@@ -382,7 +402,7 @@ class MeshSession:
         @asynccontextmanager
         async def opened() -> AsyncIterator[tuple[ClientSession, VerifiedBiscuit]]:
             peer_id = await self.connect(peer)
-            frame = self.mesh.auth_frame(target_service)
+            frame = encode_auth_frame(self.biscuit, target_service)
             async with open_mcp_session(
                 self.host, peer_id, frame, self.mesh.credential.control_plane_keys, required_labels=required_labels, egress_require_labels=self.egress_require_labels
             ) as opened_session:
@@ -540,7 +560,7 @@ class MeshSession:
         the way sam-node's egress proxy does for /sam/<peer>/<type>/<name>/<path>."""
         peer_id = await self._egress_peer(peer)
         return await http_request_over_stream(
-            self.host, peer_id, self.mesh.credential.biscuit, target_service, path, method=method, headers=headers, body=body
+            self.host, peer_id, self.biscuit, target_service, path, method=method, headers=headers, body=body
         )
 
     async def _egress_peer(self, peer: Peer) -> ID:

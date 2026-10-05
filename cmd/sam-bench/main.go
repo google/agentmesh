@@ -148,7 +148,7 @@ func main() {
 	if err := runCmd.MarkFlagRequired("target"); err != nil {
 		panic(err)
 	}
-	rootCmd.AddCommand(runCmd, newReportCmd())
+	rootCmd.AddCommand(runCmd, newReportCmd(), newSTSCmd())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -157,6 +157,42 @@ func main() {
 		fmt.Fprintf(os.Stderr, "sam-bench: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func newSTSCmd() *cobra.Command {
+	var (
+		opts bench.STSOptions
+		out  string
+	)
+	cmd := &cobra.Command{
+		Use:          "sts",
+		Short:        "Measure Control Plane /token/exchange and /sts/token throughput, latency, and node cache hit rates",
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			rep, err := bench.RunSTS(cmd.Context(), opts)
+			if err != nil {
+				return err
+			}
+			encoded, err := json.MarshalIndent(rep, "", "  ")
+			if err != nil {
+				return err
+			}
+			encoded = append(encoded, '\n')
+			if out == "" {
+				_, err = os.Stdout.Write(encoded)
+				return err
+			}
+			return os.WriteFile(out, encoded, 0o600)
+		},
+	}
+	flags := cmd.Flags()
+	flags.IntVar(&opts.Requests, "requests", 100, "Requests to issue per phase")
+	flags.IntVar(&opts.Concurrency, "concurrency", 4, "Concurrent workers")
+	flags.IntVar(&opts.Warmup, "warmup", 10, "Warmup requests before uncached phases")
+	flags.IntVar(&opts.Workloads, "workloads", 8, "Simulated active workloads on the node")
+	flags.IntVar(&opts.RequestsPerMinute, "requests-per-minute", 60, "Per-workload request rate for 5m SVID and 1h projected token cache simulation")
+	flags.StringVar(&out, "out", "", "File to write the JSON report to; default stdout")
+	return cmd
 }
 
 // scrapeAll records every endpoint, refusing to continue if one is missing:

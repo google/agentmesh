@@ -22,5 +22,10 @@ go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
 echo "Generating Go protobuf code..."
 mkdir -p api
 protoc --go_out=paths=source_relative:. api/sam.proto
+protoc -I third_party/envoy --go_out=paths=source_relative:third_party/envoy \
+  third_party/envoy/envoy/type/v3/http_status.proto \
+  third_party/envoy/envoy/config/core/v3/base.proto \
+  third_party/envoy/envoy/extensions/filters/http/ext_proc/v3/processing_mode.proto \
+  third_party/envoy/envoy/service/ext_proc/v3/external_processor.proto
 
 echo "Protobuf generation complete."

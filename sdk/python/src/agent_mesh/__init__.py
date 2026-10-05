@@ -16,7 +16,7 @@
 
 from .auth import AUTH_PROTOCOL, MCP_PROTOCOL, AuthRejectedError, auth_stream_handler, authenticate_with_peer
 from .authorizer import BASELINE_DATALOG, AuthorizationError, AuthorizeRequest, ProviderAuthorizerOptions, authorize_caller
-from .biscuit import ROLE_ROUTER, BiscuitVerificationError, VerifiedBiscuit, attenuate_biscuit, require_role, verify_peer_biscuit
+from .biscuit import ROLE_ROUTER, BiscuitVerificationError, VerifiedBiscuit, attenuate_biscuit, require_role, seal_biscuit, verify_peer_biscuit
 from .challenges import enroll_challenge, enroll_status_challenge, refresh_challenge, register_challenge
 from .controlplane import (
     ROLE_NODE,
@@ -153,6 +153,7 @@ __all__ = [
     "require_labels",
     "require_role",
     "reserve_relay",
+    "seal_biscuit",
     "service_key",
     "rewrite_agent_card",
     "split_mesh_url",

@@ -565,3 +565,65 @@ test("an egress floor stated at join is held on the HTTP path, and the provider 
     await Promise.all([...sessions.map((s) => s.close()), provider.stop(), impostor.stop(), notANode.stop()]);
   }
 });
+
+test("session.attenuate and session.seal narrow outbound requests across hops and forbid further attenuation", async () => {
+  const identity = Identity.generate();
+  const providerBiscuit = mint(identity.peerId, ROLE_NODE);
+  const provider = await createLibp2p({
+    privateKey: privateKeyFromProtobuf(identity.toLibp2pPrivateKey()),
+    addresses: { listen: ["/ip4/127.0.0.1/tcp/0"] },
+    transports: [tcp()],
+    connectionEncrypters: [tls()],
+    streamMuxers: [yamux()],
+    services: { identify: identify() },
+  });
+  await provider.handle(AUTH_PROTOCOL, authStreamHandler({ ownBiscuit: () => providerBiscuit, trustedKeys: () => [cpKey] }), AUTH_HANDLER_OPTIONS);
+  await provider.handle(
+    HTTP_PROTOCOL,
+    httpIngressHandler(a2aEndpoint({ handler: () => Response.json({ ok: true }) }), {
+      ownBiscuit: () => providerBiscuit,
+      trustedKeys: () => [cpKey],
+      policyRules: () => POLICY_RULES,
+    }),
+    HTTP_HANDLER_OPTIONS,
+  );
+  const providerAddr = (provider.getMultiaddrs()[0] as ReturnType<typeof multiaddr>).toString();
+
+  const mesh = await AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", bootstrapToken: "sbt", fetch: fakeControlPlane([routerAddr]) });
+  const credAtt = await mesh.credential.attenuate!({
+    name: "tasks/cred-hop",
+    rules: [{ allowedServices: ["a2a://agent"], operation: { allowedMethods: ["GET"], allowedPaths: ["/v1/*"] } }],
+  });
+  const credSealed = await credAtt.seal!();
+  await assert.rejects(
+    credSealed.attenuate!({ name: "tasks/after-seal", rules: [{ allowedServices: ["a2a://agent"] }] }),
+    BiscuitVerificationError,
+  );
+
+  const session = await mesh.join({ refreshLeadMs: 0, reserveRelay: false });
+  try {
+    const hop1 = await session.attenuate({
+      name: "tasks/hop-1",
+      rules: [{ allowedServices: ["a2a://agent"], operation: { allowedMethods: ["GET", "POST"], allowedPaths: ["/v1/*"] } }],
+    });
+    const hop2 = await (
+      await hop1.attenuate({
+        name: "tasks/hop-2",
+        rules: [{ allowedServices: ["a2a://agent"], operation: { allowedMethods: ["GET"], allowedPaths: ["/v1/allowed"] } }],
+      })
+    ).seal();
+
+    assert.equal((await hop2.request(providerAddr, "a2a://agent", "/v1/allowed")).status, 200);
+    assert.equal((await hop2.request(providerAddr, "a2a://agent", "/v1/denied")).status, 403);
+    assert.equal((await hop2.request(providerAddr, "a2a://agent", "/v1/allowed", { method: "POST" })).status, 403);
+    await assert.rejects(
+      hop2.attenuate({ name: "tasks/hop-3", rules: [{ allowedServices: ["a2a://agent"] }] }),
+      BiscuitVerificationError,
+    );
+    await hop2.close();
+    // Closing the derived task view leaves the parent session open.
+    assert.equal((await session.request(providerAddr, "a2a://agent", "/v2/anything")).status, 200);
+  } finally {
+    await Promise.all([session.close(), provider.stop()]);
+  }
+});

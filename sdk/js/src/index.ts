@@ -30,11 +30,14 @@ export {
   type RefreshResult,
 } from "./controlplane.ts";
 export {
+  attenuateCredential,
   credentialFromJSON,
   credentialTimeToLiveSeconds,
   credentialToJSON,
   decodeAuthResponse,
   encodeAuthFrame,
+  sealCredential,
+  withCredentialMethods,
   type MeshCredential,
 } from "./credential.ts";
 export { enrollChallenge, enrollStatusChallenge, refreshChallenge, registerChallenge } from "./challenges.ts";

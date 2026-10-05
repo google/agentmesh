@@ -158,6 +158,7 @@ testnet:
 
 test:
 	CGO_ENABLED=1 go test -v -race -count 1 $(if $(WHAT),-run $(WHAT)) ./...
+	cd tests/extproc && CGO_ENABLED=1 go test -v -race -count 1 $(if $(WHAT),-run $(WHAT)) ./...
 
 e2e-test: build docker-build
 	bats -j 10 --verbose-run $(if $(WHAT),--filter "$(WHAT)") tests/e2e/

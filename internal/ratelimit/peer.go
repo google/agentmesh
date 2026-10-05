@@ -32,16 +32,35 @@ const (
 // PeerRateLimiter tracks rate limits per peer using an LRU cache.
 type PeerRateLimiter struct {
 	cache *lru.Cache[string, *rate.Limiter]
+	limit rate.Limit
+	burst int
 	mu    sync.Mutex
 }
 
-// NewPeerRateLimiter creates a new PeerRateLimiter with specified cache size.
+// NewPeerRateLimiter creates a new PeerRateLimiter with specified cache size
+// and the default pre-authentication peer rate limit and burst.
 func NewPeerRateLimiter(size int) (*PeerRateLimiter, error) {
+	return NewPeerRateLimiterWithRate(size, PeerRateLimit, PeerBurst)
+}
+
+// NewPeerRateLimiterWithRate creates a new PeerRateLimiter with specified cache
+// size, rate limit (requests/sec), and burst size.
+func NewPeerRateLimiterWithRate(size int, limit float64, burst int) (*PeerRateLimiter, error) {
 	cache, err := lru.New[string, *rate.Limiter](size)
 	if err != nil {
 		return nil, err
 	}
-	return &PeerRateLimiter{cache: cache}, nil
+	if limit <= 0 {
+		limit = PeerRateLimit
+	}
+	if burst <= 0 {
+		burst = PeerBurst
+	}
+	return &PeerRateLimiter{
+		cache: cache,
+		limit: rate.Limit(limit),
+		burst: burst,
+	}, nil
 }
 
 // Allow checks if the peer is allowed to perform an action.
@@ -51,7 +70,7 @@ func (prl *PeerRateLimiter) Allow(peerID string) bool {
 
 	limiter, ok := prl.cache.Get(peerID)
 	if !ok {
-		limiter = rate.NewLimiter(rate.Limit(PeerRateLimit), PeerBurst)
+		limiter = rate.NewLimiter(prl.limit, prl.burst)
 		prl.cache.Add(peerID, limiter)
 		return limiter.Allow()
 	}

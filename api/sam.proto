@@ -16,6 +16,7 @@ syntax = "proto3";
 package sam.v1;
 option go_package = "github.com/google/sam/api";
 
+import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 
 
@@ -257,8 +258,8 @@ message EgressDestination {
   // empty. Must not carry a credential.
   string target_url = 2;
   // Name of the credential the serving node presents upstream, resolved by
-  // the node from its secrets directory. Never a value: secret material does
-  // not travel through this API.
+  // the node from its secrets directory. Shorthand for broker.static_secret.
+  // Never a value: secret material does not travel through this API.
   string credential = 3;
   // Role names or key=value labels selecting the nodes that serve this
   // destination. A node matches when any entry names one of its roles or
@@ -266,6 +267,142 @@ message EgressDestination {
   // nodes, so the serving node authorizes local requests with its own
   // credential; other callers need the grant on their own role.
   repeated string served_by = 4;
+  // Pluggable credential broker for the destination.
+  CredentialBroker broker = 5;
+  // Content inspection the egress node applies. Destination policy: a TAR
+  // cannot disable it or choose another inspector.
+  Inspection inspection = 6;
+  // HTTP (default): the node terminates TLS, brokers the credential and
+  // inspects. TCP: a named CONNECT tunnel, L4 policy only.
+  EgressMode mode = 7;
+  // TCP mode: destination ports a tunnel may open. Empty denies every tunnel.
+  repeated uint32 ports = 8;
+  // Keep the destination hostname in Host when target_url is an operator
+  // inspection chain that forwards to the real host.
+  bool preserve_host = 9;
+  // Forward X-Sam-Principal, X-Sam-Roles and X-Sam-Task to target_url.
+  // Only for an operator chain; the node strips them for a real destination.
+  bool forward_context = 10;
+}
+
+enum EgressMode {
+  EGRESS_MODE_HTTP = 0;
+  EGRESS_MODE_TCP = 1;
+}
+
+// Inspection lists the inspectors the egress node runs, in order; the first
+// block wins. Inspectors run before the broker injects the destination
+// credential, so a processor never sees it.
+message Inspection {
+  repeated Inspector inspectors = 1;
+}
+
+message Inspector {
+  oneof kind {
+    ModelArmor model_armor = 1;
+    ExtProc ext_proc = 2;
+  }
+}
+
+// ModelArmor calls sanitizeUserPrompt / sanitizeModelResponse directly over
+// HTTPS. Model Armor is reached as an egress destination with an
+// oidc_federation broker, so no credential is stored for it.
+message ModelArmor {
+  // projects/P/locations/L/templates/T. One template per destination; a
+  // destination that needs another template is declared as another
+  // EgressDestination.
+  string template = 1;
+  // BUFFERED: the whole response is inspected before release and may be
+  // rewritten. REQUEST_ONLY: prompts are inspected, responses pass.
+  ResponseInspection response = 2;
+  // Default false: an unreachable Model Armor fails the request.
+  bool fail_open = 3;
+  google.protobuf.Duration timeout = 4;
+}
+
+enum ResponseInspection {
+  RESPONSE_INSPECTION_BUFFERED = 0;
+  RESPONSE_INSPECTION_REQUEST_ONLY = 1;
+}
+
+// ExtProc runs an Envoy external processor (envoy.service.ext_proc.v3
+// ExternalProcessor) over one bidirectional gRPC stream per request. Field
+// names follow Envoy's ext_proc filter configuration so a processor's
+// settings carry over unchanged.
+message ExtProc {
+  // host:port, or unix:/path for a processor on the same host.
+  string target = 1;
+  // Names in the node's secrets directory for mTLS to the processor: the CA
+  // bundle and the client certificate with its key. Never values.
+  string ca = 2;
+  string client_certificate = 3;
+  ExtProcProcessingMode processing_mode = 4;
+  // Let the processor change the mode mid-request (Envoy allow_mode_override).
+  bool allow_mode_override = 5;
+  // Per-message deadline; 200ms when unset, as in Envoy.
+  google.protobuf.Duration message_timeout = 6;
+  // Default false: a processor error fails the request (Envoy failure_mode_allow).
+  bool failure_mode_allow = 7;
+  // Upper bound for BUFFERED and BUFFERED_PARTIAL bodies.
+  uint32 max_buffered_bytes = 8;
+}
+
+message ExtProcProcessingMode {
+  enum HeaderMode {
+    HEADER_MODE_DEFAULT = 0;
+    SEND = 1;
+    SKIP = 2;
+  }
+  enum BodyMode {
+    NONE = 0;
+    STREAMED = 1;
+    BUFFERED = 2;
+    BUFFERED_PARTIAL = 3;
+    FULL_DUPLEX_STREAMED = 4;
+  }
+  HeaderMode request_header_mode = 1;
+  HeaderMode response_header_mode = 2;
+  BodyMode request_body_mode = 3;
+  BodyMode response_body_mode = 4;
+  HeaderMode request_trailer_mode = 5;
+  HeaderMode response_trailer_mode = 6;
+}
+
+message CredentialBroker {
+  oneof kind {
+    // Name of a file in the node's secrets directory ("TOKEN" or "user:pass").
+    string static_secret = 1;
+    OIDCFederation oidc_federation = 2;
+    AWSAssumeRole aws_assume_role = 3;
+    // The node's own platform identity (GKE Workload Identity, instance
+    // metadata). Only for nodes that run inside the provider.
+    PlatformIdentity platform_identity = 4;
+  }
+}
+
+// OIDCFederation exchanges the control plane's JWT at a provider STS.
+message OIDCFederation {
+  // Google: https://sts.googleapis.com/v1/token. Other providers: their RFC 8693 endpoint.
+  string token_endpoint = 1;
+  // The audience the provider expects, e.g. the Google workload or workforce
+  // pool provider resource name. One per destination.
+  string audience = 2;
+  // Optional service account to impersonate when the API does not accept the
+  // federated principal directly (Google iamcredentials.generateAccessToken).
+  string impersonate = 3;
+  // OAuth scopes requested for the destination credential; the TAR may narrow
+  // them further, never widen them.
+  repeated string scopes = 4;
+}
+
+message AWSAssumeRole {
+  string role_arn = 1;
+  // Session policy template; the adapter intersects it with the TAR.
+  string session_policy = 2;
+}
+
+message PlatformIdentity {
+  repeated string scopes = 1;
 }
 
 message PolicyBinding {

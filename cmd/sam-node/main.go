@@ -920,6 +920,7 @@ func main() {
 	rootCmd.AddCommand(newStateCmd())
 	rootCmd.AddCommand(newSkillCmd())
 	rootCmd.AddCommand(newDebugCmd())
+	rootCmd.AddCommand(newForwardCmd())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

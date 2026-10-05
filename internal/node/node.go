@@ -30,6 +30,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2149,6 +2150,10 @@ func (w *responseWriterWithCount) Flush() {
 	}
 }
 
+func (w *responseWriterWithCount) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 func (n *SamNode) StartIngressServer(ctx context.Context) error {
 	listener, err := gostream.Listen(n.Host, "/libp2p-http")
 	if err != nil {
@@ -2246,6 +2251,11 @@ func (n *SamNode) StartIngressServer(ctx context.Context) error {
 				if svc, ok := n.services.GetTyped(serviceType, serviceName); ok {
 					reqCtx.Egress = egressFactsFor(svc)
 				}
+				if strings.EqualFold(r.Header.Get("Upgrade"), HeaderSamTunnelUpgrade) {
+					reqPort, _ := strconv.Atoi(r.Header.Get(HeaderSamEgressPort))
+					reqCtx.HTTP = &HTTPRequestFacts{Method: http.MethodConnect, Path: ""}
+					reqCtx.Egress = &EgressFacts{Host: serviceName, Port: reqPort}
+				}
 			}
 
 			// Verify authorization
@@ -2293,7 +2303,7 @@ func (n *SamNode) StartIngressServer(ctx context.Context) error {
 			}
 			r.URL.RawPath = ""
 
-			svc.Handler().ServeHTTP(w, r)
+			svc.Handler().ServeHTTP(w, r.WithContext(WithCallerBiscuit(r.Context(), biscuitBytes)))
 		}),
 	}
 

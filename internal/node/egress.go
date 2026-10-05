@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/sam/api"
 	cpclient "github.com/google/sam/internal/controlplane/client"
@@ -58,17 +59,36 @@ func refuse(w http.ResponseWriter, status int, text, errorType string) {
 // its own about it. Every request reaches the handler only after Authorize
 // ran with the caller's credential and the method, path, host and port facts.
 type EgressService struct {
-	destination *api.EgressDestination
-	info        *api.ServiceInfo
-	target      *url.URL
-	secretsDir  string
-	handler     http.Handler
+	node              *SamNode
+	destination       *api.EgressDestination
+	info              *api.ServiceInfo
+	target            *url.URL
+	secretsDir        string
+	exchanger         CloudTokenExchanger
+	isStaticSecret    bool
+	modelArmorBaseURL string
+	modelArmorClient  *http.Client
+	handler           http.Handler
 }
+
+type egressCallerContext struct {
+	principal string
+	roles     []string
+	actorNode string
+	task      string
+	rules     []*api.TaskAuthorizationRule
+}
+
+type egressContextKey struct{}
 
 // newEgressService builds the service for one assignment. The target URL was
 // validated by the control plane; it is parsed again here because this node
 // dials it.
 func newEgressService(d *api.EgressDestination, secretsDir string) (*EgressService, error) {
+	return newEgressServiceForNode(nil, d, secretsDir)
+}
+
+func newEgressServiceForNode(node *SamNode, d *api.EgressDestination, secretsDir string) (*EgressService, error) {
 	if err := api.ValidateEgressName(d.GetName()); err != nil {
 		return nil, err
 	}
@@ -79,11 +99,13 @@ func newEgressService(d *api.EgressDestination, secretsDir string) (*EgressServi
 	if target.User != nil {
 		return nil, fmt.Errorf("egress %s: target_url must not carry a credential", d.GetName())
 	}
-	if cred := d.GetCredential(); cred != "" && (filepath.Base(cred) != cred || cred == "." || cred == "..") {
+	if cred := api.EgressStaticSecret(d); cred != "" && (filepath.Base(cred) != cred || cred == "." || cred == "..") {
 		return nil, fmt.Errorf("egress %s: credential %q must be a file name", d.GetName(), cred)
 	}
-	return &EgressService{
-		destination: proto.Clone(d).(*api.EgressDestination),
+	cloned := proto.Clone(d).(*api.EgressDestination)
+	s := &EgressService{
+		node:        node,
+		destination: cloned,
 		info: &api.ServiceInfo{
 			Type:        api.ServiceType_SERVICE_TYPE_EGRESS,
 			Name:        d.GetName(),
@@ -91,18 +113,69 @@ func newEgressService(d *api.EgressDestination, secretsDir string) (*EgressServi
 		},
 		target:     target,
 		secretsDir: secretsDir,
-	}, nil
+	}
+	s.initExchanger()
+	return s, nil
+}
+
+func (s *EgressService) initExchanger() {
+	if secretName := api.EgressStaticSecret(s.destination); secretName != "" {
+		s.exchanger = NewStaticSecretExchanger(s.secretsDir, secretName)
+		s.isStaticSecret = true
+		return
+	}
+	if b := s.destination.GetBroker(); b != nil {
+		switch kind := b.GetKind().(type) {
+		case *api.CredentialBroker_OidcFederation:
+			if kind.OidcFederation != nil {
+				s.exchanger = NewOIDCFederationExchanger(s.destination.GetName(), kind.OidcFederation, s.mintBorderJWT, nil)
+			}
+		case *api.CredentialBroker_AwsAssumeRole:
+			if kind.AwsAssumeRole != nil {
+				s.exchanger = NewAWSAssumeRoleExchanger(s.destination.GetName(), kind.AwsAssumeRole, s.mintBorderJWT, nil)
+			}
+		case *api.CredentialBroker_PlatformIdentity:
+			if kind.PlatformIdentity != nil {
+				s.exchanger = NewPlatformIdentityExchanger(s.destination.GetName(), kind.PlatformIdentity, nil)
+			}
+		}
+	}
+}
+
+func (s *EgressService) mintBorderJWT(ctx context.Context, destination, audience string) (string, time.Time, error) {
+	if s.node == nil {
+		return "", time.Time{}, errors.New("egress service has no node attached for STS minting")
+	}
+	biscuitBytes := CallerBiscuitFromContext(ctx)
+	if len(biscuitBytes) == 0 {
+		biscuitBytes = s.node.GetIdentity()
+	}
+	resp, err := s.node.MintBorderJWT(ctx, biscuitBytes, destination, audience)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	var exp time.Time
+	if resp.GetExpireTime().IsValid() {
+		exp = resp.GetExpireTime().AsTime()
+	}
+	return resp.GetJwt(), exp, nil
 }
 
 func (s *EgressService) Info() *api.ServiceInfo { return s.info }
 func (s *EgressService) Handler() http.Handler  { return s.handler }
 func (s *EgressService) Teardown() error        { return nil }
 
+// SetExchanger overrides the CloudTokenExchanger on s (used by tests and custom brokers).
+func (s *EgressService) SetExchanger(ex CloudTokenExchanger) {
+	s.exchanger = ex
+	s.isStaticSecret = false
+}
+
 // Init builds the reverse proxy and confirms the named credential is
 // readable, so a destination whose credential the platform did not deliver is
 // refused here, visibly, instead of answering 502 to every request.
 func (s *EgressService) Init(ctx context.Context) error {
-	if s.destination.GetCredential() != "" {
+	if api.EgressStaticSecret(s.destination) != "" {
 		if _, err := s.credential(); err != nil {
 			return err
 		}
@@ -110,7 +183,11 @@ func (s *EgressService) Init(ctx context.Context) error {
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(s.target)
-			pr.Out.Host = s.target.Host
+			if s.destination.GetPreserveHost() {
+				pr.Out.Host = s.destination.GetName()
+			} else {
+				pr.Out.Host = s.target.Host
+			}
 			// What the caller sent authenticated it to the node, and what the
 			// node knows about the caller is for policy; none of it is for the
 			// destination, which sees the node's own credential only.
@@ -124,32 +201,98 @@ func (s *EgressService) Init(ctx context.Context) error {
 			if auth, ok := pr.In.Context().Value(egressAuthKey{}).(string); ok && auth != "" {
 				pr.Out.Header.Set("Authorization", auth)
 			}
+			if s.destination.GetForwardContext() {
+				if ec, ok := pr.In.Context().Value(egressContextKey{}).(egressCallerContext); ok {
+					if ec.principal != "" {
+						pr.Out.Header.Set(api.HeaderSamPrincipal, ec.principal)
+					}
+					if len(ec.roles) > 0 {
+						pr.Out.Header.Set(api.HeaderSamRoles, strings.Join(ec.roles, ","))
+					}
+					if ec.task != "" {
+						pr.Out.Header.Set(api.HeaderSamTask, ec.task)
+					}
+				}
+			}
 		},
 	}
 	s.handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth := ""
-		if s.destination.GetCredential() != "" {
-			// Read per request, so a rotation by the platform applies at once.
-			var err error
-			if auth, err = s.credential(); err != nil {
-				logger.Errorf("[Egress] %s: %v", s.info.Name, err)
-				recordEgressDecision(s.info.Name, egressOutcomeCredentialUnavailable)
-				refuse(w, http.StatusBadGateway, "egress credential unavailable", proxyStatusConfigurationError)
-				return
+		if r.Method == http.MethodConnect || strings.EqualFold(r.Header.Get("Upgrade"), HeaderSamTunnelUpgrade) {
+			reqPort := s.port()
+			if pStr := r.Header.Get(HeaderSamEgressPort); pStr != "" {
+				if p, err := strconv.Atoi(pStr); err == nil {
+					reqPort = p
+				}
 			}
+			s.ServeTunnel(r.Context(), w, r, reqPort)
+			return
 		}
-		proxy.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), egressAuthKey{}, auth)))
+		if s.destination.GetMode() == api.EgressMode_EGRESS_MODE_TCP {
+			recordEgressDecision(s.info.Name, egressOutcomeDeny)
+			refuse(w, http.StatusForbidden, "egress destination is configured for TCP tunnel mode only", proxyStatusDenied)
+			return
+		}
+		s.serveInspectedEgress(w, r, proxy)
 	})
 	return nil
 }
 
 type egressAuthKey struct{}
 
+func (s *EgressService) extractCallerContext(ctx context.Context) egressCallerContext {
+	var ec egressCallerContext
+	if s.node != nil {
+		if pid, err := s.node.localPeerID(); err == nil {
+			ec.actorNode = pid.String()
+		}
+	}
+	rawBiscuit := CallerBiscuitFromContext(ctx)
+	if len(rawBiscuit) == 0 && s.node != nil {
+		rawBiscuit = s.node.GetIdentity()
+	}
+	if len(rawBiscuit) == 0 {
+		return ec
+	}
+	if s.node != nil {
+		if claims, err := s.node.VerifyLocalBiscuit(rawBiscuit); err == nil {
+			ec.principal = claims.Principal()
+			ec.roles = claims.Roles
+			if claims.ActorNodePeerID != "" {
+				ec.actorNode = claims.ActorNodePeerID
+			}
+			ec.task = claims.InnermostTaskName()
+			ec.rules = claims.TaskRules
+			return ec
+		}
+	}
+	return ec
+}
+
+func (s *EgressService) resolveAuthorization(ctx context.Context) (string, egressCallerContext, error) {
+	ec := s.extractCallerContext(ctx)
+	if s.exchanger == nil {
+		return "", ec, nil
+	}
+	tok, _, err := s.exchanger.Exchange(ctx, ec.principal, ec.rules)
+	if err != nil {
+		return "", ec, err
+	}
+	if tok == "" {
+		return "", ec, nil
+	}
+	if s.isStaticSecret {
+		if user, pass, ok := strings.Cut(tok, ":"); ok {
+			return authorizationFor(user, pass), ec, nil
+		}
+	}
+	return authorizationFor("", tok), ec, nil
+}
+
 // credential reads the named file under the secrets directory and renders it
 // as an Authorization value: "TOKEN" as Bearer, "user:pass" as Basic, the
 // forms target_auth_path accepts.
 func (s *EgressService) credential() (string, error) {
-	name := s.destination.GetCredential()
+	name := api.EgressStaticSecret(s.destination)
 	data, err := os.ReadFile(filepath.Join(s.secretsDir, name))
 	if err != nil {
 		return "", fmt.Errorf("credential %q: %w (put the file in %s)", name, errors.Unwrap(err), s.secretsDir)
@@ -179,9 +322,7 @@ func (s *EgressService) port() int {
 
 // sameAssignment reports whether the service already serves d as written.
 func (s *EgressService) sameAssignment(d *api.EgressDestination) bool {
-	return s.destination.GetName() == d.GetName() &&
-		api.EgressTargetURL(s.destination) == api.EgressTargetURL(d) &&
-		s.destination.GetCredential() == d.GetCredential()
+	return proto.Equal(s.destination, d)
 }
 
 // egressFactsFor is the host and port an egress request will be sent to,
@@ -240,7 +381,7 @@ func (n *SamNode) applyEgressAssignments(ctx context.Context, assigned []*api.Eg
 				continue
 			}
 		}
-		svc, err := newEgressService(d, n.config.SecretsDir)
+		svc, err := newEgressServiceForNode(n, d, n.config.SecretsDir)
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -337,5 +478,5 @@ func handleLocalEgress(node *SamNode, w http.ResponseWriter, r *http.Request) {
 	r.Header.Set(api.HeaderPeerID, node.Host.ID().String())
 	r.URL.Path = "/" + upstreamPath
 	r.URL.RawPath = ""
-	svc.Handler().ServeHTTP(w, r)
+	svc.Handler().ServeHTTP(w, r.WithContext(WithCallerBiscuit(r.Context(), identity)))
 }

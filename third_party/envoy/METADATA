@@ -1,0 +1,22 @@
+name: "envoy"
+description:
+  "Trimmed Envoy ExternalProcessor (ext_proc) v3 protobuf definitions for SAM "
+  "egress content inspection and gateway external processing without adding "
+  "go-control-plane or grpc-go to the root Go module."
+third_party {
+  url {
+    type: GIT
+    value: "https://github.com/envoyproxy/envoy.git"
+  }
+  version: "v1.31.0"
+  license_type: NOTICE
+  last_upgrade_date { year: 2026 month: 10 day: 4 }
+  local_modifications:
+    "1. Removed validate, udpa, xds, and envoy deprecation annotation imports "
+    "and options from external_processor.proto, processing_mode.proto, "
+    "base.proto, and http_status.proto (wire tags and proto package names are "
+    "unchanged).\n"
+    "2. Trimmed envoy/config/core/v3/base.proto to the four messages referenced "
+    "by ext_proc: HeaderValue, HeaderValueOption, HeaderMap, and Metadata.\n"
+    "3. Set go_package options to github.com/google/sam/third_party/envoy/..."
+}

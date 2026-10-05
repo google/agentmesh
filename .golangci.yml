@@ -37,6 +37,8 @@ linters:
         limitations under the License.
 
   exclusions:
+    paths:
+      - ^third_party/
     rules:
       # The one implementation of the authority-block check.
       - path: internal/identity/biscuit\.go

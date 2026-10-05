@@ -28,6 +28,15 @@ import (
 // able to name a path.
 var credentialNameSyntax = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$`)
 
+// EgressStaticSecret returns the static secret file name configured on d,
+// whether specified via broker.static_secret or the shorthand credential field.
+func EgressStaticSecret(d *EgressDestination) string {
+	if s := d.GetBroker().GetStaticSecret(); s != "" {
+		return s
+	}
+	return d.GetCredential()
+}
+
 // ValidateEgressDestination checks one PolicyConfig.egress entry. roleNames
 // are the roles the same document defines, so served_by can be checked
 // against them; a label entry is checked for form only.
@@ -45,6 +54,63 @@ func ValidateEgressDestination(d *EgressDestination, roleNames map[string]bool) 
 	}
 	if d.GetCredential() != "" && !credentialNameSyntax.MatchString(d.GetCredential()) {
 		return fmt.Errorf("egress %q: credential %q must be a name of 1-64 chars of [a-zA-Z0-9_.-], not a path or a value", d.GetName(), d.GetCredential())
+	}
+	if b := d.GetBroker(); b != nil {
+		if d.GetCredential() != "" && (b.GetStaticSecret() == "" || b.GetStaticSecret() != d.GetCredential()) {
+			return fmt.Errorf("egress %q: cannot set both credential and broker", d.GetName())
+		}
+		switch kind := b.GetKind().(type) {
+		case *CredentialBroker_StaticSecret:
+			if kind.StaticSecret != "" && !credentialNameSyntax.MatchString(kind.StaticSecret) {
+				return fmt.Errorf("egress %q: broker.static_secret %q must be a name of 1-64 chars of [a-zA-Z0-9_.-], not a path or a value", d.GetName(), kind.StaticSecret)
+			}
+		case *CredentialBroker_OidcFederation:
+			if kind.OidcFederation == nil || strings.TrimSpace(kind.OidcFederation.GetAudience()) == "" {
+				return fmt.Errorf("egress %q: broker.oidc_federation.audience is required", d.GetName())
+			}
+			if ep := kind.OidcFederation.GetTokenEndpoint(); ep != "" {
+				if err := validateEgressTargetURL(ep); err != nil {
+					return fmt.Errorf("egress %q: broker.oidc_federation.token_endpoint: %w", d.GetName(), err)
+				}
+			}
+		case *CredentialBroker_AwsAssumeRole:
+			if kind.AwsAssumeRole == nil || strings.TrimSpace(kind.AwsAssumeRole.GetRoleArn()) == "" {
+				return fmt.Errorf("egress %q: broker.aws_assume_role.role_arn is required", d.GetName())
+			}
+		case *CredentialBroker_PlatformIdentity:
+			// PlatformIdentity uses node metadata server; scopes are optional.
+		}
+	}
+	if d.GetMode() == EgressMode_EGRESS_MODE_TCP && len(d.GetPorts()) == 0 {
+		return fmt.Errorf("egress %q: mode EGRESS_MODE_TCP requires at least one port in ports", d.GetName())
+	}
+	for _, p := range d.GetPorts() {
+		if p == 0 || p > 65535 {
+			return fmt.Errorf("egress %q: port %d must be in 1..65535", d.GetName(), p)
+		}
+	}
+	for i, ins := range d.GetInspection().GetInspectors() {
+		if ins == nil {
+			return fmt.Errorf("egress %q: inspector[%d] is nil", d.GetName(), i)
+		}
+		switch kind := ins.GetKind().(type) {
+		case *Inspector_ModelArmor:
+			if kind.ModelArmor == nil || strings.TrimSpace(kind.ModelArmor.GetTemplate()) == "" {
+				return fmt.Errorf("egress %q: inspector[%d].model_armor.template is required", d.GetName(), i)
+			}
+		case *Inspector_ExtProc:
+			if kind.ExtProc == nil || strings.TrimSpace(kind.ExtProc.GetTarget()) == "" {
+				return fmt.Errorf("egress %q: inspector[%d].ext_proc.target is required", d.GetName(), i)
+			}
+			if ca := kind.ExtProc.GetCa(); ca != "" && !credentialNameSyntax.MatchString(ca) {
+				return fmt.Errorf("egress %q: inspector[%d].ext_proc.ca %q must be a file name in the secrets directory", d.GetName(), i, ca)
+			}
+			if cc := kind.ExtProc.GetClientCertificate(); cc != "" && !credentialNameSyntax.MatchString(cc) {
+				return fmt.Errorf("egress %q: inspector[%d].ext_proc.client_certificate %q must be a file name in the secrets directory", d.GetName(), i, cc)
+			}
+		default:
+			return fmt.Errorf("egress %q: inspector[%d] must specify model_armor or ext_proc", d.GetName(), i)
+		}
 	}
 	if len(d.GetServedBy()) == 0 {
 		return fmt.Errorf("egress %q: served_by must select at least one role or label", d.GetName())

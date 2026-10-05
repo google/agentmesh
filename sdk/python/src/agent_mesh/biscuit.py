@@ -18,11 +18,13 @@ chain, unexpired, and bound to the peer at the other end of the connection."""
 
 from __future__ import annotations
 
+import struct
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Sequence
 
 import biscuit_auth as ba
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from ._proto import sam_pb2
 from .tar import _DATALOG, effective_tar_expiration, encode_tar_block_fact, parse_tar_block_source
@@ -178,6 +180,115 @@ def attenuate_biscuit(
         return token.append(bb).to_bytes()
     except Exception as err:  # noqa: BLE001
         raise BiscuitVerificationError(f"failed to append tar_block to biscuit: {err}") from err
+
+
+def _read_varint(buf: bytes, pos: int) -> tuple[int, int]:
+    val = 0
+    shift = 0
+    while True:
+        if pos >= len(buf):
+            raise ValueError("truncated varint")
+        b = buf[pos]
+        pos += 1
+        val |= (b & 0x7F) << shift
+        if not (b & 0x80):
+            return val, pos
+        shift += 7
+
+
+def _encode_varint(val: int) -> bytes:
+    out = bytearray()
+    while val >= 0x80:
+        out.append((val & 0x7F) | 0x80)
+        val >>= 7
+    out.append(val)
+    return bytes(out)
+
+
+def _parse_proto_fields(buf: bytes) -> list[tuple[int, int, int | bytes]]:
+    pos = 0
+    fields: list[tuple[int, int, int | bytes]] = []
+    while pos < len(buf):
+        tag_wire, pos = _read_varint(buf, pos)
+        field_num = tag_wire >> 3
+        wire_type = tag_wire & 0x07
+        if wire_type == 0:
+            val, pos = _read_varint(buf, pos)
+            fields.append((field_num, wire_type, val))
+        elif wire_type == 2:
+            ln, pos = _read_varint(buf, pos)
+            if pos + ln > len(buf):
+                raise ValueError("truncated length-delimited field")
+            fields.append((field_num, wire_type, buf[pos : pos + ln]))
+            pos += ln
+        else:
+            raise ValueError(f"unexpected protobuf wire type {wire_type}")
+    return fields
+
+
+def seal_biscuit(biscuit: bytes, trusted_keys: Sequence[bytes]) -> bytes:
+    """Seals a Biscuit token so no further blocks can be appended by downstream holders."""
+    token, _ = _parse_with_trusted_keys(biscuit, trusted_keys)
+    _extract_tar_chain(token)
+    try:
+        top_fields = _parse_proto_fields(biscuit)
+        last_block_bytes: bytes | None = None
+        proof_bytes: bytes | None = None
+        out_prefix = bytearray()
+        for fnum, wtype, val in top_fields:
+            if fnum in (2, 3) and wtype == 2 and isinstance(val, bytes):
+                last_block_bytes = val
+            if fnum == 4 and wtype == 2 and isinstance(val, bytes):
+                proof_bytes = val
+            else:
+                out_prefix.extend(_encode_varint((fnum << 3) | wtype))
+                if wtype == 0 and isinstance(val, int):
+                    out_prefix.extend(_encode_varint(val))
+                elif isinstance(val, bytes):
+                    out_prefix.extend(_encode_varint(len(val)))
+                    out_prefix.extend(val)
+        if last_block_bytes is None or proof_bytes is None:
+            raise ValueError("malformed biscuit container")
+        proof_fields = dict((f, v) for f, _, v in _parse_proto_fields(proof_bytes))
+        next_secret = proof_fields.get(1)
+        if not isinstance(next_secret, bytes) or len(next_secret) != 32:
+            raise ValueError("biscuit is already sealed")
+
+        sb_fields = dict((f, v) for f, _, v in _parse_proto_fields(last_block_bytes))
+        block_data = sb_fields.get(1)
+        next_key_raw = sb_fields.get(2)
+        sig_bytes = sb_fields.get(3)
+        if not isinstance(block_data, bytes) or not isinstance(next_key_raw, bytes) or not isinstance(sig_bytes, bytes):
+            raise ValueError("malformed SignedBlock")
+        next_key_fields = dict((f, v) for f, _, v in _parse_proto_fields(next_key_raw))
+        alg = int(next_key_fields.get(1, 0))  # type: ignore[arg-type]
+        key_bytes = next_key_fields.get(2)
+        if not isinstance(key_bytes, bytes):
+            raise ValueError("malformed NextKey")
+        version = sb_fields.get(5)
+        if isinstance(version, int) and version >= 1:
+            to_sign = (
+                b"\0BLOCK\0"
+                + block_data
+                + b"\0VERSION\0"
+                + struct.pack("<I", version)
+                + b"\0ALG\0"
+                + struct.pack("<I", alg)
+                + b"\0KEY\0"
+                + key_bytes
+                + b"\0PREVSIG\0"
+                + sig_bytes
+            )
+        else:
+            to_sign = block_data + struct.pack("<I", alg) + key_bytes + sig_bytes
+        final_sig = Ed25519PrivateKey.from_private_bytes(next_secret).sign(to_sign)
+        proof_msg = b"\x12" + _encode_varint(len(final_sig)) + final_sig
+        out_prefix.extend(b"\x22" + _encode_varint(len(proof_msg)) + proof_msg)
+        sealed = bytes(out_prefix)
+        _parse_with_trusted_keys(sealed, trusted_keys)
+        return sealed
+    except Exception as err:  # noqa: BLE001
+        raise BiscuitVerificationError(f"failed to seal biscuit: {err}") from err
 
 
 def require_role(verified: VerifiedBiscuit, role: str) -> None:

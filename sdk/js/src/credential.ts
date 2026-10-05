@@ -12,10 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { create, fromBinary, fromJson, toBinary, toJson } from "@bufbuild/protobuf";
+import { create, fromBinary, fromJson, toBinary, toJson, type MessageInitShape } from "@bufbuild/protobuf";
 import { timestampDate, timestampFromDate, type Timestamp } from "@bufbuild/protobuf/wkt";
+import { attenuateBiscuit, sealBiscuit } from "./biscuit.ts";
 import { toHex } from "./bytes.ts";
-import { AuthFrameSchema, AuthResponseSchema, MemberCredentialSchema, type AuthResponse, type OIDCSession } from "./gen/sam_pb.ts";
+import {
+  AuthFrameSchema,
+  AuthResponseSchema,
+  MemberCredentialSchema,
+  TaskAuthorizationRuleSchema,
+  type AuthResponse,
+  type OIDCSession,
+} from "./gen/sam_pb.ts";
 
 /** What a member holds after enrolling: its biscuit and what it trusts. */
 export interface MeshCredential {
@@ -41,6 +49,54 @@ export interface MeshCredential {
    * so a state directory survives a round trip untouched.
    */
   extra?: { receiveTime: Map<string, Timestamp>; oidcSession?: OIDCSession };
+  /** Returns a new credential whose biscuit is attenuated in memory with rule. */
+  attenuate?: (rule: MessageInitShape<typeof TaskAuthorizationRuleSchema>) => Promise<MeshCredential>;
+  /** Returns a new credential whose biscuit is sealed against further attenuation. */
+  seal?: () => Promise<MeshCredential>;
+}
+
+/** Attaches .attenuate() and .seal() convenience methods to a MeshCredential object. */
+export function withCredentialMethods(c: MeshCredential): MeshCredential {
+  const out: MeshCredential = {
+    ...c,
+    attenuate: (rule) => attenuateCredential(out, rule),
+    seal: () => sealCredential(out),
+  };
+  return out;
+}
+
+/**
+ * Returns a new MeshCredential with a tar_block appended offline in memory.
+ * If the rule sets expire_time earlier than the credential's expiration,
+ * the returned credential's expiration is narrowed to match.
+ */
+export async function attenuateCredential(
+  c: MeshCredential,
+  ruleInput: MessageInitShape<typeof TaskAuthorizationRuleSchema>,
+): Promise<MeshCredential> {
+  const rule = create(TaskAuthorizationRuleSchema, ruleInput);
+  const biscuit = await attenuateBiscuit(c.biscuit, rule, c.controlPlaneKeys);
+  let expiration = c.expiration;
+  if (rule.expireTime !== undefined) {
+    const ruleExp = Math.floor(timestampDate(rule.expireTime).getTime() / 1000);
+    if (ruleExp < expiration) {
+      expiration = ruleExp;
+    }
+  }
+  return withCredentialMethods({
+    ...c,
+    biscuit,
+    expiration,
+  });
+}
+
+/** Returns a new MeshCredential whose biscuit is sealed so no further blocks can be appended. */
+export async function sealCredential(c: MeshCredential): Promise<MeshCredential> {
+  const biscuit = await sealBiscuit(c.biscuit, c.controlPlaneKeys);
+  return withCredentialMethods({
+    ...c,
+    biscuit,
+  });
 }
 
 /** Whether a key trusted now was unknown when the credential was issued. */
@@ -63,7 +119,7 @@ export function encodeAuthFrame(biscuit: Uint8Array, targetService = ""): Uint8A
   return toBinary(AuthFrameSchema, create(AuthFrameSchema, { biscuit, targetService }));
 }
 
-/** The peer's answer to an AuthFrame, carrying its own biscuit on success. */
+/** The peer's answer to an AuthResponse, carrying its own biscuit on success. */
 export function decodeAuthResponse(bytes: Uint8Array): AuthResponse {
   return fromBinary(AuthResponseSchema, bytes);
 }
@@ -101,7 +157,7 @@ export function credentialFromJSON(text: string): MeshCredential {
       receiveTime.set(toHex(k.publicKey), k.receiveTime);
     }
   }
-  return {
+  return withCredentialMethods({
     controlPlaneUrl: message.controlPlaneUrl,
     biscuit: message.biscuit,
     expiration: Math.floor(timestampDate(message.expireTime).getTime() / 1000),
@@ -110,5 +166,5 @@ export function credentialFromJSON(text: string): MeshCredential {
     issuedUnderKeys: message.issuedUnderKeys.length > 0 ? message.issuedUnderKeys : controlPlaneKeys,
     routerAddresses: message.routerAddresses,
     extra: { receiveTime, ...(message.oidcSession !== undefined ? { oidcSession: message.oidcSession } : {}) },
-  };
+  });
 }

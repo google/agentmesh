@@ -808,3 +808,66 @@ def test_an_egress_floor_stated_at_join_is_held_on_the_http_path():
             nursery.cancel_scope.cancel()
 
     trio.run(with_timeout, 60, main)
+
+
+def test_session_attenuate_and_seal_narrows_outbound_requests():
+    """session.attenuate() and session.seal() narrow outbound requests across
+    hops and prevent further attenuation of sealed tokens."""
+
+    async def main():
+        async with trio.open_nursery() as nursery:
+            _, router_addr = await start_router(nursery)
+            _, provider_addr = await start_provider(nursery, lambda p: mint(p, ROLE_NODE), [])
+            mesh = AgentMesh.enroll("http://127.0.0.1:1", bootstrap_token="sbt", transport=fake_control_plane([router_addr]))
+
+            cred_att = mesh.credential.attenuate(
+                pb.TaskAuthorizationRule(
+                    name="tasks/cred-hop",
+                    rules=[
+                        pb.TaskRule(
+                            allowed_services=["a2a://agent"],
+                            operation=pb.TaskOperation(allowed_methods=["GET"], allowed_paths=["/v1/*"]),
+                        )
+                    ],
+                )
+            )
+            cred_sealed = cred_att.seal()
+            with pytest.raises(BiscuitVerificationError):
+                cred_sealed.attenuate(pb.TaskAuthorizationRule(name="tasks/after-seal", rules=[pb.TaskRule(allowed_services=["a2a://agent"])]))
+
+            async with mesh.join(reserve=False, refresh_lead=0) as session:
+                hop1 = session.attenuate(
+                    pb.TaskAuthorizationRule(
+                        name="tasks/hop-1",
+                        rules=[
+                            pb.TaskRule(
+                                allowed_services=["a2a://agent"],
+                                operation=pb.TaskOperation(allowed_methods=["GET", "POST"], allowed_paths=["/v1/*"]),
+                            )
+                        ],
+                    )
+                )
+                hop2 = hop1.attenuate(
+                    pb.TaskAuthorizationRule(
+                        name="tasks/hop-2",
+                        rules=[
+                            pb.TaskRule(
+                                allowed_services=["a2a://agent"],
+                                operation=pb.TaskOperation(allowed_methods=["GET"], allowed_paths=["/v1/allowed"]),
+                            )
+                        ],
+                    )
+                ).seal()
+
+                assert (await hop2.request(provider_addr, "a2a://agent", "/v1/allowed")).status == 200
+                assert (await hop2.request(provider_addr, "a2a://agent", "/v1/denied")).status == 403
+                assert (await hop2.request(provider_addr, "a2a://agent", "/v1/allowed", method="POST")).status == 403
+
+                with pytest.raises(BiscuitVerificationError):
+                    hop2.attenuate(pb.TaskAuthorizationRule(name="tasks/hop-3", rules=[pb.TaskRule(allowed_services=["a2a://agent"])]))
+
+                # Parent session remains unattenuated.
+                assert (await session.request(provider_addr, "a2a://agent", "/v2/anything")).status == 200
+            nursery.cancel_scope.cancel()
+
+    trio.run(with_timeout, 60, main)

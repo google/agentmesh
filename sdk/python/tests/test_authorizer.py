@@ -243,8 +243,11 @@ def test_attenuate_biscuit_narrows_authority_across_hops():
         [CP_KEY],
     )
 
+    from agent_mesh.biscuit import BiscuitVerificationError, seal_biscuit
+
+    sealed = seal_biscuit(att2, [CP_KEY])
     verified = authorize_caller(
-        AuthorizeRequest(biscuit=att2, peer_id=CALLER, target_service="mcp://calc", protocol="/sam/mcp/1.0.0", mcp_tool="add"),
+        AuthorizeRequest(biscuit=sealed, peer_id=CALLER, target_service="mcp://calc", protocol="/sam/mcp/1.0.0", mcp_tool="add"),
         options([]),
     )
     assert verified.expiration == hop2_exp
@@ -252,7 +255,14 @@ def test_attenuate_biscuit_narrows_authority_across_hops():
 
     with pytest.raises(AuthorizationError):
         authorize_caller(
-            AuthorizeRequest(biscuit=att2, peer_id=CALLER, target_service="mcp://calc", protocol="/sam/mcp/1.0.0", mcp_tool="multiply"),
+            AuthorizeRequest(biscuit=sealed, peer_id=CALLER, target_service="mcp://calc", protocol="/sam/mcp/1.0.0", mcp_tool="multiply"),
             options([]),
+        )
+
+    with pytest.raises(BiscuitVerificationError):
+        attenuate_biscuit(
+            sealed,
+            sam_pb2.TaskAuthorizationRule(name="hop-3", rules=[sam_pb2.TaskRule(allowed_services=["mcp://calc"])]),
+            [CP_KEY],
         )
 

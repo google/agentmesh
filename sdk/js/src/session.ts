@@ -12,16 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import type { MessageInitShape } from "@bufbuild/protobuf";
 import type { Connection } from "@libp2p/interface";
 import { timestampMs } from "@bufbuild/protobuf/wkt";
 import { TopicValidatorResult } from "@libp2p/gossipsub";
 import { peerIdFromString } from "@libp2p/peer-id";
 import { isMultiaddr, multiaddr, type Multiaddr } from "@multiformats/multiaddr";
 import { AUTH_HANDLER_OPTIONS, AUTH_PROTOCOL, authenticateWithPeer, authStreamHandler } from "./auth.ts";
-import { ROLE_ROUTER, requireRole, type VerifiedBiscuit } from "./biscuit.ts";
+import { ROLE_ROUTER, attenuateBiscuit, requireRole, sealBiscuit, type VerifiedBiscuit } from "./biscuit.ts";
 import { ROLE_NODE } from "./controlplane.ts";
+import { encodeAuthFrame } from "./credential.ts";
 import { canonicalPeerId } from "./identity.ts";
 import { isServiceType, parseServiceTarget, serviceCID } from "./discovery.ts";
+import type { TaskAuthorizationRuleSchema } from "./gen/sam_pb.ts";
 import { createMeshHost, listenThroughRelay, type MeshHost, type MeshHostOptions, type RelayListener } from "./host.ts";
 import { openMCPSession, requireEgressLabels, type MCPSession, type MCPSessionOptions } from "./mcp.ts";
 import type { AgentMesh, ControlPlaneSync } from "./mesh.ts";
@@ -173,9 +176,20 @@ export class MeshSession {
   readonly #egressRequireLabels: Record<string, string> | undefined;
   /** Peers verified as enrolled and holding the floor, until when; misses are never kept. */
   readonly #egressVerdicts = new Map<string, Date>();
+  readonly #taskBiscuit: Uint8Array | undefined;
+  readonly #isTaskView: boolean;
   #closed = false;
 
-  constructor(mesh: AgentMesh, node: MeshHost, routers: AdmittedRouter[], authenticatedPeers: Map<string, Date>, banned: BanSet, options: JoinOptions, relayListener?: RelayListener) {
+  constructor(
+    mesh: AgentMesh,
+    node: MeshHost,
+    routers: AdmittedRouter[],
+    authenticatedPeers: Map<string, Date>,
+    banned: BanSet,
+    options: JoinOptions,
+    relayListener?: RelayListener,
+    taskBiscuit?: Uint8Array,
+  ) {
     this.mesh = mesh;
     this.node = node;
     this.routers = routers;
@@ -188,20 +202,60 @@ export class MeshSession {
     this.#syncIntervalMs = options.controlPlaneSyncIntervalMs ?? DEFAULT_CONTROL_PLANE_SYNC_MS;
     this.#syncJitterMs = options.controlPlaneSyncJitterMs ?? DEFAULT_CONTROL_PLANE_SYNC_JITTER_MS;
     this.#egressRequireLabels = options.egressRequireLabels;
-    this.#scheduleRefresh();
-    this.#listenForEvents();
-    this.#keepRouterAdmissions();
-    if (this.#syncIntervalMs > 0) {
-      this.#scheduleSync(Math.min(FIRST_CONTROL_PLANE_SYNC_MS, this.#syncIntervalMs));
-    }
-    if (relayListener !== undefined) {
-      this.#relayTimer = setInterval(() => void this.keepRelay().catch(() => {}), options.relayCheckIntervalMs ?? DEFAULT_RELAY_CHECK_MS);
-      this.#relayTimer.unref?.();
+    this.#taskBiscuit = taskBiscuit;
+    this.#isTaskView = taskBiscuit !== undefined;
+    if (!this.#isTaskView) {
+      this.#scheduleRefresh();
+      this.#listenForEvents();
+      this.#keepRouterAdmissions();
+      if (this.#syncIntervalMs > 0) {
+        this.#scheduleSync(Math.min(FIRST_CONTROL_PLANE_SYNC_MS, this.#syncIntervalMs));
+      }
+      if (relayListener !== undefined) {
+        this.#relayTimer = setInterval(() => void this.keepRelay().catch(() => {}), options.relayCheckIntervalMs ?? DEFAULT_RELAY_CHECK_MS);
+        this.#relayTimer.unref?.();
+      }
     }
   }
 
   get peerId(): string {
     return this.node.peerId.toString();
+  }
+
+  /** The Biscuit presented on outbound service calls (task-attenuated when derived via attenuate()). */
+  get biscuit(): Uint8Array {
+    return this.#taskBiscuit ?? this.mesh.credential.biscuit;
+  }
+
+  /**
+   * Returns a task-scoped MeshSession view sharing the underlying libp2p host
+   * whose outbound MCP and HTTP service calls carry a Biscuit attenuated offline
+   * in memory with rule.
+   */
+  async attenuate(rule: MessageInitShape<typeof TaskAuthorizationRuleSchema>): Promise<MeshSession> {
+    const nextBiscuit = await attenuateBiscuit(this.biscuit, rule, this.mesh.credential.controlPlaneKeys);
+    return this.#deriveWithBiscuit(nextBiscuit);
+  }
+
+  /**
+   * Returns a MeshSession view whose outbound Biscuit is sealed so downstream
+   * holders cannot append any further blocks.
+   */
+  async seal(): Promise<MeshSession> {
+    const sealed = await sealBiscuit(this.biscuit, this.mesh.credential.controlPlaneKeys);
+    return this.#deriveWithBiscuit(sealed);
+  }
+
+  #deriveWithBiscuit(taskBiscuit: Uint8Array): MeshSession {
+    const opts: JoinOptions = {
+      refreshLeadMs: this.#refreshLeadMs,
+      refreshRetryMs: this.#refreshRetryMs,
+      policySyncIntervalMs: this.#policySyncMs,
+      controlPlaneSyncIntervalMs: 0,
+      controlPlaneSyncJitterMs: this.#syncJitterMs,
+      ...(this.#egressRequireLabels !== undefined ? { egressRequireLabels: this.#egressRequireLabels } : {}),
+    };
+    return new MeshSession(this.mesh, this.node, this.routers, this.authenticatedPeers, this.banned, opts, this.#relayListener, taskBiscuit);
   }
 
   /**
@@ -478,7 +532,7 @@ export class MeshSession {
    */
   async openMCP(peer: Peer, targetService: string, options: MCPSessionOptions = {}): Promise<MCPSession> {
     const conn = await this.connect(peer, options.signal);
-    return openMCPSession(conn, this.mesh.authFrame(targetService), this.mesh.credential.controlPlaneKeys, options, this.#egressRequireLabels);
+    return openMCPSession(conn, encodeAuthFrame(this.biscuit, targetService), this.mesh.credential.controlPlaneKeys, options, this.#egressRequireLabels);
   }
 
   /** Lists the tools a provider serves for a service. */
@@ -640,7 +694,7 @@ export class MeshSession {
    */
   async request(peer: Peer, targetService: string, path: string, options: HTTPRequestOptions = {}): Promise<HTTPResponse> {
     const conn = await this.#egressConnection(peer, options.signal);
-    return httpRequestOverStream(conn, this.mesh.credential.biscuit, targetService, path, options);
+    return httpRequestOverStream(conn, this.biscuit, targetService, path, options);
   }
 
   /**
@@ -677,7 +731,7 @@ export class MeshSession {
       if (init?.signal !== undefined && init.signal !== null) {
         streamOptions.signal = init.signal;
       }
-      return fetchOverStream(conn, this.mesh.credential.biscuit, request, streamOptions);
+      return fetchOverStream(conn, this.biscuit, request, streamOptions);
     };
   }
 
@@ -741,7 +795,9 @@ export class MeshSession {
     clearTimeout(this.#syncTimer);
     clearInterval(this.#policyTimer);
     clearInterval(this.#relayTimer);
-    await this.node.stop();
+    if (!this.#isTaskView) {
+      await this.node.stop();
+    }
   }
 }
 

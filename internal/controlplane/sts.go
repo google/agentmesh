@@ -646,9 +646,10 @@ func (s *Server) HandleSTSToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "destination is required", http.StatusBadRequest)
 		return
 	}
-	audience := strings.TrimSpace(req.Audience)
-	if audience == "" {
-		audience = "https://" + strings.TrimSpace(req.Destination)
+	audience, audErr := s.resolveEgressAudience(r.Context(), req.Destination, req.Audience)
+	if audErr != nil {
+		http.Error(w, audErr.Error(), http.StatusForbidden)
+		return
 	}
 
 	nodePubKey, err := crypto.UnmarshalPublicKey(nodeRecord.PublicKey)
@@ -748,6 +749,35 @@ func (s *Server) HandleSTSToken(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/x-protobuf")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(respData)
+}
+
+func (s *Server) resolveEgressAudience(ctx context.Context, destination, reqAudience string) (string, error) {
+	destHost := api.NormalizeMeshHost(strings.TrimPrefix(strings.TrimSpace(destination), api.EgressServicePrefix))
+	reqAud := strings.TrimSpace(reqAudience)
+	if egressList, err := s.store.GetEgressDestinations(ctx); err == nil {
+		for _, d := range egressList {
+			if d != nil && d.GetName() == destHost {
+				if fed := d.GetBroker().GetOidcFederation(); fed != nil && strings.TrimSpace(fed.GetAudience()) != "" {
+					policyAud := strings.TrimSpace(fed.GetAudience())
+					if reqAud != "" && reqAud != policyAud {
+						return "", fmt.Errorf("requested audience %q does not match policy audience for egress://%s", reqAud, destHost)
+					}
+					return policyAud, nil
+				}
+				if aws := d.GetBroker().GetAwsAssumeRole(); aws != nil && strings.TrimSpace(aws.GetRoleArn()) != "" {
+					if reqAud == "" {
+						return "sts.amazonaws.com", nil
+					}
+					return reqAud, nil
+				}
+				break
+			}
+		}
+	}
+	if reqAud != "" {
+		return reqAud, nil
+	}
+	return "https://" + destHost, nil
 }
 
 func (s *Server) authorizeBiscuitForEgress(ctx context.Context, rawBiscuit []byte, destination string) (*identity.VerifiedBiscuitClaims, int, error) {

@@ -474,6 +474,18 @@ var migrations = []migration{
 			)`,
 		},
 	},
+	{
+		// Persist the full EgressDestination protojson (broker, inspection,
+		// mode, ports, preserve_host, forward_context) while keeping the
+		// existing columns for backward compatibility.
+		version: 13,
+		postgres: []string{
+			`ALTER TABLE egress_destinations ADD COLUMN IF NOT EXISTS config_json TEXT DEFAULT '' NOT NULL`,
+		},
+		sqlite: []string{
+			`ALTER TABLE egress_destinations ADD COLUMN config_json TEXT DEFAULT '' NOT NULL`,
+		},
+	},
 }
 
 func (s *SQLStore) initSchema() error {
@@ -1215,6 +1227,7 @@ func (s *SQLStore) saveEgressDestinationsTx(ctx context.Context, tx *sql.Tx, egr
 	if _, err := tx.ExecContext(ctx, "DELETE FROM egress_destinations"); err != nil {
 		return err
 	}
+	marshaler := protojson.MarshalOptions{UseProtoNames: true}
 	for _, d := range egress {
 		if d == nil {
 			continue
@@ -1223,8 +1236,12 @@ func (s *SQLStore) saveEgressDestinationsTx(ctx context.Context, tx *sql.Tx, egr
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, s.rebind("INSERT INTO egress_destinations (name, target_url, credential, served_by) VALUES (?, ?, ?, ?)"),
-			d.GetName(), d.GetTargetUrl(), d.GetCredential(), string(servedBy)); err != nil {
+		cfgBytes, err := marshaler.Marshal(d)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, s.rebind("INSERT INTO egress_destinations (name, target_url, credential, served_by, config_json) VALUES (?, ?, ?, ?, ?)"),
+			d.GetName(), d.GetTargetUrl(), d.GetCredential(), string(servedBy), string(cfgBytes)); err != nil {
 			return err
 		}
 	}
@@ -1234,17 +1251,26 @@ func (s *SQLStore) saveEgressDestinationsTx(ctx context.Context, tx *sql.Tx, egr
 // GetEgressDestinations loads the egress section of the mesh policy, in name
 // order so the rendered document and rules are stable.
 func (s *SQLStore) GetEgressDestinations(ctx context.Context) ([]*api.EgressDestination, error) {
-	rows, err := s.db.QueryContext(ctx, s.rebind("SELECT name, target_url, credential, served_by FROM egress_destinations ORDER BY name"))
+	rows, err := s.db.QueryContext(ctx, s.rebind("SELECT name, target_url, credential, served_by, config_json FROM egress_destinations ORDER BY name"))
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 
+	unmarshaler := protojson.UnmarshalOptions{DiscardUnknown: true}
 	var egress []*api.EgressDestination
 	for rows.Next() {
-		var name, targetURL, credential, servedByJSON string
-		if err := rows.Scan(&name, &targetURL, &credential, &servedByJSON); err != nil {
+		var name, targetURL, credential, servedByJSON, configJSON string
+		if err := rows.Scan(&name, &targetURL, &credential, &servedByJSON, &configJSON); err != nil {
 			return nil, err
+		}
+		if strings.TrimSpace(configJSON) != "" {
+			var dest api.EgressDestination
+			if err := unmarshaler.Unmarshal([]byte(configJSON), &dest); err != nil {
+				return nil, fmt.Errorf("egress %s: stored config_json does not parse: %w", name, err)
+			}
+			egress = append(egress, &dest)
+			continue
 		}
 		var servedBy []string
 		if err := json.Unmarshal([]byte(servedByJSON), &servedBy); err != nil {

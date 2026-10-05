@@ -21,6 +21,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Mapping, Optional
 
+from ._proto import sam_pb2 as pb
 from .controlplane import ROLE_NODE, ControlPlaneClient, Enrollment, Transport
 from .credential import MeshCredential, encode_auth_frame
 from .identity import Identity
@@ -69,6 +70,14 @@ class AgentMesh:
     @property
     def credential(self) -> MeshCredential:
         return self._credential
+
+    def attenuate(self, rule: pb.TaskAuthorizationRule) -> MeshCredential:
+        """Returns a new MeshCredential with a tar_block appended offline in memory."""
+        return self._credential.attenuate(rule)
+
+    def seal(self) -> MeshCredential:
+        """Returns a new MeshCredential with its biscuit sealed against further attenuation."""
+        return self._credential.seal()
 
     @classmethod
     def enroll(
