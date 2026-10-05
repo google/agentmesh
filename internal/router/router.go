@@ -202,6 +202,10 @@ type Router struct {
 
 	metricsServer *http.Server
 	metricsAddr   net.Addr
+
+	// identityLoggedAt is when the "Router Online" line was last written.
+	identityLoggedAt atomic.Pointer[time.Time]
+	authFailureLog   perPeerLogLimiter
 }
 
 // NewRouter initializes the router.
@@ -301,6 +305,14 @@ func perIPConnResourceManager(limit int) (network.ResourceManager, error) {
 	)
 }
 
+// defaultResourceManager is what libp2p installs when none is given, built
+// here so it can be wrapped.
+func defaultResourceManager() (network.ResourceManager, error) {
+	limits := rcmgr.DefaultLimits
+	libp2p.SetDefaultServiceLimits(&limits)
+	return rcmgr.NewResourceManager(rcmgr.NewFixedLimiter(limits.AutoScale()))
+}
+
 // Start performs enrollment, syncs keys, launches libp2p host, and starts tasks.
 func (r *Router) Start() error {
 	// The operator listener comes up first so /healthz answers while
@@ -376,13 +388,19 @@ func (r *Router) Start() error {
 		}),
 	}
 
+	// Every refusal the resource manager makes is counted and logged with
+	// its source, whether the per-IP cap is the configured one or libp2p's
+	// default; a refused dialer only sees its connection close before TLS.
+	var mgr network.ResourceManager
 	if r.config.ConnsPerSourceIP > 0 {
-		mgr, err := perIPConnResourceManager(r.config.ConnsPerSourceIP)
-		if err != nil {
-			return fmt.Errorf("failed to create resource manager: %w", err)
-		}
-		p2pOpts = append(p2pOpts, libp2p.ResourceManager(mgr))
+		mgr, err = perIPConnResourceManager(r.config.ConnsPerSourceIP)
+	} else {
+		mgr, err = defaultResourceManager()
 	}
+	if err != nil {
+		return fmt.Errorf("failed to create resource manager: %w", err)
+	}
+	p2pOpts = append(p2pOpts, libp2p.ResourceManager(observeResourceManager(mgr)))
 
 	hostNode, err := libp2p.New(p2pOpts...)
 	if err != nil {
@@ -1030,9 +1048,24 @@ func (r *Router) renewLease() {
 		} else {
 			logger.Debugf("Lease renewed successfully. Expires at: %s", leaseResp.GetExpireTime().AsTime().Format(time.RFC3339))
 			leaseRenewalsTotal.WithLabelValues(leaseOK).Inc()
+			r.logIdentityPeriodically()
 		}
 		return
 	}
+}
+
+// identityLogInterval is how often the router restates who it is. Container
+// logs rotate, and the startup line is the first to go; an operator reading
+// the log should still find the peer ID within the last hour of it.
+const identityLogInterval = time.Hour
+
+func (r *Router) logIdentityPeriodically() {
+	now := time.Now()
+	if last := r.identityLoggedAt.Load(); last != nil && now.Sub(*last) < identityLogInterval {
+		return
+	}
+	r.identityLoggedAt.Store(&now)
+	logger.Infof("Router Online. PeerID: %s, ListenAddrs: %v, ConnectedPeers: %d", r.Host.ID(), r.Host.Addrs(), len(r.Host.Network().Peers()))
 }
 
 // reconcileBannedPeers replaces the local blocklist with the control plane's
@@ -1240,7 +1273,12 @@ func (r *Router) HandleAuthHandshake(s network.Stream) {
 	// Verify Biscuit
 	_, err = identity.VerifyBiscuit(exchange.Biscuit, remotePeer, r.getTrustedPublicKeys(), r.config.BiscuitTimeout)
 	if err != nil {
-		logger.Warnf("[AuthN] Authorization failed for peer %s: %v", remotePeer, err)
+		// A peer stuck on a bad credential retries every few seconds for
+		// days; one line a minute per peer keeps the log readable and the
+		// counter carries the rate.
+		if r.authFailureLog.allow(remotePeer, time.Now()) {
+			logger.Warnf("[AuthN] Authorization failed for peer %s: %v (further failures from this peer are logged once per minute)", remotePeer, err)
+		}
 		authHandshakesTotal.WithLabelValues(handshakeUnauthorized).Inc()
 		_ = s.Reset()
 		return

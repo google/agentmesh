@@ -14,7 +14,7 @@
 
 import type { MessageInitShape } from "@bufbuild/protobuf";
 import { toHex } from "./bytes.ts";
-import { ControlPlaneClient, ROLE_NODE, type Enrollment } from "./controlplane.ts";
+import { ControlPlaneClient, KeysNotTrustedError, ROLE_NODE, type Enrollment } from "./controlplane.ts";
 import {
   attenuateCredential,
   credentialFromJSON,
@@ -36,6 +36,41 @@ const IDENTITY_FILE = "identity.key";
 const CREDENTIAL_FILE = "credential.json";
 /** A saved credential with less validity left than this is not worth resuming; enroll again instead. */
 const REUSE_MIN_TTL_SECONDS = 5 * 60;
+
+/**
+ * The saved credential was issued under a signing key the control plane no
+ * longer serves, so nothing can verify or refresh it; the member must enroll
+ * again with a token.
+ */
+export class CredentialRetiredError extends Error {
+  constructor(stateDir: string) {
+    super(
+      `the credential in ${stateDir} was issued under a key the control plane no longer serves ` +
+        "(the member was off for longer than the key grace period); enroll again with a token",
+    );
+    this.name = "CredentialRetiredError";
+  }
+}
+
+/**
+ * The saved credential with the control plane's current keys adopted, or
+ * undefined when the control plane vouches for none of the keys it trusts. A
+ * control plane that cannot be reached, or answers in a way that is not a
+ * verdict on the keys, leaves the credential as it is: the pull before join
+ * tries again.
+ */
+async function resumableCredential(controlPlane: ControlPlaneClient, credential: MeshCredential): Promise<MeshCredential | undefined> {
+  let keys: Uint8Array[];
+  try {
+    keys = await controlPlane.keys(credential.controlPlaneKeys);
+  } catch (err) {
+    return err instanceof KeysNotTrustedError ? undefined : credential;
+  }
+  if (keys.length === 0 || sameKeySet(keys, credential.controlPlaneKeys)) {
+    return credential;
+  }
+  return { ...credential, controlPlaneKeys: keys };
+}
 
 export interface AgentMeshOptions {
   /** Base URL of the control plane, e.g. https://mesh.example.com. */
@@ -147,7 +182,11 @@ export class AgentMesh {
    * When stateDir already holds an unexpired credential from this control
    * plane for the saved identity, that member is returned and no token is
    * needed, so a program can call enroll on every start and read the token
-   * from its environment only on the first. Otherwise exactly one of
+   * from its environment only on the first. A credential is resumed only
+   * while the control plane still serves a key the member trusts: one issued
+   * under a key that retired while the member was off cannot be verified or
+   * refreshed, so the member enrolls again with the token given, or throws
+   * CredentialRetiredError without one. Otherwise exactly one of
    * bootstrapToken, bootstrapTokenPath, jwt or jwtPath must be given. Delete
    * the state directory to enroll afresh, for instance with other labels.
    */
@@ -157,13 +196,23 @@ export class AgentMesh {
     const identity = options.identity ?? saved ?? Identity.generate();
     const controlPlane = newClient(options);
     const jwtSource = resolveJwtSource(options);
+    const given = [options.bootstrapToken, options.bootstrapTokenPath, options.jwt, options.jwtPath].filter((v) => v !== undefined).length;
     if (state !== undefined && saved !== undefined && saved.peerId === identity.peerId) {
       const credential = await loadCredential(state);
       if (credential !== undefined && sameBaseUrl(credential.controlPlaneUrl, controlPlane.url) && credentialTimeToLiveSeconds(credential) > REUSE_MIN_TTL_SECONDS) {
-        return new AgentMesh(identity, controlPlane, credential, state, jwtSource);
+        const resumed = await resumableCredential(controlPlane, credential);
+        if (resumed !== undefined) {
+          const mesh = new AgentMesh(identity, controlPlane, resumed, state, jwtSource);
+          if (resumed !== credential) {
+            await mesh.save();
+          }
+          return mesh;
+        }
+        if (given === 0) {
+          throw new CredentialRetiredError(options.stateDir as string);
+        }
       }
     }
-    const given = [options.bootstrapToken, options.bootstrapTokenPath, options.jwt, options.jwtPath].filter((v) => v !== undefined).length;
     if (given !== 1) {
       const where = options.stateDir !== undefined ? ` (no credential to resume in ${options.stateDir})` : "";
       throw new Error(`exactly one of bootstrapToken, bootstrapTokenPath, jwt or jwtPath is required${where}`);

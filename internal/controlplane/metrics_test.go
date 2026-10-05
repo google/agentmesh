@@ -16,6 +16,8 @@ package controlplane
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -155,6 +157,23 @@ func seedMeshState(t *testing.T, store storage.Store, now time.Time) {
 			t.Fatalf("request %s: %v", reqs[i].ID, err)
 		}
 	}
+
+	// A rotation in its grace period: the first key retires in an hour, the
+	// second signs now.
+	for i, grace := range []time.Duration{0, time.Hour} {
+		pub, priv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			err = store.SaveInitialKey(ctx, priv, pub)
+		} else {
+			err = store.RotateKeys(ctx, priv, pub, grace)
+		}
+		if err != nil {
+			t.Fatalf("key %d: %v", i, err)
+		}
+	}
 }
 
 func TestMeshStateCollectorExportsStoreState(t *testing.T) {
@@ -196,6 +215,16 @@ func TestMeshStateCollectorExportsStoreState(t *testing.T) {
 
 	// node-a counted once, routers excluded, node-z behind a dead lease ignored.
 	g.want(t, "sam_control_plane_mesh_connected_peers", 3)
+
+	// Both keys verify during the grace period; the retiring one's expiry is exported.
+	g.want(t, "sam_control_plane_signing_keys", 2)
+	retiring, ok := g["sam_control_plane_retiring_key_expiry_timestamp_seconds"]
+	if !ok {
+		t.Fatal("retiring key expiry not exported during the grace period")
+	}
+	if until := time.Until(time.Unix(int64(retiring), 0)); until < 55*time.Minute || until > 65*time.Minute {
+		t.Errorf("retiring key expires in %v, want about an hour", until)
+	}
 }
 
 func TestMeshStateCollectorCachesWithinTTL(t *testing.T) {

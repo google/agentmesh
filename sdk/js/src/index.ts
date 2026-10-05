@@ -12,13 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-export { AgentMesh, type AgentMeshOptions, type ControlPlaneSync, type EnrollOptions, type JwtSource } from "./mesh.ts";
+export { AgentMesh, CredentialRetiredError, type AgentMeshOptions, type ControlPlaneSync, type EnrollOptions, type JwtSource } from "./mesh.ts";
 export { Identity, canonicalPeerId, peerIdFromPublicKey, libp2pPublicKey, verifyEd25519 } from "./identity.ts";
 export {
   ControlPlaneClient,
   ControlPlaneError,
   EnrollmentRejectedError,
   InsecureControlPlaneURLError,
+  KeysNotTrustedError,
   ROLE_NODE,
   validateControlPlaneURL,
   verifyKeysResponse,

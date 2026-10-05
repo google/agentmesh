@@ -198,6 +198,19 @@ directory with the other SDK and with an imported `sam-node`. Fields an SDK
 does not use (`receive_time`, `oidc_session`) are carried through on save,
 so a directory survives a round trip through any implementation.
 
+`enroll` resumes the saved credential when it is for this control plane,
+has more than five minutes left, and the control plane still serves a key
+in `trusted_keys`: `/keys` is pulled and verified against the saved set
+before the member is returned, and the keys it names are adopted. A member
+off for longer than the key grace period holds a credential no current
+key signed and a trusted set no current key is in, so neither verifies;
+with a token given, `enroll` enrolls again as the saved identity, and
+without one it raises `CredentialRetiredError`. A control plane that cannot
+be reached leaves the saved credential in force; the pull before join tries
+again. `TestKeyRotationWhileMembersOffline` and
+`TestKeyRotationPastGraceWhileMembersOffline` in `tests/integration` run
+both cases against real routers and a real control plane.
+
 ### Control plane (protobuf over HTTP)
 
 All requests and responses are `application/x-protobuf` bodies of the
@@ -714,7 +727,7 @@ one follows is named so a change on one side can be carried to the others.
 | `identity.ts` | `identity.py` | ed25519 key pair, libp2p key encodings, peer ID |
 | `controlplane.ts` | `controlplane.py` | `/info`, `/keys`, `/enroll`, `/enroll/status`, `/register`, `/refresh`, `/policies`, with the challenges of `api/network.go` |
 | `credential.ts` | `credential.py` | what a member holds, `AuthFrame` encoding, `issuedUnderKeys` |
-| `mesh.ts` | `mesh.py` | `AgentMesh`: enroll (resumes an unexpired credential in the state directory before spending a token), load, refresh, `syncControlPlane` as `SyncControlPlane` in `internal/node/controlplane_sync.go`; state directory (`identity.key`, `credential.json`, the same layout in both languages) |
+| `mesh.ts` | `mesh.py` | `AgentMesh`: enroll (resumes a credential in the state directory before spending a token, while the control plane still serves a key it trusts), load, refresh, `syncControlPlane` as `SyncControlPlane` in `internal/node/controlplane_sync.go`; state directory (`identity.key`, `credential.json`, the same layout in both languages) |
 | `biscuit.ts` | `biscuit.py` | verification of a peer's credential, as `internal/identity.verifyBiscuit` |
 | `host.ts` | `host.py` | the libp2p host as `internal/node/node.go` configures it, plus gossipsub and the connection gater |
 | `auth.ts` | `auth.py` | `/sam/auth/1.0.0` on both sides, as `HandleAuthHandshake` |

@@ -71,7 +71,7 @@ render() {
 # -- which made an earlier version of this test pass a manifest whose
 # apps/v1beta1 would have broken the rollout it exists to protect.
 unservable() {
-  local kinds='Gateway|HTTPRoute|HealthCheckPolicy|GCPBackendPolicy|PodMonitoring'
+  local kinds='Gateway|HTTPRoute|HealthCheckPolicy|GCPBackendPolicy|PodMonitoring|Rules'
   ! grep -qvE "no matches for kind \"(${kinds})\"|ensure CRDs are installed|^[[:space:]]*$" <<<"$1"
 }
 

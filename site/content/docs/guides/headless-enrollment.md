@@ -205,8 +205,10 @@ A node enrolled with a bootstrap token has no login or platform token source
 to fall back on. Its credential is refreshed automatically while it runs. But if the node is off
 for longer than the control plane's key grace period (`--key-grace-period`,
 one hour by default), it comes back with a credential signed by a retired
-key, and `/refresh` refuses it. There are three ways out, in order of
-preference.
+key, and `/refresh` refuses it. An SDK member in the same position enrolls
+again on start when its `enroll` call is given a token, and otherwise
+fails with `CredentialRetiredError` naming the state directory. There are
+three ways out, in order of preference.
 
 **Enroll again.** Mint a new token and run `sam-node join` with it. The
 control plane already knows the peer ID, so it mints a new credential

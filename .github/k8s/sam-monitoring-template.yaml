@@ -51,3 +51,105 @@ spec:
     fromPod:
     - from: app
       to: canary
+---
+# Alerts on the conditions behind past testnet outages. A Rules object
+# evaluates over series scraped in its own namespace, so the control plane
+# and router PodMonitorings above are what these see. Each alert names in
+# its description what to look at first.
+apiVersion: monitoring.googleapis.com/v1
+kind: Rules
+metadata:
+  name: sam-mesh-${ENV_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  groups:
+  - name: sam-mesh
+    interval: 60s
+    rules:
+    # A router that refuses inbound connections closes them before TLS, so a
+    # member only sees "stream closed" and the router's own log shows
+    # nothing unless this counter moves. per_ip_limit from one source for
+    # long means the per-IP count has drifted from the sockets that exist.
+    - alert: SamRouterRefusingInboundConnections
+      expr: sum by (pod, reason) (rate(sam_router_inbound_connections_refused_total[10m])) > 0.01
+      for: 15m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Router {{ $labels.pod }} is refusing inbound connections ({{ $labels.reason }})"
+        description: "{{ $value | humanize }} refusals/s for 15m. `kubectl logs {{ $labels.pod }} | grep '\\[Conn\\] Refused'` names the source IPs; compare sam_router_conns_per_source_ip_limit with the connections the router really holds from that IP (`ss -tn` in its network namespace). A restart of the router clears a drifted per-IP count."
+    # One peer failing the handshake every few seconds for an hour holds a
+    # credential the control plane no longer signs for, or a peer that
+    # cannot pull /keys; it also floods the router log.
+    - alert: SamRouterHandshakesFailing
+      expr: sum by (pod) (rate(sam_router_auth_handshakes_total{result="unauthorized"}[10m])) > 0.05
+      for: 1h
+      labels:
+        severity: warning
+      annotations:
+        summary: "Router {{ $labels.pod }} rejects handshakes continuously"
+        description: "{{ $value | humanize }} unauthorized handshakes/s for 1h. `kubectl logs {{ $labels.pod }} | grep 'Authorization failed'` names the peer; a credential signed by a retired key means that member did not follow the last rotation (sam_control_plane_retiring_key_expiry_timestamp_seconds says when the retiring key stopped verifying)."
+    # Every router renews its lease within a minute; a router that stops is
+    # down or cannot reach the control plane, and the DNS and /info lists
+    # keep advertising it until the lease lapses. Both control plane
+    # replicas export the same figure; max collapses them, and the slack
+    # covers the scrape interval and the store's refresh TTL.
+    - alert: SamRouterLeaseNotRenewed
+      expr: time() - max by (namespace, router) (sam_control_plane_router_lease_renewed_timestamp_seconds) > 600
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Router {{ $labels.router }} has not renewed its lease for 5m"
+        description: "Last renewal {{ $value | humanizeDuration }} ago. Check the router pod's state and `sam_router_lease_renewals_total{result!=\"ok\"}` on it."
+    # The mesh had no router at all for a scrape: nothing can enroll, join
+    # or be reached.
+    - alert: SamNoActiveRouter
+      expr: sam_control_plane_routers_active < 1
+      for: 2m
+      labels:
+        severity: critical
+      annotations:
+        summary: "No router holds a lease on ${ENV_NAME}"
+    # A key rotation whose grace period ends while members still hold the
+    # retiring key is how members fall off the mesh at once; two keys for
+    # longer than the configured grace period means a rotation did not
+    # complete.
+    - alert: SamSigningKeyRotationStuck
+      expr: sam_control_plane_signing_keys > 2 or (sam_control_plane_retiring_key_expiry_timestamp_seconds - time() < 0)
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Signing key set on ${ENV_NAME} is not the expected one current key plus at most one retiring key"
+        description: "sam_control_plane_signing_keys={{ $value }}; check the keyring and the control plane log for 'Key rotation'."
+    # The control plane's own view of the mesh is stale: its store read
+    # failed, so every gauge above is the last good one.
+    - alert: SamControlPlaneStoreUnreadable
+      expr: sam_control_plane_mesh_state_scrape_success == 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Control plane on ${ENV_NAME} cannot read its store"
+---
+# The canaries' verdict is their readiness; a canary pod that is not ready
+# is a member that cannot reach its agent across the mesh.
+apiVersion: monitoring.googleapis.com/v1
+kind: Rules
+metadata:
+  name: sam-canaries-${ENV_NAME}
+  namespace: sam-canary-${ENV_NAME}
+spec:
+  groups:
+  - name: sam-canaries
+    interval: 60s
+    rules:
+    - alert: SamCanaryNotReady
+      expr: min by (pod) (kube_pod_status_ready{namespace="sam-canary-${ENV_NAME}",condition="true"}) == 0
+      for: 20m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Canary {{ $labels.pod }} on ${ENV_NAME} has not been ready for 20m"
+        description: "`kubectl logs -n sam-canary-${ENV_NAME} {{ $labels.pod }} -c caller | tail -3` gives the error and the per-router detail of the last calls."

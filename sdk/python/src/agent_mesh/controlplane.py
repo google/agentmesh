@@ -65,6 +65,12 @@ class EnrollmentRejectedError(Exception):
     """The control plane answered, and the answer is a refusal."""
 
 
+class KeysNotTrustedError(ValueError):
+    """The /keys answer is signed by no key this member trusts: every key it
+    holds has left the control plane's set, so its credential cannot be
+    verified or refreshed either."""
+
+
 class InsecureControlPlaneURLError(Exception):
     """Plaintext http:// to a host that is not loopback; see api.ValidateControlPlaneTransport."""
 
@@ -141,7 +147,7 @@ def verify_keys_response(resp: pb.KeysResponse, trusted: Sequence[bytes], now_ms
         if not verified and any(t == pub for t in trusted) and verify_ed25519(pub, payload, sig):
             verified = True
     if not verified:
-        raise ValueError("keys response is not signed by any trusted control plane key")
+        raise KeysNotTrustedError("keys response is not signed by any trusted control plane key")
     return keys
 
 

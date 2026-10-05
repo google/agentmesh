@@ -25,7 +25,7 @@ import pytest
 from agent_mesh._proto import sam_pb2 as pb
 from agent_mesh.credential import decode_auth_response
 from agent_mesh.identity import Identity
-from agent_mesh.mesh import AgentMesh
+from agent_mesh.mesh import AgentMesh, CredentialRetiredError
 from google.protobuf.timestamp_pb2 import Timestamp
 
 
@@ -55,6 +55,8 @@ class FakeControlPlane:
         self.refresh_delay = refresh_delay
         self.last_biscuit = b""
         self.last_refresh_jwt = ""
+        # What /keys serves and signs with; a test rotates by replacing it.
+        self.keys = [CP_KEY]
         self._lock = threading.Lock()
 
     def _issue(self, biscuit):
@@ -64,8 +66,9 @@ class FakeControlPlane:
 
     def _signed_keys(self):
         ts = int(time.time() * 1000)
-        unsigned = pb.KeysResponse(public_keys=[CP_KEY.public_key_raw], sign_time=_ts_ms(ts))
-        return pb.KeysResponse(public_keys=[CP_KEY.public_key_raw], sign_time=_ts_ms(ts), signatures=[CP_KEY.sign(unsigned.SerializeToString(deterministic=True))])
+        public = [k.public_key_raw for k in self.keys]
+        payload = pb.KeysResponse(public_keys=public, sign_time=_ts_ms(ts)).SerializeToString(deterministic=True)
+        return pb.KeysResponse(public_keys=public, sign_time=_ts_ms(ts), signatures=[k.sign(payload) for k in self.keys])
 
     def transport(self, method, url, headers, body):
         path = urllib.parse.urlsplit(url).path
@@ -74,7 +77,7 @@ class FakeControlPlane:
             jwt = pb.EnrollRequest.FromString(body).jwt
             return 200, pb.EnrollResponse(
                 biscuit_token=self._issue(f"biscuit-for-{jwt}".encode()),
-                control_plane_public_key=CP_KEY.public_key_raw,
+                control_plane_public_key=self.keys[-1].public_key_raw,
                 router_addresses=["/dns4/router.example/tcp/4001/p2p/12D3KooWP8iKhDf3iCMo2H3butNVfdTUtYwYWYQ75jTGnynXPFMp"],
                 expire_time=_ts_s(int(time.time()) + 3600),
             ).SerializeToString()
@@ -82,7 +85,7 @@ class FakeControlPlane:
             return 200, pb.BootstrapEnrollResponse(
                 status=pb.ENROLLMENT_STATUS_APPROVED,
                 biscuit_token=self._issue(f"biscuit-{self.issued + 1}".encode()),
-                control_plane_public_key=CP_KEY.public_key_raw,
+                control_plane_public_key=self.keys[-1].public_key_raw,
                 router_addresses=["/dns4/router.example/tcp/4001/p2p/12D3KooWP8iKhDf3iCMo2H3butNVfdTUtYwYWYQ75jTGnynXPFMp"],
                 expire_time=_ts_s(int(time.time()) + 3600),
             ).SerializeToString()
@@ -153,6 +156,41 @@ def test_enroll_persists_load_resumes_refresh_rotates(tmp_path):
     (state / "credential.json").write_text(json.dumps(expiring))
     AgentMesh.enroll("http://127.0.0.2:1", bootstrap_token="sbt_secret", state_dir=state, transport=cp.transport)
     assert cp.issued == issued_before + 2
+
+
+def test_enroll_resumes_only_a_credential_the_control_plane_still_vouches_for(tmp_path):
+    """A member off across a rotation comes back with a credential and a trust
+    set from before it. Within the grace period the retiring key still signs
+    /keys, so the credential is resumed and the new key adopted. Past it, the
+    control plane serves only keys the member never saw: the credential is
+    dead, and the member enrolls again with the token it has, or says so."""
+    cp = FakeControlPlane()
+    state = tmp_path / "state"
+    mesh = AgentMesh.enroll("http://127.0.0.1:1", bootstrap_token="sbt_secret", state_dir=state, transport=cp.transport)
+    issued = cp.issued
+
+    # Within the grace period: resumed, both keys trusted, and persisted so.
+    rotated = Identity.generate()
+    cp.keys = [CP_KEY, rotated]
+    within = AgentMesh.enroll("http://127.0.0.1:1", state_dir=state, transport=cp.transport)
+    assert within.credential.biscuit == mesh.credential.biscuit and cp.issued == issued
+    assert {bytes(k) for k in within.credential.control_plane_keys} == {CP_KEY.public_key_raw, rotated.public_key_raw}
+    assert len(json.loads((state / "credential.json").read_text())["trusted_keys"]) == 2
+
+    # The control plane cannot be reached: resumed as saved; join tries again.
+    cp.keys_ok = False
+    assert AgentMesh.enroll("http://127.0.0.1:1", state_dir=state, transport=cp.transport).credential.biscuit == mesh.credential.biscuit
+    cp.keys_ok = True
+
+    # Past the grace period, from the state as it was before the rotation.
+    (state / "credential.json").write_text(json.dumps({**json.loads((state / "credential.json").read_text()), "trusted_keys": [{"public_key": base64.b64encode(CP_KEY.public_key_raw).decode()}]}))
+    cp.keys = [rotated]
+    with pytest.raises(CredentialRetiredError, match="key the control plane no longer serves"):
+        AgentMesh.enroll("http://127.0.0.1:1", state_dir=state, transport=cp.transport)
+    again = AgentMesh.enroll("http://127.0.0.1:1", bootstrap_token="sbt_secret", state_dir=state, transport=cp.transport)
+    assert again.peer_id == mesh.peer_id
+    assert again.credential.biscuit != mesh.credential.biscuit and cp.issued == issued + 1
+    assert [bytes(k) for k in again.credential.control_plane_keys] == [rotated.public_key_raw]
 
 
 def test_state_dir_and_token_path_expand_home(tmp_path, monkeypatch):

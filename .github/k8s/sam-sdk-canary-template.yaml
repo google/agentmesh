@@ -244,14 +244,24 @@ data:
     REACHABLE=${SAM_CANARY_DIR:-/var/run/sam}/reachable
 
     verdict() {
-      printf '{"canary":"%s","ok":%s,"agent_peer":"%s","call_s":%d,"error":"%s"}\n' \
-        "$CANARY" "$1" "${AGENT_PEER:-}" "$2" "$(printf '%s' "$3" | tr -d '"\n' | cut -c1-300)"
+      printf '{"canary":"%s","ok":%s,"agent_peer":"%s","call_s":%d,"error":"%s","detail":"%s"}\n' \
+        "$CANARY" "$1" "${AGENT_PEER:-}" "$2" "$(printf '%s' "$3" | tr -d '"\n' | cut -c1-300)" "$(printf '%s' "${4:-}" | tr -d '"' | tr '\n' ' ' | cut -c1-600)"
     }
 
     # The line naming the error: Node prints it before the stack trace and
     # Python after, so the end of the output is not the place to look.
     reason() {
       printf '%s\n' "$1" | grep -m1 -E '^[A-Za-z_.]*(Error|Exception)\b' || printf '%s' "$1" | tail -c 200
+    }
+
+    # What the SDKs put under the error line: one indented line per address
+    # or router tried and why it failed (NO_RESERVATION, a closed stream, a
+    # refused handshake). Only lines after the error line count, so neither
+    # Python's source frames nor Node's throw site are taken; Node's stack
+    # frames ("at ...") and its error-list brackets are dropped too.
+    detail() {
+      printf '%s\n' "$1" | sed -n '/^[A-Za-z_.]*\(Error\|Exception\)\b/,$p' | tail -n +2 \
+        | grep -E '^[[:space:]]+[^[:space:]]' | grep -vE '^[[:space:]]+(at |\[errors\]|\]|\}|code:|\[cause\])' | sed 's/^[[:space:]]*//; s/,$//' | head -8
     }
 
     while :; do
@@ -268,7 +278,7 @@ data:
         sleep "$INTERVAL"
       else
         rm -f "$REACHABLE"
-        verdict false $(( $(date +%s) - start )) "$(reason "$out")"
+        verdict false $(( $(date +%s) - start )) "$(reason "$out")" "$(detail "$out")"
         # A failed call is retried soon; the readiness probe already shows it.
         sleep 30
       fi

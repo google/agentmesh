@@ -99,6 +99,8 @@ func TestRouterMetricsListener(t *testing.T) {
 	for _, want := range []string{
 		"sam_router_ready 1",
 		`sam_router_info{peer_id="` + host.ID().String() + `"} 1`,
+		"sam_router_conns_per_source_ip_limit 8",
+		"sam_router_inbound_connections_refused_total",
 		"sam_router_authenticated_peers 2",
 		"sam_router_banned_peers 1",
 		"sam_router_connected_peers 0",

@@ -124,7 +124,7 @@ func newRouterStateCollector(r *Router) *routerStateCollector {
 
 func (c *routerStateCollector) Describe(ch chan<- *prometheus.Desc) {
 	for _, d := range []*prometheus.Desc{
-		c.infoDesc, c.readyDesc, c.authenticatedDesc, c.connectedDesc, c.bannedDesc, c.dhtDesc, c.biscuitExpiryDesc,
+		c.infoDesc, c.readyDesc, c.authenticatedDesc, c.connectedDesc, c.bannedDesc, c.dhtDesc, c.biscuitExpiryDesc, connsPerSourceIPDesc,
 	} {
 		ch <- d
 	}
@@ -132,6 +132,7 @@ func (c *routerStateCollector) Describe(ch chan<- *prometheus.Desc) {
 
 func (c *routerStateCollector) Collect(ch chan<- prometheus.Metric) {
 	r := c.r
+	ch <- prometheus.MustNewConstMetric(connsPerSourceIPDesc, prometheus.GaugeValue, float64(effectiveConnsPerSourceIP(r.config.ConnsPerSourceIP)))
 	// isReady is stored after Host and DHT are assigned, so observing it
 	// true is what makes reading them from this goroutine safe.
 	if !r.isReady.Load() {

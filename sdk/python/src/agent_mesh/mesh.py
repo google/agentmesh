@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Callable, Mapping, Optional
 
 from ._proto import sam_pb2 as pb
-from .controlplane import ROLE_NODE, ControlPlaneClient, Enrollment, Transport
+from .controlplane import ROLE_NODE, ControlPlaneClient, Enrollment, KeysNotTrustedError, Transport
 from .credential import MeshCredential, encode_auth_frame
 from .identity import Identity
 
@@ -32,6 +32,35 @@ _CREDENTIAL_FILE = "credential.json"
 _REUSE_MIN_TTL_SECONDS = 5 * 60
 
 JwtSource = Callable[[], str]
+
+
+class CredentialRetiredError(Exception):
+    """The saved credential was issued under a signing key the control plane
+    no longer serves, so nothing can verify or refresh it; the member must
+    enroll again with a token."""
+
+    def __init__(self, state: Path):
+        super().__init__(
+            f"the credential in {state} was issued under a key the control plane no longer serves "
+            "(the member was off for longer than the key grace period); enroll again with a token"
+        )
+
+
+def _resumable_credential(control_plane: ControlPlaneClient, credential: MeshCredential) -> Optional[MeshCredential]:
+    """The saved credential with the control plane's current keys adopted, or
+    None when the control plane vouches for none of the keys it trusts. A
+    control plane that cannot be reached, or answers in a way that is not a
+    verdict on the keys, leaves the credential as it is: the pull before join
+    tries again."""
+    try:
+        keys = control_plane.keys(credential.control_plane_keys)
+    except KeysNotTrustedError:
+        return None
+    except Exception:  # noqa: BLE001 - unreachable, or an answer that is not about the keys
+        return credential
+    if not keys or {bytes(k) for k in keys} == {bytes(k) for k in credential.control_plane_keys}:
+        return credential
+    return replace(credential, control_plane_keys=[bytes(k) for k in keys])
 
 
 @dataclass(frozen=True)
@@ -112,22 +141,33 @@ class AgentMesh:
         When state_dir already holds an unexpired credential from this control
         plane for the saved identity, that member is returned and no token is
         needed, so a program can call enroll on every start and read the token
-        from its environment only on the first. Otherwise exactly one of
-        bootstrap_token, bootstrap_token_path, jwt or jwt_path must be given; a
-        token is better read from a file or a callback than passed as a value,
-        and jwt_path or a callable jwt also supplies a fresh workload identity
-        token on every refresh. Delete the state directory to enroll afresh,
-        for instance with other labels."""
+        from its environment only on the first. A credential is resumed only
+        while the control plane still serves a key the member trusts: one
+        issued under a key that retired while the member was off cannot be
+        verified or refreshed, so the member enrolls again with the token
+        given, or raises CredentialRetiredError without one. Otherwise exactly
+        one of bootstrap_token, bootstrap_token_path, jwt or jwt_path must be
+        given; a token is better read from a file or a callback than passed as
+        a value, and jwt_path or a callable jwt also supplies a fresh workload
+        identity token on every refresh. Delete the state directory to enroll
+        afresh, for instance with other labels."""
         state = Path(state_dir).expanduser() if state_dir is not None else None
         saved = _load_identity(state)
         identity = identity or saved or Identity.generate()
         control_plane = ControlPlaneClient(control_plane_url, allow_insecure=allow_insecure, transport=transport)
         jwt_source = _resolve_jwt_source(jwt=jwt, jwt_path=jwt_path)
+        given = sum(v is not None for v in (bootstrap_token, bootstrap_token_path, jwt, jwt_path))
         if state is not None and saved is not None and saved.peer_id == identity.peer_id:
             credential = _load_credential(state)
             if credential is not None and credential.control_plane_url.rstrip("/") == control_plane.url.rstrip("/") and credential.time_to_live_seconds() > _REUSE_MIN_TTL_SECONDS:
-                return cls(identity, control_plane, credential, state, jwt_source)
-        given = sum(v is not None for v in (bootstrap_token, bootstrap_token_path, jwt, jwt_path))
+                resumed = _resumable_credential(control_plane, credential)
+                if resumed is not None:
+                    mesh = cls(identity, control_plane, resumed, state, jwt_source)
+                    if resumed is not credential:
+                        mesh.save()
+                    return mesh
+                if given == 0:
+                    raise CredentialRetiredError(state)
         if given != 1:
             where = f" (no credential to resume in {state})" if state is not None else ""
             raise ValueError(f"exactly one of bootstrap_token, bootstrap_token_path, jwt or jwt_path is required{where}")

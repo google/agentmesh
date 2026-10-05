@@ -71,6 +71,18 @@ export class EnrollmentRejectedError extends Error {
   }
 }
 
+/**
+ * The /keys answer is signed by no key this member trusts: every key it
+ * holds has left the control plane's set, so its credential cannot be
+ * verified or refreshed either.
+ */
+export class KeysNotTrustedError extends Error {
+  constructor() {
+    super("keys response is not signed by any trusted control plane key");
+    this.name = "KeysNotTrustedError";
+  }
+}
+
 /** Plaintext http:// to a host that is not loopback; see api.ValidateControlPlaneTransport. */
 export class InsecureControlPlaneURLError extends Error {
   constructor(url: string) {
@@ -194,7 +206,7 @@ export function verifyKeysResponse(resp: KeysResponse, trusted: Uint8Array[], no
     }
   });
   if (!verified) {
-    throw new Error("keys response is not signed by any trusted control plane key");
+    throw new KeysNotTrustedError();
   }
   return keys;
 }

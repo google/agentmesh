@@ -118,6 +118,11 @@ type meshSnapshot struct {
 	tokensByState      map[string]int
 	routers            []storage.RouterLease
 	meshConnectedPeers int
+	// signingKeys is how many keys verify a credential today: one, or two
+	// during the grace period after a rotation. retiringKeyExpiry is when
+	// the retiring one stops verifying; zero when there is none.
+	signingKeys       int
+	retiringKeyExpiry time.Time
 }
 
 // meshStateCollector exports the control plane's view of the mesh: who is
@@ -144,6 +149,8 @@ type meshStateCollector struct {
 	routerDHTDesc    *prometheus.Desc
 	routerLeaseDesc  *prometheus.Desc
 	meshPeersDesc    *prometheus.Desc
+	signingKeysDesc  *prometheus.Desc
+	retiringKeyDesc  *prometheus.Desc
 	scrapeOKDesc     *prometheus.Desc
 	scrapeSampleDesc *prometheus.Desc
 }
@@ -190,6 +197,14 @@ func newMeshStateCollector(store storage.Store) *meshStateCollector {
 			"sam_control_plane_mesh_connected_peers",
 			"Distinct non-router peers connected to at least one active router",
 			nil, nil),
+		signingKeysDesc: prometheus.NewDesc(
+			"sam_control_plane_signing_keys",
+			"Signing keys a credential verifies against: 1, or 2 during the grace period after a rotation",
+			nil, nil),
+		retiringKeyDesc: prometheus.NewDesc(
+			"sam_control_plane_retiring_key_expiry_timestamp_seconds",
+			"Unix time the retiring signing key stops verifying; absent when no rotation is in its grace period",
+			nil, nil),
 		scrapeOKDesc: prometheus.NewDesc(
 			"sam_control_plane_mesh_state_scrape_success",
 			"1 if the mesh state was read from the store, 0 if the last read failed",
@@ -205,7 +220,7 @@ func (c *meshStateCollector) Describe(ch chan<- *prometheus.Desc) {
 	for _, d := range []*prometheus.Desc{
 		c.nodesDesc, c.usersDesc, c.requestsDesc, c.tokensDesc, c.routersDesc,
 		c.routerPeersDesc, c.routerDHTDesc, c.routerLeaseDesc, c.meshPeersDesc,
-		c.scrapeOKDesc, c.scrapeSampleDesc,
+		c.signingKeysDesc, c.retiringKeyDesc, c.scrapeOKDesc, c.scrapeSampleDesc,
 	} {
 		ch <- d
 	}
@@ -248,6 +263,10 @@ func (c *meshStateCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.routerLeaseDesc, prometheus.GaugeValue, float64(r.LastRenewal.Unix()), r.PeerID)
 	}
 	ch <- prometheus.MustNewConstMetric(c.meshPeersDesc, prometheus.GaugeValue, float64(s.meshConnectedPeers))
+	ch <- prometheus.MustNewConstMetric(c.signingKeysDesc, prometheus.GaugeValue, float64(s.signingKeys))
+	if !s.retiringKeyExpiry.IsZero() {
+		ch <- prometheus.MustNewConstMetric(c.retiringKeyDesc, prometheus.GaugeValue, float64(s.retiringKeyExpiry.Unix()))
+	}
 }
 
 // refresh replaces the snapshot from the store. A failed read keeps the last
@@ -311,6 +330,18 @@ func readMeshSnapshot(ctx context.Context, store storage.Store, now time.Time) (
 	}
 	snap.routers = routers
 	snap.meshConnectedPeers = countMeshPeers(routers)
+
+	keys, err := store.GetAllValidKeys(ctx)
+	if err != nil {
+		return snap, err
+	}
+	snap.signingKeys = len(keys)
+	for _, k := range keys {
+		// The current key has no expiration; a retiring one expires at the end of its grace period.
+		if !k.Expiration.IsZero() && (snap.retiringKeyExpiry.IsZero() || k.Expiration.Before(snap.retiringKeyExpiry)) {
+			snap.retiringKeyExpiry = k.Expiration
+		}
+	}
 
 	return snap, nil
 }
