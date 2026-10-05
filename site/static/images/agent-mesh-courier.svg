@@ -1,0 +1,533 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Copyright 2026 Google LLC
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+  How a task travels the mesh, drawn as a courier network. Dark theme for
+  the landing page. SMIL animation: six parcels on a 12s cycle, one every
+  2s; the Registry stamp thumps only when a passport or a border pass is
+  issued: the developer's second parcel (10s) reuses its passport and nobody
+  calls the Registry. Plays in any browser, including inside an <img> tag.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     viewBox="0 0 1240 676" width="1240" height="676"
+     font-family="Inter, -apple-system, 'Segoe UI', Roboto, sans-serif">
+  <title>How a task travels the agent mesh</title>
+  <desc>Agents on a developer laptop, in Kubernetes on premises or in a cloud, on a SaaS platform or inside a sandbox hand each request to their local sam-node office. The first time, the office checks the sender's platform identity at the Registry (the control plane) and receives a passport (the Biscuit authority block: who the sender is and their memberships). For each errand the holder writes a mandate (an attenuation block) that can only narrow. Routers carry the sealed bag and cannot open it. The destination office for mcp://github, mcp://bigquery, inference://gemini, inference://claude, egress://generativelanguage.googleapis.com or a2a://partner-agent reads the passport, the law it already holds and the mandates, decides offline, inspects, and at a cloud border obtains a border pass from the Registry.</desc>
+
+  <defs>
+    <style>
+      .title { font-size: 22px; font-weight: 800; fill: #f8fafc; letter-spacing: 0.02em; }
+      .lead  { font-size: 12.5px; fill: #94a3b8; }
+      .name  { font-size: 13px; font-weight: 700; fill: #f8fafc; }
+      .sub   { font-size: 10.5px; fill: #94a3b8; }
+      .uri   { font-family: 'JetBrains Mono', SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; font-weight: 600; fill: #00f0ff; }
+      .uri2  { font-family: 'JetBrains Mono', SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; font-weight: 600; fill: #00f0ff; }
+      .say   { font-size: 11px; font-weight: 600; fill: #07131e; }
+      .legend{ font-size: 11px; fill: #94a3b8; }
+      .sign  { font-size: 9px; font-weight: 800; fill: #f6c344; letter-spacing: 0.18em; }
+      .route { fill: none; stroke: #00f0ff; stroke-width: 1.2; opacity: 0.28; }
+      .contact { fill: none; stroke: #f6c344; stroke-width: 1.6; stroke-dasharray: 3 4; }
+    </style>
+
+    <!-- A parcel with a face. Yellow because the mascots are bananas. -->
+    <symbol id="parcel" viewBox="0 0 22 17">
+      <rect x="0.5" y="0.5" width="21" height="16" rx="2" fill="#f6c344" stroke="#7a4e00" stroke-width="1.2"/>
+      <rect x="9.5" y="0.5" width="3" height="16" fill="#7a4e00" opacity="0.35"/>
+      <circle cx="5.5" cy="7" r="1.2" fill="#07131e"/><circle cx="16.5" cy="7" r="1.2" fill="#07131e"/>
+      <path d="M5 11 Q11 14 17 11" fill="none" stroke="#07131e" stroke-width="1.2" stroke-linecap="round"/>
+    </symbol>
+    <!-- The passport: the Biscuit authority block, issued once by the Registry -->
+    <symbol id="passport" viewBox="0 0 14 16">
+      <rect x="0.6" y="0.6" width="12.8" height="14.8" rx="1.6" fill="#0f2238" stroke="#00f0ff" stroke-width="1.2"/>
+      <circle cx="7" cy="6" r="2.6" fill="none" stroke="#f6c344" stroke-width="1.1"/>
+      <rect x="3" y="10.5" width="8" height="1.3" fill="#00f0ff" opacity="0.8"/>
+      <rect x="3" y="13" width="5.5" height="1.3" fill="#00f0ff" opacity="0.8"/>
+    </symbol>
+    <!-- The mandate: an attenuation block, a note the holder writes and signs for one errand -->
+    <symbol id="mandate" viewBox="0 0 13 14">
+      <path d="M0.6 0.6 H9 L12.4 4 V13.4 H0.6 Z" fill="#f8fafc" stroke="#0a7080" stroke-width="1"/>
+      <path d="M9 0.6 V4 H12.4" fill="none" stroke="#0a7080" stroke-width="1"/>
+      <rect x="2.5" y="6" width="8" height="1.2" fill="#0a7080"/><rect x="2.5" y="8.5" width="6" height="1.2" fill="#0a7080"/>
+      <path d="M2.5 11.8 q1.5 -2 3 0 q1.5 2 3 -0.5" fill="none" stroke="#f6c344" stroke-width="1.1" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="lock" viewBox="0 0 12 14">
+      <rect x="1" y="6" width="10" height="7.5" rx="1.5" fill="#94a3b8"/>
+      <path d="M3 6 V4 a3 3 0 0 1 6 0 V6" fill="none" stroke="#94a3b8" stroke-width="1.6"/>
+    </symbol>
+    <symbol id="stamp-ok" viewBox="0 0 14 14">
+      <circle cx="7" cy="7" r="6" fill="#07131e" stroke="#00f0ff" stroke-width="1.6"/>
+      <path d="M4 7.2 L6.2 9.4 L10.2 4.8" fill="none" stroke="#00f0ff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="magnifier" viewBox="0 0 14 14">
+      <circle cx="5.5" cy="5.5" r="4" fill="rgba(0,240,255,0.15)" stroke="#f6c344" stroke-width="1.6"/>
+      <path d="M8.5 8.5 L12.5 12.5" stroke="#f6c344" stroke-width="2" stroke-linecap="round"/>
+    </symbol>
+
+    <!-- A sam-node office at the edge: the post office that checks and stamps -->
+    <symbol id="office" viewBox="0 0 64 40">
+      <path d="M2 14 L32 2 L62 14 Z" fill="#132a44" stroke="#00f0ff" stroke-width="1.6" stroke-linejoin="round"/>
+      <rect x="4" y="14" width="56" height="24" rx="3" fill="#0f2238" stroke="#00f0ff" stroke-width="1.6"/>
+      <text x="32" y="23" text-anchor="middle" style="font-family:'JetBrains Mono',SFMono-Regular,Menlo,Consolas,monospace;font-size:7.5px;font-weight:700;fill:#00f0ff;letter-spacing:0.04em">sam-node</text>
+      <rect x="26" y="27" width="12" height="11" rx="1.5" fill="#132a44" stroke="#00f0ff" stroke-width="1.2"/>
+      <rect x="8" y="27" width="10" height="7" rx="1" fill="#132a44" stroke="#00f0ff" stroke-width="1"/>
+      <rect x="46" y="27" width="10" height="7" rx="1" fill="#132a44" stroke="#00f0ff" stroke-width="1"/>
+    </symbol>
+    <!-- A sam-router at the core: a relay, grey because it only forwards -->
+    <symbol id="relay" viewBox="-14 -14 28 28">
+      <path d="M-10 -5 a11 11 0 0 0 0 10 M10 -5 a11 11 0 0 1 0 10" fill="none" stroke="#94a3b8" stroke-width="1.4" stroke-linecap="round" opacity="0.8"/>
+      <circle r="6" fill="#0f2238" stroke="#94a3b8" stroke-width="2"/>
+      <circle r="2" fill="#94a3b8"/>
+    </symbol>
+
+    <!-- Kubernetes: the heptagon with a helm inside -->
+    <symbol id="helm" viewBox="-10 -10 20 20">
+      <polygon points="0,-9 7.1,-5.6 8.8,2 4,8.1 -4,8.1 -8.8,2 -7.1,-5.6" fill="#0f2238" stroke="#00f0ff" stroke-width="1.6" stroke-linejoin="round"/>
+      <circle cx="0" cy="0" r="3.2" fill="none" stroke="#00f0ff" stroke-width="1.4"/>
+      <path d="M0 -3.2 V-6 M0 3.2 V6 M-3.2 0 H-6 M3.2 0 H6 M-2.3 -2.3 L-4.2 -4.2 M2.3 2.3 L4.2 4.2 M2.3 -2.3 L4.2 -4.2 M-2.3 2.3 L-4.2 4.2" stroke="#00f0ff" stroke-width="1.2" stroke-linecap="round"/>
+    </symbol>
+
+    <!-- Sender icons, 60x56 -->
+    <symbol id="ico-dev" viewBox="0 0 60 56">
+      <rect x="4" y="8" width="38" height="26" rx="3" fill="#0f2238" stroke="#00f0ff" stroke-width="2"/>
+      <path d="M0 38 H46 L42 44 H4 Z" fill="#132a44" stroke="#00f0ff" stroke-width="2" stroke-linejoin="round"/>
+      <circle cx="17" cy="19" r="2" fill="#00f0ff"/><circle cx="29" cy="19" r="2" fill="#00f0ff"/>
+      <path d="M16 26 Q23 31 30 26" fill="none" stroke="#00f0ff" stroke-width="2" stroke-linecap="round"/>
+      <rect x="47" y="30" width="10" height="11" rx="2" fill="#132a44" stroke="#f6c344" stroke-width="2"/>
+      <path d="M57 33 h2 a2.5 2.5 0 0 1 0 5 h-2" fill="none" stroke="#f6c344" stroke-width="2"/>
+      <g stroke="#f6c344" stroke-width="1.5" stroke-linecap="round" fill="none" opacity="0.8">
+        <path d="M50 26 q1.5 -2 0 -4 q-1.5 -2 0 -4"><animate attributeName="opacity" values="0.3;0.9;0.3" dur="1.6s" repeatCount="indefinite"/></path>
+        <path d="M54 26 q1.5 -2 0 -4 q-1.5 -2 0 -4"><animate attributeName="opacity" values="0.9;0.3;0.9" dur="1.6s" repeatCount="indefinite"/></path>
+      </g>
+    </symbol>
+    <symbol id="ico-k8s-onprem" viewBox="0 0 60 56">
+      <rect x="6" y="2" width="36" height="52" rx="3" fill="#0f2238" stroke="#00f0ff" stroke-width="2"/>
+      <g stroke="#00f0ff" stroke-width="2" opacity="0.45"><line x1="11" y1="12" x2="29" y2="12"/><line x1="11" y1="22" x2="29" y2="22"/><line x1="11" y1="32" x2="29" y2="32"/></g>
+      <circle cx="36" cy="12" r="1.8" fill="#00f0ff"><animate attributeName="opacity" values="1;0.2;1" dur="1.1s" repeatCount="indefinite"/></circle>
+      <circle cx="36" cy="22" r="1.8" fill="#f6c344"><animate attributeName="opacity" values="0.2;1;0.2" dur="1.7s" repeatCount="indefinite"/></circle>
+      <circle cx="36" cy="32" r="1.8" fill="#00f0ff"><animate attributeName="opacity" values="1;0.2;1" dur="0.8s" repeatCount="indefinite"/></circle>
+      <use xlink:href="#helm" x="30" y="30" width="28" height="28"/>
+    </symbol>
+    <symbol id="ico-k8s-cloud" viewBox="0 0 60 56">
+      <path d="M14 46 H46 a10 10 0 0 0 1.6 -19.9 A14 14 0 0 0 20.8 22.2 A11 11 0 0 0 14 46 Z" fill="#0f2238" stroke="#00f0ff" stroke-width="2" stroke-linejoin="round">
+        <animateTransform attributeName="transform" type="translate" values="0 0;1.5 0;0 0" dur="3s" repeatCount="indefinite"/>
+      </path>
+      <use xlink:href="#helm" x="18" y="22" width="26" height="26"/>
+    </symbol>
+    <symbol id="ico-saas" viewBox="0 0 60 56">
+      <rect x="4" y="6" width="52" height="44" rx="4" fill="#0f2238" stroke="#00f0ff" stroke-width="2"/>
+      <line x1="4" y1="17" x2="56" y2="17" stroke="#00f0ff" stroke-width="2"/>
+      <circle cx="11" cy="11.5" r="1.8" fill="#00f0ff"/><circle cx="17" cy="11.5" r="1.8" fill="#00f0ff"/><circle cx="23" cy="11.5" r="1.8" fill="#00f0ff"/>
+      <path d="M33 21 L23 35 H30 L28 46 L38 31 H31 Z" fill="#f6c344">
+        <animate attributeName="opacity" values="1;1;0.5;1;1" keyTimes="0;0.6;0.65;0.7;1" dur="2.6s" repeatCount="indefinite"/>
+      </path>
+    </symbol>
+    <symbol id="ico-sandbox" viewBox="0 0 60 56">
+      <path d="M8 24 H52 L47 52 H13 Z" fill="#0f2238" stroke="#00f0ff" stroke-width="2" stroke-linejoin="round"/>
+      <rect x="5" y="19" width="50" height="7" rx="2" fill="#132a44" stroke="#00f0ff" stroke-width="2"/>
+      <path d="M13 32 q5 -5 10 0 q5 -5 10 0 q5 -5 10 0 q2 -2 4 0" fill="none" stroke="#f6c344" stroke-width="2" stroke-linecap="round" opacity="0.8"/>
+      <line x1="40" y1="2" x2="34" y2="21" stroke="#f6c344" stroke-width="2.5" stroke-linecap="round"/>
+      <path d="M31 19 l8 2 l-2 8 l-8 -2 z" fill="#f6c344"/>
+      <rect x="24" y="40" width="12" height="9" rx="2" fill="#f6c344"/>
+      <path d="M27 40 v-3 a3 3 0 0 1 6 0 v3" fill="none" stroke="#f6c344" stroke-width="2"/>
+    </symbol>
+
+    <!-- Destination booth, 260x58 -->
+    <symbol id="booth" viewBox="0 0 260 58">
+      <path d="M4 16 L130 2 L256 16 Z" fill="#132a44" stroke="#00f0ff" stroke-width="1.5" stroke-linejoin="round"/>
+      <rect x="8" y="16" width="244" height="40" rx="4" fill="#0f2238" stroke="#00f0ff" stroke-width="1.5"/>
+      <rect x="236" y="24" width="10" height="4" rx="2" fill="#00f0ff" opacity="0.6"/>
+    </symbol>
+    <!-- Destination glyphs, 24x24 -->
+    <symbol id="g-fork" viewBox="0 0 24 24">
+      <circle cx="6" cy="5" r="2.5" fill="none" stroke="#00f0ff" stroke-width="1.8"/><circle cx="18" cy="5" r="2.5" fill="none" stroke="#00f0ff" stroke-width="1.8"/><circle cx="12" cy="19" r="2.5" fill="none" stroke="#00f0ff" stroke-width="1.8"/>
+      <path d="M6 7.5 V10 a4 4 0 0 0 4 4 h4 a4 4 0 0 0 4 -4 V7.5 M12 14 V16.5" fill="none" stroke="#00f0ff" stroke-width="1.8"/>
+    </symbol>
+    <symbol id="g-table" viewBox="0 0 24 24">
+      <rect x="3" y="4" width="18" height="16" rx="2" fill="none" stroke="#00f0ff" stroke-width="1.8"/>
+      <path d="M3 9.5 H21 M3 15 H21 M9 4 V20 M15 4 V20" stroke="#00f0ff" stroke-width="1.4" opacity="0.8"/>
+    </symbol>
+    <symbol id="g-sparkle" viewBox="0 0 24 24">
+      <path d="M12 2 C12.6 8 15 10.4 21 12 C15 13.6 12.6 16 12 22 C11.4 16 9 13.6 3 12 C9 10.4 11.4 8 12 2 Z" fill="#00f0ff">
+        <animateTransform attributeName="transform" type="rotate" values="0 12 12;20 12 12;0 12 12" dur="3s" repeatCount="indefinite"/>
+      </path>
+    </symbol>
+    <symbol id="g-bubble" viewBox="0 0 24 24">
+      <path d="M4 5 H20 a2 2 0 0 1 2 2 V14 a2 2 0 0 1 -2 2 H11 L6 20 V16 H4 a2 2 0 0 1 -2 -2 V7 a2 2 0 0 1 2 -2 Z" fill="none" stroke="#00f0ff" stroke-width="1.8" stroke-linejoin="round"/>
+      <circle cx="8" cy="10.5" r="1.3" fill="#00f0ff"/><circle cx="12" cy="10.5" r="1.3" fill="#00f0ff"/><circle cx="16" cy="10.5" r="1.3" fill="#00f0ff"/>
+    </symbol>
+    <symbol id="g-globe" viewBox="0 0 24 24">
+      <circle cx="11" cy="12" r="8" fill="none" stroke="#00f0ff" stroke-width="1.8"/>
+      <ellipse cx="11" cy="12" rx="3.5" ry="8" fill="none" stroke="#00f0ff" stroke-width="1.2" opacity="0.8"/>
+      <path d="M3 12 H19" stroke="#00f0ff" stroke-width="1.2" opacity="0.8"/>
+      <path d="M16 5 L22 5 L22 11 M22 5 L16.5 10.5" fill="none" stroke="#f6c344" stroke-width="1.8" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="g-robots" viewBox="0 0 24 24">
+      <rect x="2" y="9" width="8" height="8" rx="1.5" fill="none" stroke="#00f0ff" stroke-width="1.6"/><circle cx="4.8" cy="13" r="1" fill="#00f0ff"/><circle cx="7.2" cy="13" r="1" fill="#00f0ff"/><line x1="6" y1="9" x2="6" y2="6" stroke="#00f0ff" stroke-width="1.6"/><circle cx="6" cy="5.2" r="1.1" fill="#f6c344"/>
+      <rect x="14" y="9" width="8" height="8" rx="1.5" fill="none" stroke="#00f0ff" stroke-width="1.6"/><circle cx="16.8" cy="13" r="1" fill="#00f0ff"/><circle cx="19.2" cy="13" r="1" fill="#00f0ff"/><line x1="18" y1="9" x2="18" y2="6" stroke="#00f0ff" stroke-width="1.6"/><circle cx="18" cy="5.2" r="1.1" fill="#f6c344"/>
+      <path d="M10.5 13 H13.5" stroke="#f6c344" stroke-width="1.6" stroke-dasharray="1.5 1.5"/>
+    </symbol>
+  </defs>
+
+  <!-- Card -->
+  <rect x="0.75" y="0.75" width="1238.5" height="674.5" rx="22" fill="#0a1526" fill-opacity="0.92" stroke="#00f0ff" stroke-opacity="0.18"/>
+
+  <text x="28" y="38" class="title">How a task travels the mesh</text>
+  <text x="28" y="58" class="lead">Every parcel carries its sender's passport and a mandate for this errand.</text>
+  <text x="28" y="76" class="lead">Every office reads them and decides alone.</text>
+  <g>
+    <rect x="818" y="24" width="394" height="22" rx="11" fill="none" stroke="#00f0ff" stroke-opacity="0.45"/>
+    <text x="1015" y="39" text-anchor="middle" class="sub" fill="#00f0ff" style="fill:#00f0ff;font-weight:600">Not another gateway: Istio, agentgateway and kgateway ask SAM over ext_proc</text>
+  </g>
+
+  <!-- Edge / core headers -->
+  <text x="306" y="130" text-anchor="middle" class="sub" style="fill:#00f0ff;font-weight:700;letter-spacing:0.12em">EDGE · SAM-NODE OFFICES</text>
+  <text x="1090" y="130" text-anchor="middle" class="sub" style="fill:#00f0ff;font-weight:700;letter-spacing:0.12em">EDGE · SAM-NODE OFFICES</text>
+
+  <!-- Core band -->
+  <rect x="342" y="168" width="516" height="352" rx="18" fill="#00f0ff" fill-opacity="0.03" stroke="#94a3b8" stroke-opacity="0.3" stroke-dasharray="4 6"/>
+  <text x="600" y="186" text-anchor="middle" class="sub" style="fill:#94a3b8;font-weight:700;letter-spacing:0.12em">CORE · SAM-ROUTERS</text>
+  <text x="600" y="508" text-anchor="middle" class="sub">relay only · the bag is sealed between two offices, a router cannot open it</text>
+
+  <!-- Routes: the parcels travel along these -->
+  <g class="route">
+    <path id="p1" d="M310,190 L360,210 L580,260 L710,350 L960,410"/>
+    <path id="p2" d="M310,280 L450,330 L580,260 L820,230 L960,250"/>
+    <path id="p3" d="M310,550 L370,480 L600,440 L710,350 L820,230 L960,170"/>
+    <path id="p4" d="M310,460 L370,480 L600,440 L830,470 L960,490"/>
+    <path id="p5" d="M310,370 L416,370 L450,330 L600,440 L830,470 L960,570"/>
+    <path id="p6" d="M310,190 L360,210 L580,260 L710,350 L960,330"/>
+    <path d="M360,210 L450,330 L370,480 M450,330 L600,440 L830,470 L820,230 L710,350 L600,440 M580,260 L820,230"/>
+  </g>
+
+  <!-- Registry contact lines, lit only when an office needs the Registry: a new sender, or a foreign border -->
+  <g class="contact">
+    <line x1="306" y1="170" x2="600" y2="132" opacity="0"><animate attributeName="opacity" dur="12s" begin="0s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.03;0.04;0.08;0.09;1"/></line>
+    <line x1="306" y1="260" x2="600" y2="132" opacity="0"><animate attributeName="opacity" dur="12s" begin="2s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.03;0.04;0.08;0.09;1"/></line>
+    <line x1="306" y1="530" x2="600" y2="132" opacity="0"><animate attributeName="opacity" dur="12s" begin="4s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.03;0.04;0.08;0.09;1"/></line>
+    <line x1="306" y1="440" x2="600" y2="132" opacity="0"><animate attributeName="opacity" dur="12s" begin="6s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.03;0.04;0.08;0.09;1"/></line>
+    <!-- the only destination that needs the Registry: a cloud border does not read passports, so a border pass is written (and cached) -->
+    <line x1="960" y1="490" x2="600" y2="132" opacity="0"><animate attributeName="opacity" dur="12s" begin="6s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.68;0.69;0.73;0.74;1"/></line>
+    <!-- row 3: the gateway asks its sam-node over ext_proc, the sam-node asks the Registry -->
+    <line x1="320" y1="370" x2="352" y2="370" opacity="0"><animate attributeName="opacity" dur="12s" begin="8s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.02;0.03;0.08;0.09;1"/></line>
+    <line x1="384" y1="350" x2="600" y2="132" opacity="0"><animate attributeName="opacity" dur="12s" begin="8s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.03;0.04;0.08;0.09;1"/></line>
+    <!-- the developer's second parcel (10s): same passport, no call -->
+  </g>
+
+  <!-- The law goes out, not the parcels: policy, revocations and the public key reach every office on a timer -->
+  <circle cx="600" cy="100" r="30" fill="none" stroke="#f6c344" stroke-width="1.2" stroke-dasharray="2 6" opacity="0">
+    <animate attributeName="r" values="30;560" dur="6s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values="0.55;0" dur="6s" repeatCount="indefinite"/>
+  </circle>
+
+  <!-- Routers: grey relays, each breathing on its own rhythm -->
+  <g>
+    <g transform="translate(360,210)"><circle r="11" fill="#94a3b8" opacity="0.1"><animate attributeName="r" values="9;16;9" dur="2.6s" repeatCount="indefinite"/></circle><use xlink:href="#relay" x="-14" y="-14" width="28" height="28"/></g>
+    <g transform="translate(450,330)"><circle r="11" fill="#94a3b8" opacity="0.1"><animate attributeName="r" values="9;16;9" dur="3.1s" repeatCount="indefinite"/></circle><use xlink:href="#relay" x="-14" y="-14" width="28" height="28"/></g>
+    <g transform="translate(370,480)"><circle r="11" fill="#94a3b8" opacity="0.1"><animate attributeName="r" values="9;16;9" dur="2.2s" repeatCount="indefinite"/></circle><use xlink:href="#relay" x="-14" y="-14" width="28" height="28"/></g>
+    <g transform="translate(580,260)"><circle r="11" fill="#94a3b8" opacity="0.1"><animate attributeName="r" values="9;16;9" dur="2.9s" repeatCount="indefinite"/></circle><use xlink:href="#relay" x="-14" y="-14" width="28" height="28"/></g>
+    <g transform="translate(600,440)"><circle r="11" fill="#94a3b8" opacity="0.1"><animate attributeName="r" values="9;16;9" dur="2.4s" repeatCount="indefinite"/></circle><use xlink:href="#relay" x="-14" y="-14" width="28" height="28"/></g>
+    <g transform="translate(710,350)"><circle r="11" fill="#94a3b8" opacity="0.1"><animate attributeName="r" values="9;16;9" dur="3.4s" repeatCount="indefinite"/></circle><use xlink:href="#relay" x="-14" y="-14" width="28" height="28"/></g>
+    <g transform="translate(820,230)"><circle r="11" fill="#94a3b8" opacity="0.1"><animate attributeName="r" values="9;16;9" dur="2.7s" repeatCount="indefinite"/></circle><use xlink:href="#relay" x="-14" y="-14" width="28" height="28"/></g>
+    <g transform="translate(830,470)"><circle r="11" fill="#94a3b8" opacity="0.1"><animate attributeName="r" values="9;16;9" dur="2.0s" repeatCount="indefinite"/></circle><use xlink:href="#relay" x="-14" y="-14" width="28" height="28"/></g>
+  </g>
+
+  <!-- Bring your own gateway: it stays in the data path and asks the sam-node office over ext_proc -->
+  <g>
+    <g transform="translate(306,370)">
+      <polygon points="0,-13 11.3,-6.5 11.3,6.5 0,13 -11.3,6.5 -11.3,-6.5" fill="#132a44" stroke="#00f0ff" stroke-width="2" stroke-linejoin="round"/>
+      <path d="M-5 -4 L0 0 L-5 4 M1 -4 L6 0 L1 4" fill="none" stroke="#00f0ff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <text x="306" y="396" text-anchor="middle" class="sub" style="fill:#f8fafc;font-weight:700">your gateway</text>
+    <text x="306" y="408" text-anchor="middle" class="sub">Istio · agentgateway · kgateway</text>
+    <line x1="320" y1="370" x2="352" y2="370" stroke="#00f0ff" stroke-width="1.4" stroke-dasharray="2 3" opacity="0.8"/>
+    <text x="336" y="363" text-anchor="middle" class="uri2" style="font-size:9px">ext_proc</text>
+    <use xlink:href="#office" x="352" y="350" width="64" height="40"/>
+  </g>
+
+  <!-- Registry: the post office that stamps -->
+  <g transform="translate(600,70)">
+    <path d="M-72 10 L0 -22 L72 10 Z" fill="#132a44" stroke="#f6c344" stroke-width="2" stroke-linejoin="round"/>
+    <line x1="0" y1="-22" x2="0" y2="-40" stroke="#f6c344" stroke-width="2"/>
+    <path d="M0 -40 L18 -35 L0 -30 Z" fill="#f6c344"><animateTransform attributeName="transform" type="skewY" values="0;6;0;-4;0" dur="1.8s" repeatCount="indefinite"/></path>
+    <rect x="-62" y="10" width="124" height="52" fill="#0f2238" stroke="#f6c344" stroke-width="2"/>
+    <text x="0" y="27" text-anchor="middle" class="sign">REGISTRY</text>
+    <rect x="-12" y="34" width="24" height="28" rx="2" fill="#132a44" stroke="#f6c344" stroke-width="1.5"/>
+    <rect x="-50" y="34" width="20" height="14" rx="1.5" fill="#132a44" stroke="#f6c344" stroke-width="1.5"/>
+    <rect x="30" y="34" width="20" height="14" rx="1.5" fill="#132a44" stroke="#f6c344" stroke-width="1.5"/>
+    <!-- passport card and the rubber stamp; thumps only when a passport (0,2,4,6,8s) or the border pass (~2.3s) is issued, never at 10s -->
+    <rect x="80" y="34" width="26" height="16" rx="2" fill="#f8fafc" stroke="#0a7080" stroke-width="1"/>
+    <use xlink:href="#stamp-ok" x="86" y="35" width="14" height="14" opacity="0"><animate attributeName="opacity" dur="12s" repeatCount="indefinite" values="0;0;1;1;0;0;1;1;0;0;1;1;0;0;1;1;0;0;1;1;0;0" keyTimes="0;0.0417;0.05;0.15;0.16;0.2083;0.2167;0.3167;0.3267;0.375;0.3833;0.4833;0.4933;0.5417;0.55;0.65;0.66;0.7083;0.7167;0.8167;0.8267;1"/></use>
+    <g>
+      <animateTransform attributeName="transform" type="translate" dur="12s" repeatCount="indefinite" calcMode="linear" values="0 0;0 0;0 11;0 11;0 0;0 0;0 11;0 11;0 0;0 0;0 11;0 11;0 0;0 0;0 11;0 11;0 0;0 0;0 11;0 11;0 0;0 0" keyTimes="0;0.0217;0.0417;0.0717;0.1017;0.1883;0.2083;0.2383;0.2683;0.355;0.375;0.405;0.435;0.5217;0.5417;0.5717;0.6017;0.6883;0.7083;0.7383;0.7683;1"/>
+      <rect x="87" y="2" width="12" height="16" rx="3" fill="#f6c344"/>
+      <rect x="78" y="17" width="30" height="8" rx="2" fill="#d9a62e" stroke="#7a4e00" stroke-width="1"/>
+    </g>
+    <text x="0" y="78" text-anchor="middle" class="sub">sam-control-plane · issues passports · writes the law and the watchlist · never touches a parcel</text>
+    <text x="0" y="91" text-anchor="middle" class="sub" style="fill:#f6c344;opacity:0.85">◌ law, watchlist and seal specimen reach every office on a timer</text>
+  </g>
+
+  <!-- Senders, each with its sam-node office -->
+  <g>
+    <use xlink:href="#ico-dev" x="36" y="162" width="60" height="56"/>
+    <text x="106" y="186" class="name">Developer</text>
+    <text x="106" y="200" class="sub">laptop, CLI agent, coffee</text>
+    <use xlink:href="#office" x="274" y="170" width="64" height="40"/>
+
+    <use xlink:href="#ico-k8s-onprem" x="36" y="252" width="60" height="56"/>
+    <text x="106" y="276" class="name">Kubernetes on premises</text>
+    <text x="106" y="290" class="sub">pods, projected SA token</text>
+    <use xlink:href="#office" x="274" y="260" width="64" height="40"/>
+
+    <use xlink:href="#ico-k8s-cloud" x="36" y="342" width="60" height="56"/>
+    <text x="106" y="366" class="name">Kubernetes in a cloud</text>
+    <text x="106" y="380" class="sub">a gateway already in path</text>
+
+    <use xlink:href="#ico-saas" x="36" y="432" width="60" height="56"/>
+    <text x="106" y="456" class="name">SaaS platform</text>
+    <text x="106" y="470" class="sub">hosted agents, same passport</text>
+    <use xlink:href="#office" x="274" y="440" width="64" height="40"/>
+
+    <use xlink:href="#ico-sandbox" x="36" y="522" width="60" height="56"/>
+    <text x="106" y="546" class="name">Sandbox platform</text>
+    <text x="106" y="560" class="sub">the agent inside holds nothing</text>
+    <use xlink:href="#office" x="274" y="530" width="64" height="40"/>
+  </g>
+
+  <!-- Destination offices: each booth is the egress sam-node for one destination -->
+  <g>
+    <g style="font-family:'JetBrains Mono',SFMono-Regular,Menlo,Consolas,monospace;font-size:7.5px;font-weight:700;fill:#00f0ff;letter-spacing:0.04em" text-anchor="middle">
+      <text x="1090" y="154.5">sam-node</text><text x="1090" y="234.5">sam-node</text><text x="1090" y="314.5">sam-node</text>
+      <text x="1090" y="394.5">sam-node</text><text x="1090" y="474.5">sam-node</text><text x="1090" y="554.5">sam-node</text>
+    </g>
+    <use xlink:href="#booth" x="960" y="141" width="260" height="58"/>
+    <use xlink:href="#g-fork" x="980" y="163" width="24" height="24"/>
+    <text x="1014" y="181" class="uri">mcp://github</text>
+
+    <use xlink:href="#booth" x="960" y="221" width="260" height="58"/>
+    <use xlink:href="#g-table" x="980" y="243" width="24" height="24"/>
+    <text x="1014" y="261" class="uri">mcp://bigquery</text>
+
+    <use xlink:href="#booth" x="960" y="301" width="260" height="58"/>
+    <use xlink:href="#g-sparkle" x="980" y="323" width="24" height="24"/>
+    <text x="1014" y="341" class="uri">inference://gemini</text>
+
+    <use xlink:href="#booth" x="960" y="381" width="260" height="58"/>
+    <use xlink:href="#g-bubble" x="980" y="403" width="24" height="24"/>
+    <text x="1014" y="421" class="uri">inference://claude</text>
+
+    <use xlink:href="#booth" x="960" y="461" width="260" height="58"/>
+    <use xlink:href="#g-globe" x="980" y="483" width="24" height="24"/>
+    <text x="1010" y="494" class="uri2" style="font-size:10px">egress://</text>
+    <text x="1010" y="508" class="uri2" style="font-size:10px">generativelanguage.googleapis.com</text>
+
+    <use xlink:href="#booth" x="960" y="541" width="260" height="58"/>
+    <use xlink:href="#g-robots" x="980" y="563" width="24" height="24"/>
+    <text x="1014" y="581" class="uri">a2a://partner-agent</text>
+
+    <!-- delivery flashes -->
+    <g fill="none" stroke="#00f0ff" stroke-width="3">
+      <rect x="966" y="155" width="248" height="42" rx="5" opacity="0"><animate attributeName="opacity" dur="12s" begin="0s"  repeatCount="indefinite" values="0;0;0.9;0;0" keyTimes="0;0.82;0.84;0.90;1"/></rect>
+      <rect x="966" y="235" width="248" height="42" rx="5" opacity="0"><animate attributeName="opacity" dur="12s" begin="2s"  repeatCount="indefinite" values="0;0;0.9;0;0" keyTimes="0;0.82;0.84;0.90;1"/></rect>
+      <rect x="966" y="315" width="248" height="42" rx="5" opacity="0"><animate attributeName="opacity" dur="12s" begin="10s" repeatCount="indefinite" values="0;0;0.9;0;0" keyTimes="0;0.82;0.84;0.90;1"/></rect>
+      <rect x="966" y="395" width="248" height="42" rx="5" opacity="0"><animate attributeName="opacity" dur="12s" begin="0s"  repeatCount="indefinite" values="0;0;0.9;0;0" keyTimes="0;0.82;0.84;0.90;1"/></rect>
+      <rect x="966" y="475" width="248" height="42" rx="5" opacity="0"><animate attributeName="opacity" dur="12s" begin="6s"  repeatCount="indefinite" values="0;0;0.9;0;0" keyTimes="0;0.82;0.84;0.90;1"/></rect>
+      <rect x="966" y="555" width="248" height="42" rx="5" opacity="0"><animate attributeName="opacity" dur="12s" begin="8s"  repeatCount="indefinite" values="0;0;0.9;0;0" keyTimes="0;0.82;0.84;0.90;1"/></rect>
+    </g>
+  </g>
+
+  <!-- What the offices say -->
+  <g>
+    <!-- sender side: a first visit needs the Registry once; a known passport does not -->
+    <g opacity="0"><animate attributeName="opacity" dur="12s" begin="0s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.02;0.035;0.10;0.12;1"/>
+      <rect x="104" y="150" width="292" height="20" rx="10" fill="#f6c344"/><text x="114" y="164" class="say">First visit: the Registry issues the passport.</text></g>
+    <g opacity="0"><animate attributeName="opacity" dur="12s" begin="2s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.02;0.035;0.10;0.12;1"/>
+      <rect x="104" y="240" width="292" height="20" rx="10" fill="#f6c344"/><text x="114" y="254" class="say">First visit: the Registry issues the passport.</text></g>
+    <g opacity="0"><animate attributeName="opacity" dur="12s" begin="4s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.02;0.035;0.10;0.12;1"/>
+      <rect x="104" y="510" width="292" height="20" rx="10" fill="#f6c344"/><text x="114" y="524" class="say">First visit: the Registry issues the passport.</text></g>
+    <g opacity="0"><animate attributeName="opacity" dur="12s" begin="6s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.02;0.035;0.10;0.12;1"/>
+      <rect x="104" y="420" width="292" height="20" rx="10" fill="#f6c344"/><text x="114" y="434" class="say">First visit: the Registry issues the passport.</text></g>
+    <g opacity="0"><animate attributeName="opacity" dur="12s" begin="8s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.02;0.035;0.10;0.12;1"/>
+      <rect x="150" y="318" width="292" height="20" rx="10" fill="#f6c344"/><text x="160" y="332" class="say">Gateway → office over ext_proc: passport issued.</text></g>
+    <g opacity="0"><animate attributeName="opacity" dur="12s" begin="10s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.02;0.035;0.10;0.12;1"/>
+      <rect x="104" y="150" width="292" height="20" rx="10" fill="#f6c344"/><text x="114" y="164" class="say">Known passport. New mandate, narrower. Go.</text></g>
+
+    <!-- destination side: every office decides offline; only the cloud border needs a border pass -->
+    <g opacity="0"><animate attributeName="opacity" dur="12s" begin="0s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.60;0.615;0.71;0.72;1"/>
+      <rect x="650" y="400" width="296" height="20" rx="10" fill="#00f0ff"/><text x="660" y="414" class="say">Passport ✓ law ✓ mandate ✓ customs ✓ — decided here.</text></g>
+    <g opacity="0"><animate attributeName="opacity" dur="12s" begin="0s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.72;0.735;0.82;0.84;1"/>
+      <rect x="860" y="400" width="86" height="20" rx="10" fill="#00f0ff"/><text x="870" y="414" class="say">Delivered!</text></g>
+    <g opacity="0"><animate attributeName="opacity" dur="12s" begin="2s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.60;0.615;0.71;0.72;1"/>
+      <rect x="650" y="240" width="296" height="20" rx="10" fill="#00f0ff"/><text x="660" y="254" class="say">Passport ✓ law ✓ mandate ✓ customs ✓ — decided here.</text></g>
+    <g opacity="0"><animate attributeName="opacity" dur="12s" begin="2s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.72;0.735;0.82;0.84;1"/>
+      <rect x="860" y="240" width="86" height="20" rx="10" fill="#00f0ff"/><text x="870" y="254" class="say">Delivered!</text></g>
+    <g opacity="0"><animate attributeName="opacity" dur="12s" begin="4s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.60;0.615;0.71;0.72;1"/>
+      <rect x="650" y="160" width="296" height="20" rx="10" fill="#00f0ff"/><text x="660" y="174" class="say">Passport ✓ law ✓ mandate ✓ customs ✓ — decided here.</text></g>
+    <g opacity="0"><animate attributeName="opacity" dur="12s" begin="4s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.72;0.735;0.82;0.84;1"/>
+      <rect x="860" y="160" width="86" height="20" rx="10" fill="#00f0ff"/><text x="870" y="174" class="say">Delivered!</text></g>
+    <g opacity="0"><animate attributeName="opacity" dur="12s" begin="6s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.60;0.615;0.71;0.72;1"/>
+      <rect x="650" y="480" width="296" height="20" rx="10" fill="#00f0ff"/><text x="660" y="494" class="say">Passport ✓ law ✓ mandate ✓ — cloud border ahead.</text></g>
+    <g opacity="0"><animate attributeName="opacity" dur="12s" begin="6s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.72;0.735;0.82;0.84;1"/>
+      <rect x="650" y="480" width="296" height="20" rx="10" fill="#00f0ff"/><text x="660" y="494" class="say">Border pass from the Registry, cached. Delivered!</text></g>
+    <g opacity="0"><animate attributeName="opacity" dur="12s" begin="8s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.60;0.615;0.71;0.72;1"/>
+      <rect x="650" y="560" width="296" height="20" rx="10" fill="#00f0ff"/><text x="660" y="574" class="say">Partner office: our Registry's seal ✓ mandate ✓. Go.</text></g>
+    <g opacity="0"><animate attributeName="opacity" dur="12s" begin="8s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.72;0.735;0.82;0.84;1"/>
+      <rect x="860" y="560" width="86" height="20" rx="10" fill="#00f0ff"/><text x="870" y="574" class="say">Delivered!</text></g>
+    <g opacity="0"><animate attributeName="opacity" dur="12s" begin="10s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.60;0.615;0.71;0.72;1"/>
+      <rect x="650" y="320" width="296" height="20" rx="10" fill="#00f0ff"/><text x="660" y="334" class="say">Passport ✓ law ✓ mandate ✓ customs ✓ — decided here.</text></g>
+    <g opacity="0"><animate attributeName="opacity" dur="12s" begin="10s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.72;0.735;0.82;0.84;1"/>
+      <rect x="860" y="320" width="86" height="20" rx="10" fill="#00f0ff"/><text x="870" y="334" class="say">Delivered!</text></g>
+  </g>
+
+  <!--
+    Parcel timeline, fraction of 12s:
+      0.00-0.10 at the sender's office (passport and mandate pop at 0.11, as the parcel leaves)
+      0.10-0.60 in transit, locked
+      0.60-0.72 customs: magnifier sweeps
+      0.72-0.82 permit stamp shows
+      0.82-0.86 delivered: parcel fades, confetti
+  -->
+  <g id="parcels">
+    <!-- 1: Developer -> inference://claude -->
+    <g opacity="0">
+      <animateMotion dur="12s" begin="0s" repeatCount="indefinite" calcMode="linear" keyPoints="0;0;1;1;1" keyTimes="0;0.10;0.60;0.82;1"><mpath xlink:href="#p1"/></animateMotion>
+      <animate attributeName="opacity" dur="12s" begin="0s" repeatCount="indefinite" values="0;1;1;1;0;0" keyTimes="0;0.02;0.80;0.82;0.86;1"/>
+      <g><animateTransform attributeName="transform" type="translate" values="0 0;0 -3;0 0" dur="0.7s" repeatCount="indefinite"/>
+        <use xlink:href="#parcel" x="-11" y="-8" width="22" height="17"/>
+        <g><animateTransform attributeName="transform" type="scale" dur="12s" begin="0s" repeatCount="indefinite" values="0;0;1.3;1;1;0;0" keyTimes="0;0.10;0.115;0.13;0.82;0.86;1"/><use xlink:href="#passport" x="4" y="-27" width="14" height="16"/><use xlink:href="#mandate" x="19" y="-25" width="13" height="14"/></g>
+        <use xlink:href="#lock" x="8" y="2" width="10" height="12" opacity="0"><animate attributeName="opacity" dur="12s" begin="0s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.10;0.12;0.58;0.61;1"/></use>
+        <g opacity="0"><animate attributeName="opacity" dur="12s" begin="0s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.60;0.62;0.71;0.72;1"/>
+          <g><animateTransform attributeName="transform" type="translate" values="-9 0;7 0;-9 0" dur="0.9s" repeatCount="indefinite"/><use xlink:href="#magnifier" x="-6" y="-9" width="16" height="16"/></g></g>
+        <use xlink:href="#stamp-ok" x="-24" y="-7" width="14" height="14" opacity="0"><animate attributeName="opacity" dur="12s" begin="0s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.72;0.74;0.82;0.86;1"/></use>
+      </g>
+    </g>
+    <!-- 2: Kubernetes on premises -> mcp://bigquery -->
+    <g opacity="0">
+      <animateMotion dur="12s" begin="2s" repeatCount="indefinite" calcMode="linear" keyPoints="0;0;1;1;1" keyTimes="0;0.10;0.60;0.82;1"><mpath xlink:href="#p2"/></animateMotion>
+      <animate attributeName="opacity" dur="12s" begin="2s" repeatCount="indefinite" values="0;1;1;1;0;0" keyTimes="0;0.02;0.80;0.82;0.86;1"/>
+      <g><animateTransform attributeName="transform" type="translate" values="0 0;0 -3;0 0" dur="0.8s" repeatCount="indefinite"/>
+        <use xlink:href="#parcel" x="-11" y="-8" width="22" height="17"/>
+        <g><animateTransform attributeName="transform" type="scale" dur="12s" begin="2s" repeatCount="indefinite" values="0;0;1.3;1;1;0;0" keyTimes="0;0.10;0.115;0.13;0.82;0.86;1"/><use xlink:href="#passport" x="4" y="-27" width="14" height="16"/><use xlink:href="#mandate" x="19" y="-25" width="13" height="14"/></g>
+        <use xlink:href="#lock" x="8" y="2" width="10" height="12" opacity="0"><animate attributeName="opacity" dur="12s" begin="2s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.10;0.12;0.58;0.61;1"/></use>
+        <g opacity="0"><animate attributeName="opacity" dur="12s" begin="2s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.60;0.62;0.71;0.72;1"/>
+          <g><animateTransform attributeName="transform" type="translate" values="-9 0;7 0;-9 0" dur="0.9s" repeatCount="indefinite"/><use xlink:href="#magnifier" x="-6" y="-9" width="16" height="16"/></g></g>
+        <use xlink:href="#stamp-ok" x="-24" y="-7" width="14" height="14" opacity="0"><animate attributeName="opacity" dur="12s" begin="2s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.72;0.74;0.82;0.86;1"/></use>
+      </g>
+    </g>
+    <!-- 3: Sandbox -> mcp://github -->
+    <g opacity="0">
+      <animateMotion dur="12s" begin="4s" repeatCount="indefinite" calcMode="linear" keyPoints="0;0;1;1;1" keyTimes="0;0.10;0.60;0.82;1"><mpath xlink:href="#p3"/></animateMotion>
+      <animate attributeName="opacity" dur="12s" begin="4s" repeatCount="indefinite" values="0;1;1;1;0;0" keyTimes="0;0.02;0.80;0.82;0.86;1"/>
+      <g><animateTransform attributeName="transform" type="translate" values="0 0;0 -3;0 0" dur="0.65s" repeatCount="indefinite"/>
+        <use xlink:href="#parcel" x="-11" y="-8" width="22" height="17"/>
+        <g><animateTransform attributeName="transform" type="scale" dur="12s" begin="4s" repeatCount="indefinite" values="0;0;1.3;1;1;0;0" keyTimes="0;0.10;0.115;0.13;0.82;0.86;1"/><use xlink:href="#passport" x="4" y="-27" width="14" height="16"/><use xlink:href="#mandate" x="19" y="-25" width="13" height="14"/></g>
+        <use xlink:href="#lock" x="8" y="2" width="10" height="12" opacity="0"><animate attributeName="opacity" dur="12s" begin="4s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.10;0.12;0.58;0.61;1"/></use>
+        <g opacity="0"><animate attributeName="opacity" dur="12s" begin="4s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.60;0.62;0.71;0.72;1"/>
+          <g><animateTransform attributeName="transform" type="translate" values="-9 0;7 0;-9 0" dur="0.9s" repeatCount="indefinite"/><use xlink:href="#magnifier" x="-6" y="-9" width="16" height="16"/></g></g>
+        <use xlink:href="#stamp-ok" x="-24" y="-7" width="14" height="14" opacity="0"><animate attributeName="opacity" dur="12s" begin="4s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.72;0.74;0.82;0.86;1"/></use>
+      </g>
+    </g>
+    <!-- 4: SaaS -> egress://generativelanguage.googleapis.com -->
+    <g opacity="0">
+      <animateMotion dur="12s" begin="6s" repeatCount="indefinite" calcMode="linear" keyPoints="0;0;1;1;1" keyTimes="0;0.10;0.60;0.82;1"><mpath xlink:href="#p4"/></animateMotion>
+      <animate attributeName="opacity" dur="12s" begin="6s" repeatCount="indefinite" values="0;1;1;1;0;0" keyTimes="0;0.02;0.80;0.82;0.86;1"/>
+      <g><animateTransform attributeName="transform" type="translate" values="0 0;0 -3;0 0" dur="0.75s" repeatCount="indefinite"/>
+        <use xlink:href="#parcel" x="-11" y="-8" width="22" height="17"/>
+        <g><animateTransform attributeName="transform" type="scale" dur="12s" begin="6s" repeatCount="indefinite" values="0;0;1.3;1;1;0;0" keyTimes="0;0.10;0.115;0.13;0.82;0.86;1"/><use xlink:href="#passport" x="4" y="-27" width="14" height="16"/><use xlink:href="#mandate" x="19" y="-25" width="13" height="14"/></g>
+        <use xlink:href="#lock" x="8" y="2" width="10" height="12" opacity="0"><animate attributeName="opacity" dur="12s" begin="6s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.10;0.12;0.58;0.61;1"/></use>
+        <g opacity="0"><animate attributeName="opacity" dur="12s" begin="6s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.60;0.62;0.71;0.72;1"/>
+          <g><animateTransform attributeName="transform" type="translate" values="-9 0;7 0;-9 0" dur="0.9s" repeatCount="indefinite"/><use xlink:href="#magnifier" x="-6" y="-9" width="16" height="16"/></g></g>
+        <use xlink:href="#stamp-ok" x="-24" y="-7" width="14" height="14" opacity="0"><animate attributeName="opacity" dur="12s" begin="6s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.72;0.74;0.82;0.86;1"/></use>
+      </g>
+    </g>
+    <!-- 5: Kubernetes in a cloud -> a2a://partner-agent -->
+    <g opacity="0">
+      <animateMotion dur="12s" begin="8s" repeatCount="indefinite" calcMode="linear" keyPoints="0;0;1;1;1" keyTimes="0;0.10;0.60;0.82;1"><mpath xlink:href="#p5"/></animateMotion>
+      <animate attributeName="opacity" dur="12s" begin="8s" repeatCount="indefinite" values="0;1;1;1;0;0" keyTimes="0;0.02;0.80;0.82;0.86;1"/>
+      <g><animateTransform attributeName="transform" type="translate" values="0 0;0 -3;0 0" dur="0.7s" repeatCount="indefinite"/>
+        <use xlink:href="#parcel" x="-11" y="-8" width="22" height="17"/>
+        <g><animateTransform attributeName="transform" type="scale" dur="12s" begin="8s" repeatCount="indefinite" values="0;0;1.3;1;1;0;0" keyTimes="0;0.10;0.115;0.13;0.82;0.86;1"/><use xlink:href="#passport" x="4" y="-27" width="14" height="16"/><use xlink:href="#mandate" x="19" y="-25" width="13" height="14"/></g>
+        <use xlink:href="#lock" x="8" y="2" width="10" height="12" opacity="0"><animate attributeName="opacity" dur="12s" begin="8s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.10;0.12;0.58;0.61;1"/></use>
+        <g opacity="0"><animate attributeName="opacity" dur="12s" begin="8s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.60;0.62;0.71;0.72;1"/>
+          <g><animateTransform attributeName="transform" type="translate" values="-9 0;7 0;-9 0" dur="0.9s" repeatCount="indefinite"/><use xlink:href="#magnifier" x="-6" y="-9" width="16" height="16"/></g></g>
+        <use xlink:href="#stamp-ok" x="-24" y="-7" width="14" height="14" opacity="0"><animate attributeName="opacity" dur="12s" begin="8s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.72;0.74;0.82;0.86;1"/></use>
+      </g>
+    </g>
+    <!-- 6: Developer -> inference://gemini -->
+    <g opacity="0">
+      <animateMotion dur="12s" begin="10s" repeatCount="indefinite" calcMode="linear" keyPoints="0;0;1;1;1" keyTimes="0;0.10;0.60;0.82;1"><mpath xlink:href="#p6"/></animateMotion>
+      <animate attributeName="opacity" dur="12s" begin="10s" repeatCount="indefinite" values="0;1;1;1;0;0" keyTimes="0;0.02;0.80;0.82;0.86;1"/>
+      <g><animateTransform attributeName="transform" type="translate" values="0 0;0 -3;0 0" dur="0.85s" repeatCount="indefinite"/>
+        <use xlink:href="#parcel" x="-11" y="-8" width="22" height="17"/>
+        <g><animateTransform attributeName="transform" type="scale" dur="12s" begin="10s" repeatCount="indefinite" values="0;0;1.3;1;1;0;0" keyTimes="0;0.10;0.115;0.13;0.82;0.86;1"/><use xlink:href="#passport" x="4" y="-27" width="14" height="16"/><use xlink:href="#mandate" x="19" y="-25" width="13" height="14"/></g>
+        <use xlink:href="#lock" x="8" y="2" width="10" height="12" opacity="0"><animate attributeName="opacity" dur="12s" begin="10s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.10;0.12;0.58;0.61;1"/></use>
+        <g opacity="0"><animate attributeName="opacity" dur="12s" begin="10s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.60;0.62;0.71;0.72;1"/>
+          <g><animateTransform attributeName="transform" type="translate" values="-9 0;7 0;-9 0" dur="0.9s" repeatCount="indefinite"/><use xlink:href="#magnifier" x="-6" y="-9" width="16" height="16"/></g></g>
+        <use xlink:href="#stamp-ok" x="-24" y="-7" width="14" height="14" opacity="0"><animate attributeName="opacity" dur="12s" begin="10s" repeatCount="indefinite" values="0;0;1;1;0;0" keyTimes="0;0.72;0.74;0.82;0.86;1"/></use>
+      </g>
+    </g>
+  </g>
+
+  <!-- Confetti at each delivery -->
+  <g>
+    <g transform="translate(960,410)">
+      <circle r="2.2" fill="#f6c344" opacity="0"><animate attributeName="opacity" dur="12s" begin="0s" repeatCount="indefinite" values="0;0;1;0;0" keyTimes="0;0.82;0.83;0.90;1"/><animateTransform attributeName="transform" type="translate" dur="12s" begin="0s" repeatCount="indefinite" values="0 0;0 0;-16 -18;-16 -18" keyTimes="0;0.82;0.90;1"/></circle>
+      <circle r="2.2" fill="#00f0ff" opacity="0"><animate attributeName="opacity" dur="12s" begin="0s" repeatCount="indefinite" values="0;0;1;0;0" keyTimes="0;0.82;0.83;0.90;1"/><animateTransform attributeName="transform" type="translate" dur="12s" begin="0s" repeatCount="indefinite" values="0 0;0 0;-20 6;-20 6" keyTimes="0;0.82;0.90;1"/></circle>
+      <circle r="2.2" fill="#f8fafc" opacity="0"><animate attributeName="opacity" dur="12s" begin="0s" repeatCount="indefinite" values="0;0;1;0;0" keyTimes="0;0.82;0.83;0.90;1"/><animateTransform attributeName="transform" type="translate" dur="12s" begin="0s" repeatCount="indefinite" values="0 0;0 0;-8 -24;-8 -24" keyTimes="0;0.82;0.90;1"/></circle>
+      <circle r="2.2" fill="#f6c344" opacity="0"><animate attributeName="opacity" dur="12s" begin="0s" repeatCount="indefinite" values="0;0;1;0;0" keyTimes="0;0.82;0.83;0.90;1"/><animateTransform attributeName="transform" type="translate" dur="12s" begin="0s" repeatCount="indefinite" values="0 0;0 0;-10 20;-10 20" keyTimes="0;0.82;0.90;1"/></circle>
+    </g>
+    <g transform="translate(960,250)">
+      <circle r="2.2" fill="#f6c344" opacity="0"><animate attributeName="opacity" dur="12s" begin="2s" repeatCount="indefinite" values="0;0;1;0;0" keyTimes="0;0.82;0.83;0.90;1"/><animateTransform attributeName="transform" type="translate" dur="12s" begin="2s" repeatCount="indefinite" values="0 0;0 0;-16 -18;-16 -18" keyTimes="0;0.82;0.90;1"/></circle>
+      <circle r="2.2" fill="#00f0ff" opacity="0"><animate attributeName="opacity" dur="12s" begin="2s" repeatCount="indefinite" values="0;0;1;0;0" keyTimes="0;0.82;0.83;0.90;1"/><animateTransform attributeName="transform" type="translate" dur="12s" begin="2s" repeatCount="indefinite" values="0 0;0 0;-20 6;-20 6" keyTimes="0;0.82;0.90;1"/></circle>
+      <circle r="2.2" fill="#f8fafc" opacity="0"><animate attributeName="opacity" dur="12s" begin="2s" repeatCount="indefinite" values="0;0;1;0;0" keyTimes="0;0.82;0.83;0.90;1"/><animateTransform attributeName="transform" type="translate" dur="12s" begin="2s" repeatCount="indefinite" values="0 0;0 0;-8 -24;-8 -24" keyTimes="0;0.82;0.90;1"/></circle>
+      <circle r="2.2" fill="#f6c344" opacity="0"><animate attributeName="opacity" dur="12s" begin="2s" repeatCount="indefinite" values="0;0;1;0;0" keyTimes="0;0.82;0.83;0.90;1"/><animateTransform attributeName="transform" type="translate" dur="12s" begin="2s" repeatCount="indefinite" values="0 0;0 0;-10 20;-10 20" keyTimes="0;0.82;0.90;1"/></circle>
+    </g>
+    <g transform="translate(960,170)">
+      <circle r="2.2" fill="#f6c344" opacity="0"><animate attributeName="opacity" dur="12s" begin="4s" repeatCount="indefinite" values="0;0;1;0;0" keyTimes="0;0.82;0.83;0.90;1"/><animateTransform attributeName="transform" type="translate" dur="12s" begin="4s" repeatCount="indefinite" values="0 0;0 0;-16 -18;-16 -18" keyTimes="0;0.82;0.90;1"/></circle>
+      <circle r="2.2" fill="#00f0ff" opacity="0"><animate attributeName="opacity" dur="12s" begin="4s" repeatCount="indefinite" values="0;0;1;0;0" keyTimes="0;0.82;0.83;0.90;1"/><animateTransform attributeName="transform" type="translate" dur="12s" begin="4s" repeatCount="indefinite" values="0 0;0 0;-20 6;-20 6" keyTimes="0;0.82;0.90;1"/></circle>
+      <circle r="2.2" fill="#f8fafc" opacity="0"><animate attributeName="opacity" dur="12s" begin="4s" repeatCount="indefinite" values="0;0;1;0;0" keyTimes="0;0.82;0.83;0.90;1"/><animateTransform attributeName="transform" type="translate" dur="12s" begin="4s" repeatCount="indefinite" values="0 0;0 0;-8 -24;-8 -24" keyTimes="0;0.82;0.90;1"/></circle>
+      <circle r="2.2" fill="#f6c344" opacity="0"><animate attributeName="opacity" dur="12s" begin="4s" repeatCount="indefinite" values="0;0;1;0;0" keyTimes="0;0.82;0.83;0.90;1"/><animateTransform attributeName="transform" type="translate" dur="12s" begin="4s" repeatCount="indefinite" values="0 0;0 0;-10 20;-10 20" keyTimes="0;0.82;0.90;1"/></circle>
+    </g>
+    <g transform="translate(960,490)">
+      <circle r="2.2" fill="#f6c344" opacity="0"><animate attributeName="opacity" dur="12s" begin="6s" repeatCount="indefinite" values="0;0;1;0;0" keyTimes="0;0.82;0.83;0.90;1"/><animateTransform attributeName="transform" type="translate" dur="12s" begin="6s" repeatCount="indefinite" values="0 0;0 0;-16 -18;-16 -18" keyTimes="0;0.82;0.90;1"/></circle>
+      <circle r="2.2" fill="#00f0ff" opacity="0"><animate attributeName="opacity" dur="12s" begin="6s" repeatCount="indefinite" values="0;0;1;0;0" keyTimes="0;0.82;0.83;0.90;1"/><animateTransform attributeName="transform" type="translate" dur="12s" begin="6s" repeatCount="indefinite" values="0 0;0 0;-20 6;-20 6" keyTimes="0;0.82;0.90;1"/></circle>
+      <circle r="2.2" fill="#f8fafc" opacity="0"><animate attributeName="opacity" dur="12s" begin="6s" repeatCount="indefinite" values="0;0;1;0;0" keyTimes="0;0.82;0.83;0.90;1"/><animateTransform attributeName="transform" type="translate" dur="12s" begin="6s" repeatCount="indefinite" values="0 0;0 0;-8 -24;-8 -24" keyTimes="0;0.82;0.90;1"/></circle>
+      <circle r="2.2" fill="#f6c344" opacity="0"><animate attributeName="opacity" dur="12s" begin="6s" repeatCount="indefinite" values="0;0;1;0;0" keyTimes="0;0.82;0.83;0.90;1"/><animateTransform attributeName="transform" type="translate" dur="12s" begin="6s" repeatCount="indefinite" values="0 0;0 0;-10 20;-10 20" keyTimes="0;0.82;0.90;1"/></circle>
+    </g>
+    <g transform="translate(960,570)">
+      <circle r="2.2" fill="#f6c344" opacity="0"><animate attributeName="opacity" dur="12s" begin="8s" repeatCount="indefinite" values="0;0;1;0;0" keyTimes="0;0.82;0.83;0.90;1"/><animateTransform attributeName="transform" type="translate" dur="12s" begin="8s" repeatCount="indefinite" values="0 0;0 0;-16 -18;-16 -18" keyTimes="0;0.82;0.90;1"/></circle>
+      <circle r="2.2" fill="#00f0ff" opacity="0"><animate attributeName="opacity" dur="12s" begin="8s" repeatCount="indefinite" values="0;0;1;0;0" keyTimes="0;0.82;0.83;0.90;1"/><animateTransform attributeName="transform" type="translate" dur="12s" begin="8s" repeatCount="indefinite" values="0 0;0 0;-20 6;-20 6" keyTimes="0;0.82;0.90;1"/></circle>
+      <circle r="2.2" fill="#f8fafc" opacity="0"><animate attributeName="opacity" dur="12s" begin="8s" repeatCount="indefinite" values="0;0;1;0;0" keyTimes="0;0.82;0.83;0.90;1"/><animateTransform attributeName="transform" type="translate" dur="12s" begin="8s" repeatCount="indefinite" values="0 0;0 0;-8 -24;-8 -24" keyTimes="0;0.82;0.90;1"/></circle>
+      <circle r="2.2" fill="#f6c344" opacity="0"><animate attributeName="opacity" dur="12s" begin="8s" repeatCount="indefinite" values="0;0;1;0;0" keyTimes="0;0.82;0.83;0.90;1"/><animateTransform attributeName="transform" type="translate" dur="12s" begin="8s" repeatCount="indefinite" values="0 0;0 0;-10 20;-10 20" keyTimes="0;0.82;0.90;1"/></circle>
+    </g>
+    <g transform="translate(960,330)">
+      <circle r="2.2" fill="#f6c344" opacity="0"><animate attributeName="opacity" dur="12s" begin="10s" repeatCount="indefinite" values="0;0;1;0;0" keyTimes="0;0.82;0.83;0.90;1"/><animateTransform attributeName="transform" type="translate" dur="12s" begin="10s" repeatCount="indefinite" values="0 0;0 0;-16 -18;-16 -18" keyTimes="0;0.82;0.90;1"/></circle>
+      <circle r="2.2" fill="#00f0ff" opacity="0"><animate attributeName="opacity" dur="12s" begin="10s" repeatCount="indefinite" values="0;0;1;0;0" keyTimes="0;0.82;0.83;0.90;1"/><animateTransform attributeName="transform" type="translate" dur="12s" begin="10s" repeatCount="indefinite" values="0 0;0 0;-20 6;-20 6" keyTimes="0;0.82;0.90;1"/></circle>
+      <circle r="2.2" fill="#f8fafc" opacity="0"><animate attributeName="opacity" dur="12s" begin="10s" repeatCount="indefinite" values="0;0;1;0;0" keyTimes="0;0.82;0.83;0.90;1"/><animateTransform attributeName="transform" type="translate" dur="12s" begin="10s" repeatCount="indefinite" values="0 0;0 0;-8 -24;-8 -24" keyTimes="0;0.82;0.90;1"/></circle>
+      <circle r="2.2" fill="#f6c344" opacity="0"><animate attributeName="opacity" dur="12s" begin="10s" repeatCount="indefinite" values="0;0;1;0;0" keyTimes="0;0.82;0.83;0.90;1"/><animateTransform attributeName="transform" type="translate" dur="12s" begin="10s" repeatCount="indefinite" values="0 0;0 0;-10 20;-10 20" keyTimes="0;0.82;0.90;1"/></circle>
+    </g>
+  </g>
+
+  <!-- Legend -->
+  <g transform="translate(28,612)">
+    <use xlink:href="#parcel" x="0" y="-12" width="18" height="14"/><text x="24" y="0" class="legend">a request</text>
+    <use xlink:href="#passport" x="96" y="-13" width="12" height="14"/><text x="114" y="0" class="legend">passport: who sends and their memberships, issued once by the Registry</text>
+    <use xlink:href="#mandate" x="520" y="-12" width="11" height="12"/><text x="538" y="0" class="legend">mandate: written by the holder for this errand, narrower and shorter, never wider</text>
+    <use xlink:href="#lock" x="1006" y="-13" width="9" height="11"/><text x="1022" y="0" class="legend">sealed between offices</text>
+    <use xlink:href="#office" x="0" y="8" width="27" height="17"/><text x="34" y="19" class="legend">sam-node, at the edge: reads passport, law and mandates offline, runs customs, gets a border pass at a cloud border</text>
+    <use xlink:href="#relay" x="684" y="6" width="20" height="20"/><text x="710" y="19" class="legend">sam-router, at the core: admits passport holders, relays sealed bags, opens none</text>
+    <text x="0" y="37" class="legend">Registry = sam-control-plane: issues passports, writes the law and the watchlist. Asked once per sender and once per task at a cloud border, never per request.</text>
+    <text x="0" y="55" class="legend">✓ is the office's decision; nothing is written on the passport. Bring your own gateway (Istio, agentgateway, kgateway over ext_proc) and your own customs (any ext_proc processor).</text>
+  </g>
+</svg>

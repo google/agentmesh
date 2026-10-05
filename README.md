@@ -77,8 +77,8 @@ installing anything:
 
 SAM is pre-1.0. The node, routers, control plane, identity and policy model
 are stable in shape and exercised by the test suite and two public testnets;
-see [ROADMAP.md](ROADMAP.md) for the release plan. Sandboxed agents
-(`sam-box`, `nano-init`) and the mobile app are in preview.
+see [ROADMAP.md](ROADMAP.md) for the release plan. Sandboxed agent blueprints
+and the mobile app are in preview.
 
 ## License and disclaimer
 

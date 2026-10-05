@@ -973,8 +973,9 @@ a TLS-terminating edge, with Node members calling it and being called.
 - They do not publish services. An MCP server, a model or an agent that
   others should find by name runs behind a `sam-node`, which publishes it
   to the discovery table and reports it to the console.
-- They do not run a sidecar API or a sandbox. An agent that needs the egress
-  policy enforcement of `sam-box` runs beside a `sam-node`.
+- They do not run a local HTTP/gRPC gateway or credential broker. A workload
+  that needs `ext_authz`, `ext_proc`, RFC 8693 `/oauth/token`, or cloud egress
+  credential brokering runs beside a `sam-node`.
 - They do not serve the discovery table. A member is a client of it; the
   routers hold the records.
 - The Python SDK does not run in a browser; the JS SDK does, see

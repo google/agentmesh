@@ -7,11 +7,12 @@ weight: 1
 `sam-node` is the mesh member that runs beside an agent or a service.
 
 ```text
-sam-node join [control-plane-url] [flags]   enroll and store a credential
-sam-node run [flags]                        run the node
-sam-node reset [--all] [--yes]              forget the credential or everything
-sam-node state export|import <dir>          move the identity to or from a state directory
-sam-node skill install|list|show            manage the agent skill document
+sam-node join [control-plane-url] [flags]            enroll and store a credential
+sam-node run [flags]                                 run the node
+sam-node forward egress://<name>:<port> [local-addr] forward a local TCP port to a named egress tunnel
+sam-node reset [--all] [--yes]                       forget the credential or everything
+sam-node state export|import <dir>                   move the identity to or from a state directory
+sam-node skill install|list|show                     manage the agent skill document
 ```
 
 ## Files

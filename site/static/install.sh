@@ -56,7 +56,7 @@ tar -xzf "${TAR_NAME}"
 
 echo "Installing to ${INSTALL_DIR} (may require sudo)..."
 INSTALLED_BINS=()
-for b in sam-one sam-node sam-control-plane sam-router mcp-client sam-box sam-console nano-init; do
+for b in sam-one sam-node sam-control-plane sam-router mcp-client sam-console; do
     if [ -f "$b" ]; then
         INSTALLED_BINS+=("$b")
     fi

@@ -130,9 +130,10 @@ headers (`Authorization`, `Cookie`, `X-*`). A `403` is a policy decision; a
 answer the destination sent.
 
 Every decision, allowed or denied, is one `Audit Traceability` line in the
-node's log with the peer, the role, the agent, the method, the path, the
-host and the port policy saw, and the decision. That line is the audit
-trail of the PEP; the destination's own logs see only the node.
+node's log with the peer, the role, the method, the path, the host and the
+port policy saw, and the decision. That line is the audit trail of the PEP;
+the destination's own logs see the brokered credential (or the federated
+principal when `oidc_federation` or `aws_assume_role` is configured).
 
 The node's `/metrics` endpoint counts the same events, so you can alert
 without reading logs:
@@ -146,9 +147,9 @@ without reading logs:
 the node serves right now. A `refused` assignment or a `credential_unavailable`
 decision means the platform did not deliver a credential the policy names.
 
-A client that names the agent it acts for sends `X-Sam-Agent`. The claim is
-checked against the node's `allowed_agents` grant and reaches policy as
-`agent()`, as it does on every other path.
+A caller that wants to narrow a request to a single task presents a
+task-attenuated Biscuit (`tar_block`), which the egress node evaluates after
+standing Datalog policy.
 
 ## What another mesh member does
 
@@ -180,14 +181,14 @@ attenuation:
 
 ## Limits
 
-- The node is the HTTP origin. A method and path decision needs the request
-  in the clear, which is the case here because the application talks plain
-  HTTP to the node. A tunnel the node opens without terminating HTTP carries
-  `method("CONNECT")` and an empty path, so a grant narrowed to methods or
-  paths denies it.
+- The node is the HTTP origin for `EGRESS_MODE_HTTP` destinations. A method
+  and path decision needs the request in the clear, which is the case here
+  because the application talks plain HTTP to the node. A TCP tunnel
+  (`mode: EGRESS_MODE_TCP`) carries `method("CONNECT")` and an empty path, so
+  a grant narrowed to HTTP methods or paths denies it.
 - The path is a prefix under the destination. A client that follows
   absolute URLs returned by the destination (a `Link` header, a URL in a
   body) leaves the node. Use a client that takes a base URL, or point it
   back at the prefix.
-- One destination is one hostname. A wildcard destination and a destination
-  reached by `CONNECT` from a sandbox are not part of this release.
+- One destination is one hostname. Wildcard egress destinations are not
+  supported.

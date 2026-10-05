@@ -18,9 +18,9 @@ in the repository has the details.
 
 | Path | Contents |
 |---|---|
-| `cmd/` | One directory per binary: `sam-node`, `sam-control-plane`, `sam-router`, `sam-one`, `sam-console`, `sam-box`, `nano-init`, `mcp-client`, and smaller tools. |
+| `cmd/` | One directory per binary: `sam-node`, `sam-control-plane`, `sam-router`, `sam-one`, `sam-console`, `mcp-client`, `sam-bench`, and smaller tools. |
 | `api/` | The wire contract: `sam.proto` and its generated code, plus the Go types for the JSON admin API and the validation and Datalog helpers both sides share. |
-| `internal/` | Implementation, one package per component (`node`, `controlplane`, `router`, `standalone`, `console`, `sambox`, `identity`, `storage`, ...). |
+| `internal/` | Implementation, one package per component (`node`, `controlplane`, `router`, `standalone`, `console`, `identity`, `storage`, ...). |
 | `charts/` | The `sam-mesh` and `sam-node` Helm charts. |
 | `tests/integration/` | Go tests that start several components in one process. |
 | `tests/e2e/` | Bats tests that drive the built binaries and containers. |
@@ -29,9 +29,9 @@ in the repository has the details.
 
 Two rules from `AGENTS.md` shape most changes. Components talk to each other
 only through `api/sam.proto` (protobuf for anything a mesh component speaks,
-JSON types in `api/` for the operator API). And no new module may be added
-to `go.mod` without discussion. Guest-only code such as `nano-init` lives in
-its own module for that reason.
+protojson of the same messages for the operator API). And no new module may be
+added to `go.mod` without discussion. Conformance harnesses with external gRPC
+dependencies such as `tests/extproc/` live in their own module for that reason.
 
 ## Build
 

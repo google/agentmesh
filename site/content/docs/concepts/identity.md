@@ -5,9 +5,12 @@ weight: 2
 ---
 
 Every participant in a mesh, node or router, has a key that it generated
-itself and a credential that the control plane issued for that key. This page
-follows the credential from enrollment to expiry: how a node gets it, what it
-contains, how it is renewed, and how it is revoked.
+itself and a credential that the control plane issued for that key. Callers
+that reach the mesh through a node (workloads, users, and sandboxed agents)
+exchange their platform JWTs into delegated credentials bound to that node's
+channel, and narrow them offline per task. This page follows credentials from
+enrollment and exchange to attenuation, outbound federation, renewal, and
+revocation.
 
 ## Keys and peer IDs
 
@@ -63,9 +66,9 @@ mints a credential:
    is registering.
 2. Neither the peer ID nor the identity behind it is banned.
 3. The identity resolves, through the bindings in the mesh policy, to the
-   role being requested. `sam-node` requests `sam:role:node`, `sam-router`
-   requests `sam:role:router`, and `sam-box` requests `sam:role:sambox`. If
-   the policy binds nobody to `sam:role:node`, no node can enroll.
+   role being requested. `sam-node` requests `sam:role:node` and `sam-router`
+   requests `sam:role:router`. If the policy binds nobody to `sam:role:node`,
+   no node can enroll.
 4. Every label the node declared is permitted by the `allowed_labels` of a
    role it holds. A role without `allowed_labels` permits no labels.
 
@@ -77,11 +80,19 @@ that issued it.
 
 ## The credential
 
-The credential is a [Biscuit](https://www.biscuitsec.org/), a signed
-authorization token. Its authority block holds facts written in Datalog, a
-small logic language in which a fact looks like `role("sam:role:node")`. The
-block is signed by the control plane's Ed25519 key. Any node with the public
-key can verify it without contacting anyone. The block contains:
+Inside the mesh, every credential is a [Biscuit](https://www.biscuitsec.org/),
+a signed authorization token. Its authority block (Block 0) holds facts
+written in Datalog, a small logic language in which a fact looks like
+`role("sam:role:node")`. The authority block is signed by the control plane's
+Ed25519 key. Any node with the public key can verify it without contacting
+anyone.
+
+The control plane mints two kinds of Biscuits:
+
+### 1. Member Biscuit (`POST /register`, `POST /enroll`, `POST /refresh`)
+
+Issued to an enrolled node, router, or native SDK peer. Its authority block
+contains:
 
 | Fact | Meaning |
 |---|---|
@@ -90,27 +101,79 @@ key can verify it without contacting anyone. The block contains:
 | `role("sam:role:node")`, `role("developer")` | The roles the identity resolved to, one fact each. |
 | `user("...")`, `email("...")`, `group("...")`, `idp_role("...")` | Claims copied from the OIDC token: subject, verified email, each group, each entry of the issuer's `roles` claim. Absent for bootstrap enrollments. |
 | `label("region", "eu")` | One fact per declared and permitted label. |
-| `granted_service_*`, `granted_target_*`, `granted_agent_*` | What the roles allow, compiled from `allowed_services`, `allowed_targets` and `allowed_agents`. [Authorization](../authorization/) describes them. |
+| `granted_service_*`, `granted_target_*` | What the roles allow, compiled from `allowed_services` and `allowed_targets`. [Authorization](../authorization/) describes them. |
 
 The node does not set any of these facts. Roles come from the bindings in
 the mesh policy, not from the identity provider: an issuer's `roles` claim
 is stored as `idp_role()`, which grants nothing by itself. Labels are the
 ones the node asked for and the policy allowed. Grants come from the policy.
 
-Tokens carry no appended blocks. Biscuit lets a holder attenuate a token by
-appending blocks, but SAM verifiers reject any token that has one. A request
-that needs to carry an extra claim (for example, which agent a node is acting
-for) sends it next to the token instead.
+### 2. Delegated Session Biscuit (`POST /token/exchange`, `/oauth/token`)
+
+When a workload or user calls through an enrolled `sam-node` (or an Envoy /
+Istio / `agentgateway` proxy integrated with `sam-node`), the node exchanges
+the caller's platform JWT (OIDC ID token, Kubernetes projected SA JWT, or
+SPIFFE JWT-SVID) at `POST /token/exchange` on the control plane. The control
+plane verifies the node's credential and proof-of-possession signature,
+validates the caller's `subject_token`, resolves the caller's roles against
+the mesh policy, and mints a short-lived Delegated Session Biscuit with zero
+database writes:
+
+- `client_peer_id("12D3KooW...")` and `actor_node("12D3KooW...")` bind the
+  token to the origin node's transport channel so only that node can present
+  it over libp2p, and record the acting node for audit logs and outbound STS.
+- **No `node()` fact is minted**, so `node:<peer_id>` bindings on the origin
+  node never leak to the delegated caller.
+- `user("...")`, `email("...")`, `group("...")`, `idp_role("...")`, and
+  `role("...")` reflect the caller's verified identity and resolved roles.
+
+## Task attenuation (`tar_block`) and sealing
+
+Before starting a task or delegating to a sub-agent, any holder (`sam-node`,
+an orchestrator via `POST /oauth/token`, or an SDK caller via
+`session.attenuate(rule)`) can narrow a Biscuit offline by appending up to 8
+blocks.
+
+Each appended block (`block_idx >= 1`) carries zero Datalog rules, zero Datalog
+checks, and exactly one fact:
+
+```datalog
+tar_block("<base64url-serialized api.TaskAuthorizationRule>")
+```
+
+Every verifier decodes the `TaskAuthorizationRule` chain and requires the
+request to satisfy both Block 0's standing Datalog policy and every appended
+`TaskAuthorizationRule` block (strict intersection across hops). For untrusted
+leaf sandboxes, the holder calls `Seal()` (`session.seal()` or `seal=true` on
+`POST /oauth/token`), which discards the ephemeral next-block key so no
+further blocks can be appended.
+
+## Outbound federation: the control plane as OIDC issuer
+
+External cloud providers do not accept Biscuits, and SAM never forwards a
+caller's mesh token to an upstream API. Instead, the control plane acts as a
+standard OIDC issuer (`/.well-known/openid-configuration` and `/jwks`, signed
+with ES256).
+
+When an egress node serves a destination configured with `oidc_federation` or
+`aws_assume_role`, it verifies the caller's Biscuit and `tar_block` chain and
+calls `POST /sts/token` on the control plane. The control plane re-verifies
+the token and mints a short-lived ES256 border JWT (`sub` = caller principal,
+`act.sub` = egress node peer ID, `aud` = destination audience, `sam_roles` =
+caller mesh roles, `sam_task` = innermost task name), which the egress node
+exchanges at the cloud provider's STS endpoint (such as Google Workload or
+Workforce Identity Federation or AWS `AssumeRoleWithWebIdentity`).
 
 ## Lifetime and refresh
 
-A credential is valid for `--biscuit-ttl`, 24 hours by default. If the OIDC
-token expires sooner, the credential expires with it. Nodes and routers check
-every ten minutes, and when less than a fifth of the lifetime remains they
-call `POST /refresh` with the current token and a signature over a fresh
-challenge. The control plane verifies both, resolves the identity's roles
-against the current policy again, and mints a new token with the same
-identity facts and labels.
+A Member Biscuit is valid for `--biscuit-ttl`, 24 hours by default (or the
+OIDC token's expiry if sooner). Delegated Session Biscuits default to 1 hour
+(bounded by the subject JWT's expiry and any `TaskAuthorizationRule.expire_time`).
+Nodes and routers check their Member Biscuit every ten minutes, and when less
+than a fifth of the lifetime remains they call `POST /refresh` with the
+current token and a signature over a fresh challenge. The control plane
+verifies both, resolves the identity's roles against the current policy again,
+and mints a new token with the same identity facts and labels.
 
 Refresh is limited by the **session**, which is a record on the control
 plane, not a field in the token. The session of an OIDC enrollment lasts
@@ -125,16 +188,16 @@ any user action.
 
 ## Signing keys and rotation
 
-The control plane rotates its signing key every `--key-rotation-interval`
-(24 hours by default). The previous key stays valid for `--key-grace-period`
-(1 hour by default) and is then retired. `GET /keys` returns the current set
-of keys, signed by each key in the set. Routers poll it every
-`--keys-sync-interval`; nodes fetch it at enrollment and then every
-`--control-plane-sync-interval`, together with the ban set and the mesh
-policy. A rotation event only brings the next pull forward. Both accept a
-new set only if one of its signatures verifies under a key they already
-trust. The first key comes from enrollment, and each later key is vouched
-for by the key it replaces.
+The control plane rotates its Biscuit Ed25519 signing key every
+`--key-rotation-interval` (24 hours by default). The previous key stays valid
+for `--key-grace-period` (1 hour by default) and is then retired. `GET /keys`
+returns the current set of keys, signed by each key in the set. Routers poll
+it every `--keys-sync-interval`; nodes fetch it at enrollment and then every
+`--control-plane-sync-interval`, together with the ban set, revocation list,
+and the mesh policy. A rotation event only brings the next pull forward. Both
+accept a new set only if one of its signatures verifies under a key they
+already trust. The first key comes from enrollment, and each later key is
+vouched for by the key it replaces.
 
 Nobody can verify a credential signed by a retired key, including the
 control plane. A node that was offline for a whole grace period therefore
@@ -154,14 +217,24 @@ depends on how it enrolled:
 
 ## Revocation
 
-`POST /admin/revoke` with a peer ID (or `sam-one admin ban`, or the console)
-marks the node as banned. Its next refresh is refused and the node daemon
-exits. The control plane publishes the peer ID in `/info`, which routers and
-nodes read, so peers stop accepting connections from it before its current
-token expires. If the node was enrolled through OIDC, the identity behind it
-(`issuer|subject`) is banned too. It can no longer register a new key, and
-bootstrap tokens it minted stop working. `POST /admin/nodes/{peer_id}/unban`
-reverses both bans.
+Revocation operates at two levels:
+
+1. **Mesh-wide node, identity, and root-prefix Biscuit revocation:**
+   `POST /admin/revoke` with a peer ID (or `sam-one admin ban`, or the console)
+   marks the node as banned. Its next refresh is refused and the node daemon
+   exits. The control plane publishes banned peer IDs in `/info` and
+   `GET /revocations`, together with revoked root Biscuit revocation IDs
+   (`RevocationIds()[0]`). Because every offline-attenuated child Biscuit
+   shares the root authority block's `RevocationIds()[0]`, revoking the root
+   credential invalidates every attenuated task token derived from it across
+   the mesh. If the node was enrolled through OIDC, the identity behind it
+   (`issuer|subject`) is banned too. `POST /admin/nodes/{peer_id}/unban`
+   reverses both bans.
+2. **Local task token revocation (`POST /oauth/revoke`):**
+   When an orchestrator or sandbox finishes a task before its TTL expires, it
+   calls `POST /oauth/revoke` (RFC 7009) on the local `sam-node`, which records
+   the leaf token's `RevocationIds()[last]` in its local revocation cache until
+   the token's `expire_time`.
 
 A bootstrap token can be revoked before it expires with
 `DELETE /admin/bootstrap-tokens/{id}`. The token stays in the list, marked
@@ -174,14 +247,17 @@ peer ID in a request body is otherwise only a claim. On the mesh, the libp2p
 secure channel already proves which key is on the other end, so the handshake
 between two nodes is simpler. Each side sends its credential. Each side
 verifies the other's signature and expiry, checks that the credential's
-`node()` fact matches the authenticated peer, and checks the ban list. Only
-then is the requested service name evaluated against policy. Routers perform
-the same handshake on every connection they accept, so a banned or unenrolled
-peer cannot reach the DHT.
+`node()` fact matches the authenticated peer, and checks the ban and
+revocation lists. On per-request streams, the destination node verifies either
+the caller's Member Biscuit or a Delegated Session Biscuit whose
+`client_peer_id()` matches the authenticated connection peer, and then
+evaluates standing Datalog policy and any appended `tar_block` chain.
 
 ## See also
 
 - [Headless enrollment](../../guides/headless-enrollment/) for the bootstrap
   token workflow step by step.
+- [Agent architecture](../../preview/agent-architecture/) for the two-token
+  STS model and task attenuation.
 - [Control plane reference](../../reference/control-plane/) for the flags
   and HTTP routes named here.

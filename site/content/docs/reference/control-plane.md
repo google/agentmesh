@@ -58,8 +58,11 @@ Responses that carry credentials are sent with `Cache-Control: no-store`.
 | `GET /metrics` | Prometheus metrics. |
 | `GET /info` | `ControlPlaneInfoResponse`: the OIDC issuer, client ID and audience, the addresses of routers with live leases, and the list of banned peer IDs. This is what a node needs before it can enroll. |
 | `GET /keys` | The current set of signing public keys, signed by every key in the set. A caller accepts the set only if one signature verifies under a key it already trusts. |
+| `GET /.well-known/openid-configuration`, `GET /.well-known/oauth-authorization-server` | OIDC Discovery and OAuth 2.1 Authorization Server metadata for outbound STS federation and MCP OAuth 2.1 clients. |
+| `GET /jwks` | JSON Web Key Set (`ES256` public keys) for verifying border JWTs minted by `POST /sts/token`. |
+| `GET /oauth/authorize`, `POST /oauth/token` | OAuth 2.1 Authorization Code + PKCE endpoints (honouring RFC 8707 `resource` indicators to scope the issued Task Biscuit). |
 
-### Enrollment and refresh
+### Enrollment, refresh, and STS
 
 Every request below carries a `challenge_unix_ms` and a `challenge_signature`.
 The enrollee signs `sam:<endpoint>:<peer_id>:<challenge_unix_ms>` with its
@@ -74,6 +77,9 @@ names. Every instant in a response (`expire_time` and the like) is a
 | `POST /enroll` | `BootstrapEnrollRequest` (bootstrap token, public key, requested role, labels) | Bootstrap enrollment. Returns `BootstrapEnrollResponse` with status `APPROVED` and the credential, or with status `PENDING`. For a peer that is already approved, a new credential is minted directly. |
 | `GET /enroll/status?peer_id=` | headers `X-Sam-Challenge-Ts`, `X-Sam-Challenge-Sig` | Poll a pending enrollment. Any authentication failure answers `401`, so the credential is released only to the enrollee. |
 | `POST /refresh` | `TokenRefreshRequest`, current credential as `Authorization: Bearer <base64>` | Exchange a credential for a new one. Refuses a replayed (superseded) credential, a banned node, an expired session, and a credential signed by a retired key unless the node has `autonomous_recovery`. |
+| `POST /token/exchange` | `TokenExchangeRequest` (`subject_token`, optional `task_rule` and `seal`, challenge signature), node credential as bearer | Stateless JWT-to-Biscuit exchange. Mints a Delegated Session Biscuit bound to the calling node (`actor_node`, `client_peer_id`) with zero database writes. |
+| `POST /sts/token` | `STSTokenRequest` (`biscuit`, `destination`, optional `audience`, challenge signature), node credential as bearer | Stateless Biscuit-to-JWT minting. Verifies the Biscuit and `tar_block` chain against `egress://<destination>` and mints a short-lived ES256 border JWT (`sub`, `act.sub`, `aud`, `sam_roles`, `sam_task`). |
+| `GET /revocations` | credential as `Authorization: Bearer <base64>` | `RevocationsResponse`: revoked root Biscuit revocation IDs (`revocation_ids`) and banned peer IDs (`banned_peer_ids`). |
 | `POST /routers/lease` | `RouterLeaseRequest` (credential, addresses, telemetry) | Register or renew a router lease. Requires `role("sam:role:router")`. Announced addresses must end in the router's own peer ID. |
 | `GET /policies` | credential as `Authorization: Bearer <base64>` | The mesh policy as `PolicyConfigGetResponse`: the Datalog rules a member adds to its authorizer, one per entry. Operators read the document at `GET /admin/policy`. |
 | `GET /egress` | credential as `Authorization: Bearer <base64>` | `EgressAssignmentsResponse`: the [egress destinations](../policy/#egress-destinations) whose `served_by` selects the calling node, by its roles or labels. A node registers and serves what it receives here. |

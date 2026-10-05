@@ -6,42 +6,100 @@ aliases:
   - /docs/development/testnet-validation/
 ---
 
-The local API that `sam-node run` serves to agents and scripts on the same
-machine. It is available on TCP (`--bind-addr`, default `127.0.0.1:8080`)
-and on a Unix socket (`--socket-path`, default `<data-dir>/sam.sock`).
+The local API that `sam-node run` serves to agents, gateways, and scripts on
+the same machine or cluster. It is available on TCP (`--bind-addr`, default
+`127.0.0.1:8080`), on a Unix socket (`--socket-path`, default
+`<data-dir>/sam.sock`), and optionally on a dedicated Envoy `ext_authz` /
+`ext_proc` listener (`--ext-authz-addr`).
 
 ## Authentication
 
 | Listener | Requirement |
 |---|---|
-| TCP | `X-Sam-Authentication: Bearer <api-token>` on every request, or a client certificate when `--tls-ca` is set. |
-| Unix socket | None. The socket has mode `0600`. Being able to open it is the credential. |
+| TCP (`--bind-addr`) | `X-Sam-Authentication: Bearer <token>` on every request, or `Authorization: Bearer <token>` on non-proxy endpoints (`/mcp`, `/v1/*`, `/egress/*`, `/oauth/*`), or a client certificate when `--tls-ca` is set. |
+| Unix socket (`--socket-path`) | None required for node-level access (the socket has mode `0600`). A caller may still pass a SAM Task Biscuit or platform JWT in `X-Sam-Authentication` or `Authorization` to scope the request to that caller's identity and task rules. |
 
-`Authorization` is reserved for the credential of the service that is being
-called through the node, and the proxy path forwards it. The endpoints that
-never forward anything (`/mcp`, `/v1/*`, `/sam/service/*`, `/metrics`,
-`/sam/identity`, `/sam/peer/*`, `/debug/*`) also accept the API token in
-`Authorization: Bearer`, for clients that cannot set custom headers. The
-proxy path does not accept it there.
+The bearer `<token>` accepted by `sam-node` can be:
+
+1. **The node's static API token** (`--api-token-path` or `SAM_API_TOKEN`),
+   which exercises the node's own enrolled credential.
+2. **A SAM Biscuit** (a Member Biscuit, a Delegated Session Biscuit, or a
+   task-attenuated Biscuit with `tar_block` blocks), base64-encoded.
+3. **An external platform JWT** (an OIDC ID token, Kubernetes projected service
+   account token, or SPIFFE JWT-SVID). On `/mcp`, `/v1/*`, `/sam/*` (via
+   `X-Sam-Authentication`), and `/egress/*`, `sam-node` exchanges the JWT via
+   the control plane's stateless `POST /token/exchange` endpoint (cached until
+   expiry) and forwards the resulting Delegated Session Biscuit.
+
+On `/sam/{peer-id}/{type}/{name}/...`, the `Authorization` header is reserved
+exclusively for the destination service's own credential and passes through
+untouched; callers of `/sam/...` pass their SAM token or platform JWT in
+`X-Sam-Authentication: Bearer <token>`.
+
+When a request on TCP fails authentication with `401 Unauthorized`, `sam-node`
+includes `WWW-Authenticate: Bearer resource_metadata="http://<host>/.well-known/oauth-protected-resource"`
+per RFC 9728 so standard MCP OAuth 2.1 clients can discover the control plane
+Authorization Server.
 
 ## Routes
 
 | Route | Auth | Purpose |
 |---|---|---|
-| `GET /healthz`, `GET /readyz` | none | `200` while the process is up. Every other route except `/debug/*` answers `503` until the node is connected to the mesh, so a `503` on `/mcp` is the practical readiness signal. |
+| `GET /healthz`, `GET /readyz` | none | `200` while the process is up. Every other route except `/debug/*` and `/.well-known/*` answers `503` until the node is connected to the mesh. |
+| `GET /.well-known/oauth-protected-resource` | none | RFC 9728 OAuth 2.1 Protected Resource Metadata naming the SAM control plane in `authorization_servers`. |
+| `POST /oauth/token` | token | RFC 8693 Token Exchange: exchanges a platform JWT or Biscuit into a Delegated or Task-Attenuated Biscuit. See [Token exchange (`/oauth/token`)](#token-exchange-oauthtoken). |
+| `POST /oauth/revoke` | token | RFC 7009 Token Revocation: revokes a task Biscuit in this node's local revocation cache. |
 | `GET /metrics` | token | Prometheus metrics (`sam_node_*`). |
 | `POST /mcp` | token | The MCP server (Streamable HTTP, sessionless: no `Mcp-Session-Id`, `GET` answers `405`). `/` is an alias. |
 | `GET /v1/models` | token | Models served by every reachable inference provider. |
 | `POST /v1/chat/completions`, `POST /v1/completions` | token | OpenAI-compatible inference, routed to a provider of the requested model. |
 | `GET /sam/service/discover` | token | Discover services on the mesh. |
 | `ANY /sam/{peer-id}/{type}/{name}[/{path}]` | token | Reverse proxy to one service on one peer. |
-| `ANY /egress/{destination}[/{path}]` | token | A destination outside the mesh that this node serves, for local clients. See [Egress](#egress). |
+| `ANY /egress/{destination}[/{path}]` | token | HTTP proxy to an external destination assigned to this node. See [Egress](#egress). |
+| `CONNECT {destination}:{port}` | token | Named TCP tunnel to an `EGRESS_MODE_TCP` destination assigned to this node. |
 | `GET /sam/identity` | token, socket or mTLS only | This node's credential and the key it verifies under. |
 | `GET /sam/peer/{peer-id}/evidence` | token, socket or mTLS only | A peer's credential as this node last verified it. |
 | `GET /debug/*` | token | Operator diagnostics. These answer even when the mesh is unreachable. |
 
 `--metrics-addr` serves `/metrics`, `/healthz` and `/readyz` on a second
 listener without authentication, for scrapers that hold no token.
+
+## Token exchange (`/oauth/token`) and revocation (`/oauth/revoke`)
+
+`POST /oauth/token` implements RFC 8693 (`application/x-www-form-urlencoded`):
+
+| Parameter | Meaning |
+|---|---|
+| `grant_type` | Required: `urn:ietf:params:oauth:grant-type:token-exchange`. |
+| `subject_token` | The input JWT or base64 Biscuit. If omitted when authenticated with the node's API token, defaults to the node's own Biscuit. |
+| `subject_token_type` | `urn:ietf:params:oauth:token-type:jwt`, `id_token`, `access_token`, or `urn:sam-mesh:params:oauth:token-type:biscuit`. |
+| `options` (or `scope` / `resource`) | Optional `TaskAuthorizationRule` as protojson (or space-separated service patterns in `scope`) to append as a `tar_block`. |
+| `seal` | Optional (`true` / `1`): seal the returned Biscuit so downstream holders cannot append further blocks. |
+
+Returns standard RFC 8693 JSON (`access_token`,
+`issued_token_type: "urn:sam-mesh:params:oauth:token-type:biscuit"`,
+`token_type: "Bearer"`, `expires_in`).
+
+`POST /oauth/revoke` accepts `token=<base64-biscuit>` and records its leaf
+revocation ID in the node's local revocation cache until the token expires.
+
+## Envoy `ext_authz` and `ext_proc` gateway integration
+
+When `--ext-authz-addr` (`host:port` or `unix:/path`) is set (or on the local
+API listener), `sam-node` serves:
+
+- **Envoy HTTP `ext_authz` (`/ext_authz`, `/ext_authz/*`)** and **gRPC
+  `envoy.service.auth.v3.Authorization/Check`**: evaluates standing Datalog
+  policy and any `tar_block` chain on the request. On a trusted `--ext-authz-addr`
+  listener, if no Bearer token is present, `sam-node` extracts the caller's
+  verified SPIFFE principal from `AttributeContext.Source.Principal` or
+  `X-Forwarded-Client-Cert` (XFCC) and exchanges it into a Delegated Session
+  Biscuit. On `OK`, it injects `Authorization: Bearer <upstream-token>`,
+  `X-Sam-Principal`, and `X-Sam-Task-Id`.
+- **Envoy gRPC `envoy.service.ext_proc.v3.ExternalProcessor/Process`**: the
+  body-aware gateway processor. It inspects JSON-RPC bodies on MCP `tools/call`
+  requests to enforce `operation.allowed_tools` in `TaskAuthorizationRule`
+  blocks before injecting the upstream credential.
 
 ## MCP tools
 
@@ -110,8 +168,11 @@ Returns `description`, `input_schema` and `output_schema`.
 | `arguments` | Object matching the tool's `input_schema`. |
 | `required_labels` | `key=value[,key=value]`. The call is refused unless the peer's credential attests every one of them. |
 
-Returns the tool's result content. A policy denial comes back as a tool
-error that the caller can read, not as a transport failure.
+Returns the tool's result content. If the caller authenticated with a
+Delegated or Task-Attenuated Biscuit, `sam-node` forwards that Biscuit on the
+mesh stream so the provider enforces the caller's roles and `tar_block` tool
+restrictions. A policy denial comes back as a tool error that the caller can
+read, not as a transport failure.
 
 ### When the node has no credential
 
@@ -134,20 +195,18 @@ server-sent events as they are found, and the stream ends with
 ```
 
 The node verifies the peer's credential and, if set, the operator's
-`egress.require_labels`. It then opens an authenticated stream and forwards
-the request to `/<type>/<name>/<path>` on the peer, which proxies it to the
-backend. Headers pass through, including `Authorization`. Paths that contain
-`..` are refused. For an `mcp` service, `<path>` is empty and the request
-body is the JSON-RPC message. For `inference`, `<path>` is `v1/models` or
-`v1/chat/completions`. For `a2a`, `<path>` is whatever the agent serves, and
-`.well-known/agent-card.json` is rewritten for the mesh.
-
-Two headers modify a proxied request:
+`egress.require_labels`. It then opens an authenticated stream (presenting the
+caller's Task Biscuit when one was supplied in `X-Sam-Authentication`) and
+forwards the request to `/<type>/<name>/<path>` on the peer, which proxies it
+to the backend. Headers pass through, including `Authorization`. Paths that
+contain `..` are refused. For an `mcp` service, `<path>` is empty and the
+request body is the JSON-RPC message. For `inference`, `<path>` is `v1/models`
+or `v1/chat/completions`. For `a2a`, `<path>` is whatever the agent serves,
+and `.well-known/agent-card.json` is rewritten for the mesh.
 
 | Header | Effect |
 |---|---|
 | `X-Sam-Required-Labels: k=v[,k=v]` | Forward only to a peer whose credential attests every listed pair. Otherwise `403`. Removed before forwarding. Also honoured on `/v1/*`. |
-| `X-Sam-Agent: <agent-id>` | Name the agent for which this request is made. Only meaningful when sent by a `sam-box`. See the [preview](../../preview/sandboxed-agents/). |
 
 ### Talking MCP through the proxy
 
@@ -213,50 +272,56 @@ curl -s --unix-socket $SOCK http://localhost/v1/chat/completions \
 ```
 
 Any OpenAI SDK works with `base_url` set to `http://127.0.0.1:8080/v1` and
-the API token as `api_key`. The node accepts the token in `Authorization`
-here because nothing on this path forwards that header. Streaming responses
-are passed through. One provider can also be addressed directly, at
-`/sam/<peer-id>/inference/<name>/v1/chat/completions`.
+the API token, Task Biscuit, or platform JWT as `api_key`. The node accepts
+the token in `Authorization` here because nothing on this path forwards that
+header. Streaming responses are passed through. One provider can also be
+addressed directly, at `/sam/<peer-id>/inference/<name>/v1/chat/completions`.
 
 ## Egress
 
-`/egress/<destination>/<path>` reaches a destination outside the mesh that
-the control plane assigned to this node (an entry of the
+`/egress/<destination>/<path>` reaches an external HTTP destination that the
+control plane assigned to this node (an entry of the
 [egress section](../policy/#egress-destinations) of the mesh policy whose
-`served_by` selects it). The node is the HTTP origin: it authorizes the
-request on its own credential, with the request's method and path and the
-destination's host and port as facts, forwards it to the destination's
-`target_url` with the credential the policy names, and returns the answer.
+`served_by` selects it). The node is the HTTP origin:
+
+1. It authorizes the request against the caller's Biscuit (or the node's own
+   credential for local socket calls), evaluating standing Datalog policy and
+   any appended `TaskAuthorizationRule` (`tar_block`) chain against `service`,
+   `method`, `path`, `host`, and `port`.
+2. It strips the caller's `Authorization`, `Cookie`, `X-Sam-*`, and
+   `X-Forwarded-*` headers (unless `forward_context` is set for an operator
+   inspection chain).
+3. It runs any configured [content inspectors](../policy/#content-inspection)
+   (`model_armor`, `ext_proc`) before injecting secrets.
+4. It brokers the upstream credential via `CloudTokenExchanger` (`static_secret`,
+   `oidc_federation` via `POST /sts/token`, `aws_assume_role`, or
+   `platform_identity`), injects `Authorization: Bearer ...`, and forwards the
+   request to `target_url` (preserving `Host: <destination>` when
+   `preserve_host` is enabled).
 
 ```bash
 curl -s --unix-socket $SOCK "http://localhost/egress/api.github.com/repos/acme/dubbing/pulls?state=open"
 ```
 
-An application that takes a base URL for the API it calls points it at the
-node, `http://127.0.0.1:8080/egress/api.github.com`, and sends the API
-token as its bearer, the way it would send a provider key. The node accepts
-the token in `Authorization` on this path and never forwards that header:
-the destination sees the node's credential and none of the client's
-headers. A client may name the agent it acts for in `X-Sam-Agent`; the
-claim is checked against the node's `allowed_agents` grant and is visible
-to policy as `agent()`.
+`403` is a policy or inspection decision (`Proxy-Status: sam-node; error=http_request_denied`).
+`404` is a destination the control plane did not assign to this node
+(`error=destination_not_found`). A destination whose broker cannot obtain a
+credential answers `502` with `error=proxy_configuration_error`. The same
+destination is reachable from another mesh member at
+`/sam/<peer-id>/egress/<destination>/<path>` on that member's node, authorized
+on the caller's Biscuit.
 
-`403` is a policy decision: the node's role lacks the destination, an
-`http` narrowing excludes the method or path, or the node's `attenuation`
-refuses the request. `404` is a destination the control plane did not
-assign to this node. Both carry a `Proxy-Status` header (RFC 9209) naming
-the node as the source, `sam-node; error=http_request_denied` or
-`error=destination_not_found`, so a client can tell them from a `403` or
-`404` the destination itself sent, which carries none. A destination whose
-credential file went missing after registration answers `502` with
-`error=proxy_configuration_error`. The same destination is reachable from
-another mesh member at `/sam/<peer-id>/egress/<destination>/<path>` on that
-member's node, authorized on the member's credential.
+### Named TCP tunnels (`CONNECT` and `sam-node forward`)
 
-The path is a prefix under the destination, so a client that follows
-absolute URLs returned by the destination (a `Link` header, a URL in a
-body) leaves the node. Point it back at the prefix, or use a client that
-takes a base URL.
+For destinations with `mode: EGRESS_MODE_TCP` and an allowed `ports` list, the
+node accepts HTTP `CONNECT <destination>:<port>` on its local listener and
+verifies that the TLS `ClientHello` SNI matches `<destination>` (and does not
+use Encrypted Client Hello) before splicing the stream to the remote egress
+node. Clients that do not speak `CONNECT` can use `sam-node forward`:
+
+```bash
+sam-node forward egress://pg.internal.example:5432 127.0.0.1:15432
+```
 
 ## Identity evidence
 
