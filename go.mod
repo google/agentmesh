@@ -3,7 +3,7 @@ module github.com/google/sam
 go 1.26.6
 
 require (
-	github.com/a2aproject/a2a-go/v2 v2.5.0
+	github.com/a2aproject/a2a-go/v2 v2.6.0
 	github.com/biscuit-auth/biscuit-go/v2 v2.2.0
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/dustin/go-humanize v1.1.0
