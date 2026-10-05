@@ -109,6 +109,7 @@ type Options struct {
 	PolicyFile string
 	// OIDCIssuer optionally enables full OIDC enrollment.
 	OIDCIssuer       string
+	WorkloadIssuer   string
 	AllowedAudiences []string
 	// OIDCClientID is the OAuth client id advertised via /info.
 	OIDCClientID string
@@ -129,6 +130,9 @@ type ControlPlaneTunables struct {
 	KeyGracePeriod time.Duration
 	// BiscuitTTL is the lifespan minted into issued biscuits.
 	BiscuitTTL time.Duration
+	// WorkloadSessionTTL is how long a workload-issuer enrollment stays
+	// refreshable without presenting a fresh platform JWT on /refresh.
+	WorkloadSessionTTL time.Duration
 	// ManualEnrollment queues bootstrap enrollments for admin approval
 	// instead of auto-approving them.
 	ManualEnrollment bool
@@ -263,12 +267,14 @@ func (s *Server) Start(ctx context.Context) error {
 		DriverName:            s.opts.DBDriver,
 		DataSourceName:        s.opts.DBDSN,
 		OIDCIssuer:            s.opts.OIDCIssuer,
+		WorkloadIssuer:        s.opts.WorkloadIssuer,
 		OIDCClientID:          s.opts.OIDCClientID,
 		AllowedAudiences:      s.opts.AllowedAudiences,
 		LeaseDuration:         s.opts.ControlPlane.LeaseDuration,
 		KeyRotationInterval:   s.opts.ControlPlane.KeyRotationInterval,
 		KeyGracePeriod:        s.opts.ControlPlane.KeyGracePeriod,
 		BiscuitTTL:            s.opts.ControlPlane.BiscuitTTL,
+		WorkloadSessionTTL:    s.opts.ControlPlane.WorkloadSessionTTL,
 		BiscuitTimeout:        10 * time.Second,
 		AdminToken:            s.adminToken,
 		AutoApproveEnrollment: !s.opts.ControlPlane.ManualEnrollment,

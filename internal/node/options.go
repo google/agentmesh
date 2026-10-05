@@ -101,6 +101,9 @@ type Options struct {
 	// report is sent, so services configured at startup have registered by
 	// then. Zero uses the default.
 	CatalogReportInitialDelay time.Duration
+	// TokenSource is the optional live platform/OIDC token provider presented
+	// as TokenRefreshRequest.jwt during RefreshEnrollment.
+	TokenSource TokenSource
 }
 
 // Default applies default values to Options if they are not specified.

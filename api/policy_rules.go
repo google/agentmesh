@@ -16,12 +16,103 @@ package api
 
 import (
 	"fmt"
+	"slices"
+	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/biscuit-auth/biscuit-go/v2"
 	"github.com/biscuit-auth/biscuit-go/v2/parser"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
+
+func validateBindingMemberCharset(s string) error {
+	for _, r := range s {
+		if unicode.IsControl(r) || r == '"' || r == '\\' {
+			return fmt.Errorf("contains disallowed character %q", r)
+		}
+	}
+	return nil
+}
+
+// ValidateRoleName checks that a PolicyRole.name is non-empty and free of
+// characters that could break or inject Datalog rules.
+func ValidateRoleName(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("role name cannot be empty")
+	}
+	if err := validateBindingMemberCharset(name); err != nil {
+		return fmt.Errorf("role name %q is invalid: %w", name, err)
+	}
+	return nil
+}
+
+// ValidateBindingMember checks a single PolicyBinding.members entry.
+// It permits sam:system:authenticated, exact "<prefix>:<value>" members, and
+// a single leading "*<suffix>" or trailing "<prefix>*" wildcard on non-node
+// prefixes. Bare "<prefix>:*" is rejected as a disguised sam:system:authenticated,
+// and values containing '"', '\', or control characters are rejected to
+// prevent Datalog rule injection.
+func ValidateBindingMember(member string, role string) error {
+	if member == SystemAuthenticated {
+		return nil
+	}
+	parts := strings.SplitN(member, ":", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
+		return fmt.Errorf("member %q in binding for role %q is invalid, must be in format 'type:value' or %q", member, role, SystemAuthenticated)
+	}
+	prefix, value := parts[0], parts[1]
+	if !slices.Contains(BindingMemberPrefixes(), prefix) {
+		return fmt.Errorf("member prefix %q in member %q is invalid", prefix, member)
+	}
+	if err := validateBindingMemberCharset(value); err != nil {
+		return fmt.Errorf("member %q in binding for role %q is invalid: %w", member, role, err)
+	}
+	if strings.Contains(value, "*") {
+		if prefix == FactNode {
+			return fmt.Errorf("wildcard is not permitted in node binding member %q for role %q", member, role)
+		}
+		if value == "*" {
+			return fmt.Errorf("bare wildcard %q in binding for role %q is not permitted; use %q to match every authenticated identity", member, role, SystemAuthenticated)
+		}
+		leading := strings.HasPrefix(value, "*") && !strings.Contains(value[1:], "*")
+		trailing := strings.HasSuffix(value, "*") && !strings.Contains(value[:len(value)-1], "*")
+		if !leading && !trailing {
+			return fmt.Errorf("wildcard in binding member %q for role %q must be a single leading or trailing '*'", member, role)
+		}
+	}
+	return nil
+}
+
+// MatchBindingMemberValue reports whether any candidate claim value satisfies
+// pattern (exact match, "<prefix>*" starts_with, or "*<suffix>" ends_with).
+func MatchBindingMemberValue(candidates []string, pattern string) bool {
+	if pattern == "" || pattern == "*" {
+		return false
+	}
+	if strings.Contains(pattern, "*") {
+		if strings.HasSuffix(pattern, "*") && !strings.Contains(pattern[:len(pattern)-1], "*") {
+			prefix := pattern[:len(pattern)-1]
+			for _, c := range candidates {
+				if strings.HasPrefix(c, prefix) {
+					return true
+				}
+			}
+			return false
+		}
+		if strings.HasPrefix(pattern, "*") && !strings.Contains(pattern[1:], "*") {
+			suffix := pattern[1:]
+			for _, c := range candidates {
+				if strings.HasSuffix(c, suffix) {
+					return true
+				}
+			}
+			return false
+		}
+		return false
+	}
+	return slices.Contains(candidates, pattern)
+}
 
 // PolicyRule is one mesh policy rule in both the form biscuit-go evaluates
 // and the Datalog text every other Biscuit implementation parses.
@@ -54,6 +145,10 @@ func BuildPolicyRules(roles []*PolicyRole, bindings []*PolicyBinding) (rules []P
 		if b == nil {
 			continue
 		}
+		if err := ValidateRoleName(b.Role); err != nil {
+			warnings = append(warnings, fmt.Sprintf("Binding has invalid role %q: %v", b.Role, err))
+			continue
+		}
 		roleHead := biscuit.Predicate{Name: FactRole, IDs: []biscuit.Term{biscuit.String(b.Role)}}
 		for _, m := range b.Members {
 			if m == SystemAuthenticated {
@@ -64,23 +159,58 @@ func BuildPolicyRules(roles []*PolicyRole, bindings []*PolicyBinding) (rules []P
 			if len(parts) != 2 || !allowedMemberPrefix[parts[0]] {
 				continue
 			}
-			value := parts[1]
+			prefix, value := parts[0], parts[1]
 			// A token carries node() in peer.ID.String() form; an operator may
 			// have written any encoding peer.Decode accepts.
-			if parts[0] == FactNode {
+			if prefix == FactNode {
 				id, err := peer.Decode(value)
 				if err != nil {
 					warnings = append(warnings, fmt.Sprintf("Binding member %q is not a peer ID and grants role %s to nobody: %v", m, b.Role, err))
 					continue
 				}
 				value = id.String()
+				add(roleHead, biscuit.Predicate{Name: prefix, IDs: []biscuit.Term{biscuit.String(value)}})
+				continue
 			}
-			add(roleHead, biscuit.Predicate{Name: parts[0], IDs: []biscuit.Term{biscuit.String(value)}})
+			if strings.Contains(value, "*") {
+				if err := validateBindingMemberCharset(value); err != nil {
+					warnings = append(warnings, fmt.Sprintf("Binding member %q for role %s %v and grants role to nobody", m, b.Role, err))
+					continue
+				}
+				var text string
+				roleLiteral := fmt.Sprintf("%s(%s)", FactRole, strconv.Quote(b.Role))
+				switch {
+				case value == "*":
+					warnings = append(warnings, fmt.Sprintf("Binding member %q has a bare wildcard and grants role %s to nobody", m, b.Role))
+					continue
+				case strings.HasSuffix(value, "*") && !strings.Contains(value[:len(value)-1], "*"):
+					affix := value[:len(value)-1]
+					text = fmt.Sprintf("%s <- %s($v), $v.starts_with(%s)", roleLiteral, prefix, strconv.Quote(affix))
+				case strings.HasPrefix(value, "*") && !strings.Contains(value[1:], "*"):
+					affix := value[1:]
+					text = fmt.Sprintf("%s <- %s($v), $v.ends_with(%s)", roleLiteral, prefix, strconv.Quote(affix))
+				default:
+					warnings = append(warnings, fmt.Sprintf("Binding member %q has an invalid wildcard and grants role %s to nobody", m, b.Role))
+					continue
+				}
+				r, err := parser.FromStringRule(text)
+				if err != nil {
+					warnings = append(warnings, fmt.Sprintf("Failed to parse wildcard binding rule %q for role %s: %v", text, b.Role, err))
+					continue
+				}
+				rules = append(rules, PolicyRule{Rule: r, Text: text})
+				continue
+			}
+			add(roleHead, biscuit.Predicate{Name: prefix, IDs: []biscuit.Term{biscuit.String(value)}})
 		}
 	}
 
 	for _, role := range roles {
 		if role == nil {
+			continue
+		}
+		if err := ValidateRoleName(role.Name); err != nil {
+			warnings = append(warnings, fmt.Sprintf("Role has invalid name %q: %v", role.Name, err))
 			continue
 		}
 		roleName := role.Name

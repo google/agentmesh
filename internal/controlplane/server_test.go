@@ -4062,3 +4062,360 @@ func TestAutonomousRecovery(t *testing.T) {
 		}
 	})
 }
+
+func TestWorkloadIssuerContainment(t *testing.T) {
+	workloadIss, mintWorkload := startCustomMockOIDC(t)
+	sharedIss, mintShared := startCustomMockOIDC(t)
+
+	store, err := storage.NewSQLStore("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("NewSQLStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const (
+		humanTTL    = 720 * time.Hour
+		workloadTTL = 36 * time.Hour
+	)
+	srv, err := NewServer(Options{
+		ListenAddr:         "127.0.0.1:0",
+		OIDCIssuer:         sharedIss,
+		WorkloadIssuer:     workloadIss + "," + sharedIss + "=.gserviceaccount.com",
+		AllowedAudiences:   []string{"sam-mesh-audience"},
+		OIDCSessionTTL:     humanTTL,
+		WorkloadSessionTTL: workloadTTL,
+		AdminToken:         "admin-secret",
+	}, store)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = srv.Close() }()
+	baseURL := "http://" + srv.Addr()
+
+	// Seed wildcard bindings for both Kubernetes SAs and GCP service accounts,
+	// plus an exact human binding.
+	ctx := context.Background()
+	roles := []*api.PolicyRole{{
+		Name:           api.RoleNode,
+		AllowedTargets: []string{"*"},
+	}}
+	bindings := []*api.PolicyBinding{{
+		Role: api.RoleNode,
+		Members: []string{
+			"user:system:serviceaccount:payments:*",
+			"email:*@proj-1.iam.gserviceaccount.com",
+			"email:alice@example.com",
+		},
+	}}
+	if err := store.SaveMeshPolicy(ctx, roles, bindings); err != nil {
+		t.Fatalf("SaveMeshPolicy: %v", err)
+	}
+
+	enrollWithJWT := func(t *testing.T, tok string) (*storage.EnrolledNode, int) {
+		t.Helper()
+		priv, pub, err := crypto.GenerateKeyPair(crypto.Ed25519, -1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pubBytes, err := crypto.MarshalPublicKey(pub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pID, err := peer.IDFromPublicKey(pub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ts := time.Now().UnixMilli()
+		sig, err := priv.Sign(api.RegisterChallenge(pID.String(), ts))
+		if err != nil {
+			t.Fatal(err)
+		}
+		reqBytes, err := proto.Marshal(&api.EnrollRequest{
+			PeerId:             pID.String(),
+			Jwt:                tok,
+			PublicKey:          pubBytes,
+			RequestedRole:      api.RoleNode,
+			ChallengeUnixMs:    ts,
+			ChallengeSignature: sig,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := (&http.Client{Timeout: 5 * time.Second}).Post(baseURL+"/register", "application/x-protobuf", bytes.NewReader(reqBytes))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			return nil, resp.StatusCode
+		}
+		nodeRec, err := store.GetNode(ctx, pID.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return nodeRec, resp.StatusCode
+	}
+
+	k8sJWT := mintWorkload(map[string]any{
+		"iss": workloadIss,
+		"sub": "system:serviceaccount:payments:worker-1",
+		"aud": "sam-mesh-audience",
+	})
+	gcpSAJWT := mintShared(map[string]any{
+		"iss":   sharedIss,
+		"sub":   "10987654321",
+		"email": "runner@proj-1.iam.gserviceaccount.com",
+		"aud":   "sam-mesh-audience",
+	})
+	humanJWT := mintShared(map[string]any{
+		"iss":   sharedIss,
+		"sub":   "human-alice-1",
+		"email": "alice@example.com",
+		"aud":   "sam-mesh-audience",
+	})
+
+	// 1. Both workload tokens enroll via wildcard bindings and receive WorkloadSessionTTL.
+	for name, tok := range map[string]string{"k8s-sa": k8sJWT, "gcp-sa": gcpSAJWT} {
+		rec, code := enrollWithJWT(t, tok)
+		if code != http.StatusOK {
+			t.Fatalf("%s /register: status = %d, want 200", name, code)
+		}
+		rem := time.Until(rec.ExpiresAt)
+		if rem <= 0 || rem > workloadTTL+time.Minute {
+			t.Errorf("%s session remaining = %v, want <= %v (WorkloadSessionTTL)", name, rem, workloadTTL)
+		}
+	}
+
+	// 2. Human token from the shared issuer receives OIDCSessionTTL and succeeds at /user/status.
+	humanRec, code := enrollWithJWT(t, humanJWT)
+	if code != http.StatusOK {
+		t.Fatalf("human /register: status = %d, want 200", code)
+	}
+	if rem := time.Until(humanRec.ExpiresAt); rem < humanTTL-time.Hour {
+		t.Errorf("human session remaining = %v, want ~%v (OIDCSessionTTL)", rem, humanTTL)
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	for name, tok := range map[string]string{"k8s-sa": k8sJWT, "gcp-sa": gcpSAJWT} {
+		// Refused at /user/status
+		req, _ := http.NewRequest(http.MethodGet, baseURL+"/user/status", nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("%s GET /user/status: got %d, want 403 Forbidden", name, resp.StatusCode)
+		}
+
+		// Refused at /user/bootstrap-tokens
+		reqBT, _ := http.NewRequest(http.MethodPost, baseURL+"/user/bootstrap-tokens", strings.NewReader(`{"role":"sam:role:node"}`))
+		reqBT.Header.Set("Authorization", "Bearer "+tok)
+		reqBT.Header.Set("Content-Type", "application/json")
+		respBT, err := client.Do(reqBT)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = respBT.Body.Close()
+		if respBT.StatusCode != http.StatusForbidden {
+			t.Errorf("%s POST /user/bootstrap-tokens: got %d, want 403 Forbidden", name, respBT.StatusCode)
+		}
+
+		// Refused at /oauth/authorize
+		authURL := baseURL + "/oauth/authorize?response_type=code&client_id=test-client&redirect_uri=http://127.0.0.1:9999/cb&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256"
+		reqOA, _ := http.NewRequest(http.MethodGet, authURL, nil)
+		reqOA.Header.Set("Authorization", "Bearer "+tok)
+		respOA, err := client.Do(reqOA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = respOA.Body.Close()
+		if respOA.StatusCode != http.StatusForbidden {
+			t.Errorf("%s GET /oauth/authorize: got %d, want 403 Forbidden", name, respOA.StatusCode)
+		}
+	}
+
+	// Human token succeeds at /user/status.
+	reqHuman, _ := http.NewRequest(http.MethodGet, baseURL+"/user/status", nil)
+	reqHuman.Header.Set("Authorization", "Bearer "+humanJWT)
+	respHuman, err := client.Do(reqHuman)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = respHuman.Body.Close()
+	if respHuman.StatusCode != http.StatusOK {
+		t.Errorf("human GET /user/status: got %d, want 200 OK", respHuman.StatusCode)
+	}
+
+	// Verify google.compute_engine claim detection for https://accounts.google.com.
+	gceClaims := jwt.MapClaims{
+		"iss": "https://accounts.google.com",
+		"sub": "12345",
+		"google": map[string]any{
+			"compute_engine": map[string]any{"project_id": "proj-1"},
+		},
+	}
+	if !srv.isWorkloadClaims(gceClaims) {
+		t.Error("expected google.compute_engine claim on https://accounts.google.com to be classified as workload")
+	}
+}
+
+func TestRefreshWithPlatformJWT(t *testing.T) {
+	issuer, mintToken := startCustomMockOIDC(t)
+	srv, store, baseURL := setupTestServer(t, issuer, func(o *Options) {
+		o.WorkloadIssuer = issuer
+		o.WorkloadSessionTTL = 2 * time.Hour
+	})
+	defer func() {
+		_ = srv.Close()
+		_ = store.Close()
+	}()
+
+	ctx := context.Background()
+	roles := []*api.PolicyRole{
+		{Name: api.RoleNode, AllowedTargets: []string{"*"}},
+		{Name: "payments-reader", AllowedServices: []string{"mcp://Payments"}},
+	}
+	bindings := []*api.PolicyBinding{
+		{Role: api.RoleNode, Members: []string{"user:system:serviceaccount:payments:*"}},
+		{Role: "payments-reader", Members: []string{"group:payments-team"}},
+	}
+	if err := store.SaveMeshPolicy(ctx, roles, bindings); err != nil {
+		t.Fatalf("SaveMeshPolicy: %v", err)
+	}
+
+	priv, pub, err := crypto.GenerateKeyPair(crypto.Ed25519, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubBytes, err := crypto.MarshalPublicKey(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pID, err := peer.IDFromPublicKey(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	initialJWT := mintToken(map[string]any{
+		"sub": "system:serviceaccount:payments:worker-1",
+	})
+	ts := time.Now().UnixMilli()
+	sig, err := priv.Sign(api.RegisterChallenge(pID.String(), ts))
+	if err != nil {
+		t.Fatal(err)
+	}
+	regBytes, err := proto.Marshal(&api.EnrollRequest{
+		PeerId:             pID.String(),
+		Jwt:                initialJWT,
+		PublicKey:          pubBytes,
+		RequestedRole:      api.RoleNode,
+		ChallengeUnixMs:    ts,
+		ChallengeSignature: sig,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Post(baseURL+"/register", "application/x-protobuf", bytes.NewReader(regBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	regBody, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /register: got %d %s", resp.StatusCode, regBody)
+	}
+	var enrollResp api.EnrollResponse
+	if err := proto.Unmarshal(regBody, &enrollResp); err != nil {
+		t.Fatal(err)
+	}
+	currentBiscuit := enrollResp.BiscuitToken
+
+	sendRefresh := func(jwtStr string) (int, []byte) {
+		t.Helper()
+		rts := time.Now().UnixMilli()
+		rsig, err := priv.Sign(api.RefreshChallenge(pID.String(), rts))
+		if err != nil {
+			t.Fatal(err)
+		}
+		reqData, err := proto.Marshal(&api.TokenRefreshRequest{
+			ChallengeUnixMs:    rts,
+			ChallengeSignature: rsig,
+			Jwt:                jwtStr,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req, err := http.NewRequest(http.MethodPost, baseURL+"/refresh", bytes.NewReader(reqData))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/x-protobuf")
+		req.Header.Set("Authorization", "Bearer "+base64.StdEncoding.EncodeToString(currentBiscuit))
+		r, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		return r.StatusCode, b
+	}
+
+	// 1. Mismatched subject in refresh JWT is rejected with 403 Forbidden.
+	otherSubJWT := mintToken(map[string]any{
+		"sub": "system:serviceaccount:payments:worker-2",
+	})
+	if code, body := sendRefresh(otherSubJWT); code != http.StatusForbidden {
+		t.Fatalf("refresh with mismatched sub: got %d %s, want 403", code, body)
+	}
+
+	// 2. Garbage JWT is rejected with 401 Unauthorized.
+	if code, body := sendRefresh("not-a-valid-jwt"); code != http.StatusUnauthorized {
+		t.Fatalf("refresh with invalid jwt: got %d %s, want 401", code, body)
+	}
+
+	// 3. Force the stored session to appear expired: refresh without JWT fails (401),
+	//    refresh with a fresh valid JWT for the same iss|sub succeeds (200) and updates
+	//    ClaimsJSON and ExpiresAt in place.
+	rec, err := store.GetNode(ctx, pID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.ExpiresAt = time.Now().Add(-time.Minute)
+	if err := store.EnrollNode(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := sendRefresh(""); code != http.StatusUnauthorized {
+		t.Fatalf("expired session refresh without jwt: got %d, want 401", code)
+	}
+
+	freshJWT := mintToken(map[string]any{
+		"sub":    "system:serviceaccount:payments:worker-1",
+		"groups": []string{"payments-team"},
+	})
+	code, body := sendRefresh(freshJWT)
+	if code != http.StatusOK {
+		t.Fatalf("refresh with fresh valid jwt: got %d %s, want 200", code, body)
+	}
+	var refreshResp api.TokenRefreshResponse
+	if err := proto.Unmarshal(body, &refreshResp); err != nil {
+		t.Fatal(err)
+	}
+	currentBiscuit = refreshResp.BiscuitToken
+
+	updatedRec, err := store.GetNode(ctx, pID.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Until(updatedRec.ExpiresAt) < time.Hour {
+		t.Errorf("expected session ExpiresAt to be renewed to ~2h, got remaining %v", time.Until(updatedRec.ExpiresAt))
+	}
+	if !strings.Contains(updatedRec.ClaimsJSON, "payments-team") {
+		t.Errorf("expected updated ClaimsJSON to include new group claim, got %s", updatedRec.ClaimsJSON)
+	}
+}

@@ -28,6 +28,7 @@ import {
   EnrollResponseSchema,
   EnrollmentStatus,
   KeysResponseSchema,
+  TokenRefreshRequestSchema,
   TokenRefreshResponseSchema,
 } from "./gen/sam_pb.ts";
 import { Identity } from "./identity.ts";
@@ -41,8 +42,8 @@ function proto(bytes: Uint8Array): Response {
 }
 
 /** A control plane that approves everything and hands out numbered biscuits. */
-function fakeControlPlane(keysOk = true): { fetch: typeof fetch; issued: number } {
-  const state = { issued: 0 };
+function fakeControlPlane(keysOk = true): { fetch: typeof fetch; issued: number; lastRefreshJwt: string } {
+  const state = { issued: 0, lastRefreshJwt: "" };
   const signedKeys = () => {
     const unsigned = create(KeysResponseSchema, { publicKeys: [cpKey.publicKeyRaw], signTime: timestampFromMs(Date.now()) });
     return create(KeysResponseSchema, { ...unsigned, signatures: [cpKey.sign(toBinary(KeysResponseSchema, unsigned))] });
@@ -65,9 +66,20 @@ function fakeControlPlane(keysOk = true): { fetch: typeof fetch; issued: number 
             }),
           ),
         );
-      case "POST /refresh":
+      case "POST /refresh": {
+        const refreshReq = fromBinary(TokenRefreshRequestSchema, new Uint8Array(await req.arrayBuffer()));
+        state.lastRefreshJwt = refreshReq.jwt;
         state.issued++;
-        return proto(toBinary(TokenRefreshResponseSchema, create(TokenRefreshResponseSchema, { biscuitToken: text(`biscuit-${state.issued}`), expireTime: timestampFromMs(Date.now() + 7200_000) })));
+        return proto(
+          toBinary(
+            TokenRefreshResponseSchema,
+            create(TokenRefreshResponseSchema, {
+              biscuitToken: text(refreshReq.jwt ? `biscuit-for-${refreshReq.jwt}` : `biscuit-${state.issued}`),
+              expireTime: timestampFromMs(Date.now() + 7200_000),
+            }),
+          ),
+        );
+      }
       case "POST /register": {
         // The biscuit names the JWT that was presented, so a test can see which.
         const jwt = fromBinary(EnrollRequestSchema, new Uint8Array(await req.arrayBuffer())).jwt;
@@ -94,6 +106,9 @@ function fakeControlPlane(keysOk = true): { fetch: typeof fetch; issued: number 
     fetch,
     get issued() {
       return state.issued;
+    },
+    get lastRefreshJwt() {
+      return state.lastRefreshJwt;
     },
   };
 }
@@ -183,18 +198,51 @@ test("enroll refuses ambiguous credentials", async () => {
   assert.equal(cp.issued, 0);
 });
 
-test("enroll reads a workload identity token from jwtPath", async () => {
+test("enroll reads a workload identity token from jwtPath and re-reads on refresh", async () => {
   const dir = await mkdtemp(join(tmpdir(), "sam-sdk-"));
   try {
     const cp = fakeControlPlane();
     const jwtPath = join(dir, "token");
-    await writeFile(jwtPath, "eyJ.projected.token\n");
+    await writeFile(jwtPath, "eyJ.projected.token.1\n");
     const mesh = await AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", jwtPath, fetch: cp.fetch });
-    assert.deepEqual(mesh.credential.biscuit, text("biscuit-for-eyJ.projected.token"));
+    assert.deepEqual(mesh.credential.biscuit, text("biscuit-for-eyJ.projected.token.1"));
+
+    await writeFile(jwtPath, "eyJ.projected.token.2\n");
+    await mesh.refresh();
+    assert.equal(cp.lastRefreshJwt, "eyJ.projected.token.2");
+    assert.deepEqual(mesh.credential.biscuit, text("biscuit-for-eyJ.projected.token.2"));
+
     await assert.rejects(AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", jwtPath: join(dir, "missing"), fetch: cp.fetch }), /ENOENT/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("enroll accepts a jwt callback and invokes it on refresh", async () => {
+  const cp = fakeControlPlane();
+  let seq = 0;
+  let shouldFail = false;
+  const mesh = await AgentMesh.enroll({
+    controlPlaneUrl: "http://127.0.0.1:1",
+    jwt: async () => {
+      if (shouldFail) {
+        throw new Error("metadata server temporarily unavailable");
+      }
+      seq++;
+      return `  eyJ.callback.${seq} \n`;
+    },
+    fetch: cp.fetch,
+  });
+  assert.deepEqual(mesh.credential.biscuit, text("biscuit-for-eyJ.callback.1"));
+
+  await mesh.refresh();
+  assert.equal(cp.lastRefreshJwt, "eyJ.callback.2");
+  assert.deepEqual(mesh.credential.biscuit, text("biscuit-for-eyJ.callback.2"));
+
+  // Best-effort fallback when the callback fails during refresh.
+  shouldFail = true;
+  await mesh.refresh();
+  assert.equal(cp.lastRefreshJwt, "");
 });
 
 test("authFrame is the AuthFrame protobuf with this member's biscuit", async () => {

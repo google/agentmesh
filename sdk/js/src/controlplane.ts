@@ -122,6 +122,8 @@ export interface RefreshParams {
   identity: Identity;
   /** The biscuit currently held; only the last one issued is redeemable. */
   biscuit: Uint8Array;
+  /** Optional fresh platform/OIDC JWT for continuous attestation on refresh. */
+  jwt?: string | undefined;
 }
 
 export interface RefreshResult {
@@ -319,6 +321,7 @@ export class ControlPlaneClient {
       challengeUnixMs: BigInt(ts),
       challengeSignature: identity.sign(refreshChallenge(identity.peerId, ts)),
       peerId: identity.peerId,
+      ...(params.jwt ? { jwt: params.jwt } : {}),
     });
     const body = await this.#request("POST", "/refresh", toBinary(TokenRefreshRequestSchema, req), {
       Authorization: `Bearer ${toBase64(params.biscuit)}`,

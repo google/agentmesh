@@ -698,12 +698,12 @@ func (r *Router) enrollWithTokens(peerID peer.ID) error {
 	}
 
 	// Fallback to OIDC token
-	if r.config.JWTPath != "" {
-		tokenData, err := os.ReadFile(r.config.JWTPath)
+	if src := r.tokenSource(); src != nil {
+		tok, err := src.FetchToken(r.ctx)
 		if err != nil {
 			return fmt.Errorf("failed to read JWT from path %s: %w", r.config.JWTPath, err)
 		}
-		r.config.OIDCToken = strings.TrimSpace(string(tokenData))
+		r.config.OIDCToken = tok
 	}
 
 	if r.config.OIDCToken != "" {
@@ -715,6 +715,13 @@ func (r *Router) enrollWithTokens(peerID peer.ID) error {
 	}
 
 	return fmt.Errorf("no enrollment token available")
+}
+
+func (r *Router) tokenSource() cpclient.TokenSource {
+	if strings.TrimSpace(r.config.JWTPath) != "" {
+		return cpclient.NewFileTokenSource(r.config.JWTPath)
+	}
+	return nil
 }
 
 func (r *Router) reEnroll() error {
@@ -1432,6 +1439,13 @@ func (r *Router) RefreshEnrollment(ctx context.Context) error {
 		ChallengeSignature: sig,
 		ChallengeUnixMs:    timestamp,
 		PeerId:             peerID.String(),
+	}
+	if src := r.tokenSource(); src != nil {
+		if jwt, err := src.FetchToken(ctx); err == nil && jwt != "" {
+			req.Jwt = jwt
+		} else if err != nil {
+			logger.Warnf("Failed to fetch platform JWT for router refresh re-attestation, continuing with PoP-only refresh: %v", err)
+		}
 	}
 	reqData, err := proto.Marshal(req)
 	if err != nil {

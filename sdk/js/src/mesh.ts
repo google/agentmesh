@@ -58,17 +58,23 @@ export interface AgentMeshOptions {
   fetch?: typeof fetch;
 }
 
+/** Callback returning a fresh platform or OIDC JWT for enrollment and refresh. */
+export type JwtSource = () => string | Promise<string>;
+
 export interface EnrollOptions extends AgentMeshOptions {
   /** A bootstrap token value, when the caller already holds it in memory. */
   bootstrapToken?: string | undefined;
   /** Path of a file holding the bootstrap token. Preferred over a value on Node; a browser has no files. */
   bootstrapTokenPath?: string | undefined;
-  /** An OIDC ID token, for meshes that enroll identities interactively. */
-  jwt?: string | undefined;
+  /**
+   * An OIDC ID token value, or a callback returning a fresh OIDC / platform
+   * workload identity token at enrollment and on every refresh.
+   */
+  jwt?: string | JwtSource | undefined;
   /**
    * Path of a file holding an OIDC ID token or a platform's workload identity
    * token, such as a Kubernetes projected service account token. Preferred
-   * over a value; the file is read at enrollment.
+   * over a value; the file is read at enrollment and on every refresh.
    */
   jwtPath?: string | undefined;
   /** Bounds the wait for an operator to approve a pending enrollment. */
@@ -101,12 +107,20 @@ export class AgentMesh {
   readonly controlPlane: ControlPlaneClient;
   #credential: MeshCredential;
   readonly #state: StateStore | undefined;
+  readonly #jwtSource: (() => Promise<string>) | undefined;
 
-  private constructor(identity: Identity, controlPlane: ControlPlaneClient, credential: MeshCredential, state: StateStore | undefined) {
+  private constructor(
+    identity: Identity,
+    controlPlane: ControlPlaneClient,
+    credential: MeshCredential,
+    state: StateStore | undefined,
+    jwtSource?: (() => Promise<string>) | undefined,
+  ) {
     this.identity = identity;
     this.controlPlane = controlPlane;
     this.#credential = withCredentialMethods(credential);
     this.#state = state;
+    this.#jwtSource = jwtSource;
   }
 
   get peerId(): string {
@@ -142,10 +156,11 @@ export class AgentMesh {
     const saved = await loadIdentity(state);
     const identity = options.identity ?? saved ?? Identity.generate();
     const controlPlane = newClient(options);
+    const jwtSource = resolveJwtSource(options);
     if (state !== undefined && saved !== undefined && saved.peerId === identity.peerId) {
       const credential = await loadCredential(state);
       if (credential !== undefined && sameBaseUrl(credential.controlPlaneUrl, controlPlane.url) && credentialTimeToLiveSeconds(credential) > REUSE_MIN_TTL_SECONDS) {
-        return new AgentMesh(identity, controlPlane, credential, state);
+        return new AgentMesh(identity, controlPlane, credential, state, jwtSource);
       }
     }
     const given = [options.bootstrapToken, options.bootstrapTokenPath, options.jwt, options.jwtPath].filter((v) => v !== undefined).length;
@@ -157,7 +172,7 @@ export class AgentMesh {
 
     let enrollment: Enrollment;
     if (options.jwt !== undefined || options.jwtPath !== undefined) {
-      const jwt = options.jwtPath !== undefined ? (await readTextFile(options.jwtPath)).trim() : (options.jwt as string);
+      const jwt = jwtSource !== undefined ? await jwtSource() : (options.jwt as string);
       enrollment = await controlPlane.register({ identity, jwt, role, ...labelsOf(options) });
     } else {
       const bootstrapToken = options.bootstrapTokenPath !== undefined ? (await readTextFile(options.bootstrapTokenPath)).trim() : (options.bootstrapToken as string);
@@ -193,6 +208,7 @@ export class AgentMesh {
         routerAddresses: enrollment.routerAddresses,
       },
       state,
+      jwtSource,
     );
     await mesh.save();
     return mesh;
@@ -203,7 +219,13 @@ export class AgentMesh {
    * for a process that must never hold an enrollment token. The control
    * plane URL comes from the saved credential.
    */
-  static async load(options: Omit<AgentMeshOptions, "controlPlaneUrl"> & { stateDir: string }): Promise<AgentMesh> {
+  static async load(
+    options: Omit<AgentMeshOptions, "controlPlaneUrl"> & {
+      stateDir: string;
+      jwt?: JwtSource | undefined;
+      jwtPath?: string | undefined;
+    },
+  ): Promise<AgentMesh> {
     const state = openState(options.stateDir);
     const identity = options.identity ?? (await loadIdentity(state));
     if (!identity) {
@@ -213,7 +235,13 @@ export class AgentMesh {
     if (credential === undefined) {
       throw new Error(`no credential in ${options.stateDir}; enroll first`);
     }
-    return new AgentMesh(identity, newClient({ ...options, controlPlaneUrl: credential.controlPlaneUrl }), credential, state);
+    return new AgentMesh(
+      identity,
+      newClient({ ...options, controlPlaneUrl: credential.controlPlaneUrl }),
+      credential,
+      state,
+      resolveJwtSource(options),
+    );
   }
 
   /**
@@ -222,7 +250,22 @@ export class AgentMesh {
    * means re-enrolling; persisting before returning keeps that rare.
    */
   async refresh(): Promise<MeshCredential> {
-    const result = await this.controlPlane.refresh({ identity: this.identity, biscuit: this.#credential.biscuit });
+    let jwt: string | undefined;
+    if (this.#jwtSource !== undefined) {
+      try {
+        const token = await this.#jwtSource();
+        if (token !== "") {
+          jwt = token;
+        }
+      } catch {
+        // Best effort: fall back to session-only refresh if the token source is temporarily unavailable.
+      }
+    }
+    const result = await this.controlPlane.refresh({
+      identity: this.identity,
+      biscuit: this.#credential.biscuit,
+      ...(jwt !== undefined ? { jwt } : {}),
+    });
     let controlPlaneKeys = this.#credential.controlPlaneKeys;
     try {
       controlPlaneKeys = await this.controlPlane.keys(controlPlaneKeys);
@@ -366,3 +409,16 @@ function baseUrl(url: URL | string): string {
 function sameBaseUrl(a: URL | string, b: URL | string): boolean {
   return baseUrl(a) === baseUrl(b);
 }
+
+function resolveJwtSource(options: { jwt?: string | JwtSource | undefined; jwtPath?: string | undefined }): (() => Promise<string>) | undefined {
+  if (options.jwtPath !== undefined) {
+    const path = options.jwtPath;
+    return async () => (await readTextFile(path)).trim();
+  }
+  if (typeof options.jwt === "function") {
+    const fn = options.jwt;
+    return async () => (await fn()).trim();
+  }
+  return undefined;
+}
+

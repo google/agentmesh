@@ -75,3 +75,17 @@ tests:
           path: spec.template.spec.tolerations
           content:
             key: dedicated
+
+  - it: passes workload issuer and session ttl flags when configured
+    template: templates/control-plane-deployment.yaml
+    set:
+      controlPlane.workloadIssuer: "https://kubernetes.default.svc.cluster.local"
+      controlPlane.workloadSessionTtl: "48h"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "--workload-issuer=https://kubernetes.default.svc.cluster.local"
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "--workload-session-ttl=48h"
+

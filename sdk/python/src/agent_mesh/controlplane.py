@@ -254,7 +254,7 @@ class ControlPlaneClient:
             router_addresses=list(resp.router_addresses),
         )
 
-    def refresh(self, identity: Identity, biscuit: bytes) -> RefreshResult:
+    def refresh(self, identity: Identity, biscuit: bytes, *, jwt: Optional[str] = None) -> RefreshResult:
         """POST /refresh: trades the biscuit for a fresh one. The old one is
         spent by this call; callers must persist the result before using it."""
         ts = _now_ms()
@@ -262,6 +262,7 @@ class ControlPlaneClient:
             challenge_unix_ms=ts,
             challenge_signature=identity.sign(challenges.refresh_challenge(identity.peer_id, ts)),
             peer_id=identity.peer_id,
+            jwt=jwt or "",
         )
         body = self._request(
             "POST",

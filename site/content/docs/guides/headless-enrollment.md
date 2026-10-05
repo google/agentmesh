@@ -13,8 +13,16 @@ what happens when the credential of such a node expires.
 ## With an OIDC token that the workload already has
 
 If the platform gives the workload a token from an issuer that the control
-plane trusts, no operator step is needed. On Kubernetes this is a projected
-service account token with the right audience:
+plane trusts, no operator step is needed. Mark workload issuers with
+`--workload-issuer` on the control plane so workload tokens can enroll,
+refresh, and exchange credentials (`POST /register`, `POST /refresh`,
+`POST /token/exchange`), while being refused at human operator endpoints
+(`/user/*`, `/oauth/authorize`).
+
+### Kubernetes projected service account tokens
+
+On Kubernetes, mount a projected service account token with the control
+plane's audience:
 
 ```yaml
 volumes:
@@ -31,11 +39,67 @@ volumes:
 sam-node run --control-plane https://mesh.example.com --jwt-path /var/run/secrets/tokens/sam-token
 ```
 
-The control plane must list the cluster's issuer in `--issuer` and the
-audience in `--allowed-audiences`. The policy must bind the service account
-(`user:system:serviceaccount:<namespace>:<name>`) to `sam:role:node`.
-Routers enroll the same way with `sam-router --jwt-path`. The
-[Kubernetes guide](../kubernetes/) shows the complete setup.
+List the cluster's issuer in `--issuer` (`controlPlane.oidcIssuer` in the Helm
+chart) and the audience in `--allowed-audiences`; add the cluster issuer to
+`--workload-issuer` (`controlPlane.workloadIssuer`) as well to keep workload
+tokens off `/user/*` and `/oauth/authorize`. Bind either a specific service
+account (`user:system:serviceaccount:<namespace>:<name>`) or a namespace prefix
+(`user:system:serviceaccount:<namespace>:*`) to `sam:role:node`. Routers enroll
+the same way with `sam-router --jwt-path`. The [Kubernetes guide](../kubernetes/)
+shows the complete setup.
+
+### GCE VMs and Cloud Run (`--cloud-provider`)
+
+On Compute Engine and Cloud Run there is no Kubernetes projected volume, so
+`sam-node` can fetch an OIDC identity token directly from the instance
+metadata server (`.../computeMetadata/v1/instance/service-accounts/default/identity?audience=<aud>&format=full`):
+
+```bash
+sam-node run --control-plane https://mesh.example.com --cloud-provider gcp
+```
+
+`--cloud-provider auto` probes the metadata server at startup and uses it
+when reachable. GCE VM metadata tokens requested with `format=full` carry a
+`google.compute_engine` claim that the control plane recognizes automatically,
+whereas Cloud Run metadata tokens do not carry that claim. On the control
+plane, list `https://accounts.google.com` in `--issuer` and pass the
+service-account suffix filter in `--workload-issuer` so service accounts on
+both GCE and Cloud Run are treated as workload tokens while human Google
+accounts remain able to use `/user/*` and `/oauth/authorize`:
+
+```bash
+sam-control-plane \
+  --issuer https://accounts.google.com \
+  --workload-issuer https://accounts.google.com=.gserviceaccount.com \
+  --allowed-audiences sam-mesh-audience
+```
+
+In the mesh policy, bind the service account email or project suffix (for
+example, `email:*@my-project.iam.gserviceaccount.com`) to `sam:role:node`.
+
+### SPIFFE / SPIRE (`spiffe-helper` + `--jwt-path`)
+
+For VMs and bare metal running SPIRE (or multi-cluster meshes sharing a
+SPIFFE trust domain), run [`spiffe-helper`](https://github.com/spiffe/spiffe-helper)
+beside `sam-node` to fetch a JWT-SVID from the SPIFFE Workload API and keep
+the file at `--jwt-path` rotated across the SVID's lifetime:
+
+```hcl
+# spiffe-helper.conf
+agent_address = "/run/spire/sockets/agent.sock"
+cert_dir      = "/run/sam"
+jwt_svids     = [{ jwt_audience = "sam-mesh-audience", jwt_svid_file_name = "jwt_svid.token" }]
+```
+
+```bash
+sam-node run --control-plane https://mesh.example.com --jwt-path /run/sam/jwt_svid.token
+```
+
+List the SPIRE OIDC Discovery Provider URL in `--issuer` and `--workload-issuer`
+on the control plane, and bind the SPIFFE ID or path prefix
+(`user:spiffe://example.org/ns/prod/*`) to `sam:role:node`.
+
+### OAuth client credentials
 
 A workload with an OAuth client ID and secret can use the client-credentials
 grant instead, with `--oidc-issuer`, `--client-id` and
@@ -127,8 +191,18 @@ remove one of those, ban the node.
 
 ## When the credential expires
 
-A node enrolled with a bootstrap token has no login to fall back on. Its
-credential is refreshed automatically while it runs. But if the node is off
+A node or router enrolled with a platform token (`--jwt-path`,
+`--cloud-provider`, or `--client-id`) presents a fresh platform JWT in
+`TokenRefreshRequest.jwt` on every `POST /refresh`. As long as the token's
+`iss|sub` matches the enrolled record, the control plane re-attests the member
+in place, updates its stored claims and extends its session
+(`--workload-session-ttl`, `48h` by default) without re-enrolling. If the
+member was offline longer than the session or key grace period, its renewal
+loop automatically re-enrolls with a fresh platform token under the same peer
+ID.
+
+A node enrolled with a bootstrap token has no login or platform token source
+to fall back on. Its credential is refreshed automatically while it runs. But if the node is off
 for longer than the control plane's key grace period (`--key-grace-period`,
 one hour by default), it comes back with a credential signed by a retired
 key, and `/refresh` refuses it. There are three ways out, in order of

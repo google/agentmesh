@@ -652,14 +652,16 @@ class TokenExchangeResponse(_message.Message):
     def __init__(self, biscuit_token: _Optional[bytes] = ..., expire_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., roles: _Optional[_Iterable[str]] = ..., subject: _Optional[str] = ...) -> None: ...
 
 class TokenRefreshRequest(_message.Message):
-    __slots__ = ["challenge_signature", "challenge_unix_ms", "peer_id"]
+    __slots__ = ["challenge_signature", "challenge_unix_ms", "jwt", "peer_id"]
     CHALLENGE_SIGNATURE_FIELD_NUMBER: _ClassVar[int]
     CHALLENGE_UNIX_MS_FIELD_NUMBER: _ClassVar[int]
+    JWT_FIELD_NUMBER: _ClassVar[int]
     PEER_ID_FIELD_NUMBER: _ClassVar[int]
     challenge_signature: bytes
     challenge_unix_ms: int
+    jwt: str
     peer_id: str
-    def __init__(self, challenge_signature: _Optional[bytes] = ..., challenge_unix_ms: _Optional[int] = ..., peer_id: _Optional[str] = ...) -> None: ...
+    def __init__(self, challenge_signature: _Optional[bytes] = ..., challenge_unix_ms: _Optional[int] = ..., peer_id: _Optional[str] = ..., jwt: _Optional[str] = ...) -> None: ...
 
 class TokenRefreshResponse(_message.Message):
     __slots__ = ["biscuit_token", "error_message", "expire_time"]

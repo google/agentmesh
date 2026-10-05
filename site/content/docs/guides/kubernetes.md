@@ -36,11 +36,15 @@ ISSUER=$(kubectl get --raw /.well-known/openid-configuration | jq -r .issuer)
 helm upgrade --install sam-mesh ./charts/sam-mesh \
   --namespace sam --create-namespace \
   --set controlPlane.oidcIssuer="$ISSUER" \
+  --set controlPlane.workloadIssuer="$ISSUER" \
   --set controlPlane.insecureSkipTlsVerify=true \
   --set bootstrap.nodeMembers='{user:system:serviceaccount:sam-nodes:calc-mcp-sam-node}' \
   --set bootstrap.nodeServices='{mcp://calculator,system://sam.catalog}'
 ```
 
+`controlPlane.workloadIssuer` marks the cluster issuer as a workload identity
+provider so service account tokens can enroll, refresh, and exchange credentials
+while being refused at `/user/*` and `/oauth/authorize`.
 `insecureSkipTlsVerify` is needed when the cluster issuer is served with the
 cluster CA, which the control plane does not trust by default. Leave it off
 for a public provider. On a managed cluster the issuer is often public (on

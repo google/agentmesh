@@ -41,6 +41,14 @@ controlPlane:
   # Required: the chart bundles no identity provider. Point it at your OIDC issuer
   # (comma-separated for more than one); the control plane refuses to start without one.
   oidcIssuer: ""
+  # Optional: comma-separated list of workload OIDC issuers (subset of or addition
+  # to oidcIssuer, optionally "<issuer>=<email-suffix>"). Tokens from a workload
+  # issuer are accepted at /register, /refresh, and /token/exchange, and refused
+  # at /user/* and /oauth/authorize.
+  workloadIssuer: ""
+  # Optional: session TTL for workload OIDC enrollments (e.g. "48h"); empty uses
+  # the control plane default (48h).
+  workloadSessionTtl: ""
   allowedAudiences: "sam-mesh-audience,sam-control-plane-audience"
   nodeSelector: {}
   tolerations: []

@@ -41,6 +41,7 @@ downloaded tunnel connector.
 | `--admin-token-path` | | File containing the admin token. Can also be set with `SAM_ADMIN_TOKEN`. Generated and saved to the data directory when neither is set. |
 | `--policy-file` | | Protojson `PolicyConfig` that seeds the mesh policy on first boot. Ignored once the database has a policy. Without it, first boot seeds an open development policy and logs a warning. |
 | `--issuer` | | External OIDC issuer(s), comma-separated. Optional. Without an issuer, enrollment works by token only. |
+| `--workload-issuer` | | Workload OIDC issuer(s), comma-separated (`<issuer>` or `<issuer>=<email-suffix>`). Automatically added to `--issuer` and refused at `/user/*` and `/oauth/authorize`. |
 | `--oidc-client-id` | first audience | Client ID advertised on `/info`. |
 | `--allowed-audiences` | `sam-mesh-audience` | Accepted OIDC audiences. |
 | `--enroll-qr` | when stdout is a terminal | Print a device-enrollment QR code at startup. Only for `https` URLs. |
@@ -58,6 +59,7 @@ of zero leaves the default of that component unchanged.
 | `--control-plane-key-rotation-interval` | `--key-rotation-interval` |
 | `--control-plane-key-grace-period` | `--key-grace-period` |
 | `--control-plane-biscuit-ttl` | `--biscuit-ttl` |
+| `--control-plane-workload-session-ttl` | `--workload-session-ttl` |
 | `--control-plane-manual-enrollment` | The opposite of `--auto-approve-enrollment`: queue bootstrap enrollments for approval. |
 | `--router-keys-sync-interval` | `sam-router --keys-sync-interval` |
 | `--router-lease-renew-interval` | `--lease-renew-interval` |

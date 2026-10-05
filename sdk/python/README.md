@@ -175,10 +175,12 @@ trio.run(main)
 
 `enroll` reuses the identity and credential saved in `state_dir` when they
 are still valid for that control plane, and needs exactly one of
-`bootstrap_token_path`, `bootstrap_token` or `jwt` otherwise. Read tokens
-from a file or the environment; do not put them on a command line. `labels`
-are attested at enrollment; `join(egress_require_labels=)` is the floor
-every peer the session calls must attest, all of it, held for the session.
+`bootstrap_token_path`, `bootstrap_token`, `jwt_path` or `jwt` (a token string
+or a `Callable[[], str]` invoked at enrollment and on every refresh)
+otherwise. Read tokens from a file, a callback or the environment; do not put
+them on a command line. `labels` are attested at enrollment;
+`join(egress_require_labels=)` is the floor every peer the session calls must
+attest, all of it, held for the session.
 
 A plaintext `http://` control plane is accepted only on loopback. Pass
 `allow_insecure=True` for a network you trust.

@@ -15,6 +15,7 @@
 package api
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -118,5 +119,134 @@ func TestParseDatalogRulesRejectsWholeSet(t *testing.T) {
 	_, err := ParseDatalogRules([]string{`role("a") <- user("b")`, `broken(`})
 	if err == nil {
 		t.Fatal("expected an error for an unparseable rule")
+	}
+}
+
+func TestValidateBindingMemberAndRoleName(t *testing.T) {
+	validMembers := []string{
+		SystemAuthenticated,
+		"email:alice@example.com",
+		"email:*@example.com",
+		"user:system:serviceaccount:payments:*",
+		"user:spiffe://cluster.local/ns/payments/sa/*",
+		"group:eng-*",
+		"group:Engineering Team",
+		"group:Engineering *",
+		"group:Équipe Ingénierie",
+		"group:team;ops",
+		"idp_role:*-worker",
+		"node:12D3KooWA4Xop1JaT3MHxwYMkCepYsv4iPVopMXwCz5iHYdBfeSB",
+	}
+	for _, m := range validMembers {
+		if err := ValidateBindingMember(m, "payments"); err != nil {
+			t.Errorf("ValidateBindingMember(%q) unexpected error: %v", m, err)
+		}
+	}
+
+	invalidMembers := []string{
+		"",
+		"user:",
+		"unknown:alice",
+		"user:*",
+		"email:*",
+		"group:*",
+		"node:*",
+		"node:12D3KooW*",
+		"user:system:serviceaccount:*:worker",
+		"user:*middle*",
+		`user:foo"); role("admin") <- true; //`,
+		`user:alice\bob`,
+		"user:alice\nbob",
+		"user:alice\x00bob",
+		"user:alice\x7fbob",
+	}
+	for _, m := range invalidMembers {
+		if err := ValidateBindingMember(m, "payments"); err == nil {
+			t.Errorf("ValidateBindingMember(%q) expected error, got nil", m)
+		}
+	}
+
+	for _, validRole := range []string{"payments-worker_1", "Engineering Team", "Équipe;Ops"} {
+		if err := ValidateRoleName(validRole); err != nil {
+			t.Errorf("ValidateRoleName(%q) unexpected error: %v", validRole, err)
+		}
+	}
+	for _, badRole := range []string{"", "   ", `admin") <- true; //`, `role\slash`, "role\nnewline"} {
+		if err := ValidateRoleName(badRole); err == nil {
+			t.Errorf("ValidateRoleName(%q) expected error, got nil", badRole)
+		}
+	}
+}
+
+func TestMatchBindingMemberValue(t *testing.T) {
+	candidates := []string{
+		"system:serviceaccount:payments:worker-a",
+		"alice@proj.iam.gserviceaccount.com",
+	}
+	cases := []struct {
+		pattern string
+		want    bool
+	}{
+		{"system:serviceaccount:payments:worker-a", true},
+		{"system:serviceaccount:payments:worker-b", false},
+		{"system:serviceaccount:payments:*", true},
+		{"system:serviceaccount:billing:*", false},
+		{"*@proj.iam.gserviceaccount.com", true},
+		{"*@other.iam.gserviceaccount.com", false},
+		{"*", false},
+		{"system:serviceaccount:*:worker-a", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := MatchBindingMemberValue(candidates, tc.pattern); got != tc.want {
+			t.Errorf("MatchBindingMemberValue(%q) = %v, want %v", tc.pattern, got, tc.want)
+		}
+	}
+}
+
+func TestBuildPolicyRulesWildcardsAndInjectionDefense(t *testing.T) {
+	roles := []*PolicyRole{
+		{
+			Name:            "payments",
+			AllowedServices: []string{"mcp:Echo"},
+		},
+	}
+	bindings := []*PolicyBinding{
+		{
+			Role: "payments",
+			Members: []string{
+				"user:system:serviceaccount:payments:*",
+				"email:*@proj.iam.gserviceaccount.com",
+				"group:Engineering Team",
+				"group:Équipe Ingénierie",
+				"group:team;ops",
+				"user:*",
+				"user:system:*:Invalid",
+				`user:foo")*`,
+			},
+		},
+	}
+
+	rules, warnings := BuildPolicyRules(roles, bindings)
+	if len(warnings) != 3 {
+		t.Fatalf("warnings = %v, want 3 warnings for rejected wildcard entries", warnings)
+	}
+
+	texts := PolicyRuleTexts(rules)
+	wantRules := []string{
+		`role("payments") <- user($v), $v.starts_with("system:serviceaccount:payments:")`,
+		`role("payments") <- email($v), $v.ends_with("@proj.iam.gserviceaccount.com")`,
+		`role("payments") <- group("Engineering Team")`,
+		`role("payments") <- group("Équipe Ingénierie")`,
+		`role("payments") <- group("team;ops")`,
+	}
+	for _, want := range wantRules {
+		if !slices.Contains(texts, want) {
+			t.Errorf("missing expected rule %q in %v", want, texts)
+		}
+	}
+
+	if _, err := ParseDatalogRules(texts); err != nil {
+		t.Fatalf("ParseDatalogRules failed on generated rules: %v", err)
 	}
 }

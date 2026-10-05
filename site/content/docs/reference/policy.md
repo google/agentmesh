@@ -181,12 +181,27 @@ A member is one of:
 
 | Member | Matches |
 |---|---|
-| `user:<sub>` | the OIDC subject. For a Kubernetes service account: `user:system:serviceaccount:<namespace>:<name>`. |
+| `user:<sub>` | the OIDC subject. For a Kubernetes service account: `user:system:serviceaccount:<namespace>:<name>`. For a SPIFFE workload: `user:spiffe://<trust-domain>/<path>`. |
 | `email:<address>` | a verified email claim |
 | `group:<name>` | an entry of the `groups` claim |
 | `idp_role:<name>` | an entry of the issuer's `roles` claim |
-| `node:<peer-id>` | one node, by key |
+| `node:<peer-id>` | one node, by key (exact peer ID only; wildcards are not permitted on `node:`) |
 | `sam:system:authenticated` | every identity that the identity provider authenticates |
+
+Each claim-backed member (`user:`, `email:`, `group:`, `idp_role:`) may carry
+a single trailing `*` (prefix match, compiled to `$v.starts_with("<prefix>")`)
+or a single leading `*` (suffix match, compiled to `$v.ends_with("<suffix>")`),
+for example:
+
+- `user:system:serviceaccount:sam-nodes:*`
+- `user:spiffe://acme.example/ns/prod/*`
+- `email:*@my-project.iam.gserviceaccount.com`
+
+Bare `<prefix>:*` (such as `user:*` or `email:*`) and interior wildcards
+(`a*b`) are rejected; use `sam:system:authenticated` when any authenticated
+identity is intended. Role names and binding member values may contain spaces
+and UTF-8 (for example `group:Engineering Team`), and may not contain `"`,
+`\`, or control characters.
 
 `role:` is not a member, because a role cannot grant a role. A bootstrap
 token enrollment carries no OIDC claims. Such a node receives exactly the

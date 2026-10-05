@@ -43,10 +43,16 @@ challenge. This is how a person enrolls a laptop.
 
 **Non-interactive OIDC.** A workload that already has an OIDC token does not
 need a login. `sam-node run --jwt-path <file>` enrolls with the token in that
-file. On Kubernetes this is a projected service account token with the
-audience the control plane expects. `--client-id` and `--client-secret-path`
-do the same with an OAuth client-credentials grant. Routers enroll in the
-same way with `sam-router --jwt-path`.
+file (such as a Kubernetes projected service account token or a SPIRE
+JWT-SVID written by `spiffe-helper`). On GCE and Cloud Run,
+`sam-node run --cloud-provider gcp` (or `auto`) fetches an identity token
+directly from the instance metadata server. `--client-id` and
+`--client-secret-path` do the same with an OAuth client-credentials grant.
+Routers enroll in the same way with `sam-router --jwt-path`. The control
+plane marks workload issuers with `--workload-issuer` (`<issuer>` or
+`<issuer>=<email-suffix>`) so workload tokens can enroll, refresh, and
+exchange credentials while being refused at human operator endpoints
+(`/user/*`, `/oauth/authorize`).
 
 **Bootstrap token.** An operator mints a token with the admin API, the
 console, or `sam-one token create`, and copies it to the machine. The node
@@ -171,15 +177,19 @@ OIDC token's expiry if sooner). Delegated Session Biscuits default to 1 hour
 (bounded by the subject JWT's expiry and any `TaskAuthorizationRule.expire_time`).
 Nodes and routers check their Member Biscuit every ten minutes, and when less
 than a fifth of the lifetime remains they call `POST /refresh` with the
-current token and a signature over a fresh challenge. The control plane
-verifies both, resolves the identity's roles against the current policy again,
-and mints a new token with the same identity facts and labels.
+current token and a signature over a fresh challenge. When the member has a
+live platform token source (`--jwt-path`, `--cloud-provider`, `--client-id`,
+or an SDK `jwtPath` / `jwt` callback), it also sends a fresh platform JWT in
+`TokenRefreshRequest.jwt`: the control plane verifies that `iss|sub` matches
+the enrolled node record, refreshes the stored claims and session in place,
+and re-resolves the identity's roles against the current policy.
 
-Refresh is limited by the **session**, which is a record on the control
-plane, not a field in the token. The session of an OIDC enrollment lasts
-`--oidc-session-ttl`, 90 days by default. After that, the node has to log in
-again. A bootstrap enrollment has no session expiry. A ban also acts on the
-session record.
+Refresh without a fresh platform JWT is bounded by the **session**, which is
+a record on the control plane, not a field in the token. A human OIDC session
+lasts `--oidc-session-ttl` (90 days by default), and a workload OIDC session
+(`--workload-issuer`) lasts `--workload-session-ttl` (48 hours by default). A
+bootstrap enrollment has no session expiry. A ban also acts on the session
+record.
 
 A node that enrolled interactively with `--offline-access` also keeps an OIDC
 refresh token. If its credential expires completely, it uses the refresh

@@ -105,6 +105,7 @@ var (
 	backendProbeTimeoutFlag      time.Duration
 	secretsDirFlag               string
 	controlPlaneSyncIntervalFlag time.Duration
+	cloudProviderFlag            string
 )
 
 var logger = golog.Logger("sam-node-cli")
@@ -372,26 +373,28 @@ func main() {
 
 			var jwtStr string
 			var controlPlaneInfo *api.ControlPlaneInfoResponse
+			var liveTokenSource node.TokenSource
 
 			if jwtFlag != "" {
 				jwtStr = jwtFlag
-			} else if jwtPathFlag != "" {
-				data, err := os.ReadFile(jwtPathFlag)
+			} else if jwtPathFlag != "" || oidcIssuerFlag != "" || cloudProviderFlag != "" {
+				src, continuous, err := node.ResolveTokenSource(ctx, node.TokenSourceConfig{
+					IssuerURL:     oidcIssuerFlag,
+					ClientID:      clientIDFlag,
+					ClientSecret:  clientSecretFlag,
+					JWTPath:       jwtPathFlag,
+					CloudProvider: cloudProviderFlag,
+					Audience:      audienceFlag,
+				})
 				if err != nil {
-					logger.Fatalf("Failed to read JWT file: %v", err)
+					logger.Fatalf("Invalid token source configuration: %v", err)
 				}
-				jwtStr = strings.TrimSpace(string(data))
-			} else if oidcIssuerFlag != "" {
-				logger.Info("Discovering OIDC endpoints...")
-				dummyNode := &node.SamNode{}
-				tokenURL, err := dummyNode.DiscoverTokenURL(context.Background(), oidcIssuerFlag)
-				if err != nil {
-					logger.Fatalf("Failed to discover OIDC endpoints: %v", err)
-				}
-				logger.Info("Fetching JWT via OIDC Client Credentials...")
-				jwtStr, err = dummyNode.FetchJWT(context.Background(), tokenURL, clientIDFlag, clientSecretFlag)
-				if err != nil {
-					logger.Fatalf("Failed to fetch JWT: %v", err)
+				if continuous {
+					liveTokenSource = src
+					jwtStr, err = src.FetchToken(ctx)
+					if err != nil {
+						logger.Fatalf("Failed to fetch platform JWT: %v", err)
+					}
 				}
 			}
 
@@ -657,7 +660,12 @@ func main() {
 			}
 
 			// Start renewal loop
-			meshNode.StartRenewalLoop(ctx, oidcIssuerFlag, clientIDFlag, clientSecretFlag, jwtPathFlag)
+			if liveTokenSource != nil {
+				meshNode.SetTokenSource(liveTokenSource)
+				meshNode.StartRenewalLoopWithSource(ctx, liveTokenSource)
+			} else {
+				meshNode.StartRenewalLoop(ctx, oidcIssuerFlag, clientIDFlag, clientSecretFlag, jwtPathFlag)
+			}
 
 			// Start Sidecar API Server (multiplexed with MCP)
 			sidecarSrv, err := node.StartSidecarServer(meshNode, bindAddrFlag, resolveSocketPath(cmd), apiTokenFlag, tlsCertFlag, tlsKeyFlag, tlsCAFlag)
@@ -863,6 +871,7 @@ func main() {
 	runCmd.Flags().StringSliceVar(&listenAddrs, "listen", []string{"/ip4/0.0.0.0/udp/5001/quic-v1", "/ip4/0.0.0.0/tcp/5002"}, "libp2p Listen Addrs")
 	runCmd.Flags().StringVar(&jwtFlag, "jwt", "", "Pre-fetched JWT token")
 	runCmd.Flags().StringVar(&jwtPathFlag, "jwt-path", "", "Path to file containing JWT token")
+	runCmd.Flags().StringVar(&cloudProviderFlag, "cloud-provider", "", "Platform metadata identity provider for enrollment and renewal: gcp or auto")
 	runCmd.Flags().BoolVar(&joinFlag, "join", false, "Enroll interactively on first run if no identity exists yet (requires --control-plane or a previously stored mesh); a no-op on later restarts")
 	runCmd.Flags().StringVar(&bootstrapTokenFlag, "bootstrap-token", "", "Pre-shared bootstrap token for enrollment")
 	runCmd.Flags().StringVar(&bootstrapTokenPathFlag, "bootstrap-token-path", "", "Path to file containing the bootstrap token (recommended over --bootstrap-token)")

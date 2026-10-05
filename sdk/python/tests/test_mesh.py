@@ -54,6 +54,7 @@ class FakeControlPlane:
         self.strict_refresh = strict_refresh
         self.refresh_delay = refresh_delay
         self.last_biscuit = b""
+        self.last_refresh_jwt = ""
         self._lock = threading.Lock()
 
     def _issue(self, biscuit):
@@ -87,11 +88,14 @@ class FakeControlPlane:
             ).SerializeToString()
         if (method, path) == ("POST", "/refresh"):
             time.sleep(self.refresh_delay)
+            refresh_req = pb.TokenRefreshRequest.FromString(body) if body else pb.TokenRefreshRequest()
             with self._lock:
+                self.last_refresh_jwt = refresh_req.jwt
                 presented = base64.b64decode(headers["Authorization"].removeprefix("Bearer "))
                 if self.strict_refresh and presented != self.last_biscuit:
                     return 200, pb.TokenRefreshResponse(error_message="biscuit already redeemed").SerializeToString()
-                biscuit = self._issue(f"biscuit-{self.issued + 1}".encode())
+                token_bytes = f"biscuit-for-{refresh_req.jwt}".encode() if refresh_req.jwt else f"biscuit-{self.issued + 1}".encode()
+                biscuit = self._issue(token_bytes)
             return 200, pb.TokenRefreshResponse(biscuit_token=biscuit, expire_time=_ts_s(int(time.time()) + 7200)).SerializeToString()
         if (method, path) == ("GET", "/keys"):
             return (200, self._signed_keys().SerializeToString()) if self.keys_ok else (500, b"boom")
@@ -208,14 +212,44 @@ def test_enroll_refuses_ambiguous_credentials():
     assert cp.issued == 0
 
 
-def test_enroll_reads_a_workload_identity_token_from_jwt_path(tmp_path):
+def test_enroll_reads_a_workload_identity_token_from_jwt_path_and_refresh(tmp_path):
     cp = FakeControlPlane()
     token = tmp_path / "token"
-    token.write_text("eyJ.projected.token\n")
+    token.write_text("eyJ.projected.token.1\n")
     mesh = AgentMesh.enroll("http://127.0.0.1:1", jwt_path=token, transport=cp.transport)
-    assert mesh.credential.biscuit == b"biscuit-for-eyJ.projected.token"
+    assert mesh.credential.biscuit == b"biscuit-for-eyJ.projected.token.1"
+
+    token.write_text("eyJ.projected.token.2\n")
+    mesh.refresh()
+    assert cp.last_refresh_jwt == "eyJ.projected.token.2"
+    assert mesh.credential.biscuit == b"biscuit-for-eyJ.projected.token.2"
+
     with pytest.raises(FileNotFoundError):
         AgentMesh.enroll("http://127.0.0.1:1", jwt_path=tmp_path / "missing", transport=cp.transport)
+
+
+def test_enroll_accepts_callable_jwt_and_invokes_on_refresh():
+    cp = FakeControlPlane()
+    seq = 0
+    should_fail = False
+
+    def fetch_jwt() -> str:
+        nonlocal seq
+        if should_fail:
+            raise RuntimeError("metadata server unavailable")
+        seq += 1
+        return f"  eyJ.callback.{seq} \n"
+
+    mesh = AgentMesh.enroll("http://127.0.0.1:1", jwt=fetch_jwt, transport=cp.transport)
+    assert mesh.credential.biscuit == b"biscuit-for-eyJ.callback.1"
+
+    mesh.refresh()
+    assert cp.last_refresh_jwt == "eyJ.callback.2"
+    assert mesh.credential.biscuit == b"biscuit-for-eyJ.callback.2"
+
+    should_fail = True
+    mesh.refresh()
+    assert cp.last_refresh_jwt == ""
 
 
 def test_load_without_identity_says_enroll_first(tmp_path):

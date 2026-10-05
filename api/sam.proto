@@ -474,6 +474,11 @@ message TokenRefreshRequest {
   // when the presented biscuit is byte-identical to the last one it
   // issued and the challenge verifies against the stored public key.
   string peer_id = 3;
+  // Optional fresh platform JWT for an OIDC-enrolled node. When set, the
+  // control plane verifies the JWT, confirms that iss|sub matches the
+  // stored enrollment's identity, and renews the stored claims and session
+  // expiry in place before minting the refreshed biscuit.
+  string jwt = 4;
 }
 
 message TokenRefreshResponse {

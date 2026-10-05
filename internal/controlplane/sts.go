@@ -1002,8 +1002,13 @@ func (s *Server) HandleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 	// Verify the user's OIDC JWT upfront before rendering consent or issuing a code.
 	verifyCtx, cancel := context.WithTimeout(r.Context(), JWTVerificationTimeout)
 	defer cancel()
-	if _, _, err := identity.VerifyJWT(verifyCtx, subjectJWT, s.config.AllowedAudiences, s.getProviders()); err != nil {
+	claims, _, err := identity.VerifyJWT(verifyCtx, subjectJWT, s.config.AllowedAudiences, s.getProviders())
+	if err != nil {
 		http.Error(w, "Invalid OIDC token: "+err.Error(), http.StatusUnauthorized)
+		return
+	}
+	if s.isWorkloadClaims(claims) {
+		http.Error(w, errWorkloadIdentity.Error(), http.StatusForbidden)
 		return
 	}
 

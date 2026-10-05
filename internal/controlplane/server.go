@@ -30,7 +30,6 @@ import (
 	mathrand "math/rand/v2"
 	"net"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -110,8 +109,10 @@ type Server struct {
 	meshMu sync.RWMutex
 	mesh   MeshAdapter
 
-	providersMu sync.RWMutex
-	providers   map[string]*oidc.Provider
+	providersMu           sync.RWMutex
+	providers             map[string]*oidc.Provider
+	workloadIssuers       map[string]bool
+	workloadEmailSuffixes map[string][]string
 
 	// catalogMu/catalog cache each node's self-reported local service list
 	// (see HandleNodeCatalog), keyed by peer ID. In-memory only: this is a
@@ -128,6 +129,27 @@ type Server struct {
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 	shutdown bool
+}
+
+func parseWorkloadIssuers(raw string) (map[string]bool, map[string][]string) {
+	issuers := make(map[string]bool)
+	suffixes := make(map[string][]string)
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if iss, suffix, ok := strings.Cut(entry, "="); ok {
+			iss = strings.TrimSpace(iss)
+			suffix = strings.TrimSpace(suffix)
+			if iss != "" && suffix != "" {
+				suffixes[iss] = append(suffixes[iss], suffix)
+			}
+			continue
+		}
+		issuers[entry] = true
+	}
+	return issuers, suffixes
 }
 
 // NewServer initializes the control plane server and stores configuration.
@@ -155,20 +177,24 @@ func NewServer(config Options, store storage.Store) (*Server, error) {
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(newMeshStateCollector(store))
 
+	workloadIssuers, workloadEmailSuffixes := parseWorkloadIssuers(config.WorkloadIssuer)
+
 	return &Server{
-		config:          config,
-		store:           store,
-		mesh:            NewNopMeshAdapter(),
-		limiter:         rate.NewLimiter(rate.Limit(EnrollRateLimit), EnrollBurst),
-		stsLimiter:      stsLimiter,
-		oidcSigner:      signer,
-		revokedBiscuits: make(map[string]time.Time),
-		oauthCodes:      make(map[string]*oauthAuthCode),
-		providers:       make(map[string]*oidc.Provider),
-		catalog:         make(map[string]nodeCatalogEntry),
-		metricsRegistry: reg,
-		ctx:             ctx,
-		cancel:          cancel,
+		config:                config,
+		store:                 store,
+		mesh:                  NewNopMeshAdapter(),
+		limiter:               rate.NewLimiter(rate.Limit(EnrollRateLimit), EnrollBurst),
+		stsLimiter:            stsLimiter,
+		oidcSigner:            signer,
+		revokedBiscuits:       make(map[string]time.Time),
+		oauthCodes:            make(map[string]*oauthAuthCode),
+		providers:             make(map[string]*oidc.Provider),
+		workloadIssuers:       workloadIssuers,
+		workloadEmailSuffixes: workloadEmailSuffixes,
+		catalog:               make(map[string]nodeCatalogEntry),
+		metricsRegistry:       reg,
+		ctx:                   ctx,
+		cancel:                cancel,
 	}, nil
 }
 
@@ -337,12 +363,26 @@ func (s *Server) discoverProviders() error {
 	s.providersMu.Lock()
 	defer s.providersMu.Unlock()
 
-	issuers := strings.Split(s.config.OIDCIssuer, ",")
-	for _, iss := range issuers {
+	var issuers []string
+	seen := make(map[string]bool)
+	addIssuer := func(iss string) {
 		iss = strings.TrimSpace(iss)
-		if iss == "" {
-			continue
+		if iss != "" && !seen[iss] {
+			seen[iss] = true
+			issuers = append(issuers, iss)
 		}
+	}
+	for _, iss := range strings.Split(s.config.OIDCIssuer, ",") {
+		addIssuer(iss)
+	}
+	for iss := range s.workloadIssuers {
+		addIssuer(iss)
+	}
+	for iss := range s.workloadEmailSuffixes {
+		addIssuer(iss)
+	}
+
+	for _, iss := range issuers {
 		tr := http.DefaultTransport.(*http.Transport).Clone()
 		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: s.config.InsecureSkipTLSVerify}
 		client := &http.Client{
@@ -357,6 +397,45 @@ func (s *Server) discoverProviders() error {
 		s.providers[iss] = provider
 	}
 	return nil
+}
+
+// isWorkloadClaims reports whether verified JWT claims belong to a machine or
+// workload identity rather than a human operator:
+//  1. The token's iss is a dedicated workload issuer (--workload-issuer=<iss>),
+//  2. The token's iss has a configured email suffix (--workload-issuer=<iss>=<suffix>)
+//     matched by the token's email claim, or
+//  3. The token was issued by https://accounts.google.com and carries a
+//     google.compute_engine attestation claim (GCE / Cloud Run format=full).
+func (s *Server) isWorkloadClaims(claims jwt.MapClaims) bool {
+	if claims == nil {
+		return false
+	}
+	iss, _ := claims["iss"].(string)
+	iss = strings.TrimSpace(iss)
+	if s.workloadIssuers[iss] {
+		return true
+	}
+	if suffixes := s.workloadEmailSuffixes[iss]; len(suffixes) > 0 {
+		email, _ := claims["email"].(string)
+		for _, suffix := range suffixes {
+			if strings.HasSuffix(email, suffix) {
+				return true
+			}
+		}
+	}
+	if iss == "https://accounts.google.com" {
+		if g, ok := claims["google"].(map[string]any); ok && g["compute_engine"] != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) sessionTTLForClaims(claims jwt.MapClaims) time.Duration {
+	if s.isWorkloadClaims(claims) {
+		return s.config.WorkloadSessionTTL
+	}
+	return s.config.OIDCSessionTTL
 }
 
 // Defaults for discoverProviderWithRetry; kept small enough that a real outage still
@@ -499,10 +578,23 @@ func (s *Server) HandleInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	issuer := s.config.OIDCIssuer
-	if strings.Contains(issuer, ",") {
-		parts := strings.Split(issuer, ",")
-		issuer = strings.TrimSpace(parts[0])
+	var issuer string
+	var firstIssuer string
+	for _, part := range strings.Split(s.config.OIDCIssuer, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if firstIssuer == "" {
+			firstIssuer = part
+		}
+		if !s.workloadIssuers[part] {
+			issuer = part
+			break
+		}
+	}
+	if issuer == "" {
+		issuer = firstIssuer
 	}
 
 	aud := api.DefaultAudience
@@ -714,8 +806,9 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// The session bounds how long refresh works without the identity proving
 	// itself to the issuer again, so its length is the operator's re-auth
-	// cadence decision (--oidc-session-ttl), not a constant.
-	sessionExpiresAt := time.Now().Add(s.config.OIDCSessionTTL)
+	// cadence decision (--oidc-session-ttl for human identities,
+	// --workload-session-ttl for workload identities), not a constant.
+	sessionExpiresAt := time.Now().Add(s.sessionTTLForClaims(claims))
 
 	// Mint token. A biscuit must never outlive the OIDC token that vouched
 	// for it, nor the session it belongs to; its expiration is capped at
@@ -892,9 +985,14 @@ func (s *Server) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Node is banned", http.StatusForbidden)
 			return
 		}
-		logger.Warnw("Session expired for node", "peer_id", canonical, "expires_at", nodeRecord.ExpiresAt)
-		unauthorized("Session expired, please re-enroll interactively")
-		return
+		// When a fresh platform JWT is presented on an OIDC enrollment, a
+		// lapsed session can be renewed in place once the challenge, last
+		// biscuit, and JWT identity all verify below.
+		if req.Jwt == "" || nodeRecord.EnrollmentType != "OIDC" {
+			logger.Warnw("Session expired for node", "peer_id", canonical, "expires_at", nodeRecord.ExpiresAt)
+			unauthorized("Session expired, please re-enroll interactively")
+			return
+		}
 	}
 
 	// Verify challenge signature using stored node public key
@@ -938,6 +1036,58 @@ func (s *Server) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 		logger.Infow("Autonomous recovery: re-issuing a biscuit whose signing key was retired", "peer_id", canonical, "error", verifyErr)
 	}
 
+	// Continuous platform attestation: when the node presents a fresh JWT on
+	// refresh, verify it against the configured OIDC providers, require the
+	// same iss|sub identity as the enrolled node record, and renew ClaimsJSON
+	// and the session expiry in place.
+	if req.Jwt != "" {
+		if nodeRecord.EnrollmentType != "OIDC" {
+			http.Error(w, "JWT refresh attestation is only supported for OIDC-enrolled nodes", http.StatusBadRequest)
+			return
+		}
+		verifyCtx, cancel := context.WithTimeout(ctx, JWTVerificationTimeout)
+		freshClaims, _, err := identity.VerifyJWT(verifyCtx, req.Jwt, s.config.AllowedAudiences, s.getProviders())
+		cancel()
+		if err != nil {
+			logger.Warnw("Refresh JWT verification failed", "peer_id", canonical, "error", err)
+			http.Error(w, "JWT validation failed: "+err.Error(), http.StatusUnauthorized)
+			return
+		}
+		if verifiedEmail(freshClaims) == "" {
+			delete(freshClaims, "email")
+		}
+		var storedClaims jwt.MapClaims
+		if err := json.Unmarshal([]byte(nodeRecord.ClaimsJSON), &storedClaims); err != nil {
+			logger.Errorf("Failed to unmarshal stored OIDC claims for node %s: %v", nodeRecord.PeerID, err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		freshKey := oidcIdentityKey(freshClaims)
+		storedKey := oidcIdentityKey(storedClaims)
+		if freshKey == "" || freshKey != storedKey {
+			logger.Warnw("Refresh JWT identity mismatch", "peer_id", canonical, "expected", storedKey, "got", freshKey)
+			http.Error(w, "JWT identity does not match enrolled node identity", http.StatusForbidden)
+			return
+		}
+		if banned, err := s.store.IsIdentityBanned(ctx, freshKey); err != nil {
+			logger.Errorf("Failed to check identity ban for %s: %v", canonical, err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		} else if banned {
+			logger.Warnw("Banned identity attempted refresh", "peer_id", canonical, "identity", freshKey)
+			http.Error(w, "Identity is banned", http.StatusForbidden)
+			return
+		}
+		claimsBytes, err := json.Marshal(freshClaims)
+		if err != nil {
+			logger.Errorf("Failed to marshal refreshed OIDC claims for node %s: %v", nodeRecord.PeerID, err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		nodeRecord.ClaimsJSON = string(claimsBytes)
+		nodeRecord.ExpiresAt = time.Now().Add(s.sessionTTLForClaims(freshClaims))
+	}
+
 	// Fetch current signing private key and policy config
 	privKey, _, err := s.store.GetCurrentKey(ctx)
 	if err != nil {
@@ -954,8 +1104,8 @@ func (s *Server) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var biscuitBytes []byte
-	// No live OIDC token is presented on refresh, so the session record is what
-	// vouches for this node. The biscuit must not outlive it.
+	// Unless a live OIDC token just renewed it above, the session record is
+	// what vouches for this node. The biscuit must not outlive it.
 	biscuitExpiry := time.Now().Add(s.config.BiscuitTTL)
 	if !nodeRecord.ExpiresAt.IsZero() && nodeRecord.ExpiresAt.Before(biscuitExpiry) {
 		biscuitExpiry = nodeRecord.ExpiresAt
@@ -1946,6 +2096,12 @@ func (s *Server) HandleEnrollStatus(w http.ResponseWriter, r *http.Request) {
 // is fine, the identity is not welcome.
 var errIdentityBanned = errors.New("identity is banned")
 
+// errWorkloadIdentity is authenticateUser's answer for a valid OIDC token from
+// a workload issuer or workload claim subset. Workload tokens may enroll and
+// refresh nodes or exchange at /token/exchange, never act as a human user on
+// /user/* or /admin/*.
+var errWorkloadIdentity = errors.New("workload tokens are not permitted on user endpoints")
+
 func (s *Server) authenticateUser(r *http.Request) (*storage.User, error) {
 	authHeader := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authHeader, "Bearer ") {
@@ -1993,6 +2149,11 @@ func (s *Server) authenticateUser(r *http.Request) (*storage.User, error) {
 	} else if banned {
 		logger.Warnw("Banned identity presented a valid ID token", "identity", oidcIdentityKey(claims))
 		return nil, errIdentityBanned
+	}
+
+	if s.isWorkloadClaims(claims) {
+		logger.Warnw("Workload token presented on user endpoint", "issuer", iss, "sub", sub, "email", email)
+		return nil, errWorkloadIdentity
 	}
 
 	// Fetch or auto-register user
@@ -2049,6 +2210,10 @@ func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) (*storage.U
 	}
 	if errors.Is(err, errIdentityBanned) {
 		http.Error(w, "Forbidden: identity is banned", http.StatusForbidden)
+		return nil, false
+	}
+	if errors.Is(err, errWorkloadIdentity) {
+		http.Error(w, "Forbidden: workload tokens are not permitted on user endpoints", http.StatusForbidden)
 		return nil, false
 	}
 	logger.Debugf("User authentication failed: %v", err)
@@ -3052,7 +3217,7 @@ func resolveRoles(peerID string, claims jwt.MapClaims, bindings []*api.PolicyBin
 				}
 				continue
 			}
-			if slices.Contains(factValues[prefix], value) {
+			if api.MatchBindingMemberValue(factValues[prefix], value) {
 				resolvedRoles[b.Role] = true
 			}
 		}
@@ -3123,8 +3288,8 @@ func validatePolicyConfig(req *api.PolicyConfig) error {
 		if r == nil {
 			continue
 		}
-		if strings.TrimSpace(r.Name) == "" {
-			return fmt.Errorf("role name cannot be empty")
+		if err := api.ValidateRoleName(r.Name); err != nil {
+			return err
 		}
 		if roleNames[r.Name] {
 			return fmt.Errorf("duplicate role name: %s", r.Name)
@@ -3182,11 +3347,6 @@ func validatePolicyConfig(req *api.PolicyConfig) error {
 		return fmt.Errorf("policy config would allow a single identity (via overlapping bindings) to accumulate up to %d Datalog facts across all roles, exceeding the safe budget of %d; biscuit-go's authorizer rejects tokens/checks beyond ~1000 world facts, so requests would start failing at authorization time instead of at config validation. Reduce the number of roles, grants, or custom_datalog entries", factBudget, maxIdentityFactBudget)
 	}
 
-	validPrefixes := make(map[string]bool)
-	for _, p := range api.BindingMemberPrefixes() {
-		validPrefixes[p] = true
-	}
-
 	for _, b := range req.Bindings {
 		if b == nil {
 			continue
@@ -3201,16 +3361,8 @@ func validatePolicyConfig(req *api.PolicyConfig) error {
 			return fmt.Errorf("binding for role %q must specify at least one member", b.Role)
 		}
 		for _, member := range b.Members {
-			if member == api.SystemAuthenticated {
-				continue
-			}
-			parts := strings.SplitN(member, ":", 2)
-			if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
-				return fmt.Errorf("member %q in binding for role %q is invalid, must be in format 'type:value' or %q", member, b.Role, api.SystemAuthenticated)
-			}
-			prefix := parts[0]
-			if !validPrefixes[prefix] {
-				return fmt.Errorf("member prefix %q in member %q is invalid", prefix, member)
+			if err := api.ValidateBindingMember(member, b.Role); err != nil {
+				return err
 			}
 		}
 	}

@@ -93,9 +93,14 @@ On a platform that issues workload identity tokens, a program needs no
 bootstrap token. A mesh whose control plane trusts the platform's issuer
 enrolls the program from that token instead; on Kubernetes that is a
 projected service account token, as [Headless enrollment](../headless-enrollment/)
-shows for `sam-node`. Set `SAM_JWT_PATH` to the token file rather than
-`SAM_BOOTSTRAP_TOKEN_PATH`. That is how the public testnets run these same
-programs as canaries beside the `sam-node` ones.
+shows for `sam-node`. Set `SAM_JWT_PATH` (`jwtPath` / `jwt_path`) to the
+token file rather than `SAM_BOOTSTRAP_TOKEN_PATH`, or pass a `jwt` callback
+(`() => string | Promise<string>` in JS, `Callable[[], str]` in Python) that
+fetches a fresh token (for example, from a cloud metadata server). On every
+credential refresh, the SDK re-reads `jwtPath` or invokes the `jwt` callback
+and sends the fresh token in `TokenRefreshRequest.jwt` so the control plane
+re-attests the member in place. That is how the public testnets run these
+same programs as canaries beside the `sam-node` ones.
 
 ## 2. Install the SDK
 

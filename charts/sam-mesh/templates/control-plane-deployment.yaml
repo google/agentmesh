@@ -93,6 +93,12 @@ spec:
         - "--db-dsn=/data/control-plane.db"
         {{- end }}
         - "--issuer={{ .Values.controlPlane.oidcIssuer }}"
+        {{- if .Values.controlPlane.workloadIssuer }}
+        - "--workload-issuer={{ .Values.controlPlane.workloadIssuer }}"
+        {{- end }}
+        {{- if .Values.controlPlane.workloadSessionTtl }}
+        - "--workload-session-ttl={{ .Values.controlPlane.workloadSessionTtl }}"
+        {{- end }}
         - "--allowed-audiences={{ .Values.controlPlane.allowedAudiences }}"
         {{- if .Values.controlPlane.autoApproveEnrollment }}
         - "--auto-approve-enrollment"

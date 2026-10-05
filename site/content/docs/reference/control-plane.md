@@ -19,7 +19,8 @@ sam-control-plane admin unban --peer <id>     lift a ban
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--issuer` | required | OIDC issuer URL(s), comma-separated. The first is advertised to enrolling nodes on `/info`. Can also be set with `SAM_OIDC_ISSUER`. |
+| `--issuer` | | OIDC issuer URL(s), comma-separated. At least one of `--issuer` or `--workload-issuer` is required. The first issuer is advertised to enrolling nodes on `/info`. |
+| `--workload-issuer` | | Workload OIDC issuer(s), comma-separated (`<issuer>` or `<issuer>=<email-suffix>`, such as `https://accounts.google.com=.gserviceaccount.com`). Automatically added to `--issuer`. Workload tokens can enroll, refresh, and exchange credentials (`/register`, `/refresh`, `/token/exchange`), and are refused at `/user/*` and `/oauth/authorize`. |
 | `--allowed-audiences` | `sam-mesh-audience` | Audiences accepted in OIDC tokens, comma-separated. |
 | `--oidc-client-id` | first audience | OAuth client ID advertised on `/info`, for providers where it differs from the audience. |
 | `--insecure-skip-tls-verify` | `false` | Skip TLS verification when fetching issuer metadata and keys. For a cluster issuer served with the cluster CA, or a local development issuer. |
@@ -30,7 +31,8 @@ sam-control-plane admin unban --peer <id>     lift a ban
 | `--admin-token-path` | | File containing the bearer token for `/admin/*` and `POST /policies`. Can also be set with `SAM_ADMIN_TOKEN`. Without a token, the admin API cannot be used. |
 | `--auto-approve-enrollment` | `false` | Issue credentials for valid bootstrap-token enrollments immediately instead of queueing them for approval. |
 | `--biscuit-ttl` | `24h` | Lifetime of each credential. If the OIDC token expires sooner, the credential expires with it. |
-| `--oidc-session-ttl` | `2160h` (90 days) | How long an OIDC enrollment may keep refreshing before the identity must log in again. |
+| `--oidc-session-ttl` | `2160h` (90 days) | How long a human OIDC enrollment may keep refreshing before the identity must log in again. |
+| `--workload-session-ttl` | `48h` | How long a workload OIDC enrollment (`--workload-issuer`) may refresh without presenting a fresh platform JWT in `TokenRefreshRequest.jwt`. |
 | `--key-rotation-interval` | `24h` | How often a new signing key is generated. `0` disables rotation. |
 | `--key-grace-period` | `1h` | How long a rotated-out key stays accepted. Credentials signed by a retired key cannot be verified or refreshed. Nodes and routers must pull `/keys` well within this window (`sam-node --control-plane-sync-interval`, `sam-router --keys-sync-interval`). |
 | `--lease-duration` | `15m` | How long a router lease lasts without renewal. |
@@ -60,7 +62,7 @@ Responses that carry credentials are sent with `Cache-Control: no-store`.
 | `GET /keys` | The current set of signing public keys, signed by every key in the set. A caller accepts the set only if one signature verifies under a key it already trusts. |
 | `GET /.well-known/openid-configuration`, `GET /.well-known/oauth-authorization-server` | OIDC Discovery and OAuth 2.1 Authorization Server metadata for outbound STS federation and MCP OAuth 2.1 clients. |
 | `GET /jwks` | JSON Web Key Set (`ES256` public keys) for verifying border JWTs minted by `POST /sts/token`. |
-| `GET /oauth/authorize`, `POST /oauth/token` | OAuth 2.1 Authorization Code + PKCE endpoints (honouring RFC 8707 `resource` indicators to scope the issued Task Biscuit). |
+| `GET /oauth/authorize`, `POST /oauth/token` | OAuth 2.1 Authorization Code + PKCE endpoints (honouring RFC 8707 `resource` indicators to scope the issued Task Biscuit). Tokens from `--workload-issuer` are refused at `/oauth/authorize` with `403`. |
 
 ### Enrollment, refresh, and STS
 
@@ -76,7 +78,7 @@ names. Every instant in a response (`expire_time` and the like) is a
 | `POST /register` | `EnrollRequest` (OIDC token, public key, requested role, labels) | OIDC enrollment. Returns `EnrollResponse`: the credential, the control plane public key, router addresses and expiry. |
 | `POST /enroll` | `BootstrapEnrollRequest` (bootstrap token, public key, requested role, labels) | Bootstrap enrollment. Returns `BootstrapEnrollResponse` with status `APPROVED` and the credential, or with status `PENDING`. For a peer that is already approved, a new credential is minted directly. |
 | `GET /enroll/status?peer_id=` | headers `X-Sam-Challenge-Ts`, `X-Sam-Challenge-Sig` | Poll a pending enrollment. Any authentication failure answers `401`, so the credential is released only to the enrollee. |
-| `POST /refresh` | `TokenRefreshRequest`, current credential as `Authorization: Bearer <base64>` | Exchange a credential for a new one. Refuses a replayed (superseded) credential, a banned node, an expired session, and a credential signed by a retired key unless the node has `autonomous_recovery`. |
+| `POST /refresh` | `TokenRefreshRequest` (optional `jwt`), current credential as `Authorization: Bearer <base64>` | Exchange a credential for a new one. When `jwt` is present and its `iss|sub` matches the enrolled node record, re-attests the node in place, updates stored claims and extends the session. Refuses a replayed (superseded) credential, a banned node, an expired session without a matching `jwt`, and a credential signed by a retired key unless the node has `autonomous_recovery`. |
 | `POST /token/exchange` | `TokenExchangeRequest` (`subject_token`, optional `task_rule` and `seal`, challenge signature), node credential as bearer | Stateless JWT-to-Biscuit exchange. Mints a Delegated Session Biscuit bound to the calling node (`actor_node`, `client_peer_id`) with zero database writes. |
 | `POST /sts/token` | `STSTokenRequest` (`biscuit`, `destination`, optional `audience`, challenge signature), node credential as bearer | Stateless Biscuit-to-JWT minting. Verifies the Biscuit and `tar_block` chain against `egress://<destination>` and mints a short-lived ES256 border JWT (`sub`, `act.sub`, `aud`, `sam_roles`, `sam_task`). |
 | `GET /revocations` | credential as `Authorization: Bearer <base64>` | `RevocationsResponse`: revoked root Biscuit revocation IDs (`revocation_ids`) and banned peer IDs (`banned_peer_ids`). |
@@ -105,8 +107,9 @@ All routes require `Authorization: Bearer <admin-token>` and use JSON.
 
 ### User
 
-For an OIDC user acting on their own nodes, authenticated with an ID token
-from the configured issuer. The console uses these routes.
+For a human OIDC user acting on their own nodes, authenticated with an ID token
+from a configured human issuer (tokens matching `--workload-issuer` are refused
+with `403`). The console uses these routes.
 
 | Route | Purpose |
 |---|---|

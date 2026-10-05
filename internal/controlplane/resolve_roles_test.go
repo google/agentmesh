@@ -63,3 +63,63 @@ func TestResolveRolesMatchesNodeOnThePeerID(t *testing.T) {
 		t.Errorf("non-matching peer resolved %v, want none", got)
 	}
 }
+
+func TestResolveRolesWildcardsAndValidation(t *testing.T) {
+	bindings := []*api.PolicyBinding{
+		{
+			Role: "k8s-payments",
+			Members: []string{
+				"user:system:serviceaccount:payments:*",
+				"user:spiffe://cluster.local/ns/payments/sa/*",
+			},
+		},
+		{
+			Role: "gcp-sa",
+			Members: []string{
+				"email:*@proj-123.iam.gserviceaccount.com",
+			},
+		},
+	}
+
+	if got := resolveRoles("peer-1", jwt.MapClaims{"sub": "system:serviceaccount:payments:worker-a"}, bindings); len(got) != 1 || got[0] != "k8s-payments" {
+		t.Errorf("k8s SA prefix wildcard resolved %v, want [k8s-payments]", got)
+	}
+	if got := resolveRoles("peer-1", jwt.MapClaims{"sub": "spiffe://cluster.local/ns/payments/sa/worker-b"}, bindings); len(got) != 1 || got[0] != "k8s-payments" {
+		t.Errorf("spiffe prefix wildcard resolved %v, want [k8s-payments]", got)
+	}
+	if got := resolveRoles("peer-1", jwt.MapClaims{"sub": "system:serviceaccount:other:worker-a"}, bindings); len(got) != 0 {
+		t.Errorf("non-matching namespace resolved %v, want none", got)
+	}
+	if got := resolveRoles("peer-1", jwt.MapClaims{"email": "runner@proj-123.iam.gserviceaccount.com"}, bindings); len(got) != 1 || got[0] != "gcp-sa" {
+		t.Errorf("email suffix wildcard resolved %v, want [gcp-sa]", got)
+	}
+
+	validCfg := &api.PolicyConfig{
+		Roles: []*api.PolicyRole{
+			{Name: "k8s-payments", AllowedServices: []string{"mcp://Echo"}},
+			{Name: "gcp-sa", AllowedServices: []string{"mcp://Echo"}},
+		},
+		Bindings: bindings,
+	}
+	if err := ValidatePolicyConfig(validCfg); err != nil {
+		t.Fatalf("ValidatePolicyConfig rejected valid wildcard bindings: %v", err)
+	}
+
+	invalidMembers := []string{
+		"user:*",
+		"email:*",
+		"node:*",
+		"node:12D3KooW*",
+		"user:system:*:worker",
+		`user:foo"); role("admin") <- true; //`,
+	}
+	for _, bad := range invalidMembers {
+		cfg := &api.PolicyConfig{
+			Roles:    []*api.PolicyRole{{Name: "r1", AllowedServices: []string{"mcp://Echo"}}},
+			Bindings: []*api.PolicyBinding{{Role: "r1", Members: []string{bad}}},
+		}
+		if err := ValidatePolicyConfig(cfg); err == nil {
+			t.Errorf("ValidatePolicyConfig accepted invalid member %q", bad)
+		}
+	}
+}

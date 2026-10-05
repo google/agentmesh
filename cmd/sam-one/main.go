@@ -51,6 +51,7 @@ func main() {
 		adminTokenPath       string
 		policyFile           string
 		oidcIssuer           string
+		workloadIssuer       string
 		oidcClientID         string
 		allowedAudiencesFlag string
 		logLevel             string
@@ -161,6 +162,7 @@ func main() {
 				AdminToken:       adminToken,
 				PolicyFile:       policyFile,
 				OIDCIssuer:       oidcIssuer,
+				WorkloadIssuer:   workloadIssuer,
 				OIDCClientID:     oidcClientID,
 				AllowedAudiences: auds,
 				ControlPlane:     cpTunables,
@@ -208,6 +210,7 @@ func main() {
 	rootCmd.Flags().StringVar(&adminTokenPath, "admin-token-path", "", "File containing the admin API bearer token (or env SAM_ADMIN_TOKEN; auto-generated and persisted in --data-dir if neither is set)")
 	rootCmd.Flags().StringVar(&policyFile, "policy-file", "", "Path to a protojson PolicyConfig seeding the mesh policy on first boot only")
 	rootCmd.Flags().StringVar(&oidcIssuer, "issuer", "", "Optional external OIDC issuer URL (comma-separated)")
+	rootCmd.Flags().StringVar(&workloadIssuer, "workload-issuer", "", "Optional workload OIDC issuer URL or '<issuer>=<email-suffix>' (comma-separated); accepted at /register, /refresh and /token/exchange, refused at /user/* and /oauth/authorize")
 	rootCmd.Flags().StringVar(&oidcClientID, "oidc-client-id", "", "OAuth client id advertised via /info (defaults to the first allowed audience)")
 	rootCmd.Flags().StringVar(&allowedAudiencesFlag, "allowed-audiences", api.DefaultAudience, "Comma-separated list of allowed OIDC audiences")
 	rootCmd.Flags().StringVar(&logLevel, "log-level", "", "Log level: debug, info, warn, error")
@@ -223,6 +226,7 @@ func main() {
 	rootCmd.Flags().DurationVar(&cpTunables.KeyRotationInterval, "control-plane-key-rotation-interval", 0, "Biscuit signing key rotation interval (0 keeps the component default)")
 	rootCmd.Flags().DurationVar(&cpTunables.KeyGracePeriod, "control-plane-key-grace-period", 0, "How long rotated-out keys stay valid for verification (0 keeps the component default)")
 	rootCmd.Flags().DurationVar(&cpTunables.BiscuitTTL, "control-plane-biscuit-ttl", 0, "Lifespan minted into issued biscuits (0 keeps the component default)")
+	rootCmd.Flags().DurationVar(&cpTunables.WorkloadSessionTTL, "control-plane-workload-session-ttl", 0, "How long a workload-issuer enrollment stays refreshable without presenting a fresh platform JWT on /refresh (0 keeps the component default)")
 	rootCmd.Flags().BoolVar(&cpTunables.ManualEnrollment, "control-plane-manual-enrollment", false, "Queue bootstrap enrollments for admin approval instead of auto-approving")
 
 	// Embedded router tunables.

@@ -66,6 +66,18 @@ administrator to approve each enrollment via `/admin/enrollments` before a
 node can join — see the
 [Headless enrollment guide](https://sam-mesh.dev/docs/guides/headless-enrollment/).
 
+## `controlPlane.workloadIssuer` and `controlPlane.workloadSessionTtl`
+
+When `controlPlane.oidcIssuer` includes a workload identity provider alongside a
+human identity provider (for example the Kubernetes API server issuer
+`https://kubernetes.default.svc.cluster.local`, a SPIRE OIDC Discovery Provider,
+or `https://accounts.google.com=.gserviceaccount.com` for Google Cloud service
+accounts), list it in `controlPlane.workloadIssuer` so those machine tokens are
+accepted at `/register`, `/refresh`, and `/token/exchange` and refused at the
+human surfaces (`/user/*`, `/oauth/authorize`). `controlPlane.workloadSessionTtl`
+overrides the default `48h` workload session lifetime (which nodes and routers
+extend in place on `/refresh` by re-presenting their current workload JWT).
+
 ## Gateway API (`gateway.enabled`)
 
 Disabled by default. When enabled the chart creates one `Gateway` fronting

@@ -38,6 +38,7 @@ var (
 	dbDSN                 string
 	dbDSNPath             string
 	oidcIssuer            string
+	workloadIssuer        string
 	oidcClientID          string
 	allowedAudiencesFlag  string
 	keyRotationInterval   time.Duration
@@ -45,6 +46,7 @@ var (
 	leaseDuration         time.Duration
 	biscuitTTL            time.Duration
 	oidcSessionTTL        time.Duration
+	workloadSessionTTL    time.Duration
 	nodeRetention         time.Duration
 	meshReconnectInterval time.Duration
 	adminTokenPath        string
@@ -83,8 +85,8 @@ func main() {
 				}
 			}
 
-			if oidcIssuer == "" {
-				logger.Fatalf("OIDC issuer is required (use --issuer flag)")
+			if oidcIssuer == "" && workloadIssuer == "" {
+				logger.Fatalf("OIDC issuer is required (use --issuer or --workload-issuer flag)")
 			}
 
 			adminToken, err := secrets.FromPathOrEnv("admin-token", adminTokenPath, "SAM_ADMIN_TOKEN")
@@ -119,6 +121,7 @@ func main() {
 				DriverName:            dbDriver,
 				DataSourceName:        dbDSN,
 				OIDCIssuer:            oidcIssuer,
+				WorkloadIssuer:        workloadIssuer,
 				OIDCClientID:          oidcClientID,
 				AllowedAudiences:      auds,
 				LeaseDuration:         leaseDuration,
@@ -128,6 +131,7 @@ func main() {
 				BiscuitTimeout:        10 * time.Second,
 				BiscuitTTL:            biscuitTTL,
 				OIDCSessionTTL:        oidcSessionTTL,
+				WorkloadSessionTTL:    workloadSessionTTL,
 				NodeRetention:         nodeRetention,
 				AdminToken:            adminToken,
 				AutoApproveEnrollment: autoApproveEnrollment,
@@ -170,6 +174,7 @@ func main() {
 	rootCmd.PersistentFlags().StringVar(&dbDSN, "db-dsn", "control-plane.db", "Database DSN/Connection URL (avoid for postgres: embeds a password; prefer --db-dsn-path or SAM_DB_DSN)")
 	rootCmd.PersistentFlags().StringVar(&dbDSNPath, "db-dsn-path", "", "Path to file containing the database DSN/Connection URL (overrides --db-dsn; or env SAM_DB_DSN)")
 	rootCmd.Flags().StringVar(&oidcIssuer, "issuer", "", "OIDC Issuer URL (comma-separated)")
+	rootCmd.Flags().StringVar(&workloadIssuer, "workload-issuer", "", "Workload OIDC Issuer URL or '<issuer>=<email-suffix>' (comma-separated); accepted at /register, /refresh and /token/exchange, refused at /user/* and /oauth/authorize")
 	rootCmd.Flags().StringVar(&oidcClientID, "oidc-client-id", "", "OAuth client ID advertised to joining nodes via /info (defaults to the first allowed audience)")
 	rootCmd.Flags().StringVar(&allowedAudiencesFlag, "allowed-audiences", api.DefaultAudience, "Comma-separated list of allowed OIDC audiences")
 	rootCmd.Flags().DurationVar(&keyRotationInterval, "key-rotation-interval", 24*time.Hour, "Key rotation interval (e.g. 24h). 0 disables rotation.")
@@ -177,6 +182,7 @@ func main() {
 	rootCmd.Flags().DurationVar(&leaseDuration, "lease-duration", 15*time.Minute, "Router lease registration TTL.")
 	rootCmd.Flags().DurationVar(&biscuitTTL, "biscuit-ttl", api.BiscuitTokenTTL, "Lifespan minted into every issued Biscuit's expiration fact. Capped to the OIDC token's own expiry when shorter.")
 	rootCmd.Flags().DurationVar(&oidcSessionTTL, "oidc-session-ttl", api.OIDCSessionTTL, "How long an OIDC enrollment stays refreshable before the identity must re-authenticate with the OIDC provider. Shorter values keep the provider authoritative for offboarding at the cost of more frequent interactive re-enrollment.")
+	rootCmd.Flags().DurationVar(&workloadSessionTTL, "workload-session-ttl", controlplane.DefaultWorkloadSessionTTL, "How long a workload-issuer enrollment stays refreshable without presenting a fresh platform JWT on /refresh.")
 	rootCmd.Flags().DurationVar(&nodeRetention, "node-retention", controlplane.DefaultNodeRetention, "How long an enrolled node's record is kept after its session expired before it is deleted. Banned nodes are always kept. 0 keeps every record forever.")
 	rootCmd.Flags().DurationVar(&meshReconnectInterval, "mesh-reconnect-interval", controlplane.DefaultMeshReconnectInterval, "How often the event publisher re-reads the router leases and dials any router it is not connected to.")
 	rootCmd.Flags().StringVar(&adminTokenPath, "admin-token-path", "", "Path to file containing the token for authenticating policy REST API requests (or env SAM_ADMIN_TOKEN)")

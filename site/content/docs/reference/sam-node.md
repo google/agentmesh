@@ -72,17 +72,18 @@ refuses until `sam-node reset` has been run.
 
 Starts the node. If the data directory holds a credential, the node uses it.
 Otherwise the node enrolls if it has a way to (`--jwt-path`,
-`--bootstrap-token-path`, `--client-id`, or `--join`). If it has none, it
-starts an unauthenticated local MCP server whose only tool explains how to
-enroll.
+`--cloud-provider`, `--bootstrap-token-path`, `--client-id`, or `--join`). If
+it has none, it starts an unauthenticated local MCP server whose only tool
+explains how to enroll.
 
 ### Enrollment
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--join` | `false` | Run the interactive login on first start if there is no credential. Needs a terminal and `--control-plane` (or a stored control plane). Does nothing once the node is enrolled. |
-| `--jwt-path` | | File containing an OIDC token to enroll with, for example a projected service account token. |
+| `--jwt-path` | | File containing an OIDC token to enroll and refresh with, for example a Kubernetes projected service account token or a `spiffe-helper` JWT-SVID file. |
 | `--jwt` | | The token as a value. Logged as a warning. The file form is preferred. |
+| `--cloud-provider` | | Cloud metadata provider for workload identity enrollment and refresh: `gcp` (GCE and Cloud Run metadata identity endpoint) or `auto` (probe GCE/Cloud Run metadata at startup). |
 | `--bootstrap-token-path`, `--bootstrap-token` | | As for `join`. |
 | `--client-id`, `--client-secret-path` | | OAuth client-credentials grant against `--oidc-issuer`. The secret can also come from `SAM_CLIENT_SECRET`. |
 | `--offline-access` | `false` | With `--join`, as for `join`. |

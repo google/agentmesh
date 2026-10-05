@@ -2991,7 +2991,12 @@ type TokenRefreshRequest struct {
 	// if the node was opted in to autonomous recovery, accepts the request
 	// when the presented biscuit is byte-identical to the last one it
 	// issued and the challenge verifies against the stored public key.
-	PeerId        string `protobuf:"bytes,3,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
+	PeerId string `protobuf:"bytes,3,opt,name=peer_id,json=peerId,proto3" json:"peer_id,omitempty"`
+	// Optional fresh platform JWT for an OIDC-enrolled node. When set, the
+	// control plane verifies the JWT, confirms that iss|sub matches the
+	// stored enrollment's identity, and renews the stored claims and session
+	// expiry in place before minting the refreshed biscuit.
+	Jwt           string `protobuf:"bytes,4,opt,name=jwt,proto3" json:"jwt,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3043,6 +3048,13 @@ func (x *TokenRefreshRequest) GetChallengeUnixMs() int64 {
 func (x *TokenRefreshRequest) GetPeerId() string {
 	if x != nil {
 		return x.PeerId
+	}
+	return ""
+}
+
+func (x *TokenRefreshRequest) GetJwt() string {
+	if x != nil {
+		return x.Jwt
 	}
 	return ""
 }
@@ -4495,11 +4507,12 @@ const file_api_sam_proto_rawDesc = "" +
 	"\tsign_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\bsignTime\x12\x1e\n" +
 	"\n" +
 	"signatures\x18\x03 \x03(\fR\n" +
-	"signatures\"\x8b\x01\n" +
+	"signatures\"\x9d\x01\n" +
 	"\x13TokenRefreshRequest\x12/\n" +
 	"\x13challenge_signature\x18\x01 \x01(\fR\x12challengeSignature\x12*\n" +
 	"\x11challenge_unix_ms\x18\x02 \x01(\x03R\x0fchallengeUnixMs\x12\x17\n" +
-	"\apeer_id\x18\x03 \x01(\tR\x06peerId\"\x9d\x01\n" +
+	"\apeer_id\x18\x03 \x01(\tR\x06peerId\x12\x10\n" +
+	"\x03jwt\x18\x04 \x01(\tR\x03jwt\"\x9d\x01\n" +
 	"\x14TokenRefreshResponse\x12#\n" +
 	"\rbiscuit_token\x18\x01 \x01(\fR\fbiscuitToken\x12;\n" +
 	"\vexpire_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +

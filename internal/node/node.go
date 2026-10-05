@@ -29,7 +29,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -200,6 +199,7 @@ type SamNode struct {
 	// only the last biscuit it issued, so two refreshes in flight would
 	// invalidate each other.
 	refreshMu      sync.Mutex
+	tokenSource    TokenSource
 	BiscuitTimeout time.Duration
 	cachedIdentity atomic.Value
 	logger         *golog.ZapEventLogger
@@ -207,6 +207,20 @@ type SamNode struct {
 	// metricsRegistry holds this node's state collector; see metricsHandler.
 	metricsOnce     sync.Once
 	metricsRegistry *prometheus.Registry
+}
+
+// SetTokenSource configures the live platform/OIDC token source presented as
+// TokenRefreshRequest.jwt during RefreshEnrollment.
+func (n *SamNode) SetTokenSource(ts TokenSource) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.tokenSource = ts
+}
+
+func (n *SamNode) getTokenSource() TokenSource {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.tokenSource
 }
 
 // UpdateRelays updates the current relays used by AutoRelay.
@@ -377,6 +391,7 @@ func NewSamNode(cfg Options) (*SamNode, error) {
 		authSuccess:             make(chan struct{}),
 		reprovideTrigger:        make(chan struct{}, 1),
 		controlPlaneSyncTrigger: make(chan struct{}, 1),
+		tokenSource:             cfg.TokenSource,
 		BiscuitTimeout:          cfg.BiscuitTimeout,
 		logger:                  golog.Logger("sam-node"),
 	}
@@ -1104,6 +1119,27 @@ func (n *SamNode) performRouterAuthHandshake(s network.Stream, biscuitBytes []by
 }
 
 func (n *SamNode) StartRenewalLoop(ctx context.Context, issuerURL, clientID, clientSecret, jwtPath string) {
+	src, continuous, err := ResolveTokenSource(ctx, TokenSourceConfig{
+		Node:         n,
+		IssuerURL:    issuerURL,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		JWTPath:      jwtPath,
+	})
+	if err != nil {
+		logger.Warnf("Failed to resolve token source: %v", err)
+		src = NewRefreshTokenSource(n, clientSecret)
+	}
+	if continuous && n.getTokenSource() == nil {
+		n.SetTokenSource(src)
+	}
+	n.StartRenewalLoopWithSource(ctx, src)
+}
+
+func (n *SamNode) StartRenewalLoopWithSource(ctx context.Context, src TokenSource) {
+	if src == nil {
+		src = n.getTokenSource()
+	}
 	go func() {
 		for {
 			var renewAfter = DefaultRenewalFallback // Default fallback
@@ -1145,26 +1181,10 @@ func (n *SamNode) StartRenewalLoop(ctx context.Context, issuerURL, clientID, cli
 
 				var newJWT string
 				var fetchErr error
-
-				if issuerURL != "" {
-					tokenURL, err := n.DiscoverTokenURL(ctx, issuerURL)
-					if err != nil {
-						fetchErr = fmt.Errorf("failed to discover OIDC endpoints for renewal: %w", err)
-					} else {
-						newJWT, fetchErr = n.FetchJWT(ctx, tokenURL, clientID, clientSecret)
-						if fetchErr != nil {
-							fetchErr = fmt.Errorf("failed to fetch JWT for renewal: %w", fetchErr)
-						}
-					}
-				} else if jwtPath != "" {
-					data, err := os.ReadFile(jwtPath)
-					if err != nil {
-						fetchErr = fmt.Errorf("failed to read JWT file for renewal: %w", err)
-					} else {
-						newJWT = strings.TrimSpace(string(data))
-					}
+				if src == nil {
+					fetchErr = errors.New("no token source configured for renewal")
 				} else {
-					newJWT, fetchErr = n.renewWithRefreshToken(ctx, clientSecret)
+					newJWT, fetchErr = src.FetchToken(ctx)
 				}
 
 				if fetchErr == nil {
@@ -1239,10 +1259,19 @@ func (n *SamNode) RefreshEnrollment(ctx context.Context) error {
 	// record when the biscuit's signing key has been retired and the biscuit
 	// itself can no longer be verified (autonomous recovery, opt-in
 	// server-side); it is cross-checked against the biscuit otherwise.
+	var freshJWT string
+	if ts := n.getTokenSource(); ts != nil {
+		if tok, fetchErr := ts.FetchToken(ctx); fetchErr != nil {
+			logger.Warnw("Failed to fetch fresh platform JWT for refresh attestation; attempting session-backed refresh", "error", fetchErr)
+		} else {
+			freshJWT = tok
+		}
+	}
 	req := &api.TokenRefreshRequest{
 		ChallengeSignature: sig,
 		ChallengeUnixMs:    timestamp,
 		PeerId:             peerID.String(),
+		Jwt:                freshJWT,
 	}
 	reqData, err := proto.Marshal(req)
 	if err != nil {

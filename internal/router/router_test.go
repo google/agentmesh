@@ -1065,3 +1065,61 @@ func TestReconcileBannedPeers(t *testing.T) {
 		t.Error("a ban recorded at the fetch instant must survive: the answer is not newer than the ban, so it cannot report it unbanned")
 	}
 }
+
+func TestRouterRefreshEnrollmentReattestsJWT(t *testing.T) {
+	issuer, mintToken := startCustomMockOIDC(t)
+	cp, cpStore, cpURL := setupControlPlane(t, issuer)
+	defer func() {
+		_ = cp.Close()
+		_ = cpStore.Close()
+	}()
+
+	tempDir := t.TempDir()
+	jwtPath := filepath.Join(tempDir, "router.jwt")
+	initialJWT := mintToken(map[string]interface{}{
+		"sub":    "system:serviceaccount:sam-system:sam-router",
+		"groups": []string{"routers"},
+	})
+	if err := os.WriteFile(jwtPath, []byte(initialJWT+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := NewRouter(context.Background(), Options{
+		ControlPlaneURL:    cpURL,
+		ListenAddrs:        []string{"/ip4/127.0.0.1/tcp/0"},
+		KeysSyncInterval:   time.Hour,
+		LeaseRenewInterval: time.Hour,
+		JWTPath:            jwtPath,
+		KeysDBPath:         filepath.Join(tempDir, "router.key"),
+		AllowLoopback:      true,
+		BiscuitTimeout:     time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewRouter: %v", err)
+	}
+	if err := r.Start(); err != nil {
+		t.Fatalf("r.Start: %v", err)
+	}
+	defer func() { _ = r.Close() }()
+
+	rotatedJWT := mintToken(map[string]interface{}{
+		"sub":    "system:serviceaccount:sam-system:sam-router",
+		"groups": []string{"routers"},
+		"email":  "sam-router@cluster.local",
+	})
+	if err := os.WriteFile(jwtPath, []byte(rotatedJWT), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.RefreshEnrollment(context.Background()); err != nil {
+		t.Fatalf("RefreshEnrollment with rotated JWT: %v", err)
+	}
+
+	rec, err := cpStore.GetNode(context.Background(), r.Host.ID().String())
+	if err != nil || rec == nil {
+		t.Fatalf("GetNode: %v", err)
+	}
+	if !strings.Contains(rec.ClaimsJSON, "sam-router@cluster.local") {
+		t.Errorf("ClaimsJSON = %s, want updated claim from rotated router JWT", rec.ClaimsJSON)
+	}
+}
