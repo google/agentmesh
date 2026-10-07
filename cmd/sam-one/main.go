@@ -250,7 +250,7 @@ func main() {
 	rootCmd.Flags().IntVar(&routerTunables.LowWaterMark, "router-low-watermark", 0, "Connection manager low watermark (0 keeps the component default)")
 	rootCmd.Flags().IntVar(&routerTunables.HighWaterMark, "router-high-watermark", 0, "Connection manager high watermark (0 keeps the component default)")
 	rootCmd.Flags().IntVar(&routerTunables.ConnsPerSourceIP, "router-conns-per-source-ip", 0, "Per-source-IP connection budget (0 follows the high watermark; proxied peers share source IPs)")
-	rootCmd.Flags().DurationVar(&routerTunables.DHTProviderAddrTTL, "router-dht-provider-addr-ttl", 0, "DHT provider address TTL (0 keeps the library default)")
+	rootCmd.Flags().DurationVar(&routerTunables.DHTProviderAddrTTL, "router-dht-provider-addr-ttl", 0, "How long a DHT provider record lives after its last announcement (0 keeps the component default of 15m)")
 	rootCmd.Flags().DurationVar(&routerTunables.DHTMaxRecordAge, "router-dht-max-record-age", 0, "DHT record max age (0 keeps the library default)")
 	rootCmd.Flags().DurationVar(&routerTunables.RelayLimitDuration, "router-relay-limit-duration", 0, "Relayed connection lifetime (0 keeps the component default of 1h; use e.g. 24h for longer)")
 	rootCmd.Flags().Var(&routerTunables.RelayLimitData, "router-relay-limit-data", "Bytes relayed per direction per connection, e.g. 512MiB (0 keeps the component default: no limit)")

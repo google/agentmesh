@@ -42,7 +42,8 @@ replica count.
 | `--allow-loopback` | `false` | Announce and accept loopback and link-local addresses. For a router and nodes on one host. |
 | `--conns-per-source-ip` | `8` (libp2p default) | Inbound connections accepted per source IP. Raise it behind a TLS-terminating proxy or a NAT that puts many peers on one address. |
 | `--low-watermark`, `--high-watermark` | `1000`, `4000` | Connection manager limits. Above the high mark, connections are trimmed down to the low mark. |
-| `--dht-provider-addr-ttl`, `--dht-max-record-age` | library defaults | DHT record lifetimes. |
+| `--dht-provider-addr-ttl` | `15m` | How long a service announcement lives after a node last made it. Nodes re-announce every 5 minutes, so a node that is gone drops out of discovery within this time. `0` keeps the default. |
+| `--dht-max-record-age` | library default | DHT value record lifetime. |
 | `--relay-limit-duration`, `--relay-limit-data` | `1h`, `0` | Caps on each relayed connection: lifetime, and bytes per direction (`512MiB`, `1GB`). The relay cuts the connection when either is reached. `0` means no limit. |
 | `--metrics-addr` | off | Serve `/metrics`, `/healthz` and `/readyz` without authentication on this address. `/readyz` returns `200` once the router is enrolled and the libp2p host is up. Keep this address separate from the libp2p ports and inside the cluster. |
 | `--log-level` | `info` | `debug`, `info`, `warn`, `error`. `LOG_FORMAT=json` selects JSON output. |

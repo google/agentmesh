@@ -65,7 +65,7 @@ of zero leaves the default of that component unchanged.
 | `--router-lease-renew-interval` | `--lease-renew-interval` |
 | `--router-low-watermark`, `--router-high-watermark` | `--low-watermark`, `--high-watermark` |
 | `--router-conns-per-source-ip` | `--conns-per-source-ip`. `0` follows the high watermark, because peers behind a proxy share source IPs. |
-| `--router-dht-provider-addr-ttl`, `--router-dht-max-record-age` | The DHT record lifetimes. |
+| `--router-dht-provider-addr-ttl`, `--router-dht-max-record-age` | `--dht-provider-addr-ttl`, `--dht-max-record-age`. `0` keeps `15m` and the library default. |
 | `--router-relay-limit-duration`, `--router-relay-limit-data` | `--relay-limit-duration`, `--relay-limit-data`. `0` keeps `1h` and no data limit, so set a long duration such as `24h` instead of an unlimited one. |
 | `--router-allow-loopback` | `--allow-loopback`. Defaults to `true` here, for a laptop. Disable it on a public deployment. |
 

@@ -72,6 +72,10 @@ const (
 	DefaultLowWaterMark  = 1000
 	DefaultHighWaterMark = 4000
 	ConnGracePeriod      = 1 * time.Minute
+	// DefaultDHTProviderAddrTTL is three of a node's 5-minute reprovides: a
+	// node that is gone drops out of discovery within it, one late reprovide
+	// does not. The library default (48h) keeps every past identity listed.
+	DefaultDHTProviderAddrTTL = 15 * time.Minute
 )
 
 var _ coreconnmgr.ConnectionGater = (*routerConnGate)(nil)
@@ -474,14 +478,11 @@ func (r *Router) Start() (retErr error) {
 		dht.Mode(dht.ModeServer),
 		dht.ProtocolPrefix("/sam"),
 	}
-	var pmOpts []records.Option
-	if r.config.DHTProviderAddrTTL > 0 {
-		pmOpts = append(pmOpts, records.ProviderAddrTTL(r.config.DHTProviderAddrTTL))
-		pmOpts = append(pmOpts, records.ProvideValidity(r.config.DHTProviderAddrTTL))
+	providerTTL := r.config.DHTProviderAddrTTL
+	if providerTTL <= 0 {
+		providerTTL = DefaultDHTProviderAddrTTL
 	}
-	if len(pmOpts) > 0 {
-		dhtOpts = append(dhtOpts, dht.ProviderManagerOpts(pmOpts...))
-	}
+	dhtOpts = append(dhtOpts, dht.ProviderManagerOpts(records.ProviderAddrTTL(providerTTL), records.ProvideValidity(providerTTL)))
 	if r.config.DHTMaxRecordAge > 0 {
 		dhtOpts = append(dhtOpts, dht.MaxRecordAge(r.config.DHTMaxRecordAge))
 	}
