@@ -134,6 +134,7 @@ class _NodeControlPageState extends State<NodeControlPage> {
   static const _exposeChannel = MethodChannel('dev.sammesh.connect/mesh_expose');
 
   late SamNodeLib _samLib;
+  late final String _version;
   bool?
       _isEnrolled; // null = checking, false = show enrollment, true = show dashboard
   bool _running = false;
@@ -171,6 +172,7 @@ class _NodeControlPageState extends State<NodeControlPage> {
   void initState() {
     super.initState();
     _samLib = SamNodeLib();
+    _version = _samLib.getVersion();
     _checkEnrollment().then((_) => _listenForEnrollLinks());
     _embeddedMcpServer = SamDartMcpServer(
       isBatteryEnabled: () => _exposeBattery,
@@ -1507,7 +1509,7 @@ class _NodeControlPageState extends State<NodeControlPage> {
           ),
           const SizedBox(height: 16),
           Text(
-            'SAM ${_samLib.getVersion()}',
+            'SAM $_version',
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.bodySmall,
           ),
