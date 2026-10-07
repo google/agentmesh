@@ -57,6 +57,8 @@ typedef IsEnrolledDart = int Function(ffi.Pointer<Utf8> dataDir);
 
 typedef GetMeshInfoC = ffi.Pointer<Utf8> Function();
 typedef GetMeshInfoDart = ffi.Pointer<Utf8> Function();
+typedef GetVersionC = ffi.Pointer<Utf8> Function();
+typedef GetVersionDart = ffi.Pointer<Utf8> Function();
 
 typedef FreeStringC = ffi.Void Function(ffi.Pointer<Utf8> str);
 typedef FreeStringDart = void Function(ffi.Pointer<Utf8> str);
@@ -73,6 +75,7 @@ class SamNodeLib {
   late FetchControlPlaneInfoJSONDart _fetchControlPlaneInfoJSON;
   late IsEnrolledDart _isEnrolled;
   late GetMeshInfoDart _getMeshInfo;
+  late GetVersionDart _getVersion;
   late FreeStringDart _freeString;
 
   SamNodeLib() {
@@ -94,6 +97,7 @@ class SamNodeLib {
     _fetchControlPlaneInfoJSON = _dylib.lookupFunction<FetchControlPlaneInfoJSONC, FetchControlPlaneInfoJSONDart>('FetchControlPlaneInfoJSON');
     _isEnrolled = _dylib.lookupFunction<IsEnrolledC, IsEnrolledDart>('IsEnrolled');
     _getMeshInfo = _dylib.lookupFunction<GetMeshInfoC, GetMeshInfoDart>('GetMeshInfo');
+    _getVersion = _dylib.lookupFunction<GetVersionC, GetVersionDart>('GetVersion');
     _freeString = _dylib.lookupFunction<FreeStringC, FreeStringDart>('FreeString');
   }
 
@@ -123,6 +127,13 @@ class SamNodeLib {
     final goID = cID.toDartString();
     _freeString(cID);
     return goID;
+  }
+
+  String getVersion() {
+    final cVersion = _getVersion();
+    final goVersion = cVersion.toDartString();
+    _freeString(cVersion);
+    return goVersion;
   }
 
   String? enroll(String dataDir, String controlPlaneURL, String jwt, bool allowLoopback, String labels, String refreshToken) {

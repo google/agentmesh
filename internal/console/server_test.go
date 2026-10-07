@@ -32,6 +32,7 @@ import (
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/google/sam/api"
+	"github.com/google/sam/internal/version"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -668,5 +669,46 @@ func TestConsoleCSRFAndSecurityHeaders(t *testing.T) {
 	_ = sameResp.Body.Close()
 	if sameResp.StatusCode != http.StatusOK {
 		t.Errorf("same-origin POST /api/policies got %d, want 200", sameResp.StatusCode)
+	}
+}
+
+// TestNewServer_StampsVersionIntoIndex: every path that serves index.html must carry the
+// build version, or the sidebar shows the raw placeholder.
+func TestNewServer_StampsVersionIntoIndex(t *testing.T) {
+	previous := version.Version
+	version.Version = "v9.9.9-test"
+	t.Cleanup(func() { version.Version = previous })
+
+	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK) // empty /info: no OIDC, which the console tolerates
+	}))
+	defer controlPlane.Close()
+
+	staticDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(staticDir, "index.html"), []byte("<span>"+versionPlaceholder+"</span>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := NewServer(Config{
+		ControlPlaneURL: controlPlane.URL,
+		AdminToken:      "test-admin-token",
+		StaticDir:       staticDir,
+	})
+	if err != nil {
+		t.Fatalf("failed to create server: %v", err)
+	}
+	console := httptest.NewServer(srv.Handler())
+	defer console.Close()
+
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	for _, path := range []string{"/", "/index.html", "/some/spa/route"} {
+		resp, err := client.Get(console.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || string(body) != "<span>v9.9.9-test</span>" {
+			t.Errorf("GET %s: got %d %q, want 200 with the stamped version", path, resp.StatusCode, body)
+		}
 	}
 }

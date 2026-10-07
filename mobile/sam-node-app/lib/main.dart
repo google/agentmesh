@@ -1505,6 +1505,12 @@ class _NodeControlPageState extends State<NodeControlPage> {
               ),
             ),
           ),
+          const SizedBox(height: 16),
+          Text(
+            'SAM ${_samLib.getVersion()}',
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
         ],
       ),
     );

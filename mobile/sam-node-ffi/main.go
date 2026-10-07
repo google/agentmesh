@@ -21,6 +21,7 @@ import "C"
 import (
 	"unsafe"
 
+	"github.com/google/sam/internal/version"
 	"github.com/google/sam/mobile/sam-node-ffi/ffi"
 )
 
@@ -114,6 +115,11 @@ func IsEnrolled(dataDir *C.char) C.char {
 func GetMeshInfo() *C.char {
 	jsonStr := ffi.GetMeshInfo()
 	return C.CString(jsonStr)
+}
+
+//export GetVersion
+func GetVersion() *C.char {
+	return C.CString(version.String())
 }
 
 //export CallRemoteTool

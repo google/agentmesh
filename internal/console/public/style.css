@@ -348,6 +348,12 @@ body {
     letter-spacing: 0.5px;
 }
 
+.sidebar-header .version {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
 .sidebar-nav {
     padding: 20px 12px;
     display: flex;

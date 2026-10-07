@@ -15,12 +15,14 @@
 package console
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"io/fs"
 	"net/http"
@@ -33,6 +35,7 @@ import (
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/google/sam/api"
+	"github.com/google/sam/internal/version"
 	"golang.org/x/oauth2"
 	"google.golang.org/protobuf/proto"
 )
@@ -219,9 +222,13 @@ func NewServer(cfg Config) (*Server, error) {
 		if name == "" {
 			name = "."
 		}
-		if _, err := fs.Stat(assets, name); err != nil && r.URL.Path != "/" {
+		if name == "." || name == "index.html" {
+			serveIndex(w, r, assets)
+			return
+		}
+		if _, err := fs.Stat(assets, name); err != nil {
 			// SPA fallback: return index.html for unknown paths (useful for flutter/react router)
-			http.ServeFileFS(w, r, assets, "index.html")
+			serveIndex(w, r, assets)
 			return
 		}
 		fileServer.ServeHTTP(w, r)
@@ -556,4 +563,19 @@ func generatePKCE() (string, string, error) {
 	hash := sha256.Sum256([]byte(verifier))
 	challenge := base64.RawURLEncoding.EncodeToString(hash[:])
 	return verifier, challenge, nil
+}
+
+// versionPlaceholder in index.html is replaced with the build version on every page load.
+const versionPlaceholder = "__SAM_VERSION__"
+
+// serveIndex reads index.html per request so a StaticDir stays live-editable.
+func serveIndex(w http.ResponseWriter, r *http.Request, assets fs.FS) {
+	page, err := fs.ReadFile(assets, "index.html")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	page = bytes.ReplaceAll(page, []byte(versionPlaceholder), []byte(html.EscapeString(version.String())))
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(page)
 }
