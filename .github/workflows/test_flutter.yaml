@@ -114,20 +114,43 @@ jobs:
         api-level: 30
         target: google_apis
         arch: x86_64
+        avd-name: test
         force-avd-creation: false
         disable-animations: false
         emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
         emulator-boot-timeout: 300
         script: echo "Generated AVD snapshot for caching."
+    # The action above only creates the AVD. Restoring its snapshot resumes a
+    # guest whose sys.boot_completed is already 1, so the action's boot wait
+    # returns as soon as adb reconnects and its unconditional `input keyevent
+    # 82` races the system services coming back ("No service published for:
+    # input"), failing one run in six before the test starts. Booting here lets
+    # the readiness check wait for the thing that actually failed.
+    - name: Boot the emulator from the cached snapshot
+      run: |
+        set -o errexit -o nounset -o pipefail
+        export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
+        echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+        echo "ANDROID_AVD_HOME=$HOME/.android/avd" >> "$GITHUB_ENV"
+        export ANDROID_AVD_HOME="$HOME/.android/avd"
+        yes | sdkmanager --licenses >/dev/null
+        sdkmanager --install platform-tools emulator 'system-images;android-30;google_apis;x86_64' >/dev/null
+        nohup emulator -avd test -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none >emulator.log 2>&1 &
+        timeout 300 adb wait-for-device
+        ready=0
+        for _ in $(seq 1 150); do
+          if [[ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" == "1" ]] && adb shell input keyevent 82 2>/dev/null; then
+            ready=1; break
+          fi
+          sleep 2
+        done
+        if [[ "$ready" != 1 ]]; then echo "emulator did not become ready"; tail -n 50 emulator.log; exit 1; fi
+        adb shell settings put global window_animation_scale 0.0
+        adb shell settings put global transition_animation_scale 0.0
+        adb shell settings put global animator_duration_scale 0.0
     - name: Run E2E Integration Test in Android Emulator
-      uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
-      with:
-        api-level: 30
-        target: google_apis
-        arch: x86_64
-        force-avd-creation: false
-        disable-animations: true
-        emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-        emulator-boot-timeout: 300
-        script: ./mobile/mobile_e2e.sh test
+      run: ./mobile/mobile_e2e.sh test
+    - name: Stop the emulator
+      if: always()
+      run: adb emu kill || true
 

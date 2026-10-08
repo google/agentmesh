@@ -270,8 +270,8 @@ adb reverse tcp:37001 tcp:37001
 adb reverse tcp:37002 tcp:37002
 
 # 7. Run the Flutter integration test against the running emulator.
-# On CI this phase runs inside ReactiveCircus/android-emulator-runner,
-# so the emulator is already started and adb is fully connected to it.
+# On CI the workflow boots the emulator and waits for it to answer adb before
+# this phase runs.
 cd mobile/sam-node-app
 
 # Run Flutter integration test
