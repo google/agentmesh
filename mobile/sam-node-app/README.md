@@ -90,7 +90,7 @@ Google Play takes an Android App Bundle (`.aab`) signed with an **upload key**; 
 
 The **Mobile App** workflow ([`.github/workflows/mobile.yml`](../../.github/workflows/mobile.yml)) builds the APK and, when the upload key is configured, the bundle:
 
-*   **On every `v*` tag**, in parallel with the goreleaser workflow that ships the Go binaries; both artifacts are attached to the GitHub release, the tag supplies the version name.
+*   **On every `mobile/v*` tag**, the app's own release cycle, independent of the mesh (`v*`) and SDK (`sdk/*/v*`) tags; the workflow creates a GitHub release for the tag with both artifacts attached, the tag supplies the version name.
 *   **On demand** (**Actions → Mobile App → Run workflow**) from any branch or tag. Pick a Google Play **track** (`internal`, `alpha`, `beta`, `production`) to publish the bundle after the build, or leave `none` to only build; the APK and `.aab` are always available as run artifacts. `build_number` overrides the versionCode, which otherwise is the workflow run number.
 
 Repository secrets for signing: `ANDROID_KEYSTORE_BASE64` (`base64 -w0 upload-keystore.jks`), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` — the values you chose when running `keytool` above. Without them the APK is debug-signed and the bundle is skipped. `GOOGLE_SERVICES_JSON_BASE64` is the base64 of the `google-services.json` downloaded from the Firebase Console (*Project settings → Your apps → dev.sammesh.connect*); without it the build uses the dummy template and Firebase features fail at runtime.

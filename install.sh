@@ -26,7 +26,9 @@ esac
 echo "Fetching latest release information..."
 VERSION=$(curl -fsSL -o /dev/null -w "%{url_effective}" "https://github.com/${REPO}/releases/latest" | sed 's|.*/||' || true)
 if [ -z "$VERSION" ] || [ "$VERSION" = "releases" ]; then
-    VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=1" | grep '"tag_name":' | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/' || true)
+    # Only a mesh release (tag v*) carries the binaries; SDK and mobile releases
+    # (sdk/js/v*, sdk/python/v*, mobile/v*) share the list.
+    VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=100" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' | grep -E '^v[0-9]' | head -n 1 || true)
 fi
 
 if [ -z "$VERSION" ] || [ "$VERSION" = "releases" ]; then

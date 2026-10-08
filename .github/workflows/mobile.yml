@@ -1,9 +1,9 @@
 name: Mobile App
 
-# Builds SAM Connect (Android) on every release tag, in parallel with the
-# goreleaser workflow that publishes the Go binaries, and on demand from any
-# ref. A dispatch may also publish the bundle to a Google Play track, keyless
-# via Workload Identity Federation: repository variables
+# Builds SAM Connect (Android) on every mobile/v* tag, its own release cycle
+# next to the mesh (v*) and the SDKs (sdk/*/v*) in release.yml, and on demand
+# from any ref. A dispatch may also publish the bundle to a Google Play track,
+# keyless via Workload Identity Federation: repository variables
 # WIF_PROVIDER_NAME_APP_STORE / SERVICE_ACCOUNT_EMAIL_APP_STORE name a
 # service account invited in Play Console with release rights.
 #
@@ -14,7 +14,7 @@ name: Mobile App
 on:
   push:
     tags:
-      - "v*"
+      - "mobile/v*"
   workflow_dispatch:
     inputs:
       track:
@@ -78,9 +78,9 @@ jobs:
           RUN_NUMBER: ${{ github.run_number }}
         run: |
           if [[ "${REF_TYPE}" == "tag" ]]; then
-            name="${REF_NAME#v}"
+            name="${REF_NAME#mobile/v}"
           else
-            name="$(git describe --tags --always)"; name="${name#v}"
+            name="$(git describe --tags --match 'mobile/v*' --always)"; name="${name#mobile/v}"
           fi
           number="${INPUT_BUILD_NUMBER:-${RUN_NUMBER}}"
           if ! [[ "${number}" =~ ^[0-9]+$ ]]; then
@@ -146,34 +146,43 @@ jobs:
           path: ${{ env.APP_DIR }}/build/app/outputs/bundle/release/app-release.aab
           if-no-files-found: error
 
-  attach-to-release:
-    name: Attach to GitHub release
+  release:
+    name: GitHub release
     if: github.ref_type == 'tag'
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - name: Download artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: sam-connect-*
           merge-multiple: true
           path: dist
-      - name: Upload to release
+      - name: Create the release and attach the app
+        # Not "latest": that stays with the mesh release install.sh downloads.
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           TAG_NAME: ${{ github.ref_name }}
         run: |
-          # The goreleaser workflow creates the release from the same tag push;
-          # wait for it rather than racing to create one ourselves.
-          for _ in $(seq 1 60); do
-            gh release view "$TAG_NAME" >/dev/null 2>&1 && break
-            echo "waiting for release $TAG_NAME to be created by goreleaser..."; sleep 30
-          done
-          gh release view "$TAG_NAME" >/dev/null
+          if ! gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            ver="${TAG_NAME#mobile/v}"
+            ./hack/release-notes.sh "$TAG_NAME" mobile internal api go.mod > "$RUNNER_TEMP/notes.md"
+            flags=(--latest=false)
+            if [[ "${ver}" == *-* ]]; then
+              flags+=(--prerelease)
+            fi
+            gh release create "$TAG_NAME" --verify-tag --title "SAM Connect ${ver}" \
+              --notes-file "$RUNNER_TEMP/notes.md" "${flags[@]}"
+          fi
           gh release upload "$TAG_NAME" dist/* --clobber
 
   publish:

@@ -65,7 +65,7 @@ steps, what persists and what stops.
 - [Guides](https://sam-mesh.dev/docs/guides/): exposing services, connecting agent clients, headless enrollment, Kubernetes, Cloud Run.
 - [Reference](https://sam-mesh.dev/docs/reference/): every flag, configuration key, HTTP route and policy field.
 - [Preview](https://sam-mesh.dev/docs/preview/): sandboxed agents and the mobile app, which work but are still settling.
-- [Contributing](https://sam-mesh.dev/docs/contributing/): building, testing and the local kind environment.
+- [Contributing](https://sam-mesh.dev/docs/contributing/): building, testing and the local kind environment. [DEVELOPMENT.md](DEVELOPMENT.md) describes how each project in the repository is released.
 
 The repository has a dev container with the Go, Node and Python toolchains
 and Docker, so you can build and test in a codespace or in VS Code without

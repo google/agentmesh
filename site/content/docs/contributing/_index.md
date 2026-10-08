@@ -62,13 +62,15 @@ authentication or authorization. They do not include peer IDs, credentials,
 or authorization roles. Publishing a version lets an observer identify the
 software release; keeping dependencies patched remains necessary.
 
-`make` derives the version from `git describe --tags --always --dirty`.
-You can override it with `make build VERSION=v0.1.0-custom` and inspect the
-node binary with `bin/sam-node --version`. Release binaries use the release
-tag, and published node, router and `sam-one` images use the tag or commit
-SHA. For direct Docker builds of those images, pass `--build-arg VERSION=...`;
-without it, the version is `devel`. Plain `go build` uses Go's embedded module
-or VCS metadata when available and falls back to `devel`.
+`make` derives the version from `git describe --tags --match 'v*' --always
+--dirty`, so only mesh tags count and the SDK and mobile tags in the same
+history do not. You can override it with `make build VERSION=v0.1.0-custom`
+and inspect the node binary with `bin/sam-node --version`. Release binaries
+use the release tag, and published node, router and `sam-one` images use
+the tag or commit SHA. For direct Docker builds of those images, pass
+`--build-arg VERSION=...`; without it, the version is `devel`. Plain
+`go build` uses Go's embedded module or VCS metadata when available and
+falls back to `devel`.
 
 ## Test
 
@@ -143,7 +145,22 @@ snippet is a change to a test.
 
 ## Releases and testnets
 
-A `v*` tag produces a GitHub release with binaries and images through
-`goreleaser`, and deploys to the `hub.sam-mesh.dev` testnet. Every push to
+The repository holds several projects, and each one is released on its own
+cycle. The prefix of the tag selects the project:
+
+| Tag | Project | What the tag produces |
+|---|---|---|
+| `v1.2.3` | the mesh: `sam-node`, `sam-control-plane`, `sam-router`, `sam-one`, `sam-console`, `mcp-client` | a GitHub release with the binaries through `goreleaser` (`release.yml`), the container images, and a deployment to `hub.sam-mesh.dev` (`deploy.yaml`) |
+| `sdk/js/v1.2.3` | `@sam-mesh/sdk` | the npm package and a GitHub release with notes from `sdk/js` and `api/sam.proto` (`release.yml`) |
+| `sdk/python/v1.2.3` | `sam-mesh` | the PyPI package and a GitHub release with notes from `sdk/python` and `api/sam.proto` (`release.yml`) |
+| `mobile/v1.2.3` | SAM Connect (Android) | a GitHub release with the APK and bundle (`mobile.yml`); a manual run can publish to a Google Play track |
+
+Only the mesh release is marked latest on GitHub, which is what `install.sh`
+downloads. The SDKs and the app talk to the mesh over `api/sam.proto`, which
+evolves compatibly, so any SDK release works with any mesh release that
+serves the messages it was generated from.
+[DEVELOPMENT.md](https://github.com/google/sam/blob/main/DEVELOPMENT.md)
+in the repository describes how to cut a release, when a mesh change calls
+for an SDK or app release, and how to retry a failed run. Every push to
 `main` deploys to `bananas.sam-mesh.dev`. [Testnets](testnets/) describes
-both.
+both testnets.

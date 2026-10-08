@@ -1,34 +1,42 @@
-name: goreleaser
+name: release
+
+# One repository, several release cycles, told apart by the tag prefix:
+#
+#   v1.2.3             the mesh: the Go binaries through goreleaser and the
+#                      GitHub release that install.sh resolves as latest.
+#                      deploy.yaml publishes the images from the same tag.
+#   sdk/js/v1.2.3      @sam-mesh/sdk on npm
+#   sdk/python/v1.2.3  sam-mesh on PyPI
+#   mobile/v1.2.3      the Android app, in mobile.yml
+#
+# A GitHub Actions tag filter never matches "/" with "*", so "v*" is the
+# mesh alone. npm and PyPI trust this workflow by its file name, so the SDK
+# jobs live here and not in one file per SDK.
 
 on:
   push:
-    # run only against release tags
     tags:
       - "v*"
-  # Publish the SDKs of a tag whose release already exists (a failed
-  # publish-sdk-* run). goreleaser does not run again.
+      - "sdk/js/v*"
+      - "sdk/python/v*"
+  # Publish an SDK tag again after a failed run. The prefix of the tag
+  # selects the SDK. goreleaser does not run twice for a mesh tag.
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing release tag, e.g. v0.1.0-rc.4"
+        description: "Existing SDK tag, e.g. sdk/js/v0.2.0"
         required: true
         type: string
-      sdk:
-        description: "SDK to publish"
-        required: false
-        default: "all"
-        type: choice
-        options:
-          - all
-          - js
-          - python
 
 permissions:
   contents: read
 
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
 jobs:
   goreleaser:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && startsWith(github.ref_name, 'v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -43,9 +51,25 @@ jobs:
         with:
           go-version: stable
           cache: false
+      - name: Compare against the previous mesh tag
+        # The SDK and mobile tags share this history; left to itself,
+        # goreleaser could start the changelog at one of them.
+        run: |
+          echo "GORELEASER_CURRENT_TAG=${TAG}" >> "$GITHUB_ENV"
+          prev="$(git describe --tags --abbrev=0 --match 'v*' "${TAG}^" 2>/dev/null || true)"
+          if [[ -n "${prev}" ]]; then
+            echo "GORELEASER_PREVIOUS_TAG=${prev}" >> "$GITHUB_ENV"
+          fi
+      - name: Which SDK and app releases this one calls for
+        run: |
+          {
+            echo "## Release status at ${TAG}"
+            echo
+            ./hack/release-status.sh "${TAG}"
+            echo
+            echo "See DEVELOPMENT.md, \"When a mesh change needs an SDK or app release\"."
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Run GoReleaser
-        # The mobile app is built and attached to this release by the
-        # parallel "Mobile App" workflow (.github/workflows/mobile.yml).
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           distribution: goreleaser
@@ -54,15 +78,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  publish-sdk-js:
+  sdk-js:
+    name: Publish @sam-mesh/sdk
+    if: startsWith(inputs.tag || github.ref_name, 'sdk/js/v')
     runs-on: ubuntu-latest
-    needs: goreleaser
-    if: always() && (github.event_name == 'workflow_dispatch' || needs.goreleaser.result == 'success') && (github.event_name != 'workflow_dispatch' || inputs.sdk == 'all' || inputs.sdk == 'js' || inputs.sdk == '')
     permissions:
       contents: read
       id-token: write
-    env:
-      SDK_VERSION: ${{ inputs.tag || github.ref_name }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -75,16 +97,16 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           cache: npm
           cache-dependency-path: sdk/js/package-lock.json
-      - name: Stamp the release version on both SDKs
-        run: ./hack/sdk-version.sh "${SDK_VERSION#v}"
-      - name: Build and publish @sam-mesh/sdk
+      - name: Stamp the tag's version
+        run: ./hack/sdk-version.sh --js "${TAG#sdk/js/v}"
+      - name: Build and publish
         # npm's trusted publishing needs npm 11.5 or later; Node 22 ships 10.
         # npm 11 refuses to publish a prerelease without an explicit dist-tag,
         # and "latest" must stay on stable versions.
         # If this version is already published, skip so the job can be safely retried.
         working-directory: sdk/js
         run: |
-          ver="${SDK_VERSION#v}"
+          ver="${TAG#sdk/js/v}"
           if npm view "@sam-mesh/sdk@${ver}" version >/dev/null 2>&1; then
             echo "@sam-mesh/sdk@${ver} is already published on npm; skipping."
             exit 0
@@ -98,15 +120,13 @@ jobs:
           esac
           npm publish --provenance --access public --tag "$tag"
 
-  publish-sdk-python:
+  sdk-python:
+    name: Publish sam-mesh
+    if: startsWith(inputs.tag || github.ref_name, 'sdk/python/v')
     runs-on: ubuntu-latest
-    needs: goreleaser
-    if: always() && (github.event_name == 'workflow_dispatch' || needs.goreleaser.result == 'success') && (github.event_name != 'workflow_dispatch' || inputs.sdk == 'all' || inputs.sdk == 'python' || inputs.sdk == '')
     permissions:
       contents: read
       id-token: write
-    env:
-      SDK_VERSION: ${{ inputs.tag || github.ref_name }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -116,15 +136,63 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: Stamp the release version on both SDKs
-        run: ./hack/sdk-version.sh "${SDK_VERSION#v}"
-      - name: Build sam-mesh
+      - name: Stamp the tag's version
+        run: ./hack/sdk-version.sh --python "${TAG#sdk/python/v}"
+      - name: Build
         working-directory: sdk/python
         run: |
           python -m pip install --upgrade build
           python -m build
-      - name: Publish sam-mesh
+      - name: Publish
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: sdk/python/dist/
           skip-existing: true
+
+  sdk-release:
+    name: GitHub release for the SDK tag
+    needs: [sdk-js, sdk-python]
+    # Exactly one of the two publish jobs runs for a tag; the other is skipped.
+    if: ${{ !cancelled() && (needs.sdk-js.result == 'success' || needs.sdk-python.result == 'success') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Create the release
+        # Not "latest": that stays with the mesh release install.sh downloads.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "release ${TAG} already exists; skipping."
+            exit 0
+          fi
+          case "${TAG}" in
+            sdk/js/v*)
+              ver="${TAG#sdk/js/v}"
+              title="@sam-mesh/sdk ${ver}"
+              paths=(sdk/js api/sam.proto api/datalog.go)
+              ;;
+            sdk/python/v*)
+              ver="${TAG#sdk/python/v}"
+              title="sam-mesh ${ver} (Python)"
+              paths=(sdk/python api/sam.proto api/datalog.go)
+              ;;
+            *)
+              echo "::error::unexpected tag ${TAG}"; exit 1
+              ;;
+          esac
+          ./hack/release-notes.sh "${TAG}" "${paths[@]}" > "$RUNNER_TEMP/notes.md"
+          flags=(--latest=false)
+          if [[ "${ver}" == *-* ]]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "${TAG}" --verify-tag --title "${title}" \
+            --notes-file "$RUNNER_TEMP/notes.md" "${flags[@]}"

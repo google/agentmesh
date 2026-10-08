@@ -595,16 +595,20 @@ holds against the control plane's records.
 - Ban enforcement: the auth handshake and the A2A ingress refuse a banned
   peer before looking at its token; `connect()` refuses to dial one; its
   connections are dropped when the ban lands.
-- Publishing: `.github/workflows/release.yml` stamps the release tag's
-  version on both packages (`hack/sdk-version.sh`) and publishes
-  `@sam-mesh/sdk` to npm and `sam-mesh` to PyPI through trusted
-  publishing. A prerelease tag (`v0.1.0-rc.4`) publishes under the npm
-  dist-tag `next`, a stable tag under `latest`; PyPI needs no tag, `pip`
-  skips prereleases on its own. When a publish job (`publish-sdk-js`
-  or `publish-sdk-python`) fails after the GitHub release exists, re-run
-  the failed job, or run the workflow by hand from the Actions tab with
-  the tag and target SDK as input; it checks out that tag and publishes
-  the selected SDK. One-time setup by a package owner: on npmjs.com, create the
+- Publishing: each SDK has its own release cycle and tags, `sdk/js/v1.2.3`
+  for `@sam-mesh/sdk` on npm and `sdk/python/v1.2.3` for `sam-mesh` on
+  PyPI, independent of the mesh tags (`v1.2.3`). On such a tag
+  `.github/workflows/release.yml` stamps the tag's version on that SDK
+  (`hack/sdk-version.sh --js` or `--python`), publishes it through trusted
+  publishing and creates a GitHub release for the tag that is not marked
+  latest, with notes generated from the commits under the SDK directory and
+  `api/sam.proto` since the previous tag of that SDK. A prerelease tag
+  (`sdk/js/v0.2.0-rc.1`) publishes under the npm dist-tag `next`, a stable
+  tag under `latest`; PyPI needs no tag, `pip` skips prereleases on its own.
+  When a publish job fails, re-run it, or run the workflow by hand from the
+  Actions tab with the SDK tag as input; it checks out that tag and
+  publishes the SDK the tag names. One-time setup by a package owner: on
+  npmjs.com, create the
   `sam-mesh` organization, publish `@sam-mesh/sdk` 0.1.0 once by hand
   (`cd sdk/js && npm publish --access public`; the trusted-publisher
   settings live on the package page, which exists only after that), then

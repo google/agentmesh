@@ -1,6 +1,7 @@
 REPO_ROOT:=${CURDIR}
 OUT_DIR=$(REPO_ROOT)/bin
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo devel)
+# Mesh tags only: sdk/*/v* and mobile/v* tags share this history.
+VERSION ?= $(shell git describe --tags --match 'v*' --always --dirty 2>/dev/null || echo devel)
 VERSION_LDFLAGS = -X github.com/google/sam/internal/version.Version=$(VERSION)
 
 .DEFAULT_GOAL := build

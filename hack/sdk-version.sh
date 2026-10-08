@@ -13,11 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Stamps one version on both native SDKs, so a release publishes
-# @sam-mesh/sdk and sam-mesh at the version of its tag. The release
-# workflow runs it on the tag; a developer never needs to.
+# Stamps a version on the native SDKs, so a release publishes @sam-mesh/sdk
+# or sam-mesh at the version of its tag. Each SDK has its own tags
+# (sdk/js/v1.2.3, sdk/python/v1.2.3) and the release workflow stamps the
+# one the tag names; a developer never needs to run this.
 #
-#   ./hack/sdk-version.sh 1.2.3
+#   ./hack/sdk-version.sh --js 1.2.3
+#   ./hack/sdk-version.sh --python 1.2.3
+#   ./hack/sdk-version.sh 1.2.3          # both
 
 set -o errexit
 set -o nounset

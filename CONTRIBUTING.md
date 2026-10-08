@@ -31,3 +31,10 @@ All submissions, including submissions by project members, require review. We
 use GitHub pull requests for this purpose. Consult
 [GitHub Help](https://help.github.com/articles/about-pull-requests/) for more
 information on using pull requests.
+
+### Building, testing and releasing
+
+[Contributing](https://sam-mesh.dev/docs/contributing/) on the documentation
+site covers the build, the test suite and the local kind mesh.
+[DEVELOPMENT.md](DEVELOPMENT.md) covers how the projects in this repository
+are released.
