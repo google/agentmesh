@@ -6,6 +6,6 @@ ARG AGENTMESH_CHANNEL=stable
 FROM ghcr.io/google/agentmesh-one:${AGENTMESH_CHANNEL} AS agentmesh-one
 FROM ghcr.io/google/agentmesh-node:${AGENTMESH_CHANNEL} AS agentmesh-node
 
-FROM mcr.microsoft.com/devcontainers/base:bookworm@sha256:3aacff4130e6cf04709f9cab1d7a6d3e1cc4bff6202bc61611831a18d3755673
+FROM mcr.microsoft.com/devcontainers/base:bookworm@sha256:9a5942e64b35c5497c591b9bf177f4a3002d43440bf0a5e1a14fc34667b1a5c1
 COPY --from=agentmesh-one /agentmesh-one /usr/local/bin/agentmesh-one
 COPY --from=agentmesh-node /agentmesh-node /usr/local/bin/agentmesh-node
