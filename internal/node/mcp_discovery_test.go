@@ -27,11 +27,11 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func TestMCPService_Tools(t *testing.T) {
-	backend := httptest.NewServer(newFakeMCPHandler(t, []*mcp.Tool{
+func TestMCPService_ToolsPagination(t *testing.T) {
+	backend := httptest.NewServer(newFakeMCPHandlerWithOptions(t, []*mcp.Tool{
 		{Name: "zeta", Description: "z", InputSchema: map[string]any{"type": "object"}},
 		{Name: "alpha", Description: "a", InputSchema: map[string]any{"type": "object"}},
-	}))
+	}, &mcp.ServerOptions{PageSize: 1}))
 	defer backend.Close()
 
 	svc := &MCPService{baseService: baseService{
