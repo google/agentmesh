@@ -161,6 +161,32 @@ func (m *MCPService) backendTransport() (mcp.Transport, error) {
 	}
 }
 
+// maxToolsPerService is the maximum number of tools collected per service
+// during discovery or remote catalogue listing. It bounds the drain against
+// backends with huge catalogues or endless cursor loops (#444).
+const maxToolsPerService = 256
+
+// listAllTools drains the SDK's Tools iterator up to maxToolsPerService.
+// If the backend paginates beyond maxToolsPerService, iteration stops,
+// a debug message is logged, and the collected tools are returned.
+func listAllTools(ctx context.Context, session *mcp.ClientSession) ([]*mcp.Tool, error) {
+	var tools []*mcp.Tool
+	for tool, err := range session.Tools(ctx, nil) {
+		if err != nil {
+			return nil, err
+		}
+		if tool == nil {
+			continue
+		}
+		tools = append(tools, tool)
+		if len(tools) >= maxToolsPerService {
+			logger.Debugf("tools list reached cap of %d tools; truncating remainder", maxToolsPerService)
+			break
+		}
+	}
+	return tools, nil
+}
+
 // Tools lists the backend's tool names (sorted), cached briefly since the
 // discovery announcer polls it on every tick.
 func (m *MCPService) Tools(ctx context.Context) ([]string, error) {
@@ -179,12 +205,12 @@ func (m *MCPService) Tools(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("connect to backend of %q: %w", m.info.GetName(), err)
 	}
 	defer func() { _ = session.Close() }()
-	res, err := session.ListTools(ctx, nil)
+	tools, err := listAllTools(ctx, session)
 	if err != nil {
 		return nil, fmt.Errorf("list tools of %q: %w", m.info.GetName(), err)
 	}
-	names := make([]string, 0, len(res.Tools))
-	for _, t := range res.Tools {
+	names := make([]string, 0, len(tools))
+	for _, t := range tools {
 		if t != nil && t.Name != "" {
 			names = append(names, t.Name)
 		}

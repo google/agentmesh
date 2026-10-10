@@ -16,11 +16,16 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"sort"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/agentmesh/api"
 	samdiscovery "github.com/google/agentmesh/internal/node/discovery"
@@ -55,6 +60,83 @@ func TestMCPService_Tools(t *testing.T) {
 	got, err = svc.Tools(context.Background())
 	if err != nil || len(got) != 2 {
 		t.Errorf("cached Tools: got %v, err %v", got, err)
+	}
+}
+
+func TestMCPService_Tools_Pagination(t *testing.T) {
+	backend := httptest.NewServer(newFakeMCPHandlerWithOptions(t, []*mcp.Tool{
+		{Name: "zeta", Description: "z", InputSchema: map[string]any{"type": "object"}},
+		{Name: "alpha", Description: "a", InputSchema: map[string]any{"type": "object"}},
+		{Name: "beta", Description: "b", InputSchema: map[string]any{"type": "object"}},
+	}, &mcp.ServerOptions{PageSize: 1}))
+	defer backend.Close()
+
+	svc := &MCPService{baseService: baseService{
+		info:    &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_MCP, Name: "tools-svc"},
+		backend: &api.RegisterServiceRequest_TargetUrl{TargetUrl: backend.URL},
+	}}
+	if err := svc.Init(context.Background()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	got, err := svc.Tools(context.Background())
+	if err != nil {
+		t.Fatalf("Tools: %v", err)
+	}
+	if want := []string{"alpha", "beta", "zeta"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Tools: got %v, want %v (sorted across pages)", got, want)
+	}
+}
+
+func TestListAllTools_BoundedAgainstEndlessCursor(t *testing.T) {
+	var pages atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal(body, &req)
+		if req.ID == nil {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		} // notification
+		var result any = map[string]any{}
+		switch req.Method {
+		case "initialize":
+			result = map[string]any{
+				"protocolVersion": "2026-07-28",
+				"capabilities":    map[string]any{"tools": map[string]any{}},
+				"serverInfo":      map[string]any{"name": "hostile", "version": "0"},
+			}
+		case "tools/list":
+			pages.Add(1)
+			result = map[string]any{
+				"tools":      []any{map[string]any{"name": "x", "inputSchema": map[string]any{"type": "object"}}},
+				"nextCursor": "again",
+				"ttlMs":      60000, "cacheScope": "public", // makes the SDK serve repeats from cache
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	session, err := mcp.NewClient(&mcp.Implementation{Name: "t", Version: "0"}, nil).
+		Connect(ctx, &mcp.StreamableClientTransport{Endpoint: srv.URL}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+
+	tools, err := listAllTools(ctx, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) != maxToolsPerService {
+		t.Fatalf("got %d tools, want cap %d", len(tools), maxToolsPerService)
 	}
 }
 
