@@ -786,10 +786,14 @@ func clientAssertionFromForm(form url.Values) (string, bool, error) {
 	if assertion == "" && assertionType == "" {
 		return "", false, nil
 	}
+	if assertion == "" {
+		return "", false, errors.New("client_assertion is required with client_assertion_type")
+	}
+	if assertionType == "" {
+		return "", false, errors.New("client_assertion_type is required with client_assertion")
+	}
 	switch assertionType {
 	case api.ClientAssertionTypeJWTBearer, api.ClientAssertionTypeJWTSPIFFE:
-	case "":
-		return "", false, errors.New("client_assertion_type is required with client_assertion")
 	default:
 		return "", false, fmt.Errorf("unsupported client_assertion_type %q; use %s or %s", assertionType, api.ClientAssertionTypeJWTBearer, api.ClientAssertionTypeJWTSPIFFE)
 	}
@@ -829,11 +833,11 @@ func handleOAuthProtectedResource(node *AgentMeshNode, w http.ResponseWriter, r 
 			authServers = append(authServers, cpURL)
 		}
 	}
-	meta := map[string]any{
-		"resource":                 nodeBaseURL(node, r) + "/mcp",
-		"authorization_servers":    authServers,
-		"bearer_methods_supported": []string{"header"},
-		"scopes_supported":         []string{"mcp", "inference", "egress", "a2a"},
+	meta := api.OAuthProtectedResourceMetadata{
+		Resource:               nodeBaseURL(node, r) + "/mcp",
+		AuthorizationServers:   authServers,
+		BearerMethodsSupported: []string{"header"},
+		ScopesSupported:        []string{"mcp", "inference", "egress", "a2a"},
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(meta)
@@ -849,14 +853,14 @@ func handleOAuthAuthorizationServer(node *AgentMeshNode, w http.ResponseWriter, 
 		return
 	}
 	issuer := nodeBaseURL(node, r)
-	meta := map[string]any{
-		"issuer":                                     issuer,
-		"token_endpoint":                             issuer + "/oauth/token",
-		"revocation_endpoint":                        issuer + "/oauth/revoke",
-		"response_types_supported":                   []string{},
-		"grant_types_supported":                      nodeOAuthGrantTypes,
-		"token_endpoint_auth_methods_supported":      nodeOAuthClientAuthMethods,
-		"revocation_endpoint_auth_methods_supported": nodeOAuthClientAuthMethods,
+	meta := api.OAuthAuthorizationServerMetadata{
+		Issuer:                                 issuer,
+		TokenEndpoint:                          issuer + "/oauth/token",
+		RevocationEndpoint:                     issuer + "/oauth/revoke",
+		ResponseTypesSupported:                 []string{},
+		GrantTypesSupported:                    nodeOAuthGrantTypes,
+		TokenEndpointAuthMethodsSupported:      nodeOAuthClientAuthMethods,
+		RevocationEndpointAuthMethodsSupported: nodeOAuthClientAuthMethods,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(meta)

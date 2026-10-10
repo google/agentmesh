@@ -377,15 +377,15 @@ func (s *Server) HandleOAuthAuthorizationServer(w http.ResponseWriter, r *http.R
 		return
 	}
 	issuer := s.oidcIssuerURL(r)
-	doc := map[string]any{
-		"issuer":                           issuer,
-		"authorization_endpoint":           issuer + "/oauth/authorize",
-		"token_endpoint":                   issuer + "/oauth/token",
-		"jwks_uri":                         issuer + "/jwks",
-		"response_types_supported":         []string{"code"},
-		"grant_types_supported":            []string{api.GrantTypeAuthorizationCode, api.GrantTypeTokenExchange},
-		"code_challenge_methods_supported": []string{"S256"},
-		"token_endpoint_auth_methods_supported": []string{
+	doc := api.OAuthAuthorizationServerMetadata{
+		Issuer:                        issuer,
+		AuthorizationEndpoint:         issuer + "/oauth/authorize",
+		TokenEndpoint:                 issuer + "/oauth/token",
+		JWKSURI:                       issuer + "/jwks",
+		ResponseTypesSupported:        []string{"code"},
+		GrantTypesSupported:           []string{api.GrantTypeAuthorizationCode, api.GrantTypeTokenExchange},
+		CodeChallengeMethodsSupported: []string{"S256"},
+		TokenEndpointAuthMethodsSupported: []string{
 			"none",
 			"client_secret_post",
 			"private_key_jwt",

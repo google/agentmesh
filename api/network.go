@@ -204,6 +204,31 @@ const (
 	TokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token"
 )
 
+// OAuthAuthorizationServerMetadata is the RFC 8414 document a token endpoint
+// serves at /.well-known/oauth-authorization-server. Only the fields Agent Mesh
+// populates are present; omitted RFC 8414 fields are optional there too.
+type OAuthAuthorizationServerMetadata struct {
+	Issuer                                 string   `json:"issuer"`
+	AuthorizationEndpoint                  string   `json:"authorization_endpoint,omitempty"`
+	TokenEndpoint                          string   `json:"token_endpoint"`
+	RevocationEndpoint                     string   `json:"revocation_endpoint,omitempty"`
+	JWKSURI                                string   `json:"jwks_uri,omitempty"`
+	ResponseTypesSupported                 []string `json:"response_types_supported"`
+	GrantTypesSupported                    []string `json:"grant_types_supported,omitempty"`
+	TokenEndpointAuthMethodsSupported      []string `json:"token_endpoint_auth_methods_supported,omitempty"`
+	RevocationEndpointAuthMethodsSupported []string `json:"revocation_endpoint_auth_methods_supported,omitempty"`
+	CodeChallengeMethodsSupported          []string `json:"code_challenge_methods_supported,omitempty"`
+}
+
+// OAuthProtectedResourceMetadata is the RFC 9728 document a resource server
+// serves at /.well-known/oauth-protected-resource.
+type OAuthProtectedResourceMetadata struct {
+	Resource               string   `json:"resource"`
+	AuthorizationServers   []string `json:"authorization_servers,omitempty"`
+	BearerMethodsSupported []string `json:"bearer_methods_supported,omitempty"`
+	ScopesSupported        []string `json:"scopes_supported,omitempty"`
+}
+
 // ============================================================================
 // Agent Mesh Custom HTTP Headers
 // ============================================================================

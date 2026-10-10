@@ -446,16 +446,12 @@ egress:
 		if err != nil {
 			t.Fatalf("GET authorization server metadata: %v", err)
 		}
-		var asMeta struct {
-			TokenEndpoint string   `json:"token_endpoint"`
-			GrantTypes    []string `json:"grant_types_supported"`
-			AuthMethods   []string `json:"token_endpoint_auth_methods_supported"`
-		}
+		var asMeta api.OAuthAuthorizationServerMetadata
 		if err := json.NewDecoder(meta.Body).Decode(&asMeta); err != nil {
 			t.Fatalf("decode authorization server metadata: %v", err)
 		}
 		_ = meta.Body.Close()
-		if !slices.Contains(asMeta.GrantTypes, api.GrantTypeClientCredentials) || !slices.Contains(asMeta.AuthMethods, "spiffe_jwt") {
+		if !slices.Contains(asMeta.GrantTypesSupported, api.GrantTypeClientCredentials) || !slices.Contains(asMeta.TokenEndpointAuthMethodsSupported, "spiffe_jwt") {
 			t.Fatalf("metadata does not advertise client_credentials/spiffe_jwt: %+v", asMeta)
 		}
 

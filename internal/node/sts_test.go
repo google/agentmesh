@@ -660,6 +660,15 @@ func TestNodeOAuthTokenClientAssertionGrants(t *testing.T) {
 			code:   "invalid_client",
 		},
 		{
+			name: "client_assertion_type without client_assertion",
+			form: url.Values{
+				"grant_type":            {api.GrantTypeClientCredentials},
+				"client_assertion_type": {api.ClientAssertionTypeJWTSPIFFE},
+			},
+			status: http.StatusUnauthorized,
+			code:   "invalid_client",
+		},
+		{
 			name:   "jwt-bearer without assertion",
 			form:   url.Values{"grant_type": {api.GrantTypeJWTBearer}},
 			status: http.StatusBadRequest,
@@ -693,12 +702,7 @@ func TestNodeOAuthTokenClientAssertionGrants(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status %d", rec.Code)
 		}
-		var meta struct {
-			Issuer        string   `json:"issuer"`
-			TokenEndpoint string   `json:"token_endpoint"`
-			GrantTypes    []string `json:"grant_types_supported"`
-			AuthMethods   []string `json:"token_endpoint_auth_methods_supported"`
-		}
+		var meta api.OAuthAuthorizationServerMetadata
 		if err := json.Unmarshal(rec.Body.Bytes(), &meta); err != nil {
 			t.Fatalf("json: %v", err)
 		}
@@ -706,12 +710,15 @@ func TestNodeOAuthTokenClientAssertionGrants(t *testing.T) {
 			t.Fatalf("issuer/token_endpoint = %q / %q", meta.Issuer, meta.TokenEndpoint)
 		}
 		for _, want := range []string{api.GrantTypeTokenExchange, api.GrantTypeClientCredentials, api.GrantTypeJWTBearer} {
-			if !slices.Contains(meta.GrantTypes, want) {
-				t.Fatalf("grant_types_supported %v lacks %s", meta.GrantTypes, want)
+			if !slices.Contains(meta.GrantTypesSupported, want) {
+				t.Fatalf("grant_types_supported %v lacks %s", meta.GrantTypesSupported, want)
 			}
 		}
-		if !slices.Contains(meta.AuthMethods, "spiffe_jwt") || !slices.Contains(meta.AuthMethods, "private_key_jwt") {
-			t.Fatalf("token_endpoint_auth_methods_supported = %v", meta.AuthMethods)
+		if !slices.Contains(meta.TokenEndpointAuthMethodsSupported, "spiffe_jwt") || !slices.Contains(meta.TokenEndpointAuthMethodsSupported, "private_key_jwt") {
+			t.Fatalf("token_endpoint_auth_methods_supported = %v", meta.TokenEndpointAuthMethodsSupported)
+		}
+		if !strings.Contains(rec.Body.String(), `"response_types_supported":[]`) {
+			t.Fatalf("response_types_supported must be an empty array, not null: %s", rec.Body.String())
 		}
 	})
 }
