@@ -42,7 +42,7 @@
   },
   "dependencies": {
     "@biscuit-auth/biscuit-wasm": "^0.6.0",
-    "@bufbuild/protobuf": "^2.15.0",
+    "@bufbuild/protobuf": "^2.16.0",
     "@chainsafe/libp2p-noise": "^17.0.0",
     "@chainsafe/libp2p-yamux": "^8.0.1",
     "@libp2p/circuit-relay-v2": "^4.2.13",
