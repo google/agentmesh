@@ -261,11 +261,6 @@ jobs:
           export ENV_NAME="${VAR_ENV_NAME}"
           export NAMESPACE="sam-${ENV_NAME}"
           export CANARY_NAMESPACE="agentmesh-canary-${ENV_NAME}"
-
-          # Retire the legacy sam-canary namespace so its workloads (including the
-          # single-TPU vllm-canary pod) release cluster resources before rolling out
-          # agentmesh-canary.
-          kubectl delete namespace sam-canary-${ENV_NAME} --ignore-not-found
           
           kubectl create namespace dex --dry-run=client -o yaml | kubectl apply -f -
           kubectl create namespace ${NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
@@ -330,23 +325,6 @@ jobs:
             exit 1
           }
 
-      - name: Provision Hub Secrets
-        env:
-          VAR_ENV_NAME: ${{ vars.ENV_NAME }}
-        run: |
-          export ENV_NAME="${VAR_ENV_NAME}"
-          export NAMESPACE="sam-${ENV_NAME}"
-          # Idempotently provision the sam-hub-secret if it doesn't already exist
-          if ! kubectl get secret sam-hub-secret -n ${NAMESPACE} >/dev/null 2>&1; then
-            echo "Generating a new random 32-byte hex key for AGENTMESH_HUB_KEY..."
-            HUB_KEY=$(openssl rand -hex 32)
-            kubectl create secret generic sam-hub-secret \
-              --namespace=${NAMESPACE} \
-              --from-literal=sam-hub-key="${HUB_KEY}"
-          else
-            echo "sam-hub-secret already exists in namespace ${NAMESPACE}. Skipping generation."
-          fi
-
       - name: Provision Control Plane Secrets
         env:
           VAR_ENV_NAME: ${{ vars.ENV_NAME }}
@@ -354,17 +332,10 @@ jobs:
           export ENV_NAME="${VAR_ENV_NAME}"
           export NAMESPACE="sam-${ENV_NAME}"
           if ! kubectl get secret agentmesh-control-plane-secret-${ENV_NAME} -n ${NAMESPACE} >/dev/null 2>&1; then
-            if kubectl get secret sam-control-plane-secret-${ENV_NAME} -n ${NAMESPACE} >/dev/null 2>&1; then
-              echo "Migrating existing credentials from sam-control-plane-secret-${ENV_NAME}..."
-              ADMIN_TOKEN=$(kubectl get secret sam-control-plane-secret-${ENV_NAME} -n ${NAMESPACE} -o jsonpath='{.data.admin-token}' | base64 -d)
-              DB_PASSWORD=$(kubectl get secret sam-control-plane-secret-${ENV_NAME} -n ${NAMESPACE} -o jsonpath='{.data.db-password}' | base64 -d)
-              DB_DSN=$(kubectl get secret sam-control-plane-secret-${ENV_NAME} -n ${NAMESPACE} -o jsonpath='{.data.db-dsn}' | base64 -d)
-            else
-              echo "Generating new random secrets for admin-token and the DB..."
-              ADMIN_TOKEN=$(openssl rand -hex 32)
-              DB_PASSWORD=$(openssl rand -hex 32)
-              DB_DSN="postgres://sam:${DB_PASSWORD}@sam-db-${ENV_NAME}:5432/sam_mesh?sslmode=disable"
-            fi
+            echo "Generating new random secrets for admin-token and the DB..."
+            ADMIN_TOKEN=$(openssl rand -hex 32)
+            DB_PASSWORD=$(openssl rand -hex 32)
+            DB_DSN="postgres://sam:${DB_PASSWORD}@sam-db-${ENV_NAME}:5432/sam_mesh?sslmode=disable"
             echo "::add-mask::${ADMIN_TOKEN}"
             echo "::add-mask::${DB_PASSWORD}"
             kubectl create secret generic agentmesh-control-plane-secret-${ENV_NAME} \
@@ -416,10 +387,6 @@ jobs:
           export CLUSTER_REGION="${VAR_CLUSTER_REGION}"
           export CLUSTER_NAME="${VAR_CLUSTER_NAME}"
 
-          # Remove legacy sam-router StatefulSet before applying agentmesh-router so
-          # hostPort 4501 (TCP/UDP) on the cluster nodes is released for the new pods.
-          kubectl delete statefulset/sam-router-${ENV_NAME} service/sam-router-${ENV_NAME} -n ${NAMESPACE} --ignore-not-found
-
           envsubst '${ENV_NAME} ${NAMESPACE} ${GCP_PROJECT_ID} ${CLUSTER_NAME} ${CLUSTER_REGION} ${IMAGE_TAG}' < .github/k8s/agentmesh-control-plane-template.yaml | kubectl apply -f -
           envsubst '${ENV_NAME} ${NAMESPACE} ${GCP_PROJECT_ID} ${CLUSTER_NAME} ${CLUSTER_REGION} ${IMAGE_TAG}' < .github/k8s/agentmesh-router-template.yaml | kubectl apply -f -
           envsubst '${ENV_NAME} ${NAMESPACE} ${GCP_PROJECT_ID} ${CLUSTER_NAME} ${CLUSTER_REGION} ${IMAGE_TAG}' < .github/k8s/agentmesh-console-template.yaml | kubectl apply -f -
@@ -427,7 +394,6 @@ jobs:
           # Managed Prometheus ships with GKE; a cluster without it should not block the mesh rollout.
           if kubectl get crd podmonitorings.monitoring.googleapis.com >/dev/null 2>&1; then
             envsubst '${ENV_NAME} ${NAMESPACE}' < .github/k8s/agentmesh-monitoring-template.yaml | kubectl apply -f -
-            kubectl delete podmonitoring/sam-control-plane-${ENV_NAME} podmonitoring/sam-router-${ENV_NAME} rules/sam-${ENV_NAME} -n ${NAMESPACE} --ignore-not-found || true
           else
             echo "::warning::PodMonitoring CRD not found; managed collection is off on this cluster, metrics will not be scraped"
           fi
@@ -486,10 +452,6 @@ jobs:
             print_rollout_diagnostics "${NAMESPACE}" "deployment/agentmesh-console-${ENV_NAME}" "app=agentmesh-console-${ENV_NAME}"
             exit 1
           }
-
-          # Retire legacy sam-control-plane and sam-console resources now that the
-          # Gateway points at agentmesh-control-plane and agentmesh-console.
-          kubectl delete deployment/sam-control-plane-${ENV_NAME} service/sam-control-plane-${ENV_NAME} healthcheckpolicy/sam-control-plane-healthcheck-${ENV_NAME} deployment/sam-console-${ENV_NAME} service/sam-console-${ENV_NAME} -n ${NAMESPACE} --ignore-not-found || true
 
           # Three routers, each held 90s after it is ready (minReadySeconds)
           # so members re-attach before the next one goes.
@@ -568,8 +530,7 @@ jobs:
           echo "Successfully generated bootstrap token."
 
           echo "Provisioning GCE VM Router instance..."
-          # Delete existing VM (including legacy sam-router-*-vm) if it exists to ensure fresh deployment with the new token and image
-          gcloud compute instances delete sam-router-${ENV_NAME}-vm --zone=${ZONE} --project=${GCP_PROJECT_ID} --quiet || true
+          # Delete existing VM if it exists to ensure fresh deployment with the new token and image
           gcloud compute instances delete agentmesh-router-${ENV_NAME}-vm --zone=${ZONE} --project=${GCP_PROJECT_ID} --quiet || true
 
           # Create a new COS VM instance running the agentmesh-router. The
@@ -582,7 +543,7 @@ jobs:
             --machine-type=e2-small \
             --image-family=cos-stable \
             --image-project=cos-cloud \
-            --tags=sam-router,agentmesh-router \
+            --tags=agentmesh-router \
             --metadata=startup-script='#!/bin/bash
           set -euo pipefail
           EXTERNAL_IP=$(curl -s -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip)
