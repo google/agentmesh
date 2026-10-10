@@ -49,6 +49,11 @@ cleanup() { [[ -n "${NODE_PID:-}" ]] && kill "${NODE_PID}" 2>/dev/null || true; 
 trap cleanup EXIT INT TERM
 
 export AGENTMESH_API_TOKEN=devtoken
+# ARGS is documented above as the way to pass extra args (e.g. to host a
+# service); word-split it here so it actually takes effect, alongside any
+# args passed positionally to this script.
+read -r -a EXTRA_ARGS <<< "${ARGS:-}"
+
 # Plaintext to the kind LoadBalancer IP: the docker bridge on this machine is
 # the trust boundary here, and the admin token above travelled the same hop.
 ./bin/agentmesh-node run \
@@ -60,6 +65,7 @@ export AGENTMESH_API_TOKEN=devtoken
   --discovery-interval 200ms \
   --router-connect-timeout 10s \
   --data-dir "${DATA_DIR}" \
+  "${EXTRA_ARGS[@]}" \
   "$@" &
 NODE_PID=$!
 wait "${NODE_PID}"
