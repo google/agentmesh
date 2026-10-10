@@ -32,9 +32,17 @@ type mockRouterConnectionManager struct {
 	discoverErr        error
 	discoverResp       *api.ControlPlaneInfoResponse
 	connectP2PErr      error
-	connectHTTPReq     bool
 	connectHTTPErr     error
 	saveConfigErr      error
+
+	// connectCalls counts calls to ConnectAndAuthWithRouter so it can return
+	// connectP2PErr for the first (P2P, stored-address) attempt and
+	// connectHTTPErr for the second (HTTP fallback, discovered-address)
+	// attempt. A static "which attempt is this" flag can't tell the two
+	// calls apart, since it's fixed for the whole test case before either
+	// call happens - that let the P2P attempt silently return the HTTP
+	// result and skip exercising the real P2P failure path.
+	connectCalls int
 }
 
 func (m *mockRouterConnectionManager) IsConnected() bool {
@@ -46,10 +54,11 @@ func (m *mockRouterConnectionManager) LoadMeshConfig() ([]byte, []string, error)
 }
 
 func (m *mockRouterConnectionManager) ConnectAndAuthWithRouter(ctx context.Context, addr multiaddr.Multiaddr) error {
-	if m.connectHTTPReq {
-		return m.connectHTTPErr
+	m.connectCalls++
+	if m.connectCalls == 1 {
+		return m.connectP2PErr
 	}
-	return m.connectP2PErr
+	return m.connectHTTPErr
 }
 
 func (m *mockRouterConnectionManager) LoadControlPlaneURL() (string, error) {
@@ -101,7 +110,6 @@ func TestCheckRouterConnection(t *testing.T) {
 				discoverResp: &api.ControlPlaneInfoResponse{
 					RouterAddresses: []string{"/ip4/127.0.0.1/tcp/4002"},
 				},
-				connectHTTPReq: true,
 				connectHTTPErr: nil,
 			},
 			wantStable: false,
@@ -117,7 +125,6 @@ func TestCheckRouterConnection(t *testing.T) {
 				discoverResp: &api.ControlPlaneInfoResponse{
 					RouterAddresses: []string{"/ip4/127.0.0.1/tcp/4002"},
 				},
-				connectHTTPReq: true,
 				connectHTTPErr: errors.New("http fallback connect failed"),
 			},
 			wantStable: false,
