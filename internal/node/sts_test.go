@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -421,6 +422,298 @@ func TestWithCallerOrTokenAuthAndJWTExchange(t *testing.T) {
 	if got := exchangeCalls.Load(); got != 1 {
 		t.Fatalf("expected second JWT call to hit LRU cache (1 control plane call), got %d", got)
 	}
+}
+
+// startFakeExchangeControlPlane serves POST /token/exchange for h.node,
+// answering every subject JWT with delegated, attenuated and sealed as the
+// request asks, the way the real control plane does.
+func startFakeExchangeControlPlane(t *testing.T, h *stsNodeHarness, delegated []byte) *atomic.Int32 {
+	t.Helper()
+	var calls atomic.Int32
+	cpServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/token/exchange" {
+			http.NotFound(w, r)
+			return
+		}
+		calls.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		var req api.TokenExchangeRequest
+		if err := proto.Unmarshal(body, &req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		out := delegated
+		if req.GetTaskRule() != nil {
+			var err error
+			if out, err = identity.AttenuateBiscuit(out, req.GetTaskRule()); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+		if req.GetSeal() {
+			var err error
+			if out, err = identity.SealBiscuit(out); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		payload, _ := proto.Marshal(&api.TokenExchangeResponse{
+			BiscuitToken: out,
+			ExpireTime:   timestamppb.New(time.Now().Add(5 * time.Minute)),
+			Roles:        []string{"developer"},
+			Subject:      "spiffe://openshell.example/sandbox/sbx-1",
+		})
+		w.Header().Set("Content-Type", "application/x-protobuf")
+		_, _ = w.Write(payload)
+	}))
+	t.Cleanup(cpServer.Close)
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = cpServer.Client().Transport
+	t.Cleanup(func() { http.DefaultTransport = origTransport })
+	if err := h.node.Store.SaveControlPlaneURL(cpServer.URL); err != nil {
+		t.Fatalf("SaveControlPlaneURL: %v", err)
+	}
+	return &calls
+}
+
+// postNodeOAuthToken posts form to the node token endpoint over TCP (no local
+// socket, no sidecar header) and returns the status and decoded JSON body.
+func postNodeOAuthToken(t *testing.T, h *stsNodeHarness, sidecarToken string, form url.Values) (int, map[string]any) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	handleNodeOAuthToken(h.node, sidecarToken, rec, req)
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response is not JSON (%d): %s", rec.Code, rec.Body.String())
+	}
+	return rec.Code, body
+}
+
+func decodeIssuedBiscuit(t *testing.T, body map[string]any) []byte {
+	t.Helper()
+	if body["issued_token_type"] != api.TokenTypeBiscuit {
+		t.Fatalf("issued_token_type = %v, want biscuit", body["issued_token_type"])
+	}
+	raw, err := base64.StdEncoding.DecodeString(body["access_token"].(string))
+	if err != nil {
+		t.Fatalf("access_token is not base64: %v", err)
+	}
+	return raw
+}
+
+// TestNodeOAuthTokenClientAssertionGrants covers the RFC 7523 shapes an OAuth
+// client such as an OpenShell token grant or an identity-chaining caller sends
+// to /oauth/token, alongside the RFC 8693 exchange the node already served.
+func TestNodeOAuthTokenClientAssertionGrants(t *testing.T) {
+	h := newSTSNodeHarness(t)
+	sidecarToken := "secret-sidecar-token"
+
+	delegated, err := identity.MintDelegatedBiscuitToken(
+		h.cpPriv,
+		jwt.MapClaims{"sub": "spiffe://openshell.example/sandbox/sbx-1"},
+		h.peerID,
+		time.Now().Add(5*time.Minute),
+		[]string{"developer"},
+		h.policyRoles,
+		nil,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("MintDelegatedBiscuitToken: %v", err)
+	}
+	exchangeCalls := startFakeExchangeControlPlane(t, h, delegated)
+
+	// A SPIFFE JWT-SVID as the Workload API would hand it out: the fake control
+	// plane does not check the signature, the real one does.
+	svid := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"ES256","typ":"JWT","kid":"k1"}`)) +
+		"." + base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"spiffe://openshell.example/sandbox/sbx-1","aud":["agentmesh-audience"]}`)) +
+		"." + base64.RawURLEncoding.EncodeToString([]byte("sig"))
+
+	getPR := RequestContext{PeerID: h.peerID, Protocol: string(api.MCPProtocolID), Target: "mcp://github", MCPTool: "get_pr", Local: true}
+	mergePR := getPR
+	mergePR.MCPTool = "merge_pr"
+	gemini := RequestContext{PeerID: h.peerID, Target: "inference://gemini-pro", Local: true}
+
+	t.Run("client_credentials with jwt-spiffe assertion issues the delegated biscuit", func(t *testing.T) {
+		exchangeCalls.Store(0)
+		form := url.Values{}
+		form.Set("grant_type", api.GrantTypeClientCredentials)
+		form.Set("client_assertion_type", api.ClientAssertionTypeJWTSPIFFE)
+		form.Set("client_assertion", svid)
+		for i := range 2 {
+			code, body := postNodeOAuthToken(t, h, sidecarToken, form)
+			if code != http.StatusOK {
+				t.Fatalf("attempt %d: status %d: %v", i+1, code, body)
+			}
+			if !bytes.Equal(decodeIssuedBiscuit(t, body), delegated) {
+				t.Fatalf("attempt %d: access_token is not the delegated biscuit", i+1)
+			}
+			if body["token_type"] != "Bearer" {
+				t.Fatalf("token_type = %v", body["token_type"])
+			}
+		}
+		if got := exchangeCalls.Load(); got != 1 {
+			t.Fatalf("unattenuated assertion grants should share the exchange cache, got %d control plane calls", got)
+		}
+	})
+
+	t.Run("client_credentials with jwt-bearer assertion honours scope, resource and seal", func(t *testing.T) {
+		form := url.Values{}
+		form.Set("grant_type", api.GrantTypeClientCredentials)
+		form.Set("client_assertion_type", api.ClientAssertionTypeJWTBearer)
+		form.Set("client_assertion", svid)
+		form.Add("resource", "mcp://github")
+		form.Set("scope", "tool:get_pr")
+		form.Set("seal", "true")
+		code, body := postNodeOAuthToken(t, h, sidecarToken, form)
+		if code != http.StatusOK {
+			t.Fatalf("status %d: %v", code, body)
+		}
+		issued := decodeIssuedBiscuit(t, body)
+		if err := h.node.VerifyBiscuitToken(issued, getPR); err != nil {
+			t.Fatalf("get_pr on mcp://github should be allowed: %v", err)
+		}
+		if err := h.node.VerifyBiscuitToken(issued, mergePR); err == nil {
+			t.Fatalf("merge_pr should be denied by the scope")
+		}
+		if err := h.node.VerifyBiscuitToken(issued, gemini); err == nil {
+			t.Fatalf("inference://gemini-pro should be denied by the resource")
+		}
+		if _, err := identity.AttenuateBiscuit(issued, &api.TaskAuthorizationRule{Name: "x"}); err == nil {
+			t.Fatalf("sealed biscuit must not accept further blocks")
+		}
+	})
+
+	t.Run("jwt-bearer authorization grant issues the delegated biscuit", func(t *testing.T) {
+		form := url.Values{}
+		form.Set("grant_type", api.GrantTypeJWTBearer)
+		form.Set("assertion", svid)
+		code, body := postNodeOAuthToken(t, h, sidecarToken, form)
+		if code != http.StatusOK {
+			t.Fatalf("status %d: %v", code, body)
+		}
+		if !bytes.Equal(decodeIssuedBiscuit(t, body), delegated) {
+			t.Fatalf("access_token is not the delegated biscuit")
+		}
+	})
+
+	t.Run("token exchange without subject_token narrows the client assertion's own identity", func(t *testing.T) {
+		form := url.Values{}
+		form.Set("grant_type", api.GrantTypeTokenExchange)
+		form.Set("client_assertion_type", api.ClientAssertionTypeJWTSPIFFE)
+		form.Set("client_assertion", svid)
+		form.Add("resource", "inference://gemini-pro")
+		code, body := postNodeOAuthToken(t, h, sidecarToken, form)
+		if code != http.StatusOK {
+			t.Fatalf("status %d: %v", code, body)
+		}
+		issued := decodeIssuedBiscuit(t, body)
+		if err := h.node.VerifyBiscuitToken(issued, gemini); err != nil {
+			t.Fatalf("inference://gemini-pro should be allowed: %v", err)
+		}
+		if err := h.node.VerifyBiscuitToken(issued, getPR); err == nil {
+			t.Fatalf("mcp://github should be denied by the resource")
+		}
+	})
+
+	rejected := []struct {
+		name   string
+		form   url.Values
+		status int
+		code   string
+	}{
+		{
+			name:   "client_credentials without assertion",
+			form:   url.Values{"grant_type": {api.GrantTypeClientCredentials}},
+			status: http.StatusUnauthorized,
+			code:   "invalid_client",
+		},
+		{
+			name: "client_credentials with unsupported assertion type",
+			form: url.Values{
+				"grant_type":            {api.GrantTypeClientCredentials},
+				"client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:saml2-bearer"},
+				"client_assertion":      {svid},
+			},
+			status: http.StatusUnauthorized,
+			code:   "invalid_client",
+		},
+		{
+			name: "client_credentials with assertion that is not a JWT",
+			form: url.Values{
+				"grant_type":            {api.GrantTypeClientCredentials},
+				"client_assertion_type": {api.ClientAssertionTypeJWTSPIFFE},
+				"client_assertion":      {sidecarToken},
+			},
+			status: http.StatusUnauthorized,
+			code:   "invalid_client",
+		},
+		{
+			name: "client_assertion without client_assertion_type",
+			form: url.Values{
+				"grant_type":       {api.GrantTypeClientCredentials},
+				"client_assertion": {svid},
+			},
+			status: http.StatusUnauthorized,
+			code:   "invalid_client",
+		},
+		{
+			name:   "jwt-bearer without assertion",
+			form:   url.Values{"grant_type": {api.GrantTypeJWTBearer}},
+			status: http.StatusBadRequest,
+			code:   "invalid_grant",
+		},
+		{
+			name:   "unknown grant type",
+			form:   url.Values{"grant_type": {"password"}},
+			status: http.StatusBadRequest,
+			code:   "unsupported_grant_type",
+		},
+	}
+	for _, tc := range rejected {
+		t.Run("rejects "+tc.name, func(t *testing.T) {
+			before := exchangeCalls.Load()
+			code, body := postNodeOAuthToken(t, h, sidecarToken, tc.form)
+			if code != tc.status || body["error"] != tc.code {
+				t.Fatalf("status %d error %v, want %d %s (%v)", code, body["error"], tc.status, tc.code, body["error_description"])
+			}
+			if exchangeCalls.Load() != before {
+				t.Fatalf("a rejected request must not reach the control plane")
+			}
+		})
+	}
+
+	t.Run("authorization server metadata advertises the grants and spiffe_jwt", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+		req.Host = "node.example:8080"
+		rec := httptest.NewRecorder()
+		handleOAuthAuthorizationServer(h.node, rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d", rec.Code)
+		}
+		var meta struct {
+			Issuer        string   `json:"issuer"`
+			TokenEndpoint string   `json:"token_endpoint"`
+			GrantTypes    []string `json:"grant_types_supported"`
+			AuthMethods   []string `json:"token_endpoint_auth_methods_supported"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &meta); err != nil {
+			t.Fatalf("json: %v", err)
+		}
+		if meta.Issuer != "http://node.example:8080" || meta.TokenEndpoint != "http://node.example:8080/oauth/token" {
+			t.Fatalf("issuer/token_endpoint = %q / %q", meta.Issuer, meta.TokenEndpoint)
+		}
+		for _, want := range []string{api.GrantTypeTokenExchange, api.GrantTypeClientCredentials, api.GrantTypeJWTBearer} {
+			if !slices.Contains(meta.GrantTypes, want) {
+				t.Fatalf("grant_types_supported %v lacks %s", meta.GrantTypes, want)
+			}
+		}
+		if !slices.Contains(meta.AuthMethods, "spiffe_jwt") || !slices.Contains(meta.AuthMethods, "private_key_jwt") {
+			t.Fatalf("token_endpoint_auth_methods_supported = %v", meta.AuthMethods)
+		}
+	})
 }
 
 func TestExtAuthzHTTPAndGRPC(t *testing.T) {

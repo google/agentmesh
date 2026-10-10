@@ -64,6 +64,27 @@ flowchart LR
    The sandboxed process has no credential in its environment variables or
    filesystem.
 
+### Per-sandbox identity without a pre-minted token
+
+A sandbox proxy that holds a workload identity for each sandbox can skip the
+minting step and let the mesh bind the credential to that identity. OpenShell's
+`token_grant` sends the sandbox's SPIFFE JWT-SVID to the node token endpoint as
+an RFC 7523 client assertion (`grant_type=client_credentials`,
+`client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-spiffe`),
+caches the Biscuit it gets back, and injects it as above. Agent Substrate's
+egress policy puts a Substrate-issued actor JWT directly on
+`X-Mesh-Authentication` (`replace_headers` with `actor_jwt`), and the node
+exchanges it on each request. In both cases the control plane trusts the
+issuer with `--workload-issuer` and binds roles to the subject:
+
+```json
+{ "role": "pr-reviewer", "members": ["user:spiffe://openshell.example/openshell/sandbox/*", "user:actor/reviews/*"] }
+```
+
+The sandbox still holds nothing. What changes is that the mesh, not the
+orchestrator, decides what each sandbox identity may call, and revoking the
+sandbox's role takes effect without touching the proxy.
+
 ## Blueprint 2: Docker Sandbox (`docker sbx`) & Kubernetes `agent-sandbox`
 
 In `docker sbx` (local microVM) and Kubernetes `agent-sandbox`

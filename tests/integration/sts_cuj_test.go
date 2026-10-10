@@ -27,6 +27,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -429,6 +430,118 @@ egress:
 		_ = respDeny.Body.Close()
 		if respDeny.StatusCode != http.StatusForbidden {
 			t.Fatalf("ext_authz datapath deny status = %d, want 403", respDeny.StatusCode)
+		}
+	})
+
+	t.Run("RFC 7523 client assertion grant from a header-injecting sandbox proxy", func(t *testing.T) {
+		// What an OpenShell token grant does: the supervisor holds the
+		// sandbox's workload JWT, trades it at the node token endpoint with
+		// grant_type=client_credentials, then puts the result on
+		// X-Mesh-Authentication for every request that leaves the sandbox. The
+		// workload JWT is the mock issuer's; a SPIFFE JWT-SVID or Substrate
+		// actor JWT differs only in the issuer the control plane trusts.
+		workloadJWT := mintToken(map[string]any{"sub": "contractor-user"})
+
+		meta, err := client.Get("http://" + callerAPI + "/.well-known/oauth-authorization-server")
+		if err != nil {
+			t.Fatalf("GET authorization server metadata: %v", err)
+		}
+		var asMeta struct {
+			TokenEndpoint string   `json:"token_endpoint"`
+			GrantTypes    []string `json:"grant_types_supported"`
+			AuthMethods   []string `json:"token_endpoint_auth_methods_supported"`
+		}
+		if err := json.NewDecoder(meta.Body).Decode(&asMeta); err != nil {
+			t.Fatalf("decode authorization server metadata: %v", err)
+		}
+		_ = meta.Body.Close()
+		if !slices.Contains(asMeta.GrantTypes, api.GrantTypeClientCredentials) || !slices.Contains(asMeta.AuthMethods, "spiffe_jwt") {
+			t.Fatalf("metadata does not advertise client_credentials/spiffe_jwt: %+v", asMeta)
+		}
+
+		grant := func(t *testing.T, form url.Values) (int, map[string]any) {
+			t.Helper()
+			resp, err := client.PostForm(asMeta.TokenEndpoint, form)
+			if err != nil {
+				t.Fatalf("POST %s: %v", asMeta.TokenEndpoint, err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			var body map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatalf("decode token response: %v", err)
+			}
+			return resp.StatusCode, body
+		}
+
+		// 1. client_credentials + jwt-spiffe assertion, narrowed by scope the
+		//    way an OpenShell profile's token_grant.scopes would.
+		status, body := grant(t, url.Values{
+			"grant_type":            {api.GrantTypeClientCredentials},
+			"client_assertion_type": {api.ClientAssertionTypeJWTSPIFFE},
+			"client_assertion":      {workloadJWT},
+			"resource":              {"egress://api.github.com"},
+			"scope":                 {"method:GET path:/repos/acme/public/*"},
+		})
+		if status != http.StatusOK {
+			t.Fatalf("client_credentials grant status = %d: %v", status, body)
+		}
+		if body["issued_token_type"] != api.TokenTypeBiscuit || body["token_type"] != "Bearer" {
+			t.Fatalf("unexpected token response: %v", body)
+		}
+		sandboxToken, _ := body["access_token"].(string)
+
+		// 2. The proxy injects it; the mesh enforces the contractor role and the
+		//    scope, and the upstream still sees the brokered credential only.
+		meshURL := fmt.Sprintf("http://%s/mesh/%s/egress/api.github.com", callerAPI, pepPeer)
+		reqAllow, _ := http.NewRequest(http.MethodGet, meshURL+"/repos/acme/public/readme", nil)
+		reqAllow.Header.Set(api.HeaderMeshAuthentication, "Bearer "+sandboxToken)
+		respAllow, err := client.Do(reqAllow)
+		if err != nil {
+			t.Fatalf("mesh egress with granted biscuit: %v", err)
+		}
+		allowBody, _ := io.ReadAll(respAllow.Body)
+		_ = respAllow.Body.Close()
+		if respAllow.StatusCode != http.StatusOK {
+			t.Fatalf("granted biscuit allow status = %d, want 200: %s", respAllow.StatusCode, allowBody)
+		}
+		if !strings.Contains(string(allowBody), `"auth":"Bearer ghp_upstream_secret"`) {
+			t.Fatalf("upstream did not receive the brokered credential: %s", allowBody)
+		}
+		reqDeny, _ := http.NewRequest(http.MethodGet, meshURL+"/repos/acme/private/secret", nil)
+		reqDeny.Header.Set(api.HeaderMeshAuthentication, "Bearer "+sandboxToken)
+		respDeny, err := client.Do(reqDeny)
+		if err != nil {
+			t.Fatalf("mesh egress deny: %v", err)
+		}
+		_ = respDeny.Body.Close()
+		if respDeny.StatusCode != http.StatusForbidden {
+			t.Fatalf("granted biscuit deny status = %d, want 403", respDeny.StatusCode)
+		}
+
+		// 3. The RFC 7523 section 2.1 authorization grant, as an identity-chaining
+		//    caller sends it, yields the same identity.
+		status, body = grant(t, url.Values{
+			"grant_type": {api.GrantTypeJWTBearer},
+			"assertion":  {workloadJWT},
+		})
+		if status != http.StatusOK || body["issued_token_type"] != api.TokenTypeBiscuit {
+			t.Fatalf("jwt-bearer grant status = %d: %v", status, body)
+		}
+
+		// 4. An assertion the control plane does not trust is refused as a
+		//    client authentication failure and never becomes a credential.
+		forged := strings.Join(append(strings.Split(workloadJWT, ".")[:2], base64.RawURLEncoding.EncodeToString([]byte("forged"))), ".")
+		status, body = grant(t, url.Values{
+			"grant_type":            {api.GrantTypeClientCredentials},
+			"client_assertion_type": {api.ClientAssertionTypeJWTSPIFFE},
+			"client_assertion":      {forged},
+		})
+		if status != http.StatusUnauthorized || body["error"] != "invalid_client" {
+			t.Fatalf("forged assertion: status %d body %v, want 401 invalid_client", status, body)
+		}
+		status, body = grant(t, url.Values{"grant_type": {api.GrantTypeClientCredentials}})
+		if status != http.StatusUnauthorized || body["error"] != "invalid_client" {
+			t.Fatalf("missing assertion: status %d body %v, want 401 invalid_client", status, body)
 		}
 	})
 

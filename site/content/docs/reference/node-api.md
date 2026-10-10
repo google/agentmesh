@@ -47,7 +47,8 @@ Authorization Server.
 |---|---|---|
 | `GET /healthz`, `GET /readyz` | none | `200` while the process is up. Every other route except `/debug/*` and `/.well-known/*` answers `503` until the node is connected to the mesh. |
 | `GET /.well-known/oauth-protected-resource` | none | RFC 9728 OAuth 2.1 Protected Resource Metadata naming the Agent Mesh control plane in `authorization_servers`. |
-| `POST /oauth/token` | token | RFC 8693 Token Exchange: exchanges a platform JWT or Biscuit into a Delegated or Task-Attenuated Biscuit. See [Token exchange (`/oauth/token`)](#token-exchange-oauthtoken). |
+| `GET /.well-known/oauth-authorization-server` | none | RFC 8414 metadata for this node's token endpoint: the grant types and client authentication methods it accepts. |
+| `POST /oauth/token` | token or client assertion | Token endpoint: RFC 8693 token exchange, RFC 7523 client assertion and JWT authorization grants. Every grant returns a Delegated or Task-Attenuated Biscuit. See [Token endpoint (`/oauth/token`)](#token-endpoint-oauthtoken). |
 | `POST /oauth/revoke` | token | RFC 7009 Token Revocation: revokes a task Biscuit in this node's local revocation cache. |
 | `GET /metrics` | token | Prometheus metrics (`agentmesh_node_*`). |
 | `POST /mcp` | token | The MCP server (Streamable HTTP, sessionless: no `Mcp-Session-Id`, `GET` answers `405`). `/` is an alias. |
@@ -64,21 +65,47 @@ Authorization Server.
 `--metrics-addr` serves `/metrics`, `/healthz` and `/readyz` on a second
 listener without authentication, for scrapers that hold no token.
 
-## Token exchange (`/oauth/token`) and revocation (`/oauth/revoke`)
+## Token endpoint (`/oauth/token`) and revocation (`/oauth/revoke`)
 
-`POST /oauth/token` implements RFC 8693 (`application/x-www-form-urlencoded`):
+`POST /oauth/token` takes `application/x-www-form-urlencoded` and accepts
+three grant types. Each one ends in a Biscuit: a platform JWT is exchanged at
+the control plane's `POST /token/exchange`, a Biscuit is attenuated locally.
+
+| `grant_type` | Subject | Standard |
+|---|---|---|
+| `urn:ietf:params:oauth:grant-type:token-exchange` | `subject_token` with `subject_token_type` | RFC 8693 token exchange. |
+| `client_credentials` | `client_assertion` with `client_assertion_type` | RFC 7523 section 2.2 client authentication. The assertion both authenticates the client and names the subject. |
+| `urn:ietf:params:oauth:grant-type:jwt-bearer` | `assertion` | RFC 7523 section 2.1 JWT authorization grant, as produced by OAuth identity chaining. |
 
 | Parameter | Meaning |
 |---|---|
-| `grant_type` | Required: `urn:ietf:params:oauth:grant-type:token-exchange`. |
-| `subject_token` | The input JWT or base64 Biscuit. If omitted when authenticated with the node's API token, defaults to the node's own Biscuit. |
+| `subject_token` | Token exchange: the input JWT or base64 Biscuit. If omitted when the caller is authenticated (API token, local socket, or `client_assertion`), defaults to that caller's Biscuit, or to the node's own Biscuit. |
 | `subject_token_type` | `urn:ietf:params:oauth:token-type:jwt`, `id_token`, `access_token`, or `urn:agentmesh:params:oauth:token-type:biscuit`. |
+| `client_assertion`, `client_assertion_type` | A JWT with type `urn:ietf:params:oauth:client-assertion-type:jwt-bearer` or `urn:ietf:params:oauth:client-assertion-type:jwt-spiffe` (a SPIFFE JWT-SVID). Required for `client_credentials`; on any other grant it authenticates the caller. The control plane verifies the JWT against its `--issuer`, `--workload-issuer` and `--allowed-audiences`, so a JWT-SVID must carry one of those audiences. A rejected assertion answers `401 invalid_client`. |
+| `assertion` | The JWT authorization grant for `jwt-bearer`. |
 | `options` (or `scope` / `resource`) | Optional `TaskAuthorizationRule` as protojson (or space-separated service patterns in `scope`) to append as a `tar_block`. |
 | `seal` | Optional (`true` / `1`): seal the returned Biscuit so downstream holders cannot append further blocks. |
 
 Returns standard RFC 8693 JSON (`access_token`,
 `issued_token_type: "urn:agentmesh:params:oauth:token-type:biscuit"`,
 `token_type: "Bearer"`, `expires_in`).
+
+`GET /.well-known/oauth-authorization-server` lists these grant types in
+`grant_types_supported` and `none`, `private_key_jwt` and `spiffe_jwt` in
+`token_endpoint_auth_methods_supported`, so an OAuth client that discovers its
+token endpoint can pick the client assertion type it holds.
+
+An OpenShell provider profile that acquires its credential with a
+`client_credentials` token grant posts exactly this shape:
+
+```yaml
+token_grant:
+  grant_type: client_credentials
+  token_endpoint: https://agentmesh-node.internal:8080/oauth/token
+  client_assertion_type: urn:ietf:params:oauth:client-assertion-type:jwt-spiffe
+  jwt_svid_audience: agentmesh-audience
+  scopes: ["mcp://github", "inference://*"]
+```
 
 `POST /oauth/revoke` accepts `token=<base64-biscuit>` and records its leaf
 revocation ID in the node's local revocation cache until the token expires.

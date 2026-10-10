@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -464,8 +465,21 @@ func withCallerOrTokenAuth(node *AgentMeshNode, token string, allowAuthorization
 	})
 }
 
-// handleNodeOAuthToken implements RFC 8693 Token Exchange & Attenuation
-// (POST /oauth/token) on agentmesh-node.
+// handleNodeOAuthToken implements the token endpoint (POST /oauth/token) on
+// agentmesh-node. It accepts three grant shapes, all of which end in a Biscuit:
+//
+//   - RFC 8693 token exchange: subject_token is a Biscuit to attenuate or an
+//     external JWT to exchange at the control plane.
+//   - RFC 6749 client_credentials with RFC 7523 section 2.2 client
+//     authentication: client_assertion is a JWT (for example a SPIFFE JWT-SVID,
+//     draft-ietf-oauth-spiffe-client-auth) that is exchanged at the control
+//     plane. This is the shape OAuth clients such as NVIDIA OpenShell token
+//     grants and Keycloak-style workload clients send.
+//   - RFC 7523 section 2.1 jwt-bearer authorization grant: assertion is a JWT
+//     authorization grant, as produced by draft-ietf-oauth-identity-chaining.
+//
+// A client_assertion on any grant also authenticates the caller, so a token
+// exchange without a subject_token narrows the assertion's own identity.
 func handleNodeOAuthToken(node *AgentMeshNode, sidecarToken string, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeNodeOAuthError(w, http.StatusMethodNotAllowed, "invalid_request", "Method not allowed")
@@ -481,14 +495,44 @@ func handleNodeOAuthToken(node *AgentMeshNode, sidecarToken string, w http.Respo
 		return
 	}
 
-	grantType := r.FormValue("grant_type")
-	if grantType != api.GrantTypeTokenExchange {
-		writeNodeOAuthError(w, http.StatusBadRequest, "unsupported_grant_type", "Only urn:ietf:params:oauth:grant-type:token-exchange is supported on agentmesh-node")
+	clientAssertion, hasClientAssertion, caErr := clientAssertionFromForm(r.Form)
+	if caErr != nil {
+		writeNodeOAuthError(w, http.StatusUnauthorized, "invalid_client", caErr.Error())
 		return
 	}
 
 	subjectToken := strings.TrimSpace(r.FormValue("subject_token"))
 	subjectTokenType := strings.TrimSpace(r.FormValue("subject_token_type"))
+	// A rejected subject is invalid_grant, unless the subject is the client
+	// assertion itself, which makes it a client authentication failure.
+	subjectRejected := func(err error) {
+		writeNodeOAuthError(w, http.StatusBadRequest, "invalid_grant", err.Error())
+	}
+	switch grantType := r.FormValue("grant_type"); grantType {
+	case api.GrantTypeTokenExchange:
+	case api.GrantTypeClientCredentials:
+		if !hasClientAssertion {
+			writeNodeOAuthError(w, http.StatusUnauthorized, "invalid_client", "client_credentials requires a JWT client_assertion (RFC 7523 section 2.2)")
+			return
+		}
+		subjectToken = clientAssertion
+		subjectTokenType = api.TokenTypeJWT
+		subjectRejected = func(err error) {
+			writeNodeOAuthError(w, http.StatusUnauthorized, "invalid_client", err.Error())
+		}
+	case api.GrantTypeJWTBearer:
+		assertion := strings.TrimSpace(r.FormValue("assertion"))
+		if !isLikelyJWT(assertion) {
+			writeNodeOAuthError(w, http.StatusBadRequest, "invalid_grant", "assertion must be a JWT (RFC 7523 section 2.1)")
+			return
+		}
+		subjectToken = assertion
+		subjectTokenType = api.TokenTypeJWT
+	default:
+		writeNodeOAuthError(w, http.StatusBadRequest, "unsupported_grant_type", "Supported grant types: "+strings.Join(nodeOAuthGrantTypes, ", "))
+		return
+	}
+
 	requestedTokenType := strings.TrimSpace(r.FormValue("requested_token_type"))
 	resources := r.Form["resource"]
 	scope := strings.TrimSpace(r.FormValue("scope"))
@@ -523,7 +567,7 @@ func handleNodeOAuthToken(node *AgentMeshNode, sidecarToken string, w http.Respo
 			if requestedTokenType != api.TokenTypeJWT {
 				resp, exErr := node.ExchangeSubjectJWT(r.Context(), subjectToken, subjectTokenType, tar, seal)
 				if exErr != nil {
-					writeNodeOAuthError(w, http.StatusBadRequest, "invalid_grant", exErr.Error())
+					subjectRejected(exErr)
 					return
 				}
 				expIn := int64(300)
@@ -538,7 +582,7 @@ func handleNodeOAuthToken(node *AgentMeshNode, sidecarToken string, w http.Respo
 			}
 			resp, exErr := node.ExchangeSubjectJWT(r.Context(), subjectToken, subjectTokenType, tar, false)
 			if exErr != nil {
-				writeNodeOAuthError(w, http.StatusBadRequest, "invalid_grant", exErr.Error())
+				subjectRejected(exErr)
 				return
 			}
 			baseBiscuit = resp.GetBiscuitToken()
@@ -547,12 +591,24 @@ func handleNodeOAuthToken(node *AgentMeshNode, sidecarToken string, w http.Respo
 			}
 		}
 	} else {
-		// No subject_token (or "self"): authenticate caller via sidecar gate and
-		// use the caller's Biscuit if provided, or the node's own Biscuit.
-		callerBiscuit, ok := authenticateSidecarCaller(node, sidecarToken, r)
-		if !ok {
-			writeNodeOAuthError(w, http.StatusUnauthorized, "invalid_client", "Sidecar authentication or subject_token required")
-			return
+		// No subject_token (or "self"): authenticate caller via a client
+		// assertion or the sidecar gate, and use the caller's Biscuit if
+		// provided, or the node's own Biscuit.
+		var callerBiscuit []byte
+		if hasClientAssertion {
+			resp, exErr := node.ExchangeSubjectJWT(r.Context(), clientAssertion, api.TokenTypeJWT, nil, false)
+			if exErr != nil {
+				writeNodeOAuthError(w, http.StatusUnauthorized, "invalid_client", exErr.Error())
+				return
+			}
+			callerBiscuit = resp.GetBiscuitToken()
+		} else {
+			var ok bool
+			callerBiscuit, ok = authenticateSidecarCaller(node, sidecarToken, r)
+			if !ok {
+				writeNodeOAuthError(w, http.StatusUnauthorized, "invalid_client", "Sidecar authentication, client_assertion, or subject_token required")
+				return
+			}
 		}
 		if len(callerBiscuit) > 0 {
 			baseBiscuit = callerBiscuit
@@ -708,13 +764,44 @@ func handleNodeOAuthRevoke(node *AgentMeshNode, sidecarToken string, w http.Resp
 	w.WriteHeader(http.StatusOK)
 }
 
-// handleOAuthProtectedResource serves RFC 9728 OAuth 2.0 Protected Resource Metadata
-// (GET /.well-known/oauth-protected-resource).
-func handleOAuthProtectedResource(node *AgentMeshNode, w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
+// nodeOAuthGrantTypes and nodeOAuthClientAuthMethods are what the node's token
+// endpoint accepts and advertises (RFC 8414 and draft-ietf-oauth-spiffe-client-auth
+// section 4).
+var (
+	nodeOAuthGrantTypes = []string{
+		api.GrantTypeTokenExchange,
+		api.GrantTypeClientCredentials,
+		api.GrantTypeJWTBearer,
 	}
+	nodeOAuthClientAuthMethods = []string{"none", "private_key_jwt", "spiffe_jwt"}
+)
+
+// clientAssertionFromForm reads an RFC 7523 section 2.2 client assertion from
+// the token request. It returns (assertion, true, nil) for a well-formed JWT
+// assertion, (_, false, nil) when the request carries none, and an error when
+// the assertion or its type is unusable.
+func clientAssertionFromForm(form url.Values) (string, bool, error) {
+	assertion := strings.TrimSpace(form.Get("client_assertion"))
+	assertionType := strings.TrimSpace(form.Get("client_assertion_type"))
+	if assertion == "" && assertionType == "" {
+		return "", false, nil
+	}
+	switch assertionType {
+	case api.ClientAssertionTypeJWTBearer, api.ClientAssertionTypeJWTSPIFFE:
+	case "":
+		return "", false, errors.New("client_assertion_type is required with client_assertion")
+	default:
+		return "", false, fmt.Errorf("unsupported client_assertion_type %q; use %s or %s", assertionType, api.ClientAssertionTypeJWTBearer, api.ClientAssertionTypeJWTSPIFFE)
+	}
+	if !isLikelyJWT(assertion) {
+		return "", false, errors.New("client_assertion must be a JWT")
+	}
+	return assertion, true, nil
+}
+
+// nodeBaseURL is the origin a caller reached this node on, for self-referencing
+// metadata documents.
+func nodeBaseURL(node *AgentMeshNode, r *http.Request) string {
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
@@ -726,6 +813,16 @@ func handleOAuthProtectedResource(node *AgentMeshNode, w http.ResponseWriter, r 
 	if host == "" {
 		host = "localhost"
 	}
+	return scheme + "://" + host
+}
+
+// handleOAuthProtectedResource serves RFC 9728 OAuth 2.0 Protected Resource Metadata
+// (GET /.well-known/oauth-protected-resource).
+func handleOAuthProtectedResource(node *AgentMeshNode, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	var authServers []string
 	if node != nil {
 		if cpURL, err := node.controlPlaneURL(); err == nil && cpURL != "" {
@@ -733,10 +830,33 @@ func handleOAuthProtectedResource(node *AgentMeshNode, w http.ResponseWriter, r 
 		}
 	}
 	meta := map[string]any{
-		"resource":                 fmt.Sprintf("%s://%s/mcp", scheme, host),
+		"resource":                 nodeBaseURL(node, r) + "/mcp",
 		"authorization_servers":    authServers,
 		"bearer_methods_supported": []string{"header"},
 		"scopes_supported":         []string{"mcp", "inference", "egress", "a2a"},
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(meta)
+}
+
+// handleOAuthAuthorizationServer serves RFC 8414 Authorization Server Metadata
+// (GET /.well-known/oauth-authorization-server) for the node's own token
+// endpoint. The node issues Biscuits only; interactive authorization lives on
+// the control plane, which the protected resource metadata points at.
+func handleOAuthAuthorizationServer(node *AgentMeshNode, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	issuer := nodeBaseURL(node, r)
+	meta := map[string]any{
+		"issuer":                                     issuer,
+		"token_endpoint":                             issuer + "/oauth/token",
+		"revocation_endpoint":                        issuer + "/oauth/revoke",
+		"response_types_supported":                   []string{},
+		"grant_types_supported":                      nodeOAuthGrantTypes,
+		"token_endpoint_auth_methods_supported":      nodeOAuthClientAuthMethods,
+		"revocation_endpoint_auth_methods_supported": nodeOAuthClientAuthMethods,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(meta)

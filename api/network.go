@@ -178,6 +178,19 @@ const (
 	// GrantTypeAuthorizationCode is the standard OAuth 2.1 authorization_code grant type.
 	GrantTypeAuthorizationCode = "authorization_code"
 
+	// GrantTypeClientCredentials is the RFC 6749 client_credentials grant type.
+	GrantTypeClientCredentials = "client_credentials"
+
+	// GrantTypeJWTBearer is the RFC 7523 section 2.1 JWT authorization grant type URI.
+	GrantTypeJWTBearer = "urn:ietf:params:oauth:grant-type:jwt-bearer"
+
+	// ClientAssertionTypeJWTBearer is the RFC 7523 section 2.2 client assertion type URI.
+	ClientAssertionTypeJWTBearer = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+
+	// ClientAssertionTypeJWTSPIFFE is the client assertion type URI for a SPIFFE
+	// JWT-SVID (draft-ietf-oauth-spiffe-client-auth).
+	ClientAssertionTypeJWTSPIFFE = "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe"
+
 	// TokenTypeBiscuit is the token type URI identifying a Agent Mesh Biscuit token in RFC 8693 exchanges.
 	TokenTypeBiscuit = "urn:agentmesh:params:oauth:token-type:biscuit"
 

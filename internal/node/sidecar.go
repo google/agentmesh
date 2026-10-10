@@ -50,6 +50,9 @@ func StartSidecarServer(node *AgentMeshNode, addr, socketPath, token, certFile, 
 	mux.HandleFunc("/.well-known/oauth-protected-resource", func(w http.ResponseWriter, r *http.Request) {
 		handleOAuthProtectedResource(node, w, r)
 	})
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
+		handleOAuthAuthorizationServer(node, w, r)
+	})
 	mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
 		handleNodeOAuthToken(node, token, w, r)
 	})
