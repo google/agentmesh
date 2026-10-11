@@ -1589,40 +1589,66 @@ func (s *Server) HandlePolicies(w http.ResponseWriter, r *http.Request) {
 // valid in form and would otherwise fail silently, as a 404 to every caller.
 // A warning and not an error: the node it selects may enroll later.
 func (s *Server) warnUnservedEgress(ctx context.Context, policy *api.PolicyConfig) {
-	unserved, err := s.unservedEgress(ctx, policy)
+	unserved, unresolved, err := s.unservedEgress(ctx, policy)
 	if err != nil {
 		logger.Warnf("mesh policy: cannot check egress selectors against enrolled nodes: %v", err)
 		return
+	}
+	// Named before the destinations: one that only this node would serve
+	// otherwise reads as a selector that matches nothing.
+	for _, n := range unresolved {
+		logger.Warnf("mesh policy: roles of node %s cannot be resolved, so it serves no egress destination: %v", n.peerID, n.err)
 	}
 	for _, d := range unserved {
 		logger.Warnf("mesh policy: egress destination %s is served by no enrolled node (served_by %v); callers get 404 until one matches", d.GetName(), d.GetServedBy())
 	}
 }
 
+// unresolvedNode is an admitted node whose roles could not be resolved.
+type unresolvedNode struct {
+	peerID string
+	err    error
+}
+
 // unservedEgress returns the destinations of policy whose served_by selects
-// no enrolled, admitted node, with roles resolved as a refresh would.
-func (s *Server) unservedEgress(ctx context.Context, policy *api.PolicyConfig) ([]*api.EgressDestination, error) {
+// no enrolled, admitted node, with roles resolved as a refresh would. An
+// admitted node whose roles cannot be resolved is refused its assignments at
+// GET /egress, so it is not counted as serving anything either; it is
+// returned as unresolved so that the caller can say why.
+func (s *Server) unservedEgress(ctx context.Context, policy *api.PolicyConfig) ([]*api.EgressDestination, []unresolvedNode, error) {
 	if len(policy.GetEgress()) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	nodes, err := s.store.ListNodes(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	// Admission and roles belong to the node, not to the destination, so each
+	// node is settled once and an unresolved one is reported once.
+	type candidate struct {
+		roles  []string
+		labels map[string]string
 	}
 	now := time.Now()
+	var candidates []candidate
+	var unresolved []unresolvedNode
+	for i := range nodes {
+		node := &nodes[i]
+		if node.CheckAdmission(now) != nil {
+			continue
+		}
+		roles, err := nodeRoles(node, policy.GetBindings())
+		if err != nil {
+			unresolved = append(unresolved, unresolvedNode{peerID: node.PeerID, err: err})
+			continue
+		}
+		candidates = append(candidates, candidate{roles: roles, labels: node.Labels})
+	}
 	var unserved []*api.EgressDestination
 	for _, d := range policy.GetEgress() {
 		served := false
-		for i := range nodes {
-			node := &nodes[i]
-			if node.CheckAdmission(now) != nil {
-				continue
-			}
-			roles, err := nodeRoles(node, policy.GetBindings())
-			if err != nil {
-				continue
-			}
-			if api.EgressServedBy(d, roles, node.Labels) {
+		for _, c := range candidates {
+			if api.EgressServedBy(d, c.roles, c.labels) {
 				served = true
 				break
 			}
@@ -1631,7 +1657,7 @@ func (s *Server) unservedEgress(ctx context.Context, policy *api.PolicyConfig) (
 			unserved = append(unserved, d)
 		}
 	}
-	return unserved, nil
+	return unserved, unresolved, nil
 }
 
 // admittedNodeWithChallenge returns the enrolled, admitted node whose biscuit

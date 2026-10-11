@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/google/agentmesh/api"
+	"github.com/google/agentmesh/internal/storage"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"google.golang.org/protobuf/proto"
@@ -242,7 +243,7 @@ func TestEgressPolicyIsDistributedToServingNodes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	unserved, err := srv.unservedEgress(ctx, &api.PolicyConfig{Roles: roles, Bindings: bindings, Egress: []*api.EgressDestination{
+	unserved, unresolved, err := srv.unservedEgress(ctx, &api.PolicyConfig{Roles: roles, Bindings: bindings, Egress: []*api.EgressDestination{
 		{Name: "api.github.com", ServedBy: []string{"pep"}},
 		{Name: "mam.internal.example.com", ServedBy: []string{"site=dc1"}},
 		{Name: "typo.example", ServedBy: []string{"site=dc-1"}},
@@ -257,6 +258,9 @@ func TestEgressPolicyIsDistributedToServingNodes(t *testing.T) {
 	}
 	if want := []string{"typo.example", "nobody.example"}; !slices.Equal(unservedNames, want) {
 		t.Errorf("unserved = %v, want %v", unservedNames, want)
+	}
+	if len(unresolved) != 0 {
+		t.Errorf("unresolved = %v, want none: every node here has roles that resolve", unresolved)
 	}
 
 	// Validation names the mistake.
@@ -273,5 +277,54 @@ func TestEgressPolicyIsDistributedToServingNodes(t *testing.T) {
 		if status != http.StatusBadRequest || !strings.Contains(body, tc.want) {
 			t.Errorf("%s: got %d %q, want 400 mentioning %q", tc.name, status, body, tc.want)
 		}
+	}
+}
+
+// TestUnservedEgressNamesNodesWhoseRolesCannotBeResolved covers an admitted
+// node that a destination selects but whose roles cannot be resolved. GET
+// /egress refuses it its assignments, so the destination really is unserved;
+// what was missing is the reason. Without it the warning says the selector
+// matches no node, which sends the operator looking for a typo.
+func TestUnservedEgressNamesNodesWhoseRolesCannotBeResolved(t *testing.T) {
+	issuer, _ := startCustomMockOIDC(t)
+	srv, store, _ := setupTestServer(t, issuer)
+	t.Cleanup(func() {
+		_ = srv.Close()
+		_ = store.Close()
+	})
+	ctx := context.Background()
+
+	// The key and the biscuit only satisfy the schema: unservedEgress reads
+	// neither, only admission, roles and labels.
+	now := time.Now()
+	placeholder := []byte("unused")
+	for _, n := range []*storage.EnrolledNode{
+		{PeerID: "healthy", PublicKey: placeholder, Biscuit: placeholder, Role: api.RoleNode, EnrollmentType: "BOOTSTRAP",
+			Labels: map[string]string{"site": "dc1"}, EnrolledAt: now, ExpiresAt: now.Add(time.Hour)},
+		{PeerID: "unreadable-claims", PublicKey: placeholder, Biscuit: placeholder, Role: api.RoleNode, EnrollmentType: "OIDC", ClaimsJSON: "{not json",
+			Labels: map[string]string{"site": "dc9"}, EnrolledAt: now, ExpiresAt: now.Add(time.Hour)},
+	} {
+		if err := store.EnrollNode(ctx, n); err != nil {
+			t.Fatalf("EnrollNode(%s): %v", n.PeerID, err)
+		}
+	}
+
+	unserved, unresolved, err := srv.unservedEgress(ctx, &api.PolicyConfig{Egress: []*api.EgressDestination{
+		{Name: "dc1.example", ServedBy: []string{"site=dc1"}},
+		{Name: "dc9.example", ServedBy: []string{"site=dc9"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var unservedNames []string
+	for _, d := range unserved {
+		unservedNames = append(unservedNames, d.Name)
+	}
+	if want := []string{"dc9.example"}; !slices.Equal(unservedNames, want) {
+		t.Errorf("unserved = %v, want %v: a node refused its assignments serves nothing", unservedNames, want)
+	}
+	if len(unresolved) != 1 || unresolved[0].peerID != "unreadable-claims" || unresolved[0].err == nil {
+		t.Fatalf("unresolved = %v, want only unreadable-claims, with the error that excluded it", unresolved)
 	}
 }
