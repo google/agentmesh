@@ -337,15 +337,91 @@ def _agent_card_service(method: str, target: str) -> Optional[str]:
     return f"a2a://{m.group(1)}" if method == "GET" and m else None
 
 
+def mesh_interface_url(base: str, raw: str) -> str:
+    """The mesh URL of one agent interface, as agentmesh-node resolves it. The
+    provider's node names an interface it can reach by a reference relative to
+    the service root ("invoke", "a2a/rest", "" for the root), which resolves
+    under base; anything else maps to base itself. A reference that could leave
+    the service (a dot segment, a rooted path, a scheme or a host) also maps to
+    base: a provider must not be able to point the caller at another path on
+    this node. Mirrors Go's url.Parse and URL.EscapedPath for the parts it reads."""
+    before_fragment, hash_sep, fragment = raw.partition("#")
+    if hash_sep and _percent_decode(_utf8(fragment)) is None:
+        return base
+    if _CONTROL_CHAR.search(before_fragment):
+        return base
+    raw_path, _, raw_query = before_fragment.partition("?")
+    # A scheme, or for Go a parse error: a colon in the first segment.
+    if ":" in raw_path.split("/", 1)[0]:
+        return base
+    # "//" alone is an empty authority and an empty path; any other authority
+    # names a host, a user or a rooted path.
+    if raw_path == "//":
+        raw_path = ""
+    encoded = _utf8(raw_path)
+    decoded = _percent_decode(encoded)
+    if decoded is None or decoded.startswith(b"/") or any(seg in (b".", b"..") for seg in decoded.split(b"/")):
+        return base
+    out = base
+    if decoded:
+        out += "/" + _escaped_path(raw_path, encoded, decoded)
+    if raw_query:
+        out += "?" + raw_query
+    return out
+
+
+_CONTROL_CHAR = re.compile(r"[\x00-\x1f\x7f]")
+# Bytes Go's url package leaves alone in a path (shouldEscape(c, encodePath) is false).
+_PATH_SAFE = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~$&+,/:;=@")
+# Bytes Go's validEncoded also accepts in an already escaped path.
+_PATH_SUB_DELIMS = frozenset(b"!'()*[]%")
+_HEX_DIGITS = frozenset(b"0123456789abcdefABCDEF")
+
+
+def _utf8(s: str) -> bytes:
+    """UTF-8 as Go sees a JSON string: a lone surrogate is U+FFFD."""
+    return s.encode("utf-16", "surrogatepass").decode("utf-16", "replace").encode()
+
+
+def _percent_decode(data: bytes) -> Optional[bytes]:
+    """Percent-decodes bytes, or None when a "%" is not followed by two hex digits."""
+    out = bytearray()
+    i = 0
+    while i < len(data):
+        if data[i] != 0x25:
+            out.append(data[i])
+            i += 1
+            continue
+        pair = data[i + 1 : i + 3]
+        if len(pair) != 2 or pair[0] not in _HEX_DIGITS or pair[1] not in _HEX_DIGITS:
+            return None
+        out.append(int(pair, 16))
+        i += 3
+    return bytes(out)
+
+
+def _escaped_path(raw_path: str, encoded: bytes, decoded: bytes) -> str:
+    """Go's URL.EscapedPath: the path as written when that is a valid escaping of it, else the default escaping."""
+    escaped = _percent_encode_path(decoded)
+    if escaped != raw_path and all(c in _PATH_SAFE or c in _PATH_SUB_DELIMS for c in encoded):
+        return raw_path
+    return "*" if decoded == b"*" else escaped
+
+
+def _percent_encode_path(data: bytes) -> str:
+    return "".join(chr(c) if c in _PATH_SAFE else f"%{c:02X}" for c in data)
+
+
 def rewrite_agent_card(card: object, base: str) -> dict:
     """An agent card rebuilt for the mesh, as agentmesh-node's egress proxy serves
-    it: HTTP interfaces point at base, gRPC ones go, signatures no longer match.
+    it: HTTP interfaces resolve under base (mesh_interface_url), gRPC ones go,
+    signatures no longer match.
     Streaming stays as declared, this transport streams. Raises when no interface remains."""
     if not isinstance(card, dict):
         raise ValueError("agent card is not a JSON object")
     interfaces = card.get("supportedInterfaces")
     kept = [
-        {**iface, "url": base}
+        {**iface, "url": mesh_interface_url(base, iface["url"] if isinstance(iface.get("url"), str) else "")}
         for iface in (interfaces if isinstance(interfaces, list) else [])
         if isinstance(iface, dict) and str(iface.get("protocolBinding", "")).upper() in _HTTP_BINDINGS
     ]
@@ -534,6 +610,7 @@ __all__: Sequence[str] = (
     "http_ingress_handler",
     "http_request_over_stream",
     "mesh_http_target",
+    "mesh_interface_url",
     "mesh_url",
     "open_http_request",
     "rewrite_agent_card",

@@ -44,6 +44,7 @@ from agent_mesh.libp2p_http import (
     http_ingress_handler,
     http_request_over_stream,
     mesh_http_target,
+    mesh_interface_url,
     open_http_request,
     rewrite_agent_card,
 )
@@ -307,9 +308,82 @@ def test_rewrite_agent_card_keeps_only_what_the_mesh_carries():
         rewrite_agent_card([], "http://mesh/x")
     with pytest.raises(ValueError, match="no supported interface"):
         rewrite_agent_card({"supportedInterfaces": []}, "http://mesh/x")
-    assert rewrite_agent_card({"supportedInterfaces": [{"url": "x", "protocolBinding": "http+json"}]}, "http://mesh/x") == {
+    assert rewrite_agent_card({"supportedInterfaces": [{"url": "http://localhost:7777/", "protocolBinding": "http+json"}]}, "http://mesh/x") == {
         "supportedInterfaces": [{"url": "http://mesh/x", "protocolBinding": "http+json"}],
     }
+
+
+def test_rewrite_agent_card_keeps_the_interface_path_the_provider_names():
+    # As agentmesh-node's TestA2AServiceCardKeepsInterfacePaths: the provider's node names
+    # each interface relative to its target URL, and the caller's card resolves it under
+    # the mesh URL, so an agent whose JSON-RPC endpoint is "/invoke" stays reachable there.
+    base = "http://mesh/mesh/12D3KooWpeer/a2a/agent"
+    card = rewrite_agent_card(
+        {
+            "supportedInterfaces": [
+                {"url": "invoke", "protocolBinding": "JSONRPC"},
+                {"url": "a2a/rest", "protocolBinding": "HTTP+JSON"},
+                {"url": "", "protocolBinding": "JSONRPC"},
+                {"url": "v1/rpc?tenant=a", "protocolBinding": "JSONRPC"},
+                {"url": "http://localhost:7777/invoke", "protocolBinding": "JSONRPC"},
+                {"protocolBinding": "JSONRPC"},
+                {"url": "localhost:50051", "protocolBinding": "GRPC"},
+            ],
+        },
+        base,
+    )
+    assert [iface["url"] for iface in card["supportedInterfaces"]] == [
+        f"{base}/invoke",
+        f"{base}/a2a/rest",
+        base,
+        f"{base}/v1/rpc?tenant=a",
+        base,
+        base,
+    ]
+
+
+BASE = "http://127.0.0.1:8080/mesh/12D3KooWpeer/a2a/agent"
+
+
+# As agentmesh-node's TestMeshInterfaceURLStaysInService: a provider cannot use the
+# relative reference to point a caller at another path on the caller's own node.
+@pytest.mark.parametrize(
+    ("ref", "want"),
+    [
+        ("", BASE),
+        ("invoke", f"{BASE}/invoke"),
+        ("a2a/rest/", f"{BASE}/a2a/rest/"),
+        ("?tenant=a", f"{BASE}?tenant=a"),
+        ("../../../../debug/connect-peer", BASE),
+        ("a/../../x", BASE),
+        ("%2e%2e/%2e%2e/debug", BASE),
+        ("./invoke", BASE),
+        ("/debug/connect-peer", BASE),
+        ("//evil.example/x", BASE),
+        ("http://localhost:7777/invoke", BASE),
+        ("mailto:x@example.com", BASE),
+        ("%zz", BASE),
+        # Go's url.Parse and URL.EscapedPath, byte for byte.
+        ("invoke#frag", f"{BASE}/invoke"),
+        ("invoke#%zz", BASE),
+        ("in\tvoke", BASE),
+        ("1a:b", BASE),
+        ("v1/a:b", f"{BASE}/v1/a:b"),
+        ("a%2Fb", f"{BASE}/a%2Fb"),
+        ("a%41", f"{BASE}/a%41"),
+        ("%2f/debug", BASE),
+        ("%2A", f"{BASE}/*"),
+        ("it's(1)*", f"{BASE}/it's(1)*"),
+        ("a b", f"{BASE}/a%20b"),
+        ("a b%41", f"{BASE}/a%20bA"),
+        ("\u00e9t\u00e9", f"{BASE}/%C3%A9t%C3%A9"),
+        ("\ud800", f"{BASE}/%EF%BF%BD"),
+        ("x?", f"{BASE}/x"),
+        ("x?a?b", f"{BASE}/x?a?b"),
+    ],
+)
+def test_mesh_interface_url_stays_in_the_service(ref, want):
+    assert mesh_interface_url(BASE, ref) == want
 
 
 def test_an_in_process_handler_sees_the_verified_caller():

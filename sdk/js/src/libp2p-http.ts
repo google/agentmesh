@@ -413,7 +413,7 @@ function agentCardService(method: string, target: string): string | undefined {
 
 /**
  * An agent card rebuilt for the mesh, as agentmesh-node's egress proxy serves it:
- * HTTP interfaces point at base, gRPC ones go, signatures no longer match.
+ * HTTP interfaces resolve under base (meshInterfaceURL), gRPC ones go, signatures no longer match.
  * Streaming stays as declared, this transport streams. Throws when no interface remains.
  */
 export function rewriteAgentCard(card: unknown, base: string): Record<string, unknown> {
@@ -423,11 +423,117 @@ export function rewriteAgentCard(card: unknown, base: string): Record<string, un
   const out = { ...(card as Record<string, unknown>) };
   delete out.signatures;
   const interfaces = Array.isArray(out.supportedInterfaces) ? (out.supportedInterfaces as unknown[]) : [];
-  const kept = interfaces.filter(carriedOverHTTP).map((iface) => ({ ...(iface as Record<string, unknown>), url: base }));
+  const kept = interfaces.filter(carriedOverHTTP).map((iface) => {
+    const url = (iface as { url?: unknown }).url;
+    return { ...(iface as Record<string, unknown>), url: meshInterfaceURL(base, typeof url === "string" ? url : "") };
+  });
   if (kept.length === 0) {
     throw new Error("agent card advertises no supported interface the mesh can carry (JSONRPC or HTTP+JSON); is the agent serving a pre-1.0 A2A card?");
   }
   return { ...out, supportedInterfaces: kept };
+}
+
+/**
+ * The mesh URL of one agent interface, as agentmesh-node resolves it. The
+ * provider's node names an interface it can reach by a reference relative to
+ * the service root ("invoke", "a2a/rest", "" for the root), which resolves
+ * under base; anything else maps to base itself. A reference that could leave
+ * the service (a dot segment, a rooted path, a scheme or a host) also maps to
+ * base: a provider must not be able to point the caller at another path on
+ * this node. Mirrors Go's url.Parse and URL.EscapedPath for the parts it reads.
+ */
+export function meshInterfaceURL(base: string, raw: string): string {
+  const hash = raw.indexOf("#");
+  const beforeFragment = hash < 0 ? raw : raw.slice(0, hash);
+  if (hash >= 0 && percentDecode(utf8.encode(raw.slice(hash + 1))) === undefined) {
+    return base;
+  }
+  if (/[\x00-\x1f\x7f]/.test(beforeFragment)) {
+    return base;
+  }
+  const query = beforeFragment.indexOf("?");
+  let rawPath = query < 0 ? beforeFragment : beforeFragment.slice(0, query);
+  const rawQuery = query < 0 ? "" : beforeFragment.slice(query + 1);
+  // A scheme, or for Go a parse error: a colon in the first segment.
+  if (rawPath.split("/", 1)[0]!.includes(":")) {
+    return base;
+  }
+  // "//" alone is an empty authority and an empty path; any other authority
+  // names a host, a user or a rooted path.
+  if (rawPath === "//") {
+    rawPath = "";
+  }
+  const encoded = utf8.encode(rawPath);
+  const decoded = percentDecode(encoded);
+  if (decoded === undefined) {
+    return base;
+  }
+  const path = latin1(decoded);
+  if (path.startsWith("/") || path.split("/").some((seg) => seg === "." || seg === "..")) {
+    return base;
+  }
+  let out = base;
+  if (path !== "") {
+    out += "/" + escapedPath(rawPath, encoded, decoded);
+  }
+  if (rawQuery !== "") {
+    out += "?" + rawQuery;
+  }
+  return out;
+}
+
+const utf8 = new TextEncoder();
+// Bytes Go's url package leaves alone in a path (shouldEscape(c, encodePath) is false).
+const PATH_SAFE = new Set(Array.from("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~$&+,/:;=@", (c) => c.charCodeAt(0)));
+// Bytes Go's validEncoded also accepts in an already escaped path.
+const PATH_SUB_DELIMS = new Set(Array.from("!'()*[]%", (c) => c.charCodeAt(0)));
+
+function hexValue(c: number): number {
+  if (c >= 0x30 && c <= 0x39) return c - 0x30;
+  if (c >= 0x41 && c <= 0x46) return c - 0x37;
+  if (c >= 0x61 && c <= 0x66) return c - 0x57;
+  return -1;
+}
+
+/** Percent-decodes bytes, or undefined when a "%" is not followed by two hex digits. */
+function percentDecode(bytes: Uint8Array): Uint8Array | undefined {
+  const out: number[] = [];
+  for (let i = 0; i < bytes.length; i++) {
+    if (bytes[i] !== 0x25) {
+      out.push(bytes[i]!);
+      continue;
+    }
+    const hi = hexValue(bytes[i + 1] ?? -1);
+    const lo = hexValue(bytes[i + 2] ?? -1);
+    if (hi < 0 || lo < 0) {
+      return undefined;
+    }
+    out.push((hi << 4) | lo);
+    i += 2;
+  }
+  return Uint8Array.from(out);
+}
+
+/** Go's URL.EscapedPath: the path as written when that is a valid escaping of it, else the default escaping. */
+function escapedPath(rawPath: string, encoded: Uint8Array, decoded: Uint8Array): string {
+  const escaped = percentEncodePath(decoded);
+  if (escaped !== rawPath && encoded.every((c) => PATH_SAFE.has(c) || PATH_SUB_DELIMS.has(c))) {
+    return rawPath;
+  }
+  return latin1(decoded) === "*" ? "*" : escaped;
+}
+
+function percentEncodePath(bytes: Uint8Array): string {
+  let out = "";
+  for (const c of bytes) {
+    out += PATH_SAFE.has(c) ? String.fromCharCode(c) : "%" + c.toString(16).toUpperCase().padStart(2, "0");
+  }
+  return out;
+}
+
+/** One char per byte, so that segment checks see the decoded bytes as Go does. */
+function latin1(bytes: Uint8Array): string {
+  return Array.from(bytes, (c) => String.fromCharCode(c)).join("");
 }
 
 /** Whether an interface's binding can traverse the mesh; gRPC needs its own connection. */

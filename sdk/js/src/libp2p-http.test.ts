@@ -38,6 +38,7 @@ import {
   httpRequestOverStream,
   meshHTTPTarget,
   meshURL,
+  meshInterfaceURL,
   rewriteAgentCard,
   splitMeshURL,
   type ProviderOptions,
@@ -308,9 +309,73 @@ test("the card of an agent behind a node comes back rewritten for the mesh, as a
 test("rewriteAgentCard keeps only what the mesh carries", () => {
   assert.throws(() => rewriteAgentCard([], "http://mesh/x"), /not a JSON object/);
   assert.throws(() => rewriteAgentCard({ supportedInterfaces: [] }, "http://mesh/x"), /no supported interface/);
-  assert.deepEqual(rewriteAgentCard({ supportedInterfaces: [{ url: "x", protocolBinding: "http+json" }] }, "http://mesh/x"), {
+  assert.deepEqual(rewriteAgentCard({ supportedInterfaces: [{ url: "http://localhost:7777/", protocolBinding: "http+json" }] }, "http://mesh/x"), {
     supportedInterfaces: [{ url: "http://mesh/x", protocolBinding: "http+json" }],
   });
+});
+
+// As agentmesh-node's TestA2AServiceCardKeepsInterfacePaths: the provider's node names
+// each interface relative to its target URL, and the caller's card resolves it under
+// the mesh URL, so an agent whose JSON-RPC endpoint is "/invoke" stays reachable there.
+test("rewriteAgentCard keeps the interface path the provider names", () => {
+  const base = "http://mesh/mesh/12D3KooWpeer/a2a/agent";
+  const card = rewriteAgentCard(
+    {
+      supportedInterfaces: [
+        { url: "invoke", protocolBinding: "JSONRPC" },
+        { url: "a2a/rest", protocolBinding: "HTTP+JSON" },
+        { url: "", protocolBinding: "JSONRPC" },
+        { url: "v1/rpc?tenant=a", protocolBinding: "JSONRPC" },
+        { url: "http://localhost:7777/invoke", protocolBinding: "JSONRPC" },
+        { protocolBinding: "JSONRPC" },
+        { url: "localhost:50051", protocolBinding: "GRPC" },
+      ],
+    },
+    base,
+  );
+  assert.deepEqual(
+    (card.supportedInterfaces as { url: string }[]).map((iface) => iface.url),
+    [`${base}/invoke`, `${base}/a2a/rest`, base, `${base}/v1/rpc?tenant=a`, base, base],
+  );
+});
+
+// As agentmesh-node's TestMeshInterfaceURLStaysInService: a provider cannot use the
+// relative reference to point a caller at another path on the caller's own node.
+test("meshInterfaceURL stays in the service", () => {
+  const base = "http://127.0.0.1:8080/mesh/12D3KooWpeer/a2a/agent";
+  for (const [ref, want] of [
+    ["", base],
+    ["invoke", `${base}/invoke`],
+    ["a2a/rest/", `${base}/a2a/rest/`],
+    ["?tenant=a", `${base}?tenant=a`],
+    ["../../../../debug/connect-peer", base],
+    ["a/../../x", base],
+    ["%2e%2e/%2e%2e/debug", base],
+    ["./invoke", base],
+    ["/debug/connect-peer", base],
+    ["//evil.example/x", base],
+    ["http://localhost:7777/invoke", base],
+    ["mailto:x@example.com", base],
+    ["%zz", base],
+    // Go's url.Parse and URL.EscapedPath, byte for byte.
+    ["invoke#frag", `${base}/invoke`],
+    ["invoke#%zz", base],
+    ["in\tvoke", base],
+    ["1a:b", base],
+    ["v1/a:b", `${base}/v1/a:b`],
+    ["a%2Fb", `${base}/a%2Fb`],
+    ["a%41", `${base}/a%41`],
+    ["%2f/debug", base],
+    ["%2A", `${base}/*`],
+    ["it's(1)*", `${base}/it's(1)*`],
+    ["a b", `${base}/a%20b`],
+    ["a b%41", `${base}/a%20bA`],
+    ["\u00e9t\u00e9", `${base}/%C3%A9t%C3%A9`],
+    ["x?", `${base}/x`],
+    ["x?a?b", `${base}/x?a?b`],
+  ]) {
+    assert.equal(meshInterfaceURL(base, ref!), want, `meshInterfaceURL(${JSON.stringify(ref)})`);
+  }
 });
 
 test("a fetch handler sees the caller and the path, and its streaming body goes out as it is written", async () => {
