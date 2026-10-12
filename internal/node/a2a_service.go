@@ -16,6 +16,8 @@ package node
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -171,10 +173,43 @@ func a2aServeAgentCard(node *AgentMeshNode, rt http.RoundTripper, w http.Respons
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return true
 	}
+	// Caching (A2A 1.0, section 8.6.1): the agent's freshness and
+	// modification time still describe the card, but its validator does not
+	// once the content changed, so the node derives its own from the bytes it
+	// serves and answers a matching If-None-Match itself.
+	for _, h := range []string{"Cache-Control", "Last-Modified"} {
+		if v := resp.Header.Get(h); v != "" {
+			w.Header().Set(h, v)
+		}
+	}
+	etag := agentCardETag(out)
+	w.Header().Set("ETag", etag)
+	if etagMatches(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return true
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Length", strconv.Itoa(len(out)))
 	_, _ = w.Write(out)
 	return true
+}
+
+// agentCardETag is a strong validator for the card bytes the node serves.
+func agentCardETag(card []byte) string {
+	sum := sha256.Sum256(card)
+	return `"` + hex.EncodeToString(sum[:16]) + `"`
+}
+
+// etagMatches applies If-None-Match's weak comparison (RFC 9110, section
+// 13.1.2) of a request header against the card's validator.
+func etagMatches(header, etag string) bool {
+	for _, candidate := range strings.Split(header, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" || strings.TrimPrefix(candidate, "W/") == etag {
+			return true
+		}
+	}
+	return false
 }
 
 // fetchRemoteAgentCard performs the mesh-side GET for the agent card, reusing
@@ -192,8 +227,12 @@ func fetchRemoteAgentCard(node *AgentMeshNode, rt http.RoundTripper, r *http.Req
 	}
 	req.Header = r.Header.Clone()
 	// The node decodes the card itself, so negotiate identity encoding
-	// regardless of what the held client asked for.
+	// regardless of what the held client asked for, and ask for the whole
+	// card: the client's validators are for the card this node serves, which
+	// the agent never saw.
 	req.Header.Del("Accept-Encoding")
+	req.Header.Del("If-None-Match")
+	req.Header.Del("If-Modified-Since")
 	req.Host = route.peerID
 	return (&http.Client{Transport: rt}).Do(req)
 }
