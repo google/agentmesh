@@ -29,6 +29,7 @@ import (
 	"syscall"
 
 	"github.com/google/agentmesh/api"
+	"github.com/google/agentmesh/internal/logging"
 	"github.com/google/agentmesh/internal/router"
 	"github.com/google/agentmesh/internal/standalone"
 	"github.com/google/agentmesh/internal/tunnel"
@@ -74,27 +75,7 @@ func main() {
 		Short:   "Agent Mesh - all-in-one standalone server",
 		Version: version.String(),
 		Run: func(cmd *cobra.Command, args []string) {
-			// go-log read GOLOG_LOG_FMT at package init, before a Setenv here could land.
-			if os.Getenv("LOG_FORMAT") == "json" {
-				cfg := golog.GetConfig()
-				cfg.Format = golog.JSONOutput
-				golog.SetupLogging(cfg)
-			}
-			lvl := golog.LevelInfo
-			if logLevel != "" {
-				if parsed, err := golog.LevelFromString(logLevel); err == nil {
-					lvl = parsed
-				}
-			}
-			golog.SetAllLoggers(lvl)
-			// Same as agentmesh-node: go-libp2p-kad-dht logs routine small-mesh
-			// conditions (empty routing table, no closer peers) at INFO/ERROR,
-			// the latter through a malformed zap call inside the library.
-			// Only an explicit debug level keeps them.
-			if lvl > golog.LevelDebug {
-				_ = golog.SetLogLevel("dht", "fatal")
-				_ = golog.SetLogLevel("dht/RtRefreshManager", "fatal")
-			}
+			logging.Setup(logLevel, "")
 
 			// Secrets arrive through a file or the environment, never as a
 			// flag value that would sit in `ps` and shell history. Env keeps

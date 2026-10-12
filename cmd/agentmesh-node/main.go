@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/google/agentmesh/api"
+	"github.com/google/agentmesh/internal/logging"
 	"github.com/google/agentmesh/internal/node"
 	"github.com/google/agentmesh/internal/pprofserver"
 	"github.com/google/agentmesh/internal/secrets"
@@ -313,23 +314,8 @@ func main() {
 				}
 				return
 			}
-			// Configure logging to duplicate to ring buffer
-			cfg := golog.GetConfig()
-			cfg.URL = "ringbuffer://"
-			golog.SetupLogging(cfg)
-
-			// Initialize logging
-			golog.SetAllLoggers(golog.LevelInfo)
-			if logLevelFlag != "" {
-				lvl, err := golog.LevelFromString(logLevelFlag)
-				if err == nil {
-					golog.SetAllLoggers(lvl)
-				}
-			}
-
-			// Suppress noisy DHT logs
-			_ = golog.SetLogLevel("dht", "fatal")
-			_ = golog.SetLogLevel("dht/RtRefreshManager", "fatal")
+			// Duplicate logs to the ring buffer served by /debug/logs.
+			logging.Setup(logLevelFlag, "ringbuffer://")
 
 			apiTokenFlag = resolveDaemonSecret("api-token", apiTokenPathFlag, "AGENTMESH_API_TOKEN")
 			bootstrapTokenFlag = resolveSecretFlag("bootstrap-token", bootstrapTokenFlag, bootstrapTokenPathFlag)

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/google/agentmesh/api"
+	"github.com/google/agentmesh/internal/logging"
 	"github.com/google/agentmesh/internal/pprofserver"
 	"github.com/google/agentmesh/internal/router"
 	"github.com/google/agentmesh/internal/version"
@@ -68,20 +69,7 @@ func main() {
 		Short:   "Agent Mesh - libp2p Router Node",
 		Version: version.String(),
 		Run: func(cmd *cobra.Command, args []string) {
-			// Initialize logging
-			// go-log read GOLOG_LOG_FMT at package init, before a Setenv here could land.
-			if os.Getenv("LOG_FORMAT") == "json" {
-				cfg := golog.GetConfig()
-				cfg.Format = golog.JSONOutput
-				golog.SetupLogging(cfg)
-			}
-			golog.SetAllLoggers(golog.LevelInfo)
-			if logLevel != "" {
-				lvl, err := golog.LevelFromString(logLevel)
-				if err == nil {
-					golog.SetAllLoggers(lvl)
-				}
-			}
+			logging.Setup(logLevel, "")
 
 			opts := router.Options{
 				ControlPlaneURL:           controlPlaneURL,
