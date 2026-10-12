@@ -74,8 +74,11 @@ func main() {
 		Short:   "Agent Mesh - all-in-one standalone server",
 		Version: version.String(),
 		Run: func(cmd *cobra.Command, args []string) {
+			// go-log read GOLOG_LOG_FMT at package init, before a Setenv here could land.
 			if os.Getenv("LOG_FORMAT") == "json" {
-				_ = os.Setenv("GOLOG_LOG_FMT", "json")
+				cfg := golog.GetConfig()
+				cfg.Format = golog.JSONOutput
+				golog.SetupLogging(cfg)
 			}
 			lvl := golog.LevelInfo
 			if logLevel != "" {
