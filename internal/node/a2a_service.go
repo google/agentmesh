@@ -15,6 +15,7 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -22,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -45,10 +47,15 @@ type A2AService struct{ baseService }
 func (s *A2AService) Init(ctx context.Context) error {
 	switch x := s.backend.(type) {
 	case *api.RegisterServiceRequest_TargetUrl:
-		h, err := newReverseProxyHandler(x.TargetUrl)
+		h, err := newReverseProxy(x.TargetUrl)
 		if err != nil {
 			return err
 		}
+		target, err := parseBackendTarget(x.TargetUrl)
+		if err != nil {
+			return err
+		}
+		h.ModifyResponse = relativizeAgentCardResponse(s.info.GetName(), target.url.EscapedPath())
 		s.handler = h
 	case *api.RegisterServiceRequest_Command:
 		return fmt.Errorf("command-based backends are not supported for A2AService")
@@ -250,7 +257,7 @@ func regenerateAgentCardForMesh(card *a2a.AgentCard, base string) error {
 		if iface == nil || !a2aBindingOverHTTP(iface.ProtocolBinding) {
 			continue
 		}
-		iface.URL = base
+		iface.URL = meshInterfaceURL(base, iface.URL)
 		kept = append(kept, iface)
 	}
 	if len(kept) == 0 {
@@ -270,6 +277,147 @@ func regenerateAgentCardForMesh(card *a2a.AgentCard, base string) error {
 		card.DefaultOutputModes = []string{}
 	}
 	return nil
+}
+
+// meshInterfaceURL is the mesh URL of one agent interface. The provider's
+// node names an interface it can reach by a reference relative to the
+// service root (relativizeAgentCard), which resolves under base; anything
+// else maps to base itself, as a card from an older provider or from an SDK
+// member always has. A reference that could leave the service (a dot
+// segment, a rooted path, a scheme or a host) also maps to base: a provider
+// must not be able to point the caller at another path on this node.
+func meshInterfaceURL(base, raw string) string {
+	ref, err := url.Parse(raw)
+	if err != nil || ref.Scheme != "" || ref.Host != "" || ref.User != nil || ref.Opaque != "" ||
+		strings.HasPrefix(ref.Path, "/") || hasDotSegment(ref.Path) {
+		return base
+	}
+	out := base
+	if ref.Path != "" {
+		out += "/" + ref.EscapedPath()
+	}
+	if ref.RawQuery != "" {
+		out += "?" + ref.RawQuery
+	}
+	return out
+}
+
+// relativizeAgentCardResponse rewrites the agent card the provider's backend
+// serves so that every interface under the service's target URL is named
+// relative to it: an agent whose JSON-RPC endpoint is "/invoke", or whose
+// HTTP+JSON binding lives under "/rest", stays reachable at the same path
+// below the mesh URL. Only the provider knows the target URL, so this is the
+// one place that can compute that path; the caller's node resolves it
+// (meshInterfaceURL). A card it cannot parse is relayed unchanged.
+func relativizeAgentCardResponse(service, targetPath string) func(*http.Response) error {
+	root := strings.TrimSuffix(targetPath, "/")
+	cardPath := root + "/" + a2aAgentCardPath
+	return func(resp *http.Response) error {
+		if resp.Request == nil || resp.Request.Method != http.MethodGet || resp.Request.URL.EscapedPath() != cardPath ||
+			resp.StatusCode != http.StatusOK {
+			return nil
+		}
+		if enc := resp.Header.Get("Content-Encoding"); enc != "" {
+			logger.Warnf("[A2A] agent card of %q is compressed (%s), relayed with its interface URLs unchanged", service, enc)
+			return nil
+		}
+		raw, err := io.ReadAll(io.LimitReader(resp.Body, maxAgentCardBytes+1))
+		if err != nil {
+			return fmt.Errorf("read agent card of %q: %w", service, err)
+		}
+		if len(raw) > maxAgentCardBytes {
+			logger.Warnf("[A2A] agent card of %q exceeds %d bytes, relayed with its interface URLs unchanged", service, maxAgentCardBytes)
+			resp.Body = struct {
+				io.Reader
+				io.Closer
+			}{io.MultiReader(bytes.NewReader(raw), resp.Body), resp.Body}
+			return nil
+		}
+		if err := resp.Body.Close(); err != nil {
+			logger.Debugf("[A2A] close agent card body of %q: %v", service, err)
+		}
+		out, outside, err := relativizeAgentCard(raw, root)
+		if err != nil {
+			logger.Warnf("[A2A] agent card of %q relayed with its interface URLs unchanged: %v", service, err)
+			out = raw
+		}
+		for _, u := range outside {
+			logger.Warnf("[A2A] agent card of %q names interface %q outside target path %q; callers reach it at the service root", service, truncateForLog(u), targetPath)
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(out))
+		resp.ContentLength = int64(len(out))
+		resp.Header.Set("Content-Length", strconv.Itoa(len(out)))
+		return nil
+	}
+}
+
+// relativizeAgentCard rewrites the url of every HTTP supportedInterfaces
+// entry whose path lies under root to a reference relative to root ("" for root
+// itself), and returns the absolute URLs it left as they were. Every other
+// member is kept as the agent wrote it.
+func relativizeAgentCard(raw []byte, root string) ([]byte, []string, error) {
+	var card map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &card); err != nil {
+		return nil, nil, fmt.Errorf("card is not a JSON object: %w", err)
+	}
+	ifacesRaw, ok := card["supportedInterfaces"]
+	if !ok {
+		return raw, nil, nil
+	}
+	var ifaces []map[string]json.RawMessage
+	if err := json.Unmarshal(ifacesRaw, &ifaces); err != nil {
+		return nil, nil, fmt.Errorf("supportedInterfaces is not a list of objects: %w", err)
+	}
+	var outside []string
+	for _, iface := range ifaces {
+		var u, binding string
+		if iface == nil || json.Unmarshal(iface["url"], &u) != nil || json.Unmarshal(iface["protocolBinding"], &binding) != nil ||
+			!a2aBindingOverHTTP(a2a.TransportProtocol(binding)) {
+			continue
+		}
+		rel, ok := relativeToRoot(u, root)
+		if !ok {
+			outside = append(outside, u)
+			continue
+		}
+		enc, err := json.Marshal(rel)
+		if err != nil {
+			return nil, nil, err
+		}
+		iface["url"] = enc
+	}
+	enc, err := json.Marshal(ifaces)
+	if err != nil {
+		return nil, nil, err
+	}
+	card["supportedInterfaces"] = enc
+	out, err := json.Marshal(card)
+	return out, outside, err
+}
+
+// relativeToRoot returns the part of an absolute interface URL below root,
+// without its leading slash, or ok=false when the URL is not under root.
+func relativeToRoot(raw, root string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || !u.IsAbs() || u.Opaque != "" {
+		return "", false
+	}
+	p := u.EscapedPath()
+	var rest string
+	switch {
+	case p == root || p == root+"/":
+	case strings.HasPrefix(p, root+"/"):
+		rest = strings.TrimPrefix(p, root+"/")
+	default:
+		return "", false
+	}
+	if hasDotSegment(rest) {
+		return "", false
+	}
+	if u.RawQuery != "" {
+		rest += "?" + u.RawQuery
+	}
+	return rest, true
 }
 
 // a2aBindingOverHTTP reports whether an A2A protocol binding can traverse the

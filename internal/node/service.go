@@ -52,6 +52,16 @@ type baseService struct {
 // newReverseProxyHandler builds a single-host reverse-proxy handler for a
 // URL backend. Same code path as today's URL branch in RegisterService.
 func newReverseProxyHandler(targetURL string) (http.Handler, error) {
+	p, err := newReverseProxy(targetURL)
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// newReverseProxy is newReverseProxyHandler for a service type that hooks
+// the backend's responses (ModifyResponse).
+func newReverseProxy(targetURL string) (*httputil.ReverseProxy, error) {
 	target, err := parseBackendTarget(targetURL)
 	if err != nil {
 		return nil, err

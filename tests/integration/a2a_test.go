@@ -69,14 +69,29 @@ func TestA2ACUJ(t *testing.T) {
 	// Stock-SDK A2A agent on node A's side: a2asrv serving its card and
 	// echoing message/send. The card deliberately advertises a gRPC
 	// interface and a stale signature, which the mesh must drop on
-	// regeneration, and streaming, which it must keep and carry. The backend
-	// exists before the node: services are declared in the node's
-	// configuration, never registered at runtime.
+	// regeneration, and streaming, which it must keep and carry. Its
+	// JSON-RPC endpoint is "/invoke", as in the a2a-go samples, not the
+	// root: the mesh URL must keep that path. The backend exists before
+	// the node: services are declared in the node's configuration, never
+	// registered at runtime.
 	var sendCount atomic.Int32
 	var sawLabelsHeader atomic.Bool
+	firstStreamEventSeen := make(chan struct{})
 	echo := a2asrv.AgentExecutorFunc(func(ctx context.Context, ec *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
 		return func(yield func(a2a.Event, error) bool) {
 			sendCount.Add(1)
+			if len(ec.Message.Parts) > 0 && ec.Message.Parts[0].Text() == "stream" {
+				if !yield(a2a.NewSubmittedTask(ec, ec.Message), nil) {
+					return
+				}
+				select {
+				case <-firstStreamEventSeen:
+				case <-ctx.Done():
+					return
+				}
+				yield(a2a.NewStatusUpdateEvent(ec, a2a.TaskStateCompleted, a2a.NewMessageForTask(a2a.MessageRoleAgent, ec, a2a.NewTextPart("echo from eu"))), nil)
+				return
+			}
 			yield(a2a.NewMessageForTask(a2a.MessageRoleAgent, ec, a2a.NewTextPart("echo from eu")), nil)
 		}
 	})
@@ -86,14 +101,14 @@ func TestA2ACUJ(t *testing.T) {
 		Version:      "1.0.0",
 		Capabilities: a2a.AgentCapabilities{Streaming: true},
 		SupportedInterfaces: []*a2a.AgentInterface{
-			{URL: "http://localhost:9999", ProtocolBinding: a2a.TransportProtocolJSONRPC, ProtocolVersion: "1.0"},
+			{URL: "http://localhost:9999/invoke", ProtocolBinding: a2a.TransportProtocolJSONRPC, ProtocolVersion: "1.0"},
 			{URL: "localhost:50051", ProtocolBinding: a2a.TransportProtocolGRPC, ProtocolVersion: "1.0"},
 		},
 		Signatures: []a2a.AgentCardSignature{{Protected: "eyJhbGciOiJFUzI1NiJ9", Signature: "c3RhbGU"}},
 	}
 	mux := http.NewServeMux()
 	mux.Handle(a2asrv.WellKnownAgentCardPath, a2asrv.NewStaticAgentCardHandler(agentCard))
-	mux.Handle("/", a2asrv.NewJSONRPCHandler(a2asrv.NewHandler(echo)))
+	mux.Handle("/invoke", a2asrv.NewJSONRPCHandler(a2asrv.NewHandler(echo)))
 	agent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get(api.HeaderMeshRequiredLabels) != "" {
 			sawLabelsHeader.Store(true)
@@ -149,8 +164,8 @@ func TestA2ACUJ(t *testing.T) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	if len(card.SupportedInterfaces) != 1 || card.SupportedInterfaces[0].URL != meshBase {
-		t.Errorf("interfaces not regenerated / gRPC not dropped: %+v", card.SupportedInterfaces)
+	if len(card.SupportedInterfaces) != 1 || card.SupportedInterfaces[0].URL != meshBase+"/invoke" {
+		t.Errorf("interfaces not regenerated / gRPC not dropped: got %+v, want exactly one interface with URL %q", card.SupportedInterfaces, meshBase+"/invoke")
 	}
 	if card.SupportedInterfaces[0].ProtocolBinding != a2a.TransportProtocolJSONRPC {
 		t.Errorf("binding = %q, want JSONRPC", card.SupportedInterfaces[0].ProtocolBinding)
@@ -191,19 +206,29 @@ func TestA2ACUJ(t *testing.T) {
 	}
 
 	// CUJ step 2b: the card keeps streaming, so the same client may stream
-	// the exchange; the SSE response must cross the mesh as it is.
+	// the exchange; the SSE response must flush across the mesh as each
+	// event is emitted (not buffered until EOF): the server holds the final
+	// event until the client confirms it received the first one.
+	streamReq := &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("stream"))}
 	var streamed []a2a.Event
-	for event, err := range euClient.SendStreamingMessage(ctx, req) {
+	for event, err := range euClient.SendStreamingMessage(ctx, streamReq) {
 		if err != nil {
 			t.Fatalf("streamed message/send failed: %v", err)
 		}
 		streamed = append(streamed, event)
+		if len(streamed) == 1 {
+			close(firstStreamEventSeen)
+		}
 	}
-	if len(streamed) != 1 {
-		t.Fatalf("streamed %d events, want the one echo: %+v", len(streamed), streamed)
+	if len(streamed) != 2 {
+		t.Fatalf("streamed %d events, want 2 (submitted task + completed status): %+v", len(streamed), streamed)
 	}
-	if msg, ok := streamed[0].(*a2a.Message); !ok || len(msg.Parts) == 0 || msg.Parts[0].Text() != "echo from eu" {
-		t.Fatalf("streamed event = %+v, want a message with text %q", streamed[0], "echo from eu")
+	if task, ok := streamed[0].(*a2a.Task); !ok || task.Status.State != a2a.TaskStateSubmitted {
+		t.Fatalf("first streamed event = %+v, want *a2a.Task in state %q", streamed[0], a2a.TaskStateSubmitted)
+	}
+	if ev, ok := streamed[1].(*a2a.TaskStatusUpdateEvent); !ok || ev.Status.State != a2a.TaskStateCompleted ||
+		ev.Status.Message == nil || len(ev.Status.Message.Parts) == 0 || ev.Status.Message.Parts[0].Text() != "echo from eu" {
+		t.Fatalf("second streamed event = %+v, want completed TaskStatusUpdateEvent with text %q", streamed[1], "echo from eu")
 	}
 
 	// CUJ step 3: a mismatched label refuses fail-closed BEFORE egress —

@@ -23,6 +23,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -474,5 +475,165 @@ func TestA2AServeAgentCardCaching(t *testing.T) {
 	}
 	if stale := get(`"agent-v1"`); stale.Code != http.StatusOK {
 		t.Errorf("If-None-Match with the agent's validator: status = %d, want 200", stale.Code)
+	}
+}
+
+// TestA2AServiceCardKeepsInterfacePaths pins that an interface served below
+// the agent's root stays reachable through the mesh: the provider names it
+// relative to its target URL and the caller's card resolves it under the
+// mesh URL. Pointing every interface at the bare service root instead sends
+// a client of an agent whose JSON-RPC endpoint is "/invoke", or whose
+// HTTP+JSON binding lives under "/rest", to a path the agent does not serve.
+func TestA2AServiceCardKeepsInterfacePaths(t *testing.T) {
+	const base = "http://127.0.0.1:8080/mesh/12D3KooWpeer/a2a/agent"
+	for _, tc := range []struct {
+		name       string
+		targetPath string
+		ifaces     []string // url of each JSONRPC/HTTP+JSON interface, %s is the agent origin
+		want       []string // url of each interface in the caller's card
+	}{
+		{
+			name:       "agent at the target root",
+			targetPath: "",
+			ifaces:     []string{"%s/invoke", "%s/a2a/rest", "%s", "%s/"},
+			want:       []string{base + "/invoke", base + "/a2a/rest", base, base},
+		},
+		{
+			name:       "target URL with a path",
+			targetPath: "/a2a/app",
+			ifaces:     []string{"%s/a2a/app", "%s/a2a/app/rest", "%s/a2a/app/"},
+			want:       []string{base, base + "/rest", base},
+		},
+		{
+			name:       "interface outside the target keeps the service root",
+			targetPath: "/a2a/app",
+			ifaces:     []string{"%s/other", "%s/a2a/application"},
+			want:       []string{base, base},
+		},
+		{
+			name:       "public URL in front of the agent",
+			targetPath: "",
+			ifaces:     []string{"https://agent.example.com/v1/rpc?tenant=a"},
+			want:       []string{base + "/v1/rpc?tenant=a"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var origin string
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != tc.targetPath+"/.well-known/agent-card.json" {
+					http.NotFound(w, r)
+					return
+				}
+				ifaces := make([]map[string]string, 0, len(tc.ifaces))
+				for i, u := range tc.ifaces {
+					binding := "JSONRPC"
+					if i%2 == 1 {
+						binding = "HTTP+JSON"
+					}
+					u = strings.Replace(u, "%s", origin, 1)
+					ifaces = append(ifaces, map[string]string{"url": u, "protocolBinding": binding, "protocolVersion": "1.0"})
+				}
+				// The mesh drops gRPC; the provider must leave it alone.
+				ifaces = append(ifaces, map[string]string{"url": "localhost:50051", "protocolBinding": "GRPC", "protocolVersion": "1.0"})
+				w.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(w).Encode(map[string]any{"name": "T", "supportedInterfaces": ifaces}); err != nil {
+					t.Errorf("encode card: %v", err)
+				}
+			}))
+			defer backend.Close()
+			origin = backend.URL
+
+			svc := &A2AService{baseService: baseService{
+				info:    &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_A2A, Name: "agent"},
+				backend: &api.RegisterServiceRequest_TargetUrl{TargetUrl: backend.URL + tc.targetPath},
+			}}
+			if err := svc.Init(context.Background()); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			// The provider's ingress strips the routing prefix before the
+			// service handler sees the request.
+			provided := httptest.NewRecorder()
+			svc.Handler().ServeHTTP(provided, httptest.NewRequest("GET", "/.well-known/agent-card.json", nil))
+			if provided.Code != http.StatusOK {
+				t.Fatalf("provider card status = %d, body: %s", provided.Code, provided.Body.String())
+			}
+			if got, want := provided.Header().Get("Content-Length"), strconv.Itoa(provided.Body.Len()); got != want {
+				t.Errorf("provider Content-Length = %q, body is %s bytes", got, want)
+			}
+
+			rt := roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return cardResponse(http.StatusOK, provided.Body.String()), nil
+			})
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest("GET", "/mesh/12D3KooWpeer/a2a/agent/.well-known/agent-card.json", nil)
+			req.Host = "127.0.0.1:8080"
+			if !serveEgressLocally(nil, rt, rec, req) {
+				t.Fatal("card GET must be handled locally")
+			}
+			if rec.Code != http.StatusOK {
+				t.Fatalf("caller card status = %d, body: %s", rec.Code, rec.Body.String())
+			}
+			var card a2a.AgentCard
+			if err := json.Unmarshal(rec.Body.Bytes(), &card); err != nil {
+				t.Fatalf("caller card is not a valid AgentCard: %v", err)
+			}
+			if len(card.SupportedInterfaces) != len(tc.want) {
+				t.Fatalf("got %d interfaces, want %d: %+v", len(card.SupportedInterfaces), len(tc.want), card.SupportedInterfaces)
+			}
+			for i, iface := range card.SupportedInterfaces {
+				if iface.URL != tc.want[i] {
+					t.Errorf("interface %d url = %q, want %q", i, iface.URL, tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestMeshInterfaceURLStaysInService pins that a provider cannot use the
+// relative interface reference to point a caller at another path on the
+// caller's own node (its debug or admin endpoints, another peer).
+func TestMeshInterfaceURLStaysInService(t *testing.T) {
+	const base = "http://127.0.0.1:8080/mesh/12D3KooWpeer/a2a/agent"
+	for _, tc := range []struct{ ref, want string }{
+		{"", base},
+		{"invoke", base + "/invoke"},
+		{"a2a/rest/", base + "/a2a/rest/"},
+		{"?tenant=a", base + "?tenant=a"},
+		{"../../../../debug/connect-peer", base},
+		{"a/../../x", base},
+		{"%2e%2e/%2e%2e/debug", base},
+		{"./invoke", base},
+		{"/debug/connect-peer", base},
+		{"//evil.example/x", base},
+		{"http://localhost:7777/invoke", base},
+		{"mailto:x@example.com", base},
+		{"%zz", base},
+	} {
+		if got := meshInterfaceURL(base, tc.ref); got != tc.want {
+			t.Errorf("meshInterfaceURL(%q) = %q, want %q", tc.ref, got, tc.want)
+		}
+	}
+}
+
+// TestA2AServiceCardRelayedUnchangedWhenUnparseable pins that the provider's
+// card hook never turns an agent's odd response into an error of its own.
+func TestA2AServiceCardRelayedUnchangedWhenUnparseable(t *testing.T) {
+	for _, body := range []string{"<html>login</html>", `{"supportedInterfaces":"x"}`, `{"name":"no interfaces"}`} {
+		backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(body))
+		}))
+		svc := &A2AService{baseService: baseService{
+			info:    &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_A2A, Name: "agent"},
+			backend: &api.RegisterServiceRequest_TargetUrl{TargetUrl: backend.URL},
+		}}
+		if err := svc.Init(context.Background()); err != nil {
+			t.Fatalf("Init: %v", err)
+		}
+		rec := httptest.NewRecorder()
+		svc.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/.well-known/agent-card.json", nil))
+		backend.Close()
+		if rec.Code != http.StatusOK || rec.Body.String() != body {
+			t.Errorf("card %q: got status %d body %q, want it relayed unchanged", body, rec.Code, rec.Body.String())
+		}
 	}
 }
