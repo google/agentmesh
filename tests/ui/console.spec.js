@@ -421,3 +421,25 @@ test('revoked nodes disappear from the Nodes view and the node count', async ({ 
   await expect(page.locator('#table-nodes')).not.toContainText(REVOKED);
   await expect(page.locator('#stat-nodes')).toHaveText('1');
 });
+
+// A revoke only bans the record, so the console offers the way back.
+test('an admin restores a revoked node from the Nodes view', async ({ page }) => {
+  const REVOKED = '12D3KooWRevokedNodeFixturePeer';
+  await page.route('**/api/admin/status', async (route) => {
+    const response = await route.fetch();
+    const status = await response.json();
+    status.enrolled_nodes = [{ peer_id: REVOKED, role: 'mesh:role:node', owner_id: 'root-admin', banned: true }];
+    await route.fulfill({ response, json: status });
+  });
+  let unban = '';
+  await page.route('**/api/admin/nodes/*/unban', async (route) => {
+    unban = `${route.request().method()} ${new URL(route.request().url()).pathname}`;
+    await route.fulfill({ status: 204 });
+  });
+
+  await login(page);
+  await page.click('.nav-item[data-target="nodes"]');
+  page.once('dialog', (d) => d.accept());
+  await page.locator('#table-revoked-nodes tr', { hasText: REVOKED }).locator('button:has-text("Restore")').click();
+  await expect.poll(() => unban).toBe(`POST /api/admin/nodes/${REVOKED}/unban`);
+});

@@ -238,8 +238,8 @@ Revocation operates at two levels:
    shares the root authority block's `RevocationIds()[0]`, revoking the root
    credential invalidates every attenuated task token derived from it across
    the mesh. If the node was enrolled through OIDC, the identity behind it
-   (`issuer|subject`) is banned too. `POST /admin/nodes/{peer_id}/unban`
-   reverses both bans.
+   (`issuer|subject`) is banned too. `POST /admin/nodes/{peer_id}/unban`, or
+   **Restore** in the console's Revoked Nodes list, reverses both bans.
 2. **Local task token revocation (`POST /oauth/revoke`):**
    When an orchestrator or sandbox finishes a task before its TTL expires, it
    calls `POST /oauth/revoke` (RFC 7009) on the local `agentmesh-node`, which records

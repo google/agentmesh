@@ -205,6 +205,27 @@
                         </table>
                         </div>
                     </div>
+                    <!-- Admins only: a revoked node keeps its record, so it can be restored. -->
+                    <div id="revoked-nodes" hidden>
+                        <div class="section-header section-header-spaced">
+                            <h2>Revoked Nodes</h2>
+                        </div>
+                        <div class="card">
+                            <div class="table-responsive">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Node ID</th>
+                                        <th>Type</th>
+                                        <th>Owner</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="table-revoked-nodes"></tbody>
+                            </table>
+                            </div>
+                        </div>
+                    </div>
                 </section>
 
                 <!-- Services View: self-reported by each node (see /nodes/catalog);

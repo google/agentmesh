@@ -251,6 +251,6 @@ curl -fsS -X POST https://mesh.example.com/admin/revoke \
 ```
 
 The node's next refresh fails and its daemon exits. Connected peers drop it
-as soon as the ban event reaches them. `POST /admin/nodes/<peer-id>/unban`
-reverses the ban. `agentmesh-control-plane admin ban --peer <id>` and `unban` do
+as soon as the ban event reaches them. `POST /admin/nodes/<peer-id>/unban`,
+or **Restore** in the console's Revoked Nodes list, reverses the ban. `agentmesh-control-plane admin ban --peer <id>` and `unban` do
 the same directly in the database, for cases where the API is not reachable.

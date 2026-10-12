@@ -219,8 +219,8 @@ async function loadData() {
             }
         }
         
-        // A revoked node is banned, not deleted: the record survives for unban
-        // and audit, but it is out of the mesh, so no view may list it.
+        // A revoked node is banned, not deleted: the record survives for restore
+        // and audit, but it is out of the mesh, so only the admins' revoked list shows it.
         const enrolledNodes = (data.enrolled_nodes || []).filter(node => !node.banned);
 
         // Update Stats
@@ -248,6 +248,7 @@ async function loadData() {
             setTableMessage('table-enrollments', 4, 'Restricted to administrators.');
         }
         renderNodesTable(enrolledNodes, role);
+        renderRevokedNodesTable(role === 'admin' ? (data.enrolled_nodes || []).filter(node => node.banned) : []);
         renderServicesTable(data.node_catalog || {}, buildLabelsByPeer(enrolledNodes));
         renderRoutersTable(data.active_routers || []);
         renderRouterTopography(data.active_routers || []);
@@ -410,6 +411,24 @@ window.setAutonomousRecovery = function(peerID, enabled) {
         : 'Disable autonomous recovery? If this node is offline past the key grace period it will need a new bootstrap token to rejoin.';
     if (confirm(prompt)) {
         actionRequest(`api/admin/nodes/${peerID}/autonomous-recovery`, 'POST', { enabled }).catch(() => {});
+    }
+};
+
+function renderRevokedNodesTable(nodes) {
+    document.getElementById('revoked-nodes').hidden = nodes.length === 0;
+    document.getElementById('table-revoked-nodes').innerHTML = nodes.map(node => `
+        <tr>
+            <td>${peerCell(node.peer_id, node.labels)}</td>
+            <td>${escapeHTML(node.role)}</td>
+            <td>${escapeHTML(node.owner_id || '')}</td>
+            <td><button class="btn btn-sm" onclick="restoreNode('${escapeHTML(node.peer_id)}')">Restore</button></td>
+        </tr>
+    `).join('');
+}
+
+window.restoreNode = function(peerID) {
+    if (confirm('Restore this node? Its key and the identity behind it may join the mesh again.')) {
+        actionRequest(`api/admin/nodes/${peerID}/unban`).catch(() => {});
     }
 };
 
