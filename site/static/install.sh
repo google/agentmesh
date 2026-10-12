@@ -36,9 +36,6 @@ fi
 
 echo "Found latest version: ${VERSION}"
 
-# Construct download URL (matches goreleaser name template)
-TAR_NAME="agentmesh_${OS_NAME}_${ARCH_NAME}.tar.gz"
-DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/${TAR_NAME}"
 CHECKSUMS_URL="https://github.com/${REPO}/releases/download/${VERSION}/checksums.txt"
 
 # Create a temporary directory
@@ -46,24 +43,32 @@ TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
 cd "$TMP_DIR"
 
-echo "Downloading ${DOWNLOAD_URL}..."
-if ! curl -sfL -o "${TAR_NAME}" "${DOWNLOAD_URL}"; then
-    echo "Error: Failed to download ${DOWNLOAD_URL}"
-    exit 1
-fi
-
 echo "Downloading ${CHECKSUMS_URL}..."
 if ! curl -sfL -o checksums.txt "${CHECKSUMS_URL}"; then
     echo "Error: Failed to download ${CHECKSUMS_URL}"
     exit 1
 fi
 
-echo "Verifying SHA-256 checksum..."
+# Construct download URL (matches goreleaser name template, with fallback for pre-rename tags)
+TAR_NAME="agentmesh_${OS_NAME}_${ARCH_NAME}.tar.gz"
 EXPECTED_SUM=$(awk -v f="${TAR_NAME}" '$2 == f {print $1}' checksums.txt)
 if [ -z "${EXPECTED_SUM}" ]; then
-    echo "Error: ${TAR_NAME} not found in checksums.txt"
+    TAR_NAME="sam_${OS_NAME}_${ARCH_NAME}.tar.gz"
+    EXPECTED_SUM=$(awk -v f="${TAR_NAME}" '$2 == f {print $1}' checksums.txt)
+fi
+if [ -z "${EXPECTED_SUM}" ]; then
+    echo "Error: archive for ${OS_NAME}_${ARCH_NAME} not found in checksums.txt"
     exit 1
 fi
+
+DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/${TAR_NAME}"
+echo "Downloading ${DOWNLOAD_URL}..."
+if ! curl -sfL -o "${TAR_NAME}" "${DOWNLOAD_URL}"; then
+    echo "Error: Failed to download ${DOWNLOAD_URL}"
+    exit 1
+fi
+
+echo "Verifying SHA-256 checksum..."
 if command -v sha256sum >/dev/null 2>&1; then
     ACTUAL_SUM=$(sha256sum "${TAR_NAME}" | awk '{print $1}')
 elif command -v shasum >/dev/null 2>&1; then
@@ -82,7 +87,7 @@ tar -xzf "${TAR_NAME}"
 
 echo "Installing to ${INSTALL_DIR} (may require sudo)..."
 INSTALLED_BINS=()
-for b in agentmesh-one agentmesh-node agentmesh-control-plane agentmesh-router mcp-client agentmesh-console; do
+for b in agentmesh-one agentmesh-node agentmesh-control-plane agentmesh-router mcp-client agentmesh-console sam-one sam-node sam-control-plane sam-router sam-console; do
     if [ -f "$b" ]; then
         INSTALLED_BINS+=("$b")
     fi

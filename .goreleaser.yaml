@@ -102,3 +102,7 @@ archives:
       - goos: windows
         formats:
           - zip
+checksum:
+  # install.sh downloads releases/download/<tag>/checksums.txt; keep the name
+  # fixed so it does not follow project_name and the version.
+  name_template: checksums.txt
