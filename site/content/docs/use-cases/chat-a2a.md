@@ -28,8 +28,8 @@ So the caller's node stands in for the card endpoint. It holds the client's
 request, fetches the card from the agent over the mesh, and serves a
 regenerated card whose interface URLs point back at the mesh path that the
 client fetched from. Protocol bindings that the mesh cannot carry are
-dropped (gRPC needs its own end-to-end connection), and streaming is
-advertised as off. The client follows the regenerated card as it would for
+dropped (gRPC needs its own end-to-end connection). Capabilities such as
+streaming stay as the agent declares them. The client follows the regenerated card as it would for
 any A2A server. Discovery, sending messages and `contextId` round-tripping
 all work without changes, while the traffic flows over libp2p between the
 nodes.
@@ -122,8 +122,7 @@ curl -s -H 'X-Mesh-Authentication: Bearer devtoken' \
 
 The interface URLs in the response point back at this
 `/mesh/{peer}/a2a/chat` path, and not at the agent's own `127.0.0.1:7777`.
-`capabilities.streaming` is `false`. That regenerated card is what makes the
-example work.
+That regenerated card is what makes the example work.
 
 ### 6. Chat
 

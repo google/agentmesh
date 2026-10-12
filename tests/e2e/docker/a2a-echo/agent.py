@@ -1,7 +1,8 @@
 """Stock a2a-sdk echo agent for the e2e mesh CUJ: deterministic, no external APIs.
 
 The card deliberately advertises a gRPC interface and streaming so the test
-can verify the mesh regenerates the card (drops gRPC, turns streaming off).
+can verify the mesh regenerates the card (drops gRPC, keeps streaming) and
+that the stock client's streamed message/send crosses the mesh.
 """
 import uuid
 

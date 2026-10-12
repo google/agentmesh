@@ -68,9 +68,10 @@ func TestA2ACUJ(t *testing.T) {
 
 	// Stock-SDK A2A agent on node A's side: a2asrv serving its card and
 	// echoing message/send. The card deliberately advertises a gRPC
-	// interface, streaming, and a stale signature: the mesh must drop all
-	// three on regeneration. The backend exists before the node: services
-	// are declared in the node's configuration, never registered at runtime.
+	// interface and a stale signature, which the mesh must drop on
+	// regeneration, and streaming, which it must keep and carry. The backend
+	// exists before the node: services are declared in the node's
+	// configuration, never registered at runtime.
 	var sendCount atomic.Int32
 	var sawLabelsHeader atomic.Bool
 	echo := a2asrv.AgentExecutorFunc(func(ctx context.Context, ec *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
@@ -154,8 +155,8 @@ func TestA2ACUJ(t *testing.T) {
 	if card.SupportedInterfaces[0].ProtocolBinding != a2a.TransportProtocolJSONRPC {
 		t.Errorf("binding = %q, want JSONRPC", card.SupportedInterfaces[0].ProtocolBinding)
 	}
-	if card.Capabilities.Streaming {
-		t.Error("streaming must be advertised off through the mesh")
+	if !card.Capabilities.Streaming {
+		t.Error("streaming must stay as the agent declares it")
 	}
 	if len(card.Signatures) != 0 {
 		t.Error("stale signatures must be dropped from the regenerated card")
@@ -187,6 +188,22 @@ func TestA2ACUJ(t *testing.T) {
 	}
 	if len(reply.Parts) == 0 || reply.Parts[0].Text() != "echo from eu" {
 		t.Fatalf("unexpected reply: %+v", reply)
+	}
+
+	// CUJ step 2b: the card keeps streaming, so the same client may stream
+	// the exchange; the SSE response must cross the mesh as it is.
+	var streamed []a2a.Event
+	for event, err := range euClient.SendStreamingMessage(ctx, req) {
+		if err != nil {
+			t.Fatalf("streamed message/send failed: %v", err)
+		}
+		streamed = append(streamed, event)
+	}
+	if len(streamed) != 1 {
+		t.Fatalf("streamed %d events, want the one echo: %+v", len(streamed), streamed)
+	}
+	if msg, ok := streamed[0].(*a2a.Message); !ok || len(msg.Parts) == 0 || msg.Parts[0].Text() != "echo from eu" {
+		t.Fatalf("unexpected streamed event: %+v", streamed[0])
 	}
 
 	// CUJ step 3: a mismatched label refuses fail-closed BEFORE egress —

@@ -25,7 +25,7 @@ async def main(url: str, text: str) -> None:
         assert "GRPC" not in bindings, f"gRPC interface not dropped: {bindings}"
         assert all(i.url == url for i in card.supported_interfaces), \
             f"interface URLs not regenerated to {url}: {card.supported_interfaces}"
-        assert not card.capabilities.streaming, "streaming not advertised off"
+        assert card.capabilities.streaming, "streaming not kept as the agent declares it"
         client = await create_client(card, client_config=ClientConfig(httpx_client=http))
         message = Message(
             role=Role.ROLE_USER,
