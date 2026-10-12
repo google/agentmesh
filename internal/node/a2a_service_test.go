@@ -217,7 +217,7 @@ func TestA2AServeAgentCardRegenerates(t *testing.T) {
 		t.Errorf("binding = %q, want JSONRPC", card.SupportedInterfaces[0].ProtocolBinding)
 	}
 	if !card.Capabilities.Streaming {
-		t.Error("streaming must stay as the agent declares it")
+		t.Errorf("streaming = %v, want true as the agent declares it", card.Capabilities.Streaming)
 	}
 	if len(card.Signatures) != 0 {
 		t.Error("stale signatures must be dropped from the regenerated card")

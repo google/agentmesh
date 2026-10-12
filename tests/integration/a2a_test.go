@@ -156,7 +156,7 @@ func TestA2ACUJ(t *testing.T) {
 		t.Errorf("binding = %q, want JSONRPC", card.SupportedInterfaces[0].ProtocolBinding)
 	}
 	if !card.Capabilities.Streaming {
-		t.Error("streaming must stay as the agent declares it")
+		t.Errorf("streaming = %v, want true as the agent declares it", card.Capabilities.Streaming)
 	}
 	if len(card.Signatures) != 0 {
 		t.Error("stale signatures must be dropped from the regenerated card")
@@ -203,7 +203,7 @@ func TestA2ACUJ(t *testing.T) {
 		t.Fatalf("streamed %d events, want the one echo: %+v", len(streamed), streamed)
 	}
 	if msg, ok := streamed[0].(*a2a.Message); !ok || len(msg.Parts) == 0 || msg.Parts[0].Text() != "echo from eu" {
-		t.Fatalf("unexpected streamed event: %+v", streamed[0])
+		t.Fatalf("streamed event = %+v, want a message with text %q", streamed[0], "echo from eu")
 	}
 
 	// CUJ step 3: a mismatched label refuses fail-closed BEFORE egress —
