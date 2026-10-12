@@ -48,7 +48,8 @@ downloaded tunnel connector.
 | `--allowed-audiences` | `agentmesh-audience` | Accepted OIDC audiences. |
 | `--enroll-qr` | when stdout is a terminal | Print a device-enrollment QR code at startup. Only for `https` URLs. |
 | `--enroll-qr-max-usages` | `1` | How many devices the startup QR admits. |
-| `--log-level` | `info` | `debug`, `info`, `warn`, `error`. `LOG_FORMAT=json` selects JSON output. |
+| `--log-level` | `info` | `debug`, `info`, `warn`, `error`. |
+| `--log-format` |  | `text` or `json`. When unset, the `LOG_FORMAT` env var decides, else `text`. |
 
 ### Embedded component tunables
 

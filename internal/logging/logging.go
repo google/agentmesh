@@ -23,33 +23,47 @@ import (
 
 var logger = golog.Logger("logging")
 
-// Setup applies the sink URL, the LOG_FORMAT=json bridge and the log level.
-// go-log reads GOLOG_LOG_FMT at package init, before main runs, so the
-// config has to be re-applied here through SetupLogging.
-func Setup(level, sinkURL string) {
-	cfg := golog.GetConfig()
-	if sinkURL != "" {
-		cfg.URL = sinkURL
+// Options selects how a binary logs. Zero values keep the defaults: info
+// level, the LOG_FORMAT env var (else text) and no extra sink.
+type Options struct {
+	Level   string // log level: debug, info, warn or error
+	Format  string // output format: text or json; empty falls back to $LOG_FORMAT, else text
+	SinkURL string // extra go-log sink, e.g. the node's ring buffer
+}
+
+// Setup applies opts process-wide. go-log reads its GOLOG_* env at package
+// init, before main runs, so the config is re-applied here through
+// SetupLogging.
+func Setup(opts Options) {
+	lvl, levelErr := golog.LevelFromString(opts.Level)
+	if levelErr != nil {
+		lvl = golog.LevelInfo
 	}
-	if os.Getenv("LOG_FORMAT") == "json" {
+	format := opts.Format
+	badFormat := format != "" && format != "text" && format != "json"
+	if format == "" || badFormat {
+		format = os.Getenv("LOG_FORMAT")
+	}
+
+	cfg := golog.GetConfig()
+	if opts.SinkURL != "" {
+		cfg.URL = opts.SinkURL
+	}
+	switch format {
+	case "json":
 		cfg.Format = golog.JSONOutput
+	case "text":
+		cfg.Format = golog.PlaintextOutput
 	}
 	golog.SetupLogging(cfg)
-
-	lvl := golog.LevelInfo
-	var levelErr error
-	if level != "" {
-		if parsed, err := golog.LevelFromString(level); err == nil {
-			lvl = parsed
-		} else {
-			levelErr = err
-		}
-	}
 	golog.SetAllLoggers(lvl)
-	// Warn after SetAllLoggers, which sets this logger to a level that lets
-	// the warning through.
+
+	// go-log starts at error level, so warnings only show after SetAllLoggers.
 	if levelErr != nil {
-		logger.Warnf("invalid log level %q, falling back to info", level)
+		logger.Warnf("invalid log level %q, using info", opts.Level)
+	}
+	if badFormat {
+		logger.Warnf("invalid log format %q, want text or json; using LOG_FORMAT", opts.Format)
 	}
 	// go-libp2p-kad-dht logs routine small-mesh conditions (empty routing
 	// table, no closer peers) at INFO/ERROR, the latter through a malformed

@@ -59,6 +59,7 @@ func main() {
 		oidcClientID         string
 		allowedAudiencesFlag string
 		logLevel             string
+		logFormat            string
 		tunnelProvider       string
 		tunnelTokenPath      string
 		tunnelInstall        bool
@@ -75,7 +76,7 @@ func main() {
 		Short:   "Agent Mesh - all-in-one standalone server",
 		Version: version.String(),
 		Run: func(cmd *cobra.Command, args []string) {
-			logging.Setup(logLevel, "")
+			logging.Setup(logging.Options{Level: logLevel, Format: logFormat})
 
 			// Secrets arrive through a file or the environment, never as a
 			// flag value that would sit in `ps` and shell history. Env keeps
@@ -214,6 +215,7 @@ func main() {
 	rootCmd.Flags().StringVar(&oidcClientID, "oidc-client-id", "", "OAuth client id advertised via /info (defaults to the first allowed audience)")
 	rootCmd.Flags().StringVar(&allowedAudiencesFlag, "allowed-audiences", api.DefaultAudience, "Comma-separated list of allowed OIDC audiences")
 	rootCmd.Flags().StringVar(&logLevel, "log-level", "", "Log level: debug, info, warn, error")
+	rootCmd.Flags().StringVar(&logFormat, "log-format", "", "Log format (text, json); when unset, the LOG_FORMAT env var decides, else text")
 	rootCmd.Flags().StringVar(&tunnelProvider, "tunnel", "", "Publish the listener on a public URL through a tunnel provider ("+strings.Join(tunnel.Names(), ", ")+"); sets the external URL")
 	rootCmd.Flags().StringVar(&tunnelTokenPath, "tunnel-token-path", "", "File containing the tunnel provider token (or env AGENTMESH_TUNNEL_TOKEN); use with --tunnel <provider> --external-url https://...")
 	rootCmd.Flags().BoolVar(&tunnelInstall, "tunnel-install", false, "Download the pinned connector binary (cloudflared "+tunnel.CloudflaredVersion+", digest-verified) into <data-dir>/bin without asking; implies accepting its license")

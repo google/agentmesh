@@ -57,6 +57,7 @@ var (
 	stsIssuerURL          string
 	insecureSkipTLSVerify bool
 	logLevel              string
+	logFormat             string
 	autoApproveEnrollment bool
 )
 
@@ -79,7 +80,7 @@ func main() {
 			return nil
 		},
 		Run: func(cmd *cobra.Command, args []string) {
-			logging.Setup(logLevel, "")
+			logging.Setup(logging.Options{Level: logLevel, Format: logFormat})
 
 			if oidcIssuer == "" && workloadIssuer == "" {
 				logger.Fatalf("OIDC issuer is required (use --issuer or --workload-issuer flag)")
@@ -201,6 +202,7 @@ func main() {
 	rootCmd.Flags().StringVar(&stsIssuerURL, "sts-issuer-url", "", "Canonical external URL of this control plane for OIDC/STS issuer and discovery metadata (or env AGENTMESH_STS_ISSUER_URL)")
 	rootCmd.Flags().BoolVar(&insecureSkipTLSVerify, "insecure-skip-tls-verify", false, "Skip TLS verification for OIDC providers")
 	rootCmd.Flags().StringVar(&logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
+	rootCmd.Flags().StringVar(&logFormat, "log-format", "", "Log format (text, json); when unset, the LOG_FORMAT env var decides, else text")
 	rootCmd.Flags().BoolVar(&autoApproveEnrollment, "auto-approve-enrollment", false, "Auto-approve valid bootstrap token enrollment requests")
 
 	adminCmd := &cobra.Command{

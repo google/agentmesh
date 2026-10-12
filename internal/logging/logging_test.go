@@ -21,11 +21,36 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-func TestSetupFormatBridge(t *testing.T) {
-	t.Setenv("LOG_FORMAT", "json")
-	Setup("info", "")
-	if got := golog.GetConfig().Format; got != golog.JSONOutput {
-		t.Fatalf("format = %v, want %v (JSONOutput)", got, golog.JSONOutput)
+func TestSetupFormat(t *testing.T) {
+	cases := []struct {
+		name string
+		env  string
+		flag string
+		want golog.LogFormat
+	}{
+		{"env selects json", "json", "", golog.JSONOutput},
+		{"env selects text", "text", "", golog.PlaintextOutput},
+		{"flag wins over env", "json", "text", golog.PlaintextOutput},
+		{"flag selects json", "", "json", golog.JSONOutput},
+		{"invalid flag falls back to env", "json", "bogus", golog.JSONOutput},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LOG_FORMAT", tc.env)
+			Setup(Options{Format: tc.flag})
+			if got := golog.GetConfig().Format; got != tc.want {
+				t.Errorf("format = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSetupInvalidFormatKeepsCurrent(t *testing.T) {
+	t.Setenv("LOG_FORMAT", "")
+	Setup(Options{Format: "text"})
+	Setup(Options{Format: "bogus"})
+	if got := golog.GetConfig().Format; got != golog.PlaintextOutput {
+		t.Errorf("format = %v, want %v (PlaintextOutput): an invalid value must keep the current format", got, golog.PlaintextOutput)
 	}
 }
 
@@ -33,27 +58,27 @@ func TestSetupLevels(t *testing.T) {
 	dht := golog.Logger("dht")
 	app := golog.Logger("logging-test-app")
 
-	Setup("info", "")
-	if !app.Desugar().Core().Enabled(zapcore.InfoLevel) {
-		t.Error("info level not applied to ordinary loggers")
+	Setup(Options{Level: "info"})
+	if got := app.Desugar().Core().Enabled(zapcore.InfoLevel); !got {
+		t.Errorf("app Enabled(Info) = %v, want true after Setup(info)", got)
 	}
-	if dht.Desugar().Core().Enabled(zapcore.ErrorLevel) {
-		t.Error("dht logger not suppressed at info level")
+	if got := dht.Desugar().Core().Enabled(zapcore.ErrorLevel); got {
+		t.Errorf("dht Enabled(Error) = %v, want false (suppressed) at info level", got)
 	}
 
-	Setup("debug", "")
-	if !dht.Desugar().Core().Enabled(zapcore.ErrorLevel) {
-		t.Error("explicit debug level must keep dht logs")
+	Setup(Options{Level: "debug"})
+	if got := dht.Desugar().Core().Enabled(zapcore.ErrorLevel); !got {
+		t.Errorf("dht Enabled(Error) = %v, want true at explicit debug level", got)
 	}
 }
 
 func TestSetupInvalidLevelFallsBackToInfo(t *testing.T) {
 	app := golog.Logger("logging-test-fallback")
-	Setup("degub", "")
-	if !app.Desugar().Core().Enabled(zapcore.InfoLevel) {
-		t.Error("invalid level must fall back to info, got stricter")
+	Setup(Options{Level: "degub"})
+	if got := app.Desugar().Core().Enabled(zapcore.InfoLevel); !got {
+		t.Errorf("app Enabled(Info) = %v, want true: invalid level must fall back to info", got)
 	}
-	if app.Desugar().Core().Enabled(zapcore.DebugLevel) {
-		t.Error("invalid level must fall back to info, got debug")
+	if got := app.Desugar().Core().Enabled(zapcore.DebugLevel); got {
+		t.Errorf("app Enabled(Debug) = %v, want false: invalid level must fall back to info, not debug", got)
 	}
 }

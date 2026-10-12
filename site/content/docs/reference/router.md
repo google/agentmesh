@@ -52,7 +52,8 @@ replica count.
 | `--auth-deadline` | `1m` | How long an inbound connection may stay open without its peer passing the handshake. A member handshakes the moment it connects; a member attached elsewhere whose DHT client came to query is done in less, as is the control plane's event publisher, which presents a credential of its own. What is left at the deadline is closed, so the connections a router holds are its members' and the watermarks mean members. `0` keeps every connection. |
 | `--metrics-addr` | off | Serve `/metrics`, `/healthz`, `/readyz` and `/debug/peer` without authentication on this address. `/readyz` returns `200` once the router is enrolled and the libp2p host is up. Keep this address separate from the libp2p ports and inside the cluster. |
 | `--pprof-addr` | off | Serve Go runtime profiles under `/debug/pprof/` on this address, for attributing memory or goroutines the metrics show as held. Unauthenticated, and a heap profile is a dump of process memory, which holds the router's key: bind it to loopback and reach it with `kubectl port-forward`. |
-| `--log-level` | `info` | `debug`, `info`, `warn`, `error`. `LOG_FORMAT=json` selects JSON output. |
+| `--log-level` | `info` | `debug`, `info`, `warn`, `error`. |
+| `--log-format` |  | `text` or `json`. When unset, the `LOG_FORMAT` env var decides, else `text`. |
 
 ## What it does at run time
 

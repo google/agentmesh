@@ -127,7 +127,8 @@ explains how to enroll.
 | `--monitor-bootstrap` | `2m` | Delay before the router-connection monitor starts. |
 | `--monitor-interval` | `1m` | How often the monitor checks that a router is connected. |
 | `--autorelay-min-interval`, `--autorelay-boot-delay`, `--autorelay-backoff` | `30s`, `0s`, `3s` | libp2p AutoRelay tuning. |
-| `--log-level` | `info` | `debug`, `info`, `warn` or `error`. `LOG_FORMAT=json` selects JSON output. |
+| `--log-level` | `info` | `debug`, `info`, `warn` or `error`. |
+| `--log-format` |  | `text` or `json`. When unset, the `LOG_FORMAT` env var decides, else `text`. |
 
 ## `reset`
 
