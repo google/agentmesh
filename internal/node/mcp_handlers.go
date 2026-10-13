@@ -527,7 +527,7 @@ func (n *AgentMeshNode) fetchToolsForRemoteService(
 	}
 	defer cleanup()
 
-	listRes, err := session.ListTools(ctx, nil)
+	tools, err := listAllTools(ctx, session)
 	if err != nil {
 		if serviceNameFilter == "" || connectService == serviceNameFilter {
 			return []remoteToolRow{{
@@ -538,11 +538,8 @@ func (n *AgentMeshNode) fetchToolsForRemoteService(
 		}
 		return nil
 	}
-	if listRes == nil {
-		return nil
-	}
 	var rows []remoteToolRow
-	for _, t := range listRes.Tools {
+	for _, t := range tools {
 		if t == nil {
 			continue
 		}
@@ -643,15 +640,11 @@ func (n *AgentMeshNode) fetchRemoteToolDescription(ctx context.Context, pid peer
 	}
 	defer cleanup()
 
-	listRes, err := session.ListTools(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	if listRes == nil {
-		return nil, fmt.Errorf("list tools response was nil")
-	}
-
-	for _, tool := range listRes.Tools {
+	count := 0
+	for tool, err := range session.Tools(ctx, nil) {
+		if err != nil {
+			return nil, err
+		}
 		if tool == nil {
 			continue
 		}
@@ -663,6 +656,10 @@ func (n *AgentMeshNode) fetchRemoteToolDescription(ctx context.Context, pid peer
 				InputSchema:  tool.InputSchema,
 				OutputSchema: tool.OutputSchema,
 			}, nil
+		}
+		count++
+		if count >= maxToolsPerService {
+			break
 		}
 	}
 

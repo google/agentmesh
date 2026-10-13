@@ -217,6 +217,71 @@ func TestHandleFindRemoteTools_SinglePeer(t *testing.T) {
 	}
 }
 
+func TestHandleFindRemoteTools_Pagination(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	tools := []*mcp.Tool{
+		{Name: "review_pr", Description: "Run a code review", InputSchema: map[string]any{"type": "object"}},
+		{Name: "add_comment", Description: "Add a comment", InputSchema: map[string]any{"type": "object"}},
+	}
+	hostedSrv := httptest.NewServer(newFakeMCPHandlerWithOptions(t, tools, &mcp.ServerOptions{PageSize: 1}))
+	defer hostedSrv.Close()
+
+	nodeA, cleanupA := startBareNode(t, ctx)
+	defer cleanupA()
+	nodeB, cleanupB := startBareNode(t, ctx)
+	defer cleanupB()
+
+	if err := nodeA.Host.Connect(ctx, peer.AddrInfo{ID: nodeB.Host.ID(), Addrs: nodeB.Host.Addrs()}); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	enrollUnderRoot(t, nodeA, nodeB)
+
+	// Register an MCP service on B with two tools paginated across pages.
+	regReq := &api.RegisterServiceRequest{
+		Service: &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_MCP, Name: "code-reviewer"},
+		Backend: &api.RegisterServiceRequest_TargetUrl{TargetUrl: hostedSrv.URL},
+	}
+	if err := nodeB.RegisterService(ctx, regReq); err != nil {
+		t.Fatalf("RegisterService: %v", err)
+	}
+
+	res, _, err := nodeA.handleFindRemoteTools(ctx, &mcp.CallToolRequest{}, FindRemoteToolsParams{
+		PeerID: nodeB.Host.ID().String(),
+	})
+	if err != nil {
+		t.Fatalf("handleFindRemoteTools: %v", err)
+	}
+	tc, ok := res.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent, got %T", res.Content[0])
+	}
+	var rows []remoteToolRow
+	if err := json.Unmarshal([]byte(tc.Text), &rows); err != nil {
+		t.Fatalf("unmarshal: %v (text: %q)", err, tc.Text)
+	}
+
+	wantNames := map[string]bool{
+		"mcp://code-reviewer/review_pr":   false,
+		"mcp://code-reviewer/add_comment": false,
+	}
+	for _, row := range rows {
+		if row.PeerID != nodeB.Host.ID().String() {
+			t.Errorf("row has peer_id %q, want %q", row.PeerID, nodeB.Host.ID().String())
+		}
+		if _, ok := wantNames[row.ToolName]; ok {
+			wantNames[row.ToolName] = true
+		}
+	}
+	for name, found := range wantNames {
+		if !found {
+			t.Errorf("expected tool %q in response, not found across pages; rows=%+v", name, rows)
+		}
+	}
+}
+
 // TestHandleFindRemoteTools_BackendPredatesDiscover is a regression test for
 // a go-sdk v1.7.0 (SEP-2575) incompatibility: mcp.Client.Connect() sends a
 // "server/discover" preflight before "initialize", falling back to the
@@ -1027,6 +1092,143 @@ func TestHandleDescribeRemoteTool_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestHandleDescribeRemoteTool_Pagination(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	nodeA, cleanupA := startBareNode(t, ctx)
+	defer cleanupA()
+	nodeB, cleanupB := startBareNode(t, ctx)
+	defer cleanupB()
+
+	if err := nodeA.Host.Connect(ctx, peer.AddrInfo{ID: nodeB.Host.ID(), Addrs: nodeB.Host.Addrs()}); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	enrollUnderRoot(t, nodeA, nodeB)
+
+	// Tools are served with PageSize: 1, with "alpha" ahead of "review_pr" so
+	// review_pr lives on a subsequent page.
+	tools := []*mcp.Tool{
+		{Name: "alpha", Description: "First tool", InputSchema: map[string]any{"type": "object"}},
+		{
+			Name:        "review_pr",
+			Description: "Run a code review",
+			InputSchema: map[string]any{
+				"type":     "object",
+				"required": []any{"pr_url"},
+				"properties": map[string]any{
+					"pr_url": map[string]any{"type": "string"},
+				},
+			},
+			OutputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"summary": map[string]any{"type": "string"},
+				},
+			},
+		},
+	}
+	hostedSrv := httptest.NewServer(newFakeMCPHandlerWithOptions(t, tools, &mcp.ServerOptions{PageSize: 1}))
+	defer hostedSrv.Close()
+
+	regReq := &api.RegisterServiceRequest{
+		Service: &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_MCP, Name: "code-reviewer"},
+		Backend: &api.RegisterServiceRequest_TargetUrl{TargetUrl: hostedSrv.URL},
+	}
+	if err := nodeB.RegisterService(ctx, regReq); err != nil {
+		t.Fatalf("RegisterService: %v", err)
+	}
+	defer func() { _ = nodeB.UnregisterService(ctx, "code-reviewer") }()
+
+	res, _, err := nodeA.handleDescribeRemoteTool(ctx, &mcp.CallToolRequest{}, DescribeRemoteToolParams{
+		PeerID:   nodeB.Host.ID().String(),
+		ToolName: "mcp://code-reviewer/review_pr",
+	})
+	if err != nil {
+		t.Fatalf("handleDescribeRemoteTool on paginated backend: %v", err)
+	}
+	tc, ok := res.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("expected TextContent, got %T", res.Content[0])
+	}
+
+	var desc remoteToolDescription
+	if err := json.Unmarshal([]byte(tc.Text), &desc); err != nil {
+		t.Fatalf("unmarshal: %v (text: %q)", err, tc.Text)
+	}
+	if desc.ToolName != "mcp://code-reviewer/review_pr" {
+		t.Errorf("ToolName = %q, want %q", desc.ToolName, "mcp://code-reviewer/review_pr")
+	}
+	if desc.Description != "Run a code review" {
+		t.Errorf("Description = %q, want %q", desc.Description, "Run a code review")
+	}
+}
+
+func TestHandleDescribeRemoteTool_BoundedAgainstEndlessCursor(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	hostileSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal(body, &req)
+		if req.ID == nil {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		var result any = map[string]any{}
+		switch req.Method {
+		case "initialize":
+			result = map[string]any{
+				"protocolVersion": "2026-07-28",
+				"capabilities":    map[string]any{"tools": map[string]any{}},
+				"serverInfo":      map[string]any{"name": "hostile", "version": "0"},
+			}
+		case "tools/list":
+			result = map[string]any{
+				"tools":      []any{map[string]any{"name": "other", "inputSchema": map[string]any{"type": "object"}}},
+				"nextCursor": "again",
+				"ttlMs":      60000, "cacheScope": "public",
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
+	}))
+	defer hostileSrv.Close()
+
+	nodeA, cleanupA := startBareNode(t, ctx)
+	defer cleanupA()
+	nodeB, cleanupB := startBareNode(t, ctx)
+	defer cleanupB()
+
+	if err := nodeA.Host.Connect(ctx, peer.AddrInfo{ID: nodeB.Host.ID(), Addrs: nodeB.Host.Addrs()}); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	enrollUnderRoot(t, nodeA, nodeB)
+
+	regReq := &api.RegisterServiceRequest{
+		Service: &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_MCP, Name: "hostile-svc"},
+		Backend: &api.RegisterServiceRequest_TargetUrl{TargetUrl: hostileSrv.URL},
+	}
+	if err := nodeB.RegisterService(ctx, regReq); err != nil {
+		t.Fatalf("RegisterService: %v", err)
+	}
+	defer func() { _ = nodeB.UnregisterService(ctx, "hostile-svc") }()
+
+	_, _, err := nodeA.handleDescribeRemoteTool(ctx, &mcp.CallToolRequest{}, DescribeRemoteToolParams{
+		PeerID:   nodeB.Host.ID().String(),
+		ToolName: "mcp://hostile-svc/wanted_tool",
+	})
+	if err == nil || !strings.Contains(err.Error(), "tool not found on peer") {
+		t.Fatalf("expected 'tool not found on peer', got: %v", err)
+	}
+}
+
 func TestHandleDescribeRemoteTool_RoundTrip_UnknownTool(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -1109,7 +1311,14 @@ func TestNewMCPHandler_RegistersDescribeRemoteTool(t *testing.T) {
 // streamable-http with the given tools registered.
 func newFakeMCPHandler(t *testing.T, tools []*mcp.Tool) http.Handler {
 	t.Helper()
-	srv := mcp.NewServer(&mcp.Implementation{Name: "fake", Version: "0.0.1"}, nil)
+	return newFakeMCPHandlerWithOptions(t, tools, nil)
+}
+
+// newFakeMCPHandlerWithOptions returns an http.Handler serving a tiny MCP server over
+// streamable-http with the given tools registered and custom server options.
+func newFakeMCPHandlerWithOptions(t *testing.T, tools []*mcp.Tool, opts *mcp.ServerOptions) http.Handler {
+	t.Helper()
+	srv := mcp.NewServer(&mcp.Implementation{Name: "fake", Version: "0.0.1"}, opts)
 	for _, tool := range tools {
 		toolCopy := tool
 		srv.AddTool(toolCopy, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
