@@ -22,9 +22,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/biscuit-auth/biscuit-go/v2"
-	"github.com/biscuit-auth/biscuit-go/v2/datalog"
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/eclipse-biscuit/biscuit-go/v2"
+	"github.com/eclipse-biscuit/biscuit-go/v2/datalog"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/agentmesh/api"
 	"github.com/libp2p/go-libp2p/core/crypto"

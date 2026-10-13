@@ -34,8 +34,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/biscuit-auth/biscuit-go/v2"
-	"github.com/biscuit-auth/biscuit-go/v2/parser"
+	"github.com/eclipse-biscuit/biscuit-go/v2"
+	"github.com/eclipse-biscuit/biscuit-go/v2/parser"
 	"github.com/google/agentmesh/api"
 	"github.com/google/agentmesh/internal/identity"
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -159,7 +159,7 @@ func buildConformanceSuite() tarConformanceSuite {
 	expiredExp := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	// Mint provider Biscuit.
-	provBuilder := biscuit.NewBuilder(cpPriv, biscuit.WithRandom(newDeterministicReader("provider-root")))
+	provBuilder := biscuit.NewBuilder(cpPriv, biscuit.WithRNG(newDeterministicReader("provider-root")))
 	for _, f := range []biscuit.Fact{
 		{Predicate: biscuit.Predicate{Name: api.FactNode, IDs: []biscuit.Term{biscuit.String(providerPeer.String())}}},
 		{Predicate: biscuit.Predicate{Name: api.FactClientPeerID, IDs: []biscuit.Term{biscuit.String(providerPeer.String())}}},
@@ -180,7 +180,7 @@ func buildConformanceSuite() tarConformanceSuite {
 	}
 
 	// Mint caller authority Biscuit with wildcard service and target grants.
-	callerBuilder := biscuit.NewBuilder(cpPriv, biscuit.WithRandom(newDeterministicReader("caller-root")))
+	callerBuilder := biscuit.NewBuilder(cpPriv, biscuit.WithRNG(newDeterministicReader("caller-root")))
 	for _, f := range []biscuit.Fact{
 		{Predicate: biscuit.Predicate{Name: api.FactNode, IDs: []biscuit.Term{biscuit.String(callerPeer.String())}}},
 		{Predicate: biscuit.Predicate{Name: api.FactClientPeerID, IDs: []biscuit.Term{biscuit.String(callerPeer.String())}}},

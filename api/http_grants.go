@@ -21,7 +21,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/biscuit-auth/biscuit-go/v2"
+	"github.com/eclipse-biscuit/biscuit-go/v2"
 )
 
 // httpMethodSyntax is the token form of an HTTP method, uppercase as the

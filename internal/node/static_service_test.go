@@ -26,7 +26,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/biscuit-auth/biscuit-go/v2"
+	"github.com/eclipse-biscuit/biscuit-go/v2"
 	"github.com/google/agentmesh/api"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"

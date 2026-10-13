@@ -21,7 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/biscuit-auth/biscuit-go/v2"
+	"github.com/eclipse-biscuit/biscuit-go/v2"
 	"github.com/google/agentmesh/api"
 	"github.com/google/agentmesh/internal/identity"
 	"github.com/libp2p/go-libp2p/core/network"

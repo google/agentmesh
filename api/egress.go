@@ -20,7 +20,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/biscuit-auth/biscuit-go/v2"
+	"github.com/eclipse-biscuit/biscuit-go/v2"
 )
 
 // credentialNameSyntax bounds a credential name to one safe file name: the

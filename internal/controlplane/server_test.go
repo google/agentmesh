@@ -37,8 +37,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/biscuit-auth/biscuit-go/v2"
-	"github.com/biscuit-auth/biscuit-go/v2/datalog"
+	"github.com/eclipse-biscuit/biscuit-go/v2"
+	"github.com/eclipse-biscuit/biscuit-go/v2/datalog"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/agentmesh/api"
 	"github.com/google/agentmesh/internal/identity"

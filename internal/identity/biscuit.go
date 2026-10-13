@@ -24,11 +24,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/biscuit-auth/biscuit-go/v2"
-	"github.com/biscuit-auth/biscuit-go/v2/datalog"
-	"github.com/biscuit-auth/biscuit-go/v2/parser"
-	"github.com/biscuit-auth/biscuit-go/v2/pb"
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/eclipse-biscuit/biscuit-go/v2"
+	"github.com/eclipse-biscuit/biscuit-go/v2/datalog"
+	"github.com/eclipse-biscuit/biscuit-go/v2/parser"
+	"github.com/eclipse-biscuit/biscuit-go/v2/pb"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/agentmesh/api"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -361,7 +361,7 @@ func mintBiscuitWithBinding(signingKey ed25519.PrivateKey, remotePeer peer.ID, d
 }
 
 func mintBiscuitWithBindingAndRand(rng io.Reader, signingKey ed25519.PrivateKey, remotePeer peer.ID, delegated bool, roles []string, expiration time.Time, claims jwt.MapClaims, policyRoles []*api.PolicyRole, labels map[string]string) ([]byte, error) {
-	builder := biscuit.NewBuilder(signingKey, biscuit.WithRandom(rng))
+	builder := biscuit.NewBuilder(signingKey, biscuit.WithRNG(rng))
 	addedFacts := make(map[string]bool)
 	addFact := func(fact biscuit.Fact) error {
 		factStr := fact.String()

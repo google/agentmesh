@@ -35,8 +35,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/biscuit-auth/biscuit-go/v2/parser"
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/eclipse-biscuit/biscuit-go/v2/parser"
 	jwt "github.com/golang-jwt/jwt/v5"
 	"github.com/google/agentmesh/api"
 	"github.com/google/agentmesh/internal/identity"

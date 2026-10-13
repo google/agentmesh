@@ -17,7 +17,7 @@ linters:
         # themselves. identity.RequireAuthorityBinding is the one place allowed
         # to make that distinction.
         - pattern: ^biscuit\.Biscuit\.GetBlockID$
-          pkg: ^github\.com/biscuit-auth/biscuit-go/v2$
+          pkg: ^github\.com/eclipse-biscuit/biscuit-go/v2$
           msg: Use identity.RequireAuthorityBinding; GetBlockID also matches forgeable appended blocks.
 
     goheader:

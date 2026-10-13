@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/biscuit-auth/biscuit-go/v2"
+	"github.com/eclipse-biscuit/biscuit-go/v2"
 	"github.com/google/agentmesh/api"
 )
 

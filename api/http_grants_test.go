@@ -20,8 +20,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/biscuit-auth/biscuit-go/v2"
-	"github.com/biscuit-auth/biscuit-go/v2/datalog"
+	"github.com/eclipse-biscuit/biscuit-go/v2"
+	"github.com/eclipse-biscuit/biscuit-go/v2/datalog"
 )
 
 // authorizeHTTP evaluates the baseline policies plus BaselineHTTPRules for a
