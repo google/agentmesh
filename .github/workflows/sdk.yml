@@ -24,6 +24,7 @@ on:
     branches: [main]
     paths:
       - 'sdk/**'
+      - 'development/tools/agentmesh-cop/**'
       - 'api/agentmesh.proto'
       - 'hack/gen-sdk-proto.sh'
       - 'hack/gen-sdk-docs/**'
@@ -36,6 +37,7 @@ on:
     branches: [main]
     paths:
       - 'sdk/**'
+      - 'development/tools/agentmesh-cop/**'
       - 'api/agentmesh.proto'
       - 'hack/gen-sdk-proto.sh'
       - 'hack/gen-sdk-docs/**'

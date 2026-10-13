@@ -166,7 +166,8 @@ e2e-test: build docker-build
 # tests and leave it installed, which is what TestNativeSDKs needs to run
 # both against a real control plane instead of skipping. sdk-js also
 # compiles the example programs the docs embed; TestNativeSDKExamples runs
-# them.
+# them. sdk-python also runs agentmesh-cop's tests, since the cop runs on
+# the Python SDK.
 .PHONY: sdk-js sdk-python sdk-proto sdk-docs sdk-test
 sdk-js:
 	cd sdk/js && npm ci --no-fund --no-audit && npm test && npm run build && npm run examples
@@ -175,6 +176,7 @@ sdk-python:
 	python3 -m venv sdk/python/.venv
 	./sdk/python/.venv/bin/pip install -q -e './sdk/python[test,examples]'
 	./sdk/python/.venv/bin/python -m pytest -q sdk/python/tests
+	./sdk/python/.venv/bin/python -m pytest -q development/tools/agentmesh-cop
 
 sdk-proto:
 	./hack/gen-sdk-proto.sh
