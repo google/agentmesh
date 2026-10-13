@@ -187,6 +187,20 @@ func TestBootstrapTokenOwnership(t *testing.T) {
 		}
 	})
 
+	t.Run("an OIDC subject named root-admin owns its token", func(t *testing.T) {
+		jwt := mintToken(map[string]interface{}{"sub": "root-admin", "email": "impostor@example.com"})
+		status, res, body := requestBootstrapToken(t, baseURL, jwt, map[string]interface{}{
+			"role": api.RoleNode,
+		})
+		if status != http.StatusCreated {
+			t.Fatalf("expected 201, got %d: %s", status, body)
+		}
+		if res.OwnerID != "root-admin" {
+			t.Errorf("expected owner %q, got %q", "root-admin", res.OwnerID)
+		}
+		assertStoredOwner(t, ctx, store, res.ID, "root-admin")
+	})
+
 	t.Run("admin token session owns no token", func(t *testing.T) {
 		status, res, body := requestBootstrapToken(t, baseURL, "test-admin-token", map[string]interface{}{
 			"role": api.RoleNode,

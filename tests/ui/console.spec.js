@@ -82,7 +82,7 @@ test('generating a token shows a copyable value and lists it', async ({ page }) 
   await expect(tokenField).toHaveValue(/^mesh-bt-[0-9a-f]{32}$/);
 
   const token = await tokenField.inputValue();
-  await expect(page.locator('#token-result-owner')).toHaveText('root-admin');
+  await expect(page.locator('#token-result-owner')).toHaveText('none');
   await expect(page.locator('#token-result-cmd')).toContainText(token);
 
   // The copy affordance is the whole point of the panel; prove it works.
@@ -92,18 +92,18 @@ test('generating a token shows a copyable value and lists it', async ({ page }) 
   expect(clipboard).toBe(token);
 
   // The new token must appear in the active token list after the refresh.
-  await expect(page.locator('#table-bootstrap')).toContainText('root-admin');
   await expect(page.locator('#table-bootstrap')).toContainText('mesh:role:node');
 });
 
-test('omitting the owner attributes the token to the session user', async ({ page }) => {
+// The admin token has no users row to own a token, so the token is unowned.
+test('omitting the owner as the root admin leaves the token unowned', async ({ page }) => {
   await login(page);
   await page.click('.nav-item[data-target="bootstrap"]');
 
   await expect(page.locator('#token-owner')).toHaveValue('');
   await page.click('#form-generate-token button[type="submit"]');
 
-  await expect(page.locator('#token-result-owner')).toHaveText('root-admin');
+  await expect(page.locator('#token-result-owner')).toHaveText('none');
 });
 
 // The console holds mesh admin credentials. If they were reachable from JS, a
@@ -154,9 +154,9 @@ test('the search box filters rendered rows', async ({ page }) => {
   // its text there instead of into the search box.
   await page.click('#form-generate-token button[type="submit"]');
   await expect(page.locator('#token-result')).toBeVisible();
-  await expect(page.locator('#table-bootstrap')).toContainText('root-admin');
+  await expect(page.locator('#table-bootstrap')).toContainText('mesh:role:node');
 
-  await page.fill('#resource-search', 'root-admin');
+  await page.fill('#resource-search', 'mesh:role:node');
   await expect(page.locator('#table-bootstrap tr:visible')).not.toHaveCount(0);
   await expect(page.locator('#table-bootstrap tr[data-filter-empty]')).toHaveCount(0);
 
@@ -165,7 +165,7 @@ test('the search box filters rendered rows', async ({ page }) => {
 
   await page.fill('#resource-search', '');
   await expect(page.locator('#table-bootstrap tr[data-filter-empty]')).toHaveCount(0);
-  await expect(page.locator('#table-bootstrap')).toContainText('root-admin');
+  await expect(page.locator('#table-bootstrap')).toContainText('mesh:role:node');
 });
 
 // The policy textarea is the one place in the console where a stray click can

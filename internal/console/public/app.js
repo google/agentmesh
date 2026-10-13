@@ -829,7 +829,7 @@ function showGeneratedToken(res) {
     const panel = document.getElementById('token-result');
     const input = document.getElementById('token-result-value');
     input.value = res.token;
-    document.getElementById('token-result-owner').textContent = res.owner_id || 'you';
+    document.getElementById('token-result-owner').textContent = res.owner_id || 'none';
     document.getElementById('token-result-cmd').textContent =
         'agentmesh-node join --bootstrap-token ' + res.token + ' <control-plane-url>';
     panel.hidden = false;

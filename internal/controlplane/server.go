@@ -2345,8 +2345,9 @@ var errIdentityBanned = errors.New("identity is banned")
 // /user/* or /admin/*.
 var errWorkloadIdentity = errors.New("workload tokens are not permitted on user endpoints")
 
-// rootAdminID is the session of the --admin-token holder. It has no users row,
-// so nothing may reference it as an owner.
+// rootAdminID is the user ID of the --admin-token holder. It has no users row and,
+// unlike every OIDC user, no issuer, which tells it apart from an OIDC subject that
+// happens to be named root-admin.
 const rootAdminID = "root-admin"
 
 func (s *Server) authenticateUser(r *http.Request) (*storage.User, error) {
@@ -3262,12 +3263,11 @@ func (s *Server) HandleUserBootstrapTokens(w http.ResponseWriter, r *http.Reques
 
 // resolveTokenOwner determines which user a bootstrap token is issued on behalf of.
 // The owner defaults to the caller, or to none for the root admin; only admins may
-// override it, and only with a user that already exists. Returns the owner plus an
-// HTTP status to use on error.
+// override it, and only with a user that already exists.
 func (s *Server) resolveTokenOwner(ctx context.Context, caller *storage.User, requested string) (string, int, error) {
 	requested = strings.TrimSpace(requested)
 	if requested == "" || requested == caller.ID {
-		if caller.ID == rootAdminID {
+		if caller.ID == rootAdminID && caller.Issuer == "" {
 			return "", 0, nil
 		}
 		return caller.ID, 0, nil
