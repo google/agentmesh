@@ -179,12 +179,12 @@ func (m *MCPService) Tools(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("connect to backend of %q: %w", m.info.GetName(), err)
 	}
 	defer func() { _ = session.Close() }()
-	res, err := session.ListTools(ctx, nil)
+	tools, err := listAllTools(ctx, session)
 	if err != nil {
 		return nil, fmt.Errorf("list tools of %q: %w", m.info.GetName(), err)
 	}
-	names := make([]string, 0, len(res.Tools))
-	for _, t := range res.Tools {
+	names := make([]string, 0, len(tools))
+	for _, t := range tools {
 		if t != nil && t.Name != "" {
 			names = append(names, t.Name)
 		}
@@ -193,6 +193,17 @@ func (m *MCPService) Tools(ctx context.Context) ([]string, error) {
 	m.cachedTools = names
 	m.toolsExpires = time.Now().Add(backendProbeTTL)
 	return names, nil
+}
+
+func listAllTools(ctx context.Context, session *mcp.ClientSession) ([]*mcp.Tool, error) {
+	var tools []*mcp.Tool
+	for tool, err := range session.Tools(ctx, nil) {
+		if err != nil {
+			return nil, err
+		}
+		tools = append(tools, tool)
+	}
+	return tools, nil
 }
 
 // preflightMethodsUnsupportedByPassThrough lists stateless MCP capability
