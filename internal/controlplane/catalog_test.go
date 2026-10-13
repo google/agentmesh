@@ -82,8 +82,8 @@ func catalogBody(t *testing.T, services ...*api.ServiceInfo) []byte {
 	return body
 }
 
-// adminNodeCatalog fetches /admin/status and returns its node_catalog value.
-func adminNodeCatalog(t *testing.T, cpURL, adminToken string) map[string]*api.NodeServices {
+// adminStatus fetches /admin/status with the admin token.
+func adminStatus(t *testing.T, cpURL, adminToken string) *api.AdminStatusResponse {
 	t.Helper()
 
 	req, err := http.NewRequest(http.MethodGet, cpURL+"/admin/status", nil)
@@ -107,7 +107,7 @@ func adminNodeCatalog(t *testing.T, cpURL, adminToken string) map[string]*api.No
 	if err := protojson.Unmarshal(body, status); err != nil {
 		t.Fatalf("decode /admin/status: %v", err)
 	}
-	return status.GetNodeCatalog()
+	return status
 }
 
 func TestHandleNodeCatalog(t *testing.T) {
@@ -155,7 +155,7 @@ func TestHandleNodeCatalog(t *testing.T) {
 	}
 
 	// The console sees the reported services with the report time.
-	view := adminNodeCatalog(t, cpURL, srv.config.AdminToken)
+	view := adminStatus(t, cpURL, srv.config.AdminToken).GetNodeCatalog()
 	got, ok := view[nodePeer.String()]
 	if !ok || len(view) != 1 {
 		t.Fatalf("expected the reporting peer in node_catalog, got %v", view)
@@ -169,7 +169,7 @@ func TestHandleNodeCatalog(t *testing.T) {
 	if got := postCatalog(t, cpURL, bearer(biscuitBytes), priv, catalogBody(t)); got != http.StatusNoContent {
 		t.Fatalf("empty report: got status %d, want %d", got, http.StatusNoContent)
 	}
-	if view := adminNodeCatalog(t, cpURL, srv.config.AdminToken); len(view[nodePeer.String()].GetServices()) != 0 {
+	if view := adminStatus(t, cpURL, srv.config.AdminToken).GetNodeCatalog(); len(view[nodePeer.String()].GetServices()) != 0 {
 		t.Fatalf("empty report must clear services, got %+v", view)
 	}
 }
@@ -280,7 +280,7 @@ func TestHandleNodeCatalog_Admission(t *testing.T) {
 	if got := postCatalog(t, cpURL, bearer(biscuitBytes), priv, body); got != http.StatusNoContent {
 		t.Fatalf("admitted node: got status %d, want %d", got, http.StatusNoContent)
 	}
-	if _, ok := adminNodeCatalog(t, cpURL, srv.config.AdminToken)[nodePeer.String()]; !ok {
+	if _, ok := adminStatus(t, cpURL, srv.config.AdminToken).GetNodeCatalog()[nodePeer.String()]; !ok {
 		t.Fatal("admitted node's report missing from node_catalog")
 	}
 
@@ -296,8 +296,12 @@ func TestHandleNodeCatalog_Admission(t *testing.T) {
 	if got := postCatalog(t, cpURL, bearer(biscuitBytes), priv, body); got != http.StatusUnauthorized {
 		t.Fatalf("expired session: got status %d, want %d", got, http.StatusUnauthorized)
 	}
-	if view := adminNodeCatalog(t, cpURL, srv.config.AdminToken); len(view) != 0 {
+	expired := adminStatus(t, cpURL, srv.config.AdminToken)
+	if view := expired.GetNodeCatalog(); len(view) != 0 {
 		t.Fatalf("expired node must not appear in node_catalog, got %v", view)
+	}
+	if nodes := expired.GetEnrolledNodes(); len(nodes) != 0 {
+		t.Fatalf("expired node must not appear in enrolled_nodes, got %v", nodes)
 	}
 
 	// Banned through the server path: the entry is evicted outright.
@@ -359,7 +363,7 @@ func TestCatalogPeerIDCanonicalization(t *testing.T) {
 
 	// The view must join the CIDv1 record with the canonically-keyed entry,
 	// displayed under the record's own spelling.
-	view := adminNodeCatalog(t, cpURL, srv.config.AdminToken)
+	view := adminStatus(t, cpURL, srv.config.AdminToken).GetNodeCatalog()
 	if _, ok := view[cidForm]; !ok || len(view[cidForm].GetServices()) != 1 {
 		t.Fatalf("CIDv1-enrolled node's report missing from node_catalog, got %v", view)
 	}

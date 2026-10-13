@@ -443,3 +443,70 @@ test('an admin restores a revoked node from the Nodes view', async ({ page }) =>
   await page.locator('#table-revoked-nodes tr', { hasText: REVOKED }).locator('button:has-text("Restore")').click();
   await expect.poll(() => unban).toBe(`POST /api/admin/nodes/${REVOKED}/unban`);
 });
+
+// Expired nodes are not in /admin/status: the section fetches them only when
+// opened, a page at a time, and a revoke there drops the row in place.
+test('expired nodes load on open, page on demand and revoke in place', async ({ page }) => {
+  const FIRST = '12D3KooWExpiredFirstFixturePeer';
+  const SECOND = '12D3KooWExpiredSecondFixturePeer';
+  const requested = [];
+  await page.route((url) => url.pathname.endsWith('/api/user/nodes'), async (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    requested.push(`${params.getAll('state')}:${params.get('page_token') || ''}`);
+    const expired = { role: 'mesh:role:node', expire_time: '2026-09-15T08:00:00Z' };
+    const json = params.get('page_token') === 'next'
+      // The owner is server data on an admin page; markup in it must render inert.
+      ? { nodes: [{ ...expired, peer_id: SECOND, owner_id: '<img src=x onerror="window.expiredXSS=1">' }] }
+      : { nodes: [{ ...expired, peer_id: FIRST, owner_id: 'alice' }], next_page_token: 'next' };
+    await route.fulfill({ json });
+  });
+  let revoked = '';
+  await page.route((url) => url.pathname.endsWith('/api/user/revoke'), async (route) => {
+    revoked = `${route.request().method()} ${new URL(route.request().url()).searchParams.get('id')}`;
+    await route.fulfill({ status: 200, contentType: 'text/plain', body: 'Node revoked successfully' });
+  });
+
+  await login(page);
+  await page.click('.nav-item[data-target="nodes"]');
+  expect(requested, 'the list is fetched only when opened').toEqual([]);
+
+  await page.click('#expired-nodes summary');
+  const rows = page.locator('#table-expired-nodes tr');
+  await expect(rows).toHaveCount(1);
+  await expect(rows.nth(0)).toContainText(FIRST);
+  await expect(rows.nth(0).locator('td').nth(3)).not.toHaveText(/2026-09-15T08:00:00Z|-/);
+
+  await page.click('#expired-nodes-more');
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(1)).toContainText(SECOND);
+  await expect(page.locator('#expired-nodes-more')).toBeHidden();
+  expect(await page.locator('#table-expired-nodes img').count()).toBe(0);
+  expect(await page.evaluate(() => window.expiredXSS)).toBeUndefined();
+  expect(requested).toEqual(['expired:', 'expired:next']);
+
+  page.once('dialog', (d) => d.accept());
+  await rows.filter({ hasText: FIRST }).locator('button:has-text("Revoke")').click();
+  await expect.poll(() => revoked).toBe(`POST ${FIRST}`);
+  await expect(rows).toHaveCount(1);
+  await expect(page.locator('#table-expired-nodes')).not.toContainText(FIRST);
+});
+
+// The landing page hides the app without a reload, so the next identity to log
+// in must not see the expired rows fetched for the previous one.
+test('returning to the landing page clears the expired nodes list', async ({ page }) => {
+  await page.route((url) => url.pathname.endsWith('/api/user/nodes'), async (route) => {
+    await route.fulfill({ json: { nodes: [{
+      peer_id: '12D3KooWExpiredResetFixturePeer', role: 'mesh:role:node', owner_id: 'bob', expire_time: '2026-09-15T08:00:00Z',
+    }] } });
+  });
+
+  await login(page);
+  await page.click('.nav-item[data-target="nodes"]');
+  await page.click('#expired-nodes summary');
+  const rows = page.locator('#table-expired-nodes tr');
+  await expect(rows).toHaveCount(1);
+
+  await page.evaluate(() => showLandingPage());
+  await expect(page.locator('#expired-nodes')).toHaveJSProperty('open', false);
+  await expect(rows).toHaveCount(0);
+});

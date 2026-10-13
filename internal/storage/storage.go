@@ -112,6 +112,44 @@ type EnrolledNode struct {
 	AutonomousRecovery bool
 }
 
+// NodeState is what CheckAdmission says of a node at some instant. "admitted"
+// is not liveness: a node that enrolled once and went away stays admitted
+// until its session expires.
+type NodeState string
+
+const (
+	NodeAdmitted NodeState = "admitted"
+	NodeExpired  NodeState = "expired"
+	NodeBanned   NodeState = "banned"
+)
+
+// NodeFilter selects what ListNodes returns; the zero value is every node.
+type NodeFilter struct {
+	// States keeps the nodes in any of these states at Now, time.Now() if zero.
+	States []NodeState
+	Now    time.Time
+	// OwnerID nil means every owner; any other value, even "", keeps only
+	// that owner's nodes.
+	OwnerID *string
+	Role    string
+	// After resumes from the last row of the previous page. Limit 0 is no limit.
+	After *NodeCursor
+	Limit int
+}
+
+// NodeCursor is the sort key of the last row of a ListNodes page.
+type NodeCursor struct {
+	EnrolledAt time.Time
+	PeerID     string
+}
+
+// NodeCount is how many nodes of one role are in one state.
+type NodeCount struct {
+	Role  string
+	State NodeState
+	Count int
+}
+
 // CheckAdmission reports whether the control plane may still serve this node.
 // Enrollment is bounded by two independent conditions, an explicit ban and the
 // end of the OIDC session, and every path that acts on an enrolled node has to
@@ -313,8 +351,12 @@ type Store interface {
 	// both succeed. ErrEnrollmentAlreadyResolved if it was not pending.
 	ResolveEnrollmentRequest(ctx context.Context, id string, status api.EnrollmentStatus, biscuit []byte, resolvedBy string) error
 
-	// ListNodes retrieves all enrolled nodes.
-	ListNodes(ctx context.Context) ([]EnrolledNode, error)
+	// ListNodes retrieves the enrolled nodes the filter selects, newest
+	// enrollment first. Peer ID breaks ties, so pages neither skip nor repeat a row.
+	ListNodes(ctx context.Context, filter NodeFilter) ([]EnrolledNode, error)
+
+	// CountNodes counts every enrolled node by role and by its state at now.
+	CountNodes(ctx context.Context, now time.Time) ([]NodeCount, error)
 
 	// DeleteExpiredNodes removes enrolled nodes whose session expired before
 	// the given time and that are not banned, returning how many went. A

@@ -555,6 +555,19 @@ var migrations = []migration{
 			`ALTER TABLE routers ADD COLUMN connection_limit INTEGER`,
 		},
 	},
+	{
+		// A user's node list searches owner_id, and a GET /user/nodes page
+		// walks enrolled_at instead of sorting every matching row.
+		version: 19,
+		postgres: []string{
+			`CREATE INDEX IF NOT EXISTS idx_nodes_owner_id ON nodes (owner_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_nodes_enrolled_at ON nodes (enrolled_at, peer_id)`,
+		},
+		sqlite: []string{
+			`CREATE INDEX IF NOT EXISTS idx_nodes_owner_id ON nodes (owner_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_nodes_enrolled_at ON nodes (enrolled_at, peer_id)`,
+		},
+	},
 }
 
 var meshPrefixMigration = []string{
@@ -1062,9 +1075,11 @@ func (s *SQLStore) IsIdentityBanned(ctx context.Context, identity string) (bool,
 
 // DeleteExpiredNodes implements Store.
 func (s *SQLStore) DeleteExpiredNodes(ctx context.Context, before time.Time) (int64, error) {
-	// A zero ExpiresAt round-trips as a negative UnixMilli, hence > 0.
-	query := s.rebind(`DELETE FROM nodes WHERE banned = ? AND expires_at > 0 AND expires_at < ?`)
-	res, err := s.db.ExecContext(ctx, query, false, before.UnixMilli())
+	expired, args, err := nodeStateWhere(NodeExpired, before)
+	if err != nil {
+		return 0, err
+	}
+	res, err := s.db.ExecContext(ctx, s.rebind(`DELETE FROM nodes WHERE `+expired), args...)
 	if err != nil {
 		return 0, err
 	}
@@ -1684,10 +1699,18 @@ func (s *SQLStore) ResolveEnrollmentRequest(ctx context.Context, id string, stat
 	return nil
 }
 
-// ListNodes retrieves all enrolled nodes.
-func (s *SQLStore) ListNodes(ctx context.Context) ([]EnrolledNode, error) {
-	query := s.rebind(`SELECT peer_id, public_key, biscuit_token, role, enrollment_type, claims_json, owner_id, labels_json, enrolled_at, expires_at, banned, autonomous_recovery FROM nodes ORDER BY enrolled_at DESC`)
-	rows, err := s.db.QueryContext(ctx, query)
+// ListNodes implements Store.
+func (s *SQLStore) ListNodes(ctx context.Context, filter NodeFilter) ([]EnrolledNode, error) {
+	where, args, err := nodeFilterWhere(filter)
+	if err != nil {
+		return nil, err
+	}
+	query := `SELECT peer_id, public_key, biscuit_token, role, enrollment_type, claims_json, owner_id, labels_json, enrolled_at, expires_at, banned, autonomous_recovery FROM nodes` + where + ` ORDER BY enrolled_at DESC, peer_id DESC`
+	if filter.Limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, filter.Limit)
+	}
+	rows, err := s.db.QueryContext(ctx, s.rebind(query), args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query nodes: %w", err)
 	}
@@ -1743,6 +1766,90 @@ func (s *SQLStore) ListNodes(ctx context.Context) ([]EnrolledNode, error) {
 		return nil, err
 	}
 	return nodes, nil
+}
+
+// nodeFilterWhere renders filter as a WHERE clause, empty for the zero filter.
+func nodeFilterWhere(filter NodeFilter) (string, []any, error) {
+	var conds []string
+	var args []any
+	if len(filter.States) > 0 {
+		now := filter.Now
+		if now.IsZero() {
+			now = time.Now()
+		}
+		arms := make([]string, 0, len(filter.States))
+		for _, state := range filter.States {
+			arm, armArgs, err := nodeStateWhere(state, now)
+			if err != nil {
+				return "", nil, err
+			}
+			arms = append(arms, arm)
+			args = append(args, armArgs...)
+		}
+		conds = append(conds, "("+strings.Join(arms, " OR ")+")")
+	}
+	if filter.OwnerID != nil {
+		conds = append(conds, "owner_id = ?")
+		args = append(args, *filter.OwnerID)
+	}
+	if filter.Role != "" {
+		conds = append(conds, "role = ?")
+		args = append(args, filter.Role)
+	}
+	if filter.After != nil {
+		at := filter.After.EnrolledAt.UnixMilli()
+		conds = append(conds, "enrolled_at <= ? AND (enrolled_at < ? OR peer_id < ?)")
+		args = append(args, at, at, filter.After.PeerID)
+	}
+	if len(conds) == 0 {
+		return "", nil, nil
+	}
+	return " WHERE " + strings.Join(conds, " AND "), args, nil
+}
+
+// nodeStateWhere is CheckAdmission in SQL. A zero ExpiresAt round-trips as a
+// negative UnixMilli, so it never expires. Each arm leads with banned so it
+// can search the (banned, expires_at) index.
+func nodeStateWhere(state NodeState, now time.Time) (string, []any, error) {
+	ms := now.UnixMilli()
+	switch state {
+	case NodeBanned:
+		return "banned = ?", []any{true}, nil
+	case NodeExpired:
+		return "(banned = ? AND expires_at > 0 AND expires_at < ?)", []any{false, ms}, nil
+	case NodeAdmitted:
+		return "(banned = ? AND expires_at <= 0) OR (banned = ? AND expires_at >= ?)", []any{false, false, ms}, nil
+	}
+	return "", nil, fmt.Errorf("unknown node state %q", state)
+}
+
+// CountNodes implements Store. The CASE tests a ban first, as CheckAdmission does.
+func (s *SQLStore) CountNodes(ctx context.Context, now time.Time) ([]NodeCount, error) {
+	banned, args, err := nodeStateWhere(NodeBanned, now)
+	if err != nil {
+		return nil, err
+	}
+	expired, expiredArgs, err := nodeStateWhere(NodeExpired, now)
+	if err != nil {
+		return nil, err
+	}
+	query := fmt.Sprintf(`SELECT role, CASE WHEN %s THEN '%s' WHEN %s THEN '%s' ELSE '%s' END, COUNT(*) FROM nodes GROUP BY 1, 2`,
+		banned, NodeBanned, expired, NodeExpired, NodeAdmitted)
+	rows, err := s.db.QueryContext(ctx, s.rebind(query), append(args, expiredArgs...)...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count nodes: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var counts []NodeCount
+	for rows.Next() {
+		var c NodeCount
+		if err := rows.Scan(&c.Role, &c.State, &c.Count); err != nil {
+			return nil, fmt.Errorf("failed to scan node count: %w", err)
+		}
+		counts = append(counts, c)
+	}
+	return counts, rows.Err()
 }
 
 // ListBootstrapTokens retrieves all bootstrap tokens.

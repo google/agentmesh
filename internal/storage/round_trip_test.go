@@ -18,6 +18,8 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -138,7 +140,7 @@ func TestEnrolledNodeRoundTripsEveryField(t *testing.T) {
 	requireFieldsRoundTrip(t, want, got, "Banned")
 
 	// ListNodes selects its own column list, so it can drift from GetNode.
-	listed, err := store.ListNodes(ctx)
+	listed, err := store.ListNodes(ctx, NodeFilter{})
 	if err != nil {
 		t.Fatalf("ListNodes: %v", err)
 	}
@@ -277,7 +279,7 @@ func TestDeleteExpiredNodesSparesBannedAndUnbounded(t *testing.T) {
 		t.Errorf("deleted %d rows, want 1", deleted)
 	}
 
-	remaining, err := store.ListNodes(ctx)
+	remaining, err := store.ListNodes(ctx, NodeFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,6 +297,131 @@ func TestDeleteExpiredNodesSparesBannedAndUnbounded(t *testing.T) {
 	}
 	if banned, _ := store.IsNodeBanned(ctx, "lapsed-but-banned"); !banned {
 		t.Error("the ban did not survive the sweep")
+	}
+}
+
+// The console lists, pages and revokes from what ListNodes selects, so each
+// state must hold exactly what CheckAdmission says, an owner filter must never
+// widen, and paging must not lose a row that shares its enrollment time with
+// the end of the previous page.
+func TestListNodes(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	for _, id := range []string{"alice", "bob"} {
+		if err := store.SaveUser(ctx, &User{ID: id, Role: "user", CreatedAt: now}); err != nil {
+			t.Fatalf("save user %s: %v", id, err)
+		}
+	}
+	enrolled := now.Add(-48 * time.Hour)
+	for _, n := range []struct {
+		id, owner, role       string
+		enrolledAt, expiresAt time.Time
+	}{
+		{"live-a", "alice", api.RoleNode, enrolled, now.Add(time.Hour)},
+		{"live-b", "bob", api.RoleNode, enrolled, now.Add(time.Hour)},
+		{"never", "alice", api.RoleRouter, enrolled.Add(-time.Hour), time.Time{}},
+		{"exp-a", "alice", api.RoleNode, enrolled.Add(-2 * time.Hour), now.Add(-time.Minute)},
+		{"exp-unowned", "", api.RoleNode, enrolled.Add(-3 * time.Hour), now.Add(-time.Hour)},
+		{"banned", "alice", api.RoleNode, enrolled.Add(-4 * time.Hour), now.Add(-24 * time.Hour)},
+	} {
+		if err := store.EnrollNode(ctx, &EnrolledNode{
+			PeerID: n.id, PublicKey: []byte("pub"), Biscuit: []byte("b"), Role: n.role,
+			EnrollmentType: "OIDC", OwnerID: n.owner, EnrolledAt: n.enrolledAt, ExpiresAt: n.expiresAt,
+		}); err != nil {
+			t.Fatalf("enroll %s: %v", n.id, err)
+		}
+	}
+	if err := store.SetNodeBanned(ctx, "banned", true); err != nil {
+		t.Fatal(err)
+	}
+
+	list := func(t *testing.T, filter NodeFilter) []string {
+		t.Helper()
+		nodes, err := store.ListNodes(ctx, filter)
+		if err != nil {
+			t.Fatalf("ListNodes(%+v): %v", filter, err)
+		}
+		var ids []string
+		for _, n := range nodes {
+			ids = append(ids, n.PeerID)
+		}
+		return ids
+	}
+
+	all := []string{"live-b", "live-a", "never", "exp-a", "exp-unowned", "banned"}
+	for _, tc := range []struct {
+		name   string
+		filter NodeFilter
+		want   []string
+	}{
+		{"zero filter", NodeFilter{}, all},
+		{"admitted", NodeFilter{States: []NodeState{NodeAdmitted}, Now: now}, []string{"live-b", "live-a", "never"}},
+		{"expired", NodeFilter{States: []NodeState{NodeExpired}, Now: now}, []string{"exp-a", "exp-unowned"}},
+		{"banned", NodeFilter{States: []NodeState{NodeBanned}, Now: now}, []string{"banned"}},
+		{"admitted or banned", NodeFilter{States: []NodeState{NodeAdmitted, NodeBanned}, Now: now}, []string{"live-b", "live-a", "never", "banned"}},
+		{"one owner", NodeFilter{OwnerID: new("alice")}, []string{"live-a", "never", "exp-a", "banned"}},
+		{"owner without nodes", NodeFilter{OwnerID: new("carol")}, nil},
+		// An empty ID must never widen to every owner, unowned rows included.
+		{"empty owner", NodeFilter{OwnerID: new("")}, nil},
+		{"role", NodeFilter{Role: api.RoleRouter}, []string{"never"}},
+		{"owner and state", NodeFilter{States: []NodeState{NodeExpired}, Now: now, OwnerID: new("alice")}, []string{"exp-a"}},
+		{"cursor from another owner's row", NodeFilter{OwnerID: new("alice"), After: &NodeCursor{EnrolledAt: enrolled, PeerID: "live-b"}}, []string{"live-a", "never", "exp-a", "banned"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := list(t, tc.filter); !slices.Equal(got, tc.want) {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	for _, pageSize := range []int{1, 4} {
+		t.Run("pages of "+strconv.Itoa(pageSize), func(t *testing.T) {
+			var got []string
+			var after *NodeCursor
+			for range len(all) + 1 {
+				page, err := store.ListNodes(ctx, NodeFilter{After: after, Limit: pageSize})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(page) == 0 {
+					break
+				}
+				for _, n := range page {
+					got = append(got, n.PeerID)
+				}
+				last := page[len(page)-1]
+				after = &NodeCursor{EnrolledAt: last.EnrolledAt, PeerID: last.PeerID}
+			}
+			if !slices.Equal(got, all) {
+				t.Errorf("paging visited %v, want %v", got, all)
+			}
+		})
+	}
+
+	t.Run("CountNodes buckets as ListNodes filters", func(t *testing.T) {
+		counts, err := store.CountNodes(ctx, now)
+		if err != nil {
+			t.Fatalf("CountNodes: %v", err)
+		}
+		got := map[NodeCount]bool{}
+		for _, c := range counts {
+			got[c] = true
+		}
+		want := map[NodeCount]bool{
+			{Role: api.RoleNode, State: NodeAdmitted, Count: 2}:   true,
+			{Role: api.RoleRouter, State: NodeAdmitted, Count: 1}: true,
+			{Role: api.RoleNode, State: NodeExpired, Count: 2}:    true,
+			{Role: api.RoleNode, State: NodeBanned, Count: 1}:     true,
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("CountNodes = %v, want %v", counts, want)
+		}
+	})
+
+	if _, err := store.ListNodes(ctx, NodeFilter{States: []NodeState{"lapsed"}}); err == nil {
+		t.Error("ListNodes accepted an unknown state")
 	}
 }
 

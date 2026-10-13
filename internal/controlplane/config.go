@@ -49,9 +49,10 @@ type Options struct {
 	OIDCSessionTTL        time.Duration // How long an OIDC enrollment stays refreshable before the identity must re-authenticate interactively; defaults to api.OIDCSessionTTL
 	WorkloadSessionTTL    time.Duration // Session TTL for enrollments from a WorkloadIssuer; defaults to DefaultWorkloadSessionTTL (48h)
 	// NodeRetention is how long an enrolled node's row is kept after its
-	// session expired before being deleted; 0 keeps rows forever. Every
-	// pod restart without a persistent data dir enrolls a fresh identity,
-	// so without this the nodes table only ever grows.
+	// session expired before being deleted; 0 is DefaultNodeRetention and a
+	// negative value keeps rows forever. Every pod restart without a
+	// persistent data dir enrolls a fresh identity, so without this the
+	// nodes table only ever grows.
 	NodeRetention         time.Duration
 	AdminToken            string // Optional: administrative bearer token for protecting policy and enrollment queue REST APIs
 	AutoApproveEnrollment bool   // If true, valid bootstrap token enrollment requests are immediately approved without administrative manual gate
@@ -123,6 +124,9 @@ func (o *Options) Default() {
 	}
 	if o.WorkloadSessionTTL <= 0 {
 		o.WorkloadSessionTTL = DefaultWorkloadSessionTTL
+	}
+	if o.NodeRetention == 0 {
+		o.NodeRetention = DefaultNodeRetention
 	}
 	if o.DelegatedBiscuitTTL <= 0 {
 		o.DelegatedBiscuitTTL = 1 * time.Hour

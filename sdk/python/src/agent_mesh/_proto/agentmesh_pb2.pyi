@@ -588,6 +588,14 @@ class NodeCatalogReport(_message.Message):
     services: _containers.RepeatedCompositeFieldContainer[ServiceInfo]
     def __init__(self, services: _Optional[_Iterable[_Union[ServiceInfo, _Mapping]]] = ...) -> None: ...
 
+class NodeListResponse(_message.Message):
+    __slots__ = ["next_page_token", "nodes"]
+    NEXT_PAGE_TOKEN_FIELD_NUMBER: _ClassVar[int]
+    NODES_FIELD_NUMBER: _ClassVar[int]
+    next_page_token: str
+    nodes: _containers.RepeatedCompositeFieldContainer[EnrolledNode]
+    def __init__(self, nodes: _Optional[_Iterable[_Union[EnrolledNode, _Mapping]]] = ..., next_page_token: _Optional[str] = ...) -> None: ...
+
 class NodeServices(_message.Message):
     __slots__ = ["report_time", "services"]
     REPORT_TIME_FIELD_NUMBER: _ClassVar[int]

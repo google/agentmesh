@@ -91,16 +91,6 @@ const (
 	meshStateTimeout = 5 * time.Second
 )
 
-// Node admission states as reported by meshStateCollector. "admitted" is
-// what CheckAdmission says, not liveness: a node that enrolled once and went
-// away stays admitted until its session expires. Liveness is
-// agentmesh_control_plane_mesh_connected_peers.
-const (
-	nodeStateAdmitted = "admitted"
-	nodeStateExpired  = "expired"
-	nodeStateBanned   = "banned"
-)
-
 // Bootstrap token states as reported by meshStateCollector.
 const (
 	tokenStateActive    = "active"
@@ -294,12 +284,14 @@ func readMeshSnapshot(ctx context.Context, store storage.Store, now time.Time) (
 		tokensByState:      map[string]int{},
 	}
 
-	nodes, err := store.ListNodes(ctx)
+	// Liveness is agentmesh_control_plane_mesh_connected_peers, not the
+	// "admitted" state (see storage.NodeState).
+	counts, err := store.CountNodes(ctx, now)
 	if err != nil {
 		return snap, err
 	}
-	for i := range nodes {
-		snap.nodesByRoleState[[2]string{nodes[i].Role, nodeState(&nodes[i], now)}]++
+	for _, c := range counts {
+		snap.nodesByRoleState[[2]string{c.Role, string(c.State)}] = c.Count
 	}
 
 	users, err := store.ListUsers(ctx)
@@ -349,17 +341,6 @@ func readMeshSnapshot(ctx context.Context, store storage.Store, now time.Time) (
 // enrollmentStatusLabel turns ENROLLMENT_STATUS_PENDING into "pending".
 func enrollmentStatusLabel(s api.EnrollmentStatus) string {
 	return strings.ToLower(strings.TrimPrefix(s.String(), "ENROLLMENT_STATUS_"))
-}
-
-func nodeState(n *storage.EnrolledNode, now time.Time) string {
-	switch n.CheckAdmission(now) {
-	case nil:
-		return nodeStateAdmitted
-	case storage.ErrNodeBanned:
-		return nodeStateBanned
-	default:
-		return nodeStateExpired
-	}
 }
 
 func tokenState(t *storage.BootstrapToken, now time.Time) string {

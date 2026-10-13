@@ -226,6 +226,28 @@
                             </div>
                         </div>
                     </div>
+                    <!-- Loaded on open, never by the refresh: expired rows pile up for the
+                         retention period, yet an expired OIDC node can renew until revoked. -->
+                    <details id="expired-nodes" class="section-header-spaced">
+                        <summary class="section-header"><h2>Expired Nodes</h2></summary>
+                        <div class="card">
+                            <div class="table-responsive">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Node ID</th>
+                                        <th>Type</th>
+                                        <th>Owner</th>
+                                        <th>Expired</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="table-expired-nodes"></tbody>
+                            </table>
+                            </div>
+                            <button id="expired-nodes-more" class="btn btn-sm load-more" type="button" hidden>Load more</button>
+                        </div>
+                    </details>
                 </section>
 
                 <!-- Services View: self-reported by each node (see /nodes/catalog);
@@ -405,5 +427,6 @@
     <div id="toast-container" class="toast-container" role="status" aria-live="polite"></div>
     <script src="vendor/js-yaml.min.js"></script>
     <script src="app.js"></script>
+    <script src="expired-nodes.js"></script>
 </body>
 </html>

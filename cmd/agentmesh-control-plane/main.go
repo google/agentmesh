@@ -121,6 +121,12 @@ func main() {
 				}
 			}()
 
+			// Options reads 0 as the default, so the flag's 0 (keep forever)
+			// travels as a negative retention.
+			if nodeRetention == 0 {
+				nodeRetention = -1
+			}
+
 			opts := controlplane.Options{
 				ListenAddr:            bindAddress,
 				DriverName:            dbDriver,

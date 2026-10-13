@@ -57,7 +57,7 @@ func TestGCExpiredNodesAppliesRetention(t *testing.T) {
 
 	srv.gcExpiredNodes(now)
 
-	nodes, err := store.ListNodes(ctx)
+	nodes, err := store.ListNodes(ctx, storage.NodeFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,22 +88,56 @@ func TestNodeGCLoopIsOffWithoutRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	srv, err := NewServer(Options{DriverName: "sqlite", DataSourceName: "unused", OIDCIssuer: "https://issuer", NodeRetention: -1}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = srv.Close() }()
+
+	// The loop returns immediately with a negative retention, and a direct
+	// sweep is a no-op too: it means keep forever, not "expired as of now".
+	srv.wg.Add(1)
+	srv.runNodeGCLoop()
+	srv.gcExpiredNodes(now)
+	nodes, err := store.ListNodes(ctx, storage.NodeFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("negative retention deleted rows: %d left", len(nodes))
+	}
+}
+
+// A caller that leaves NodeRetention unset, such as agentmesh-one, still
+// reclaims rows whose session lapsed more than DefaultNodeRetention ago.
+func TestGCExpiredNodesDefaultsRetention(t *testing.T) {
+	store := newMetricsTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+	for id, expiresAt := range map[string]time.Time{
+		"stale":  now.Add(-DefaultNodeRetention - time.Hour),
+		"recent": now.Add(-DefaultNodeRetention + time.Hour),
+	} {
+		if err := store.EnrollNode(ctx, &storage.EnrolledNode{
+			PeerID: id, PublicKey: []byte("pub"), Biscuit: []byte("b"), Role: api.RoleNode,
+			EnrollmentType: "OIDC", EnrolledAt: now.Add(-90 * 24 * time.Hour), ExpiresAt: expiresAt,
+		}); err != nil {
+			t.Fatalf("enroll %s: %v", id, err)
+		}
+	}
+
 	srv, err := NewServer(Options{DriverName: "sqlite", DataSourceName: "unused", OIDCIssuer: "https://issuer"}, store)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = srv.Close() }()
 
-	// The loop returns immediately with retention 0, and a direct sweep is a
-	// no-op too: zero means keep forever, not "expired as of now".
-	srv.wg.Add(1)
-	srv.runNodeGCLoop()
 	srv.gcExpiredNodes(now)
-	nodes, err := store.ListNodes(ctx)
+	nodes, err := store.ListNodes(ctx, storage.NodeFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(nodes) != 1 {
-		t.Fatalf("retention 0 deleted rows: %d left", len(nodes))
+	if len(nodes) != 1 || nodes[0].PeerID != "recent" {
+		t.Fatalf("after a sweep with the default retention got %+v, want only recent", nodes)
 	}
 }

@@ -355,6 +355,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	handle("/admin/status", noStore(s.HandleAdminStatus))
 	handle("/admin/policy", noStore(s.HandleAdminPolicy))
 	handle("/user/status", noStore(s.HandleUserStatus))
+	handle("/user/nodes", noStore(s.HandleListNodes))
 	handle("/user/bootstrap-tokens", noStore(s.HandleUserBootstrapTokens))
 	handle("/user/revoke", noStore(s.HandleUserRevoke))
 }
@@ -1620,24 +1621,20 @@ func (s *Server) unservedEgress(ctx context.Context, policy *api.PolicyConfig) (
 	if len(policy.GetEgress()) == 0 {
 		return nil, nil, nil
 	}
-	nodes, err := s.store.ListNodes(ctx)
+	nodes, err := s.store.ListNodes(ctx, storage.NodeFilter{States: []storage.NodeState{storage.NodeAdmitted}})
 	if err != nil {
 		return nil, nil, err
 	}
-	// Admission and roles belong to the node, not to the destination, so each
-	// node is settled once and an unresolved one is reported once.
+	// Roles belong to the node, not to the destination, so each node is
+	// settled once and an unresolved one is reported once.
 	type candidate struct {
 		roles  []string
 		labels map[string]string
 	}
-	now := time.Now()
 	var candidates []candidate
 	var unresolved []unresolvedNode
 	for i := range nodes {
 		node := &nodes[i]
-		if node.CheckAdmission(now) != nil {
-			continue
-		}
 		roles, err := nodeRoles(node, policy.GetBindings())
 		if err != nil {
 			unresolved = append(unresolved, unresolvedNode{peerID: node.PeerID, err: err})
@@ -3108,17 +3105,19 @@ func (s *Server) HandleUserStatus(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	isAdmin := user.Role == "admin"
 
-	allNodes, err := s.store.ListNodes(ctx)
+	filter := storage.NodeFilter{States: statusNodeStates, Now: time.Now()}
+	if !isAdmin {
+		filter.OwnerID = &user.ID
+	}
+	allNodes, err := s.store.ListNodes(ctx, filter)
 	if err != nil {
 		logger.Errorf("Failed to list nodes: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
-	nodes := []*api.EnrolledNode{}
+	nodes := make([]*api.EnrolledNode, 0, len(allNodes))
 	for i := range allNodes {
-		if isAdmin || allNodes[i].OwnerID == user.ID {
-			nodes = append(nodes, enrolledNodeView(&allNodes[i], isAdmin))
-		}
+		nodes = append(nodes, enrolledNodeView(&allNodes[i], isAdmin))
 	}
 
 	allTokens, err := s.store.ListBootstrapTokens(ctx)

@@ -95,8 +95,11 @@ func TestNewServerEmbeddedAssets(t *testing.T) {
 	if code, body := get("/"); code != http.StatusOK || !strings.Contains(body, "<html") {
 		t.Errorf("GET / = %d, want 200 with the embedded index.html", code)
 	}
-	if code, _ := get("/app.js"); code != http.StatusOK {
-		t.Errorf("GET /app.js = %d, want 200", code)
+	// A missing file would get the SPA fallback, so a script must not be index.html.
+	for _, asset := range []string{"/app.js", "/expired-nodes.js"} {
+		if code, body := get(asset); code != http.StatusOK || strings.Contains(body, "<html") {
+			t.Errorf("GET %s = %d, want 200 with the embedded script", asset, code)
+		}
 	}
 	// SPA fallback: unknown paths serve index.html.
 	if code, body := get("/some/client/route"); code != http.StatusOK || !strings.Contains(body, "<html") {

@@ -523,6 +523,24 @@ body {
     font-weight: 600;
 }
 
+/* A collapsible section: the disclosure marker sits beside its title. */
+summary.section-header {
+    cursor: pointer;
+}
+
+summary.section-header h2 {
+    display: inline;
+}
+
+.load-more {
+    margin-top: 16px;
+}
+
+/* .btn sets display, which would otherwise beat the hidden attribute. */
+.load-more[hidden] {
+    display: none;
+}
+
 /* Buttons */
 .btn {
     display: inline-flex;

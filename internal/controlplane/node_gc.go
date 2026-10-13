@@ -62,7 +62,7 @@ func (s *Server) runNodeGCLoop() {
 }
 
 // gcExpiredNodes deletes every unbanned node whose session expired more than
-// NodeRetention before now. A retention of zero means keep forever, and that
+// NodeRetention before now. A negative retention means keep forever, and that
 // holds here too, not only in the loop that decides whether to tick.
 func (s *Server) gcExpiredNodes(now time.Time) {
 	if s.config.NodeRetention <= 0 {

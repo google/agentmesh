@@ -767,7 +767,7 @@ message NodeServices {
 }
 
 // AdminStatusResponse answers GET /admin/status: everything the console
-// shows an administrator.
+// shows an administrator, except expired nodes (see GET /user/nodes).
 message AdminStatusResponse {
   repeated User users = 1;
   repeated RouterLease active_routers = 2;
@@ -779,15 +779,25 @@ message AdminStatusResponse {
   map<string, NodeServices> node_catalog = 7;
 }
 
-// UserStatusResponse answers GET /user/status: the caller and what it owns.
-// The router fleet and the mesh policy describe the whole mesh and are set
-// for an administrator only.
+// UserStatusResponse answers GET /user/status: the caller and what it owns,
+// except expired nodes (see GET /user/nodes). The router fleet and the mesh
+// policy describe the whole mesh and are set for an administrator only.
 message UserStatusResponse {
   User user = 1;
   repeated EnrolledNode enrolled_nodes = 2;
   repeated BootstrapToken bootstrap_tokens = 3;
   repeated RouterLease active_routers = 4;
   PolicyConfig policy = 5;
+}
+
+// NodeListResponse answers GET /user/nodes: enrolled nodes, newest enrollment
+// first, page_size (default 50, at most 200) at a time. state (admitted,
+// expired or banned, repeatable) and role narrow the list. An administrator
+// sees every owner's nodes and may pick one with owner_id; a user sees its own.
+message NodeListResponse {
+  repeated EnrolledNode nodes = 1;
+  // Pass as page_token for the next page; empty on the last page.
+  string next_page_token = 2;
 }
 
 // ============================================================================

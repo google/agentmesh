@@ -146,6 +146,7 @@ function showApp() {
 
 function showLandingPage() {
     stopAutoRefresh();
+    resetExpiredNodes();
     document.getElementById('landing-page').classList.add('active');
     document.getElementById('app-container').style.display = 'none';
 }

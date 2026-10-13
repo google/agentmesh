@@ -126,7 +126,7 @@ func TestTokenExchangeStatelessAndRoleIsolation(t *testing.T) {
 		t.Fatalf("SavePolicyDocument: %v", err)
 	}
 
-	nodesBefore, err := store.ListNodes(ctx)
+	nodesBefore, err := store.ListNodes(ctx, storage.NodeFilter{})
 	if err != nil {
 		t.Fatalf("ListNodes: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestTokenExchangeStatelessAndRoleIsolation(t *testing.T) {
 	}
 
 	// Verify zero DB writes occurred during /token/exchange.
-	nodesAfter, err := store.ListNodes(ctx)
+	nodesAfter, err := store.ListNodes(ctx, storage.NodeFilter{})
 	if err != nil {
 		t.Fatalf("ListNodes after exchange: %v", err)
 	}

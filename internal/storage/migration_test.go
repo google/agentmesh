@@ -149,8 +149,9 @@ func TestMigrationConvertsSecondsToMillis(t *testing.T) {
 	}
 }
 
-// Migration 16 indexes the scans that run on every bootstrap and every GC
-// pass; the index list is the contract the planner relies on.
+// Migrations 16 and 19 index the scans that run on every bootstrap, every GC
+// pass and every console refresh; the index list is the contract the planner
+// relies on.
 func TestMigrationCreatesIndexes(t *testing.T) {
 	store, err := NewSQLStore("sqlite", filepath.Join(t.TempDir(), "cp.db"))
 	if err != nil {
@@ -174,6 +175,8 @@ func TestMigrationCreatesIndexes(t *testing.T) {
 	want := []string{
 		"idx_enrollment_requests_created_at",
 		"idx_nodes_banned_expires_at",
+		"idx_nodes_enrolled_at",
+		"idx_nodes_owner_id",
 		"idx_revoked_biscuits_expires_at",
 		"idx_routers_expires_at",
 	}
