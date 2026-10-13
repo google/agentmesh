@@ -2345,6 +2345,10 @@ var errIdentityBanned = errors.New("identity is banned")
 // /user/* or /admin/*.
 var errWorkloadIdentity = errors.New("workload tokens are not permitted on user endpoints")
 
+// rootAdminID is the session of the --admin-token holder. It has no users row,
+// so nothing may reference it as an owner.
+const rootAdminID = "root-admin"
+
 func (s *Server) authenticateUser(r *http.Request) (*storage.User, error) {
 	authHeader := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authHeader, "Bearer ") {
@@ -2361,7 +2365,7 @@ func (s *Server) authenticateUser(r *http.Request) (*storage.User, error) {
 		adminHash := sha256.Sum256([]byte(s.config.AdminToken))
 		if subtle.ConstantTimeCompare(tokenHash[:], adminHash[:]) == 1 {
 			return &storage.User{
-				ID:        "root-admin",
+				ID:        rootAdminID,
 				Email:     "admin@agentmesh.local",
 				Role:      "admin",
 				CreatedAt: time.Now(),
@@ -3257,11 +3261,15 @@ func (s *Server) HandleUserBootstrapTokens(w http.ResponseWriter, r *http.Reques
 }
 
 // resolveTokenOwner determines which user a bootstrap token is issued on behalf of.
-// The owner defaults to the caller; only admins may override it, and only with a
-// user that already exists. Returns the owner plus an HTTP status to use on error.
+// The owner defaults to the caller, or to none for the root admin; only admins may
+// override it, and only with a user that already exists. Returns the owner plus an
+// HTTP status to use on error.
 func (s *Server) resolveTokenOwner(ctx context.Context, caller *storage.User, requested string) (string, int, error) {
 	requested = strings.TrimSpace(requested)
 	if requested == "" || requested == caller.ID {
+		if caller.ID == rootAdminID {
+			return "", 0, nil
+		}
 		return caller.ID, 0, nil
 	}
 	if caller.Role != "admin" {
