@@ -36,7 +36,9 @@ func startTokenTestControlPlane(t *testing.T) (string, func(claims map[string]in
 
 	oidcURL, mintToken := startCustomMockOIDC(t)
 
-	store, err := storage.NewSQLStore("sqlite", filepath.Join(t.TempDir(), "cp.db"))
+	// foreign_keys(1) makes SQLite enforce owner_id REFERENCES users(id) as Postgres does.
+	dsn := filepath.Join(t.TempDir(), "cp.db") + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
+	store, err := storage.NewSQLStore("sqlite", dsn)
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
@@ -183,6 +185,19 @@ func TestBootstrapTokenOwnership(t *testing.T) {
 		if status != http.StatusBadRequest {
 			t.Fatalf("expected 400, got %d: %s", status, body)
 		}
+	})
+
+	t.Run("admin token session owns no token", func(t *testing.T) {
+		status, res, body := requestBootstrapToken(t, baseURL, "test-admin-token", map[string]interface{}{
+			"role": api.RoleNode,
+		})
+		if status != http.StatusCreated {
+			t.Fatalf("expected 201, got %d: %s", status, body)
+		}
+		if res.OwnerID != "" {
+			t.Errorf("expected no owner, got %q", res.OwnerID)
+		}
+		assertStoredOwner(t, ctx, store, res.ID, "")
 	})
 
 	t.Run("non-admin cannot request router role", func(t *testing.T) {
