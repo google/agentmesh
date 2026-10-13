@@ -40,7 +40,7 @@ agentmesh-control-plane admin unban --peer <id>     lift a ban
 | `--node-retention` | `720h` (30 days) | How long the record of an enrolled node is kept after its session expires. Banned nodes are kept forever. `0` keeps every record. |
 | `--mesh-reconnect-interval` | `30s` | How often the event publisher re-reads the router leases and dials any router it is not connected to. On each router it runs the mesh handshake with a credential it mints for its own peer under the signing key, with the role `mesh:role:control-plane`, so the router holds its connection as a member's. |
 | `--log-level` | `info` | `debug`, `info`, `warn`, `error`. |
-| `--log-format` |  | `text` or `json`. When unset, the `LOG_FORMAT` env var decides, else `text`. |
+| `--log-format` | `text` | `text` or `json`. |
 
 ## HTTP API
 

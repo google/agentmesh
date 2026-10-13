@@ -15,6 +15,7 @@
 package logging
 
 import (
+	"strings"
 	"testing"
 
 	golog "github.com/ipfs/go-log/v2"
@@ -24,33 +25,22 @@ import (
 func TestSetupFormat(t *testing.T) {
 	cases := []struct {
 		name string
-		env  string
 		flag string
 		want golog.LogFormat
 	}{
-		{"env selects json", "json", "", golog.JSONOutput},
-		{"env selects text", "text", "", golog.PlaintextOutput},
-		{"flag wins over env", "json", "text", golog.PlaintextOutput},
-		{"flag selects json", "", "json", golog.JSONOutput},
-		{"invalid flag falls back to env", "json", "bogus", golog.JSONOutput},
+		{"json", "json", golog.JSONOutput},
+		{"empty defaults to text", "", golog.PlaintextOutput},
+		{"json again", "json", golog.JSONOutput},
+		{"invalid falls back to text", "bogus", golog.PlaintextOutput},
+		{"explicit text", "text", golog.PlaintextOutput},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("LOG_FORMAT", tc.env)
 			Setup(Options{Format: tc.flag})
 			if got := golog.GetConfig().Format; got != tc.want {
 				t.Errorf("format = %v, want %v", got, tc.want)
 			}
 		})
-	}
-}
-
-func TestSetupInvalidFormatKeepsCurrent(t *testing.T) {
-	t.Setenv("LOG_FORMAT", "")
-	Setup(Options{Format: "text"})
-	Setup(Options{Format: "bogus"})
-	if got := golog.GetConfig().Format; got != golog.PlaintextOutput {
-		t.Errorf("format = %v, want %v (PlaintextOutput): an invalid value must keep the current format", got, golog.PlaintextOutput)
 	}
 }
 
@@ -61,6 +51,11 @@ func TestSetupLevels(t *testing.T) {
 	Setup(Options{Level: "info"})
 	if got := app.Desugar().Core().Enabled(zapcore.InfoLevel); !got {
 		t.Errorf("app Enabled(Info) = %v, want true after Setup(info)", got)
+	}
+	// A logger created after Setup must also inherit the configured level.
+	late := golog.Logger("logging-test-late")
+	if got := late.Desugar().Core().Enabled(zapcore.InfoLevel); !got {
+		t.Errorf("late logger Enabled(Info) = %v, want true after Setup(info)", got)
 	}
 	if got := dht.Desugar().Core().Enabled(zapcore.ErrorLevel); got {
 		t.Errorf("dht Enabled(Error) = %v, want false (suppressed) at info level", got)
@@ -80,5 +75,46 @@ func TestSetupInvalidLevelFallsBackToInfo(t *testing.T) {
 	}
 	if got := app.Desugar().Core().Enabled(zapcore.DebugLevel); got {
 		t.Errorf("app Enabled(Debug) = %v, want false: invalid level must fall back to info, not debug", got)
+	}
+}
+
+func TestSetupRingBuffer(t *testing.T) {
+	Setup(Options{Level: "info", RingBuffer: true})
+	golog.Logger("logging-test-ring").Infof("hello ring buffer")
+	lines := RecentLogs()
+	found := false
+	for _, line := range lines {
+		if strings.Contains(line, "hello ring buffer") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("RecentLogs() = %v, want line containing %q", lines, "hello ring buffer")
+	}
+}
+
+// The ring keeps whole lines; without a per-line cap a remote peer that gets
+// an 8 MiB string logged pins it in memory for 500 rounds.
+func TestRingBufferSinkCapsLineBytes(t *testing.T) {
+	sink := newRingBufferSink(4)
+	huge := strings.Repeat("A", 3*maxLogLineBytes) + "\n"
+	if _, err := sink.Write([]byte(huge)); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = sink.Write([]byte("short\n"))
+
+	lines := sink.lines()
+	if len(lines) != 2 {
+		t.Fatalf("got %d lines, want 2", len(lines))
+	}
+	if got := len(lines[0]); got > maxLogLineBytes+len("…[truncated]") {
+		t.Errorf("stored line is %d bytes, want <= %d", got, maxLogLineBytes+len("…[truncated]"))
+	}
+	if !strings.HasSuffix(lines[0], "[truncated]") {
+		t.Errorf("truncated line should be marked, got suffix %q", lines[0][len(lines[0])-16:])
+	}
+	if lines[1] != "short" {
+		t.Errorf("second line = %q, want %q", lines[1], "short")
 	}
 }

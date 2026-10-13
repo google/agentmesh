@@ -14,58 +14,11 @@
 
 package node
 
-import (
-	"container/ring"
-	"fmt"
-	"net/url"
-	"strings"
-	"sync"
+import "fmt"
 
-	"go.uber.org/zap"
-)
-
-// RingBufferSink implements zap.Sink to capture logs in memory.
-type RingBufferSink struct {
-	mu     sync.Mutex
-	buffer *ring.Ring
-}
-
-const (
-	logBufferLines = 500
-	// maxLogLineBytes bounds each retained line so the ring's memory is
-	// bounded too (logBufferLines * maxLogLineBytes), whatever a remote peer
-	// manages to get logged.
-	maxLogLineBytes = 4 << 10
-	// maxRemoteLogBytes is how much of a remote-controlled string a log
-	// message may carry; see truncateForLog.
-	maxRemoteLogBytes = 256
-)
-
-var globalLogBuffer = &RingBufferSink{
-	buffer: ring.New(logBufferLines),
-}
-
-func init() {
-	_ = zap.RegisterSink("ringbuffer", func(u *url.URL) (zap.Sink, error) {
-		return globalLogBuffer, nil
-	})
-}
-
-// Write implements io.Writer
-func (s *RingBufferSink) Write(p []byte) (n int, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// zap writes complete log lines per Write call
-	line := strings.TrimSuffix(string(p), "\n")
-	if len(line) > maxLogLineBytes {
-		line = line[:maxLogLineBytes] + "…[truncated]"
-	}
-	s.buffer.Value = line
-	s.buffer = s.buffer.Next()
-
-	return len(p), nil
-}
+// maxRemoteLogBytes is how much of a remote-controlled string a log
+// message may carry; see truncateForLog.
+const maxRemoteLogBytes = 256
 
 // truncateForLog bounds a string that a remote peer chose (a request path, a
 // tool result, a target name) before it reaches the logs.
@@ -74,28 +27,4 @@ func truncateForLog(s string) string {
 		return s
 	}
 	return fmt.Sprintf("%s…(+%d bytes)", s[:maxRemoteLogBytes], len(s)-maxRemoteLogBytes)
-}
-
-// Sync implements zap.Sink
-func (s *RingBufferSink) Sync() error {
-	return nil
-}
-
-// Close implements zap.Sink
-func (s *RingBufferSink) Close() error {
-	return nil
-}
-
-// GetRecentLogs returns the most recent log lines.
-func GetRecentLogs() []string {
-	globalLogBuffer.mu.Lock()
-	defer globalLogBuffer.mu.Unlock()
-
-	logs := []string{}
-	globalLogBuffer.buffer.Do(func(p any) {
-		if p != nil {
-			logs = append(logs, p.(string))
-		}
-	})
-	return logs
 }

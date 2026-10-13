@@ -22,6 +22,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/google/agentmesh/internal/logging"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 )
@@ -68,7 +69,7 @@ func newDebugHandler(n *AgentMeshNode) http.Handler {
 		writeDebugJSON(w, n.tokenInfo())
 	})
 	mux.HandleFunc("GET /debug/logs", func(w http.ResponseWriter, r *http.Request) {
-		writeDebugJSON(w, logsResponse{Logs: GetRecentLogs()})
+		writeDebugJSON(w, logsResponse{Logs: logging.RecentLogs()})
 	})
 	mux.HandleFunc("POST /debug/connect-peer", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {

@@ -15,40 +15,9 @@
 package node
 
 import (
-	"container/ring"
 	"strings"
 	"testing"
 )
-
-// The ring keeps whole lines; without a per-line cap a remote peer that gets
-// an 8 MiB string logged pins it in memory for 500 rounds.
-func TestRingBufferSinkCapsLineBytes(t *testing.T) {
-	sink := &RingBufferSink{buffer: ring.New(4)}
-	huge := strings.Repeat("A", 3*maxLogLineBytes) + "\n"
-	if _, err := sink.Write([]byte(huge)); err != nil {
-		t.Fatal(err)
-	}
-	_, _ = sink.Write([]byte("short\n"))
-
-	var lines []string
-	sink.buffer.Do(func(p any) {
-		if p != nil {
-			lines = append(lines, p.(string))
-		}
-	})
-	if len(lines) != 2 {
-		t.Fatalf("got %d lines, want 2", len(lines))
-	}
-	if got := len(lines[0]); got > maxLogLineBytes+len("…[truncated]") {
-		t.Errorf("stored line is %d bytes, want <= %d", got, maxLogLineBytes+len("…[truncated]"))
-	}
-	if !strings.HasSuffix(lines[0], "[truncated]") {
-		t.Errorf("truncated line should be marked, got suffix %q", lines[0][len(lines[0])-16:])
-	}
-	if lines[1] != "short" {
-		t.Errorf("second line = %q, want %q", lines[1], "short")
-	}
-}
 
 func TestTruncateForLog(t *testing.T) {
 	if got := truncateForLog("small"); got != "small" {

@@ -145,7 +145,7 @@ func main() {
 	rootCmd.Flags().BoolVar(&allowLoopback, "allow-loopback", false, "Allow loopback and link-local addresses for discovery")
 	rootCmd.Flags().IntVar(&connsPerSourceIP, "conns-per-source-ip", 0, "Max inbound connections per source IP; 0 is a quarter of --high-watermark, so filling the router takes at least four addresses. Raise it where more members share one address")
 	rootCmd.Flags().StringVar(&logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
-	rootCmd.Flags().StringVar(&logFormat, "log-format", "", "Log format (text, json); when unset, the LOG_FORMAT env var decides, else text")
+	rootCmd.Flags().StringVar(&logFormat, "log-format", "text", "Log format (text, json)")
 	rootCmd.Flags().DurationVar(&dhtProviderAddrTTL, "dht-provider-addr-ttl", router.DefaultDHTProviderAddrTTL, "How long a DHT provider record lives after its last announcement")
 	rootCmd.Flags().DurationVar(&dhtMaxRecordAge, "dht-max-record-age", 0, "Maximum age for DHT records (0s uses library default)")
 	rootCmd.Flags().IntVar(&lowWaterMark, "low-watermark", 0, "Connections the router trims down to once it is over --high-watermark; 0 is 15% below the high watermark, so a trim sheds that share and no more")

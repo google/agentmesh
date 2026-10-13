@@ -49,7 +49,7 @@ downloaded tunnel connector.
 | `--enroll-qr` | when stdout is a terminal | Print a device-enrollment QR code at startup. Only for `https` URLs. |
 | `--enroll-qr-max-usages` | `1` | How many devices the startup QR admits. |
 | `--log-level` | `info` | `debug`, `info`, `warn`, `error`. |
-| `--log-format` |  | `text` or `json`. When unset, the `LOG_FORMAT` env var decides, else `text`. |
+| `--log-format` | `text` | `text` or `json`. |
 
 ### Embedded component tunables
 

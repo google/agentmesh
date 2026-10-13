@@ -16,54 +16,81 @@
 package logging
 
 import (
-	"os"
+	"container/ring"
+	"net/url"
+	"strings"
+	"sync"
 
 	golog "github.com/ipfs/go-log/v2"
+	"go.uber.org/zap"
 )
 
 var logger = golog.Logger("logging")
 
+const (
+	ringBufferScheme = "ringbuffer"
+	logBufferLines   = 500
+	// maxLogLineBytes bounds each retained line so the ring's memory is
+	// bounded too (logBufferLines * maxLogLineBytes), whatever a remote peer
+	// manages to get logged.
+	maxLogLineBytes = 4 << 10
+)
+
+var (
+	ringBufferOnce sync.Once
+	ringBuffer     *ringBufferSink
+)
+
 // Options selects how a binary logs. Zero values keep the defaults: info
-// level, the LOG_FORMAT env var (else text) and no extra sink.
+// level, text format and no in-memory ring buffer.
 type Options struct {
-	Level   string // log level: debug, info, warn or error
-	Format  string // output format: text or json; empty falls back to $LOG_FORMAT, else text
-	SinkURL string // extra go-log sink, e.g. the node's ring buffer
+	Level      string // log level: debug, info, warn or error (default: info)
+	Format     string // output format: text or json (default: text)
+	RingBuffer bool   // also retain the most recent lines in memory (see RecentLogs)
 }
 
-// Setup applies opts process-wide. go-log reads its GOLOG_* env at package
-// init, before main runs, so the config is re-applied here through
-// SetupLogging.
+// Setup applies opts process-wide.
 func Setup(opts Options) {
-	lvl, levelErr := golog.LevelFromString(opts.Level)
-	if levelErr != nil {
-		lvl = golog.LevelInfo
-	}
-	format := opts.Format
-	badFormat := format != "" && format != "text" && format != "json"
-	if format == "" || badFormat {
-		format = os.Getenv("LOG_FORMAT")
+	lvl := golog.LevelInfo
+	var levelErr error
+	if opts.Level != "" {
+		lvl, levelErr = golog.LevelFromString(opts.Level)
+		if levelErr != nil {
+			lvl = golog.LevelInfo
+		}
 	}
 
 	cfg := golog.GetConfig()
-	if opts.SinkURL != "" {
-		cfg.URL = opts.SinkURL
+	cfg.Level = lvl
+	if opts.RingBuffer {
+		ringBufferOnce.Do(func() {
+			ringBuffer = newRingBufferSink(logBufferLines)
+			_ = zap.RegisterSink(ringBufferScheme, func(*url.URL) (zap.Sink, error) {
+				return ringBuffer, nil
+			})
+		})
+		cfg.URL = ringBufferScheme + "://"
+	} else {
+		cfg.URL = ""
 	}
-	switch format {
+	badFormat := false
+	switch opts.Format {
 	case "json":
 		cfg.Format = golog.JSONOutput
-	case "text":
+	case "", "text":
+		cfg.Format = golog.PlaintextOutput
+	default:
+		badFormat = true
 		cfg.Format = golog.PlaintextOutput
 	}
 	golog.SetupLogging(cfg)
-	golog.SetAllLoggers(lvl)
 
 	// go-log starts at error level, so warnings only show after SetAllLoggers.
 	if levelErr != nil {
 		logger.Warnf("invalid log level %q, using info", opts.Level)
 	}
 	if badFormat {
-		logger.Warnf("invalid log format %q, want text or json; using LOG_FORMAT", opts.Format)
+		logger.Warnf("invalid log format %q, want text or json; using text", opts.Format)
 	}
 	// go-libp2p-kad-dht logs routine small-mesh conditions (empty routing
 	// table, no closer peers) at INFO/ERROR, the latter through a malformed
@@ -72,4 +99,52 @@ func Setup(opts Options) {
 		_ = golog.SetLogLevel("dht", "fatal")
 		_ = golog.SetLogLevel("dht/RtRefreshManager", "fatal")
 	}
+}
+
+// RecentLogs returns the most recent log lines captured when Options.RingBuffer
+// was enabled in Setup.
+func RecentLogs() []string {
+	if ringBuffer == nil {
+		return []string{}
+	}
+	return ringBuffer.lines()
+}
+
+type ringBufferSink struct {
+	mu     sync.Mutex
+	buffer *ring.Ring
+}
+
+func newRingBufferSink(lines int) *ringBufferSink {
+	return &ringBufferSink{buffer: ring.New(lines)}
+}
+
+func (s *ringBufferSink) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// zap writes complete log lines per Write call.
+	line := strings.TrimSuffix(string(p), "\n")
+	if len(line) > maxLogLineBytes {
+		line = line[:maxLogLineBytes] + "…[truncated]"
+	}
+	s.buffer.Value = line
+	s.buffer = s.buffer.Next()
+	return len(p), nil
+}
+
+func (s *ringBufferSink) Sync() error  { return nil }
+func (s *ringBufferSink) Close() error { return nil }
+
+func (s *ringBufferSink) lines() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	logs := []string{}
+	s.buffer.Do(func(p any) {
+		if p != nil {
+			logs = append(logs, p.(string))
+		}
+	})
+	return logs
 }
