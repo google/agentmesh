@@ -650,7 +650,7 @@ func TestCallMCPTool_ProviderNotGrantedIsNotRetried(t *testing.T) {
 		t.Fatalf("CallMCPTool to an ungranted provider = %v, want ErrProviderNotGranted", err)
 	}
 	if strings.Contains(err.Error(), "retries") {
-		t.Fatalf("CallMCPTool retried a provider that is not granted the service: %v", err)
+		t.Fatalf("CallMCPTool to an ungranted provider = %v, want one refusal with no retry", err)
 	}
 }
 
