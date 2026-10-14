@@ -1,4 +1,4 @@
-a2a-sdk>=1.2.1
+a2a-sdk>=1.2.2
 httpx>=0.28.1
 mcp>=2.3.0
 sse-starlette>=3.5.0
