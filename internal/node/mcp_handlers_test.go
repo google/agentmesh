@@ -19,6 +19,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -593,6 +594,63 @@ func TestCallMCPTool_LabelEnforcement(t *testing.T) {
 	// A required label that nodeB's attestation does not satisfy: fail closed.
 	if _, err := nodeA.CallMCPTool(ctx, nodeB.Host.ID(), "mcp://code-reviewer/review_pr", map[string]any{}, map[string]string{"region": "na-us"}); err == nil {
 		t.Fatal("CallMCPTool with a non-matching label requirement must fail")
+	}
+}
+
+// A provider whose credential does not grant the service is refused once: the
+// refusal is an answer, so the call is not retried against the same peer.
+func TestCallMCPTool_ProviderNotGrantedIsNotRetried(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	nodeA, cleanupA := startBareNode(t, ctx)
+	defer cleanupA()
+	nodeB, cleanupB := startBareNode(t, ctx)
+	defer cleanupB()
+
+	if err := nodeA.Host.Connect(ctx, peer.AddrInfo{ID: nodeB.Host.ID(), Addrs: nodeB.Host.Addrs()}); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	rootPub, rootPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("gen root key: %v", err)
+	}
+	if err := buildAndSaveBiscuit(nodeA, rootPriv); err != nil {
+		t.Fatalf("buildAndSaveBiscuit: %v", err)
+	}
+	nodeB.keysMu.Lock()
+	nodeB.trustedKeys = append(nodeB.trustedKeys, TrustedKey{Key: rootPub, ReceivedAt: time.Now()})
+	nodeB.keysMu.Unlock()
+
+	// nodeB is enrolled, but no role grants it anything to publish.
+	nodeBIdentity, err := identity.MintBootstrapBiscuitToken(rootPriv, nodeB.Host.ID(), api.RoleNode, time.Now().Add(time.Hour), nil, nil)
+	if err != nil {
+		t.Fatalf("mint nodeB identity: %v", err)
+	}
+	nodeB.SetIdentityCache(nodeBIdentity)
+	nodeA.keysMu.Lock()
+	nodeA.trustedKeys = append(nodeA.trustedKeys, TrustedKey{Key: rootPub, ReceivedAt: time.Now()})
+	nodeA.keysMu.Unlock()
+
+	hostedSrv := httptest.NewServer(newFakeMCPHandler(t, []*mcp.Tool{
+		{Name: "review_pr", Description: "Run a code review", InputSchema: map[string]any{"type": "object"}},
+	}))
+	defer hostedSrv.Close()
+	if err := nodeB.RegisterService(ctx, &api.RegisterServiceRequest{
+		Service: &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_MCP, Name: "code-reviewer"},
+		Backend: &api.RegisterServiceRequest_TargetUrl{TargetUrl: hostedSrv.URL},
+	}); err != nil {
+		t.Fatalf("RegisterService: %v", err)
+	}
+	defer func() { _ = nodeB.UnregisterService(ctx, "code-reviewer") }()
+
+	_, err = nodeA.CallMCPTool(ctx, nodeB.Host.ID(), "mcp://code-reviewer/review_pr", map[string]any{}, nil)
+	if !errors.Is(err, ErrProviderNotGranted) {
+		t.Fatalf("CallMCPTool to an ungranted provider = %v, want ErrProviderNotGranted", err)
+	}
+	if strings.Contains(err.Error(), "retries") {
+		t.Fatalf("CallMCPTool retried a provider that is not granted the service: %v", err)
 	}
 }
 

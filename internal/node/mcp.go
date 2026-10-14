@@ -219,8 +219,9 @@ func (n *AgentMeshNode) CallMCPTool(ctx context.Context, targetPeer peer.ID, too
 		}
 		// A denial is an answer, not a failure to reach anyone. Retrying it
 		// just delays the same reply and knocks on the remote peer three times
-		// for one call.
-		if errors.Is(err, ErrAuthRejected) {
+		// for one call. That holds for the remote peer refusing the caller
+		// and for the caller refusing a provider not granted the service.
+		if errors.Is(err, ErrAuthRejected) || errors.Is(err, ErrProviderNotGranted) {
 			logger.Warnf("[MCP] Tool call denied, not retrying: %v", err)
 			return nil, err
 		}
