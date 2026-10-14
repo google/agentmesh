@@ -137,7 +137,10 @@ func TestValidatePolicyConfigAllowedPublish(t *testing.T) {
 			t.Errorf("ValidatePolicyConfig rejected allowed_publish %q: %v", ok, err)
 		}
 	}
-	for _, bad := range []string{"calc", "mcp:calc", "mcp://calc?x=1", "mcp://calc#f", ""} {
+	for _, bad := range []string{"calc", "mcp:calc", "mcp://calc?x=1", "mcp://calc#f", "",
+		// An egress name is a lowercase hostname: these would mint a grant
+		// that matches no destination.
+		"egress://API.github.com", "egress://api.github.com.", "egress://api.github.com/v1"} {
 		err := ValidatePolicyConfig(role(bad))
 		if err == nil {
 			t.Errorf("ValidatePolicyConfig accepted allowed_publish %q", bad)

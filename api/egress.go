@@ -152,12 +152,13 @@ func ValidateEgressName(name string) error {
 	return nil
 }
 
-// ValidateEgressServicePattern checks an egress entry of allowed_services or
-// http.service. The generic service validator accepts a path and any case,
-// which for the other types name a service that may exist; an egress name is
-// a hostname, matched against a lowercase destination name, so a path, a
-// port, uppercase or a trailing dot would compile to a grant that matches
-// nothing. Entries of other types pass through unchanged.
+// ValidateEgressServicePattern checks an egress entry of allowed_services,
+// allowed_publish or http.service. The generic service validator accepts a
+// path and any case, which for the other types name a service that may
+// exist; an egress name is a hostname, matched against a lowercase
+// destination name, so a path, a port, uppercase or a trailing dot would
+// compile to a grant that matches nothing. Entries of other types pass
+// through unchanged.
 func ValidateEgressServicePattern(svc string) error {
 	svcType, name := ParseServiceTarget(svc)
 	if svcType != ServiceTypeStringEgress {
