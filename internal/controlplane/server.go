@@ -3575,7 +3575,7 @@ func validatePolicyConfig(req *api.PolicyConfig) error {
 				return fmt.Errorf("invalid allowed_publish %q in role %s: %w", svc, r.Name, err)
 			}
 			if err := api.ValidateEgressServicePattern(svc); err != nil {
-				return fmt.Errorf("invalid allowed_publish %q in role %s: %w", svc, r.Name, err)
+				return fmt.Errorf("invalid allowed_publish in role %s: %w", r.Name, err)
 			}
 		}
 		if err := api.ValidateHTTPGrants(r.Http, r.AllowedServices); err != nil {
