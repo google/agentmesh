@@ -49,9 +49,9 @@ type Options struct {
 	OIDCSessionTTL        time.Duration // How long an OIDC enrollment stays refreshable before the identity must re-authenticate interactively; defaults to api.OIDCSessionTTL
 	WorkloadSessionTTL    time.Duration // Session TTL for enrollments from a WorkloadIssuer; defaults to DefaultWorkloadSessionTTL (48h)
 	// NodeRetention is how long an enrolled node's row is kept after its
-	// session expired before being deleted; 0 is DefaultNodeRetention and a
-	// negative value keeps rows forever. Every pod restart without a
-	// persistent data dir enrolls a fresh identity, so without this the
+	// session expired before being deleted; unset is DefaultNodeRetention,
+	// and Validate refuses a negative value. Every pod restart without a
+	// persistent data dir enrolls a fresh identity, so without a bound the
 	// nodes table only ever grows.
 	NodeRetention         time.Duration
 	AdminToken            string // Optional: administrative bearer token for protecting policy and enrollment queue REST APIs
@@ -152,6 +152,9 @@ func (o *Options) Validate() error {
 	}
 	if err := api.ValidateDirectoryParameters(o.DHTReplication, o.DHTReprovideInterval); err != nil {
 		return err
+	}
+	if o.NodeRetention <= 0 {
+		return fmt.Errorf("NodeRetention must be positive, got %s: node records are never kept forever", o.NodeRetention)
 	}
 	return nil
 }

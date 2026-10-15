@@ -43,10 +43,6 @@ var nodesDeletedTotal = promauto.NewCounter(prometheus.CounterOpts{
 // harmless and not worth a claim.
 func (s *Server) runNodeGCLoop() {
 	defer s.wg.Done()
-	if s.config.NodeRetention <= 0 {
-		return
-	}
-
 	s.gcExpiredNodes(time.Now())
 
 	ticker := time.NewTicker(nodeGCInterval)
@@ -62,12 +58,10 @@ func (s *Server) runNodeGCLoop() {
 }
 
 // gcExpiredNodes deletes every unbanned node whose session expired more than
-// NodeRetention before now. A negative retention means keep forever, and that
-// holds here too, not only in the loop that decides whether to tick.
+// NodeRetention before now. Options.Validate has refused a retention that is
+// not positive, so there is no "keep forever": an unbounded nodes table is
+// what slowed every console refresh and metrics scrape.
 func (s *Server) gcExpiredNodes(now time.Time) {
-	if s.config.NodeRetention <= 0 {
-		return
-	}
 	ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
 	defer cancel()
 

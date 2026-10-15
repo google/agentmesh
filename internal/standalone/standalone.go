@@ -137,6 +137,9 @@ type ControlPlaneTunables struct {
 	// WorkloadSessionTTL is how long a workload-issuer enrollment stays
 	// refreshable without presenting a fresh platform JWT on /refresh.
 	WorkloadSessionTTL time.Duration
+	// NodeRetention is how long a node record is kept after its session
+	// expired before the control plane deletes it.
+	NodeRetention time.Duration
 	// ManualEnrollment queues bootstrap enrollments for admin approval
 	// instead of auto-approving them.
 	ManualEnrollment bool
@@ -290,6 +293,7 @@ func (s *Server) Start(ctx context.Context) (retErr error) {
 		KeyGracePeriod:        s.opts.ControlPlane.KeyGracePeriod,
 		BiscuitTTL:            s.opts.ControlPlane.BiscuitTTL,
 		WorkloadSessionTTL:    s.opts.ControlPlane.WorkloadSessionTTL,
+		NodeRetention:         s.opts.ControlPlane.NodeRetention,
 		BiscuitTimeout:        10 * time.Second,
 		AdminToken:            s.adminToken,
 		AutoApproveEnrollment: !s.opts.ControlPlane.ManualEnrollment,

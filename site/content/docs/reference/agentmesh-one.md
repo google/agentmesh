@@ -64,6 +64,7 @@ of zero leaves the default of that component unchanged.
 | `--control-plane-key-grace-period` | `--key-grace-period` |
 | `--control-plane-biscuit-ttl` | `--biscuit-ttl` |
 | `--control-plane-workload-session-ttl` | `--workload-session-ttl` |
+| `--control-plane-node-retention` | `--node-retention` |
 | `--control-plane-manual-enrollment` | The opposite of `--auto-approve-enrollment`: queue bootstrap enrollments for approval. |
 | `--router-control-plane-sync-interval` | `agentmesh-router --control-plane-sync-interval` |
 | `--router-low-watermark`, `--router-high-watermark` | `--low-watermark`, `--high-watermark` |

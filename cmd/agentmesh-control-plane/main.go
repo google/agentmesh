@@ -98,6 +98,10 @@ func main() {
 			if stsIssuerURL == "" {
 				stsIssuerURL = strings.TrimSpace(os.Getenv("AGENTMESH_STS_ISSUER_URL"))
 			}
+			// Options reads 0 as unset; the flag's 0 is a value the operator typed.
+			if nodeRetention <= 0 {
+				logger.Fatalf("--node-retention must be positive, got %s: node records are never kept forever", nodeRetention)
+			}
 
 			var auds []string
 			for _, aud := range strings.Split(allowedAudiencesFlag, ",") {
@@ -120,12 +124,6 @@ func main() {
 					logger.Errorf("Failed to close database: %v", err)
 				}
 			}()
-
-			// Options reads 0 as the default, so the flag's 0 (keep forever)
-			// travels as a negative retention.
-			if nodeRetention == 0 {
-				nodeRetention = -1
-			}
 
 			opts := controlplane.Options{
 				ListenAddr:            bindAddress,
@@ -208,7 +206,7 @@ func main() {
 	rootCmd.Flags().DurationVar(&biscuitTTL, "biscuit-ttl", api.BiscuitTokenTTL, "Lifespan minted into every issued Biscuit's expiration fact. Capped to the OIDC token's own expiry when shorter.")
 	rootCmd.Flags().DurationVar(&oidcSessionTTL, "oidc-session-ttl", api.OIDCSessionTTL, "How long an OIDC enrollment stays refreshable before the identity must re-authenticate with the OIDC provider. Shorter values keep the provider authoritative for offboarding at the cost of more frequent interactive re-enrollment.")
 	rootCmd.Flags().DurationVar(&workloadSessionTTL, "workload-session-ttl", controlplane.DefaultWorkloadSessionTTL, "How long a workload-issuer enrollment stays refreshable without presenting a fresh platform JWT on /refresh.")
-	rootCmd.Flags().DurationVar(&nodeRetention, "node-retention", controlplane.DefaultNodeRetention, "How long an enrolled node's record is kept after its session expired before it is deleted. Banned nodes are always kept. 0 keeps every record forever.")
+	rootCmd.Flags().DurationVar(&nodeRetention, "node-retention", controlplane.DefaultNodeRetention, "How long an enrolled node's record is kept after its session expired before it is deleted. Banned nodes are always kept. Must be positive: records are never kept forever.")
 	rootCmd.Flags().DurationVar(&meshReconnectInterval, "mesh-reconnect-interval", controlplane.DefaultMeshReconnectInterval, "How often the event publisher re-reads the router leases and dials any router it is not connected to.")
 	rootCmd.Flags().StringVar(&adminTokenPath, "admin-token-path", "", "Path to file containing the token for authenticating policy REST API requests (or env AGENTMESH_ADMIN_TOKEN)")
 	rootCmd.Flags().StringVar(&stsIssuerURL, "sts-issuer-url", "", "Canonical external URL of this control plane for OIDC/STS issuer and discovery metadata (or env AGENTMESH_STS_ISSUER_URL)")

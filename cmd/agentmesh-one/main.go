@@ -231,6 +231,7 @@ func main() {
 	rootCmd.Flags().DurationVar(&cpTunables.KeyGracePeriod, "control-plane-key-grace-period", 0, "How long rotated-out keys stay valid for verification (0 keeps the component default)")
 	rootCmd.Flags().DurationVar(&cpTunables.BiscuitTTL, "control-plane-biscuit-ttl", 0, "Lifespan minted into issued biscuits (0 keeps the component default)")
 	rootCmd.Flags().DurationVar(&cpTunables.WorkloadSessionTTL, "control-plane-workload-session-ttl", 0, "How long a workload-issuer enrollment stays refreshable without presenting a fresh platform JWT on /refresh (0 keeps the component default)")
+	rootCmd.Flags().DurationVar(&cpTunables.NodeRetention, "control-plane-node-retention", 0, "How long a node record is kept after its session expired before it is deleted (0 keeps the component default)")
 	rootCmd.Flags().BoolVar(&cpTunables.ManualEnrollment, "control-plane-manual-enrollment", false, "Queue bootstrap enrollments for admin approval instead of auto-approving")
 
 	// Embedded router tunables.

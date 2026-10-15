@@ -16,6 +16,7 @@ package controlplane
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -77,34 +78,16 @@ func TestGCExpiredNodesAppliesRetention(t *testing.T) {
 	}
 }
 
-func TestNodeGCLoopIsOffWithoutRetention(t *testing.T) {
+// A retention that is not positive is refused, not read as "keep forever":
+// an unbounded nodes table is what this GC exists to prevent. Unset is the
+// default (TestGCExpiredNodesDefaultsRetention).
+func TestNodeRetentionMustBePositive(t *testing.T) {
 	store := newMetricsTestStore(t)
-	ctx := context.Background()
-	now := time.Now()
-	if err := store.EnrollNode(ctx, &storage.EnrolledNode{
-		PeerID: "lapsed", PublicKey: []byte("pub"), Biscuit: []byte("b"), Role: api.RoleNode,
-		EnrollmentType: "OIDC", EnrolledAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(-time.Hour),
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	srv, err := NewServer(Options{DriverName: "sqlite", DataSourceName: "unused", OIDCIssuer: "https://issuer", NodeRetention: -1}, store)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = srv.Close() }()
-
-	// The loop returns immediately with a negative retention, and a direct
-	// sweep is a no-op too: it means keep forever, not "expired as of now".
-	srv.wg.Add(1)
-	srv.runNodeGCLoop()
-	srv.gcExpiredNodes(now)
-	nodes, err := store.ListNodes(ctx, storage.NodeFilter{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(nodes) != 1 {
-		t.Fatalf("negative retention deleted rows: %d left", len(nodes))
+	for _, retention := range []time.Duration{-1, -time.Hour} {
+		_, err := NewServer(Options{DriverName: "sqlite", DataSourceName: "unused", OIDCIssuer: "https://issuer", NodeRetention: retention}, store)
+		if err == nil || !strings.Contains(err.Error(), "NodeRetention must be positive") {
+			t.Fatalf("NewServer with NodeRetention %s: err = %v, want a refusal naming NodeRetention", retention, err)
+		}
 	}
 }
 

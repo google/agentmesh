@@ -39,7 +39,7 @@ agentmesh-control-plane admin unban --peer <id>     lift a ban
 | `--lease-duration` | `15m` | How long a router lease lasts without renewal. |
 | `--dht-replication` | `3` | How many routers each record a member announces is placed on: the router it announced to keeps it, and places a copy on this many routers closest to the key. A record on three routers survives two of them down at once; each replica more is a copy more of every record. Members are not concerned: they ask the routers they hold. Published on `/info`; every router of the mesh runs on it. |
 | `--dht-reprovide-interval` | `5m` | How often a member re-announces each service it publishes. A provider that stopped without unpublishing stays listed for three intervals, which is how long routers keep a record after its last announcement; the mesh pays its providers divided by the interval in announcements a minute. Published on `/info`. |
-| `--node-retention` | `720h` (30 days) | How long the record of an enrolled node is kept after its session expires. Banned nodes are kept forever. `0` keeps every record. |
+| `--node-retention` | `720h` (30 days) | How long the record of an enrolled node is kept after its session expires. Banned nodes are kept forever. Must be positive; records are never kept forever. |
 | `--mesh-reconnect-interval` | `30s` | How often the event publisher re-reads the router leases and dials any router it is not connected to. On each router it runs the mesh handshake with a credential it mints for its own peer under the signing key, with the role `mesh:role:control-plane`, so the router holds its connection as a member's. |
 | `--log-level` | `info` | `debug`, `info`, `warn`, `error`. |
 | `--log-format` | `text` | `text` or `json`. |
