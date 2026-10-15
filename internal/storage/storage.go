@@ -353,6 +353,7 @@ type Store interface {
 
 	// ListNodes retrieves the enrolled nodes the filter selects, newest
 	// enrollment first. Peer ID breaks ties, so pages neither skip nor repeat a row.
+	// A listed node carries no PublicKey and no Biscuit: GetNode reads those.
 	ListNodes(ctx context.Context, filter NodeFilter) ([]EnrolledNode, error)
 
 	// CountNodes counts every enrolled node by role and by its state at now.

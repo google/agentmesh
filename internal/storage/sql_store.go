@@ -1705,7 +1705,9 @@ func (s *SQLStore) ListNodes(ctx context.Context, filter NodeFilter) ([]Enrolled
 	if err != nil {
 		return nil, err
 	}
-	query := `SELECT peer_id, public_key, biscuit_token, role, enrollment_type, claims_json, owner_id, labels_json, enrolled_at, expires_at, banned, autonomous_recovery FROM nodes` + where + ` ORDER BY enrolled_at DESC, peer_id DESC`
+	// Neither blob is read: a list is a view of the rows, and the biscuit is
+	// a 2 KB column per row that only GetNode's single-row callers need.
+	query := `SELECT peer_id, role, enrollment_type, claims_json, owner_id, labels_json, enrolled_at, expires_at, banned, autonomous_recovery FROM nodes` + where + ` ORDER BY enrolled_at DESC, peer_id DESC`
 	if filter.Limit > 0 {
 		query += ` LIMIT ?`
 		args = append(args, filter.Limit)
@@ -1723,8 +1725,6 @@ func (s *SQLStore) ListNodes(ctx context.Context, filter NodeFilter) ([]Enrolled
 		var enrolledAtUnix, expiresAtUnix int64
 		err := rows.Scan(
 			&node.PeerID,
-			&node.PublicKey,
-			&node.Biscuit,
 			&node.Role,
 			&node.EnrollmentType,
 			&claimsJSON,
@@ -1751,15 +1751,6 @@ func (s *SQLStore) ListNodes(ctx context.Context, filter NodeFilter) ([]Enrolled
 		}
 		node.EnrolledAt = time.UnixMilli(enrolledAtUnix)
 		node.ExpiresAt = time.UnixMilli(expiresAtUnix)
-
-		pubCopy := make([]byte, len(node.PublicKey))
-		copy(pubCopy, node.PublicKey)
-		node.PublicKey = pubCopy
-
-		biscuitCopy := make([]byte, len(node.Biscuit))
-		copy(biscuitCopy, node.Biscuit)
-		node.Biscuit = biscuitCopy
-
 		nodes = append(nodes, node)
 	}
 	if err := rows.Err(); err != nil {
@@ -1818,7 +1809,8 @@ func nodeStateWhere(state NodeState, now time.Time) (string, []any, error) {
 	case NodeExpired:
 		return "(banned = ? AND expires_at > 0 AND expires_at < ?)", []any{false, ms}, nil
 	case NodeAdmitted:
-		return "(banned = ? AND expires_at <= 0) OR (banned = ? AND expires_at >= ?)", []any{false, false, ms}, nil
+		// Parenthesised like the other arms, so a caller may AND it with more.
+		return "((banned = ? AND expires_at <= 0) OR (banned = ? AND expires_at >= ?))", []any{false, false, ms}, nil
 	}
 	return "", nil, fmt.Errorf("unknown node state %q", state)
 }

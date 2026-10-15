@@ -140,6 +140,7 @@ func TestEnrolledNodeRoundTripsEveryField(t *testing.T) {
 	requireFieldsRoundTrip(t, want, got, "Banned")
 
 	// ListNodes selects its own column list, so it can drift from GetNode.
+	// It leaves the two blobs out on purpose: a list is a view of the rows.
 	listed, err := store.ListNodes(ctx, NodeFilter{})
 	if err != nil {
 		t.Fatalf("ListNodes: %v", err)
@@ -147,7 +148,10 @@ func TestEnrolledNodeRoundTripsEveryField(t *testing.T) {
 	if len(listed) != 1 {
 		t.Fatalf("ListNodes returned %d nodes, want 1", len(listed))
 	}
-	requireFieldsRoundTrip(t, want, &listed[0], "Banned")
+	requireFieldsRoundTrip(t, want, &listed[0], "Banned", "PublicKey", "Biscuit")
+	if len(listed[0].PublicKey) != 0 || len(listed[0].Biscuit) != 0 {
+		t.Errorf("ListNodes read the blobs: public key %d bytes, biscuit %d bytes; GetNode is what reads them", len(listed[0].PublicKey), len(listed[0].Biscuit))
+	}
 }
 
 // Autonomous recovery is a per-node, server-side opt-in: it must default

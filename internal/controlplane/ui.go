@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -200,7 +201,9 @@ func parseNodeStates(raw []string) ([]storage.NodeState, error) {
 		state := storage.NodeState(value)
 		switch state {
 		case storage.NodeAdmitted, storage.NodeExpired, storage.NodeBanned:
-			states = append(states, state)
+			if !slices.Contains(states, state) {
+				states = append(states, state)
+			}
 		default:
 			return nil, fmt.Errorf("state must be admitted, expired or banned, not %q", value)
 		}
