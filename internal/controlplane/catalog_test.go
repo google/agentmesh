@@ -19,14 +19,18 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/agentmesh/api"
 	"github.com/google/agentmesh/internal/identity"
+	"github.com/google/agentmesh/internal/storage"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -317,6 +321,74 @@ func TestHandleNodeCatalog_Admission(t *testing.T) {
 	}
 	if snap := srv.catalogSnapshot(); len(snap) != 0 {
 		t.Fatalf("banning must evict the cached report, got %v", snap)
+	}
+}
+
+// failingStore is a store whose reads fail on demand, the way a database
+// that stopped answering looks to the control plane.
+type failingStore struct {
+	storage.Store
+	fail atomic.Bool
+}
+
+func (f *failingStore) GetAllValidPublicKeys(ctx context.Context) ([]ed25519.PublicKey, error) {
+	if f.fail.Load() {
+		return nil, errors.New("store: connection refused")
+	}
+	return f.Store.GetAllValidPublicKeys(ctx)
+}
+
+func (f *failingStore) GetNode(ctx context.Context, peerID string) (*storage.EnrolledNode, error) {
+	if f.fail.Load() {
+		return nil, errors.New("store: connection refused")
+	}
+	return f.Store.GetNode(ctx, peerID)
+}
+
+// A store that does not answer is an outage, not a refusal: the member is
+// told 503 and the control plane logs it, where before it was told 401, the
+// answer a revoked credential gets, and nothing was logged. On the testnet
+// a database stall produced hundreds of such 401s per step of the ladder.
+func TestMemberAuthAnswersStoreFailureAs503(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "control-plane.db")
+	real, err := storage.NewSQLStore("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &failingStore{Store: real}
+	srv, err := NewServer(Options{
+		ListenAddr: "127.0.0.1:0", DriverName: "sqlite", DataSourceName: dbPath,
+		AllowedAudiences: []string{"agentmesh-audience"}, BiscuitTimeout: 10 * time.Second,
+	}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = srv.Close()
+		_ = real.Close()
+	}()
+	cpURL := "http://" + srv.listener.Addr().String()
+
+	ctx := context.Background()
+	priv, biscuitBytes := enrollRefreshTestNode(t, ctx, real)
+	body := catalogBody(t, &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_MCP, Name: "calc"})
+	if got := postCatalog(t, cpURL, bearer(biscuitBytes), priv, body); got != http.StatusNoContent {
+		t.Fatalf("admitted node with a healthy store: got status %d, want %d", got, http.StatusNoContent)
+	}
+
+	store.fail.Store(true)
+	if got := postCatalog(t, cpURL, bearer(biscuitBytes), priv, body); got != http.StatusServiceUnavailable {
+		t.Fatalf("admitted node with a failing store: got status %d, want %d, not a refusal", got, http.StatusServiceUnavailable)
+	}
+
+	store.fail.Store(false)
+	if got := postCatalog(t, cpURL, bearer(biscuitBytes), priv, body); got != http.StatusNoContent {
+		t.Fatalf("admitted node once the store answers again: got status %d, want %d", got, http.StatusNoContent)
 	}
 }
 

@@ -743,7 +743,11 @@ func (s *Server) HandleTokenExchange(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	nodeRecord := s.admittedNode(r)
+	nodeRecord, err := s.admittedNode(r)
+	if err != nil {
+		writeStoreUnavailable(w, r, err)
+		return
+	}
 	if nodeRecord == nil {
 		writeChallengeError(w, "Unauthorized: node credential required")
 		return
@@ -944,7 +948,11 @@ func (s *Server) HandleSTSToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	nodeRecord := s.admittedNode(r)
+	nodeRecord, err := s.admittedNode(r)
+	if err != nil {
+		writeStoreUnavailable(w, r, err)
+		return
+	}
 	if nodeRecord == nil {
 		writeChallengeError(w, "Unauthorized: node credential required")
 		return
@@ -1553,7 +1561,11 @@ func decodeBase64Biscuit(encoded string) ([]byte, error) {
 }
 
 func (s *Server) resolveDefaultActorPeer(ctx context.Context, r *http.Request) (peer.ID, error) {
-	if nodeRecord := s.admittedNode(r); nodeRecord != nil {
+	nodeRecord, err := s.admittedNode(r)
+	if err != nil {
+		return "", err
+	}
+	if nodeRecord != nil {
 		return peer.Decode(nodeRecord.PeerID)
 	}
 	_, pub, err := s.store.GetCurrentKey(ctx)
@@ -1708,7 +1720,12 @@ func (s *Server) handleOAuthTokenExchangeGrant(w http.ResponseWriter, r *http.Re
 			}
 		}
 	} else {
-		admitted := s.admittedNode(r)
+		admitted, storeErr := s.admittedNode(r)
+		if storeErr != nil {
+			logger.Errorw("Store unavailable while authenticating a member", "path", r.URL.Path, "error", storeErr)
+			writeOAuthError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "control plane store did not answer")
+			return
+		}
 		actorPeerID, err := s.resolveDefaultActorPeer(r.Context(), r)
 		if err != nil {
 			writeOAuthError(w, http.StatusBadRequest, "invalid_request", "Could not resolve actor peer_id: "+err.Error())

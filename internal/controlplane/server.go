@@ -1661,9 +1661,15 @@ func (s *Server) unservedEgress(ctx context.Context, policy *api.PolicyConfig) (
 // admittedNodeWithChallenge returns the enrolled, admitted node whose biscuit
 // the request bears after verifying the signed freshness challenge in
 // HeaderChallengeTimestamp and HeaderChallengeSignature against the node's
-// stored public key. Every failure writes a uniform 401 Unauthorized.
+// stored public key. A credential that does not verify writes a uniform 401
+// Unauthorized; a store that could not be read writes 503, so that a member
+// retries instead of taking a database outage for a revocation.
 func (s *Server) admittedNodeWithChallenge(w http.ResponseWriter, r *http.Request, challengeFn func(peerID string, ts int64) []byte) *storage.EnrolledNode {
-	nodeRecord := s.admittedNode(r)
+	nodeRecord, err := s.admittedNode(r)
+	if err != nil {
+		writeStoreUnavailable(w, r, err)
+		return nil
+	}
 	if nodeRecord == nil {
 		writeChallengeError(w, "Unauthorized: node credential required")
 		return nil
@@ -1689,29 +1695,43 @@ func (s *Server) admittedNodeWithChallenge(w http.ResponseWriter, r *http.Reques
 }
 
 // admittedNode returns the enrolled, admitted node whose biscuit the request
-// bears, or nil.
-func (s *Server) admittedNode(r *http.Request) *storage.EnrolledNode {
+// bears, or nil when the request carries no such credential. The error is a
+// store that could not be read, which says nothing about the credential;
+// the caller answers it as an outage, not as a refusal.
+func (s *Server) admittedNode(r *http.Request) (*storage.EnrolledNode, error) {
 	authHeader := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authHeader, "Bearer ") {
-		return nil
+		return nil, nil
 	}
 	biscuitBytes, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(authHeader, "Bearer "))
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	trustedKeys, err := s.store.GetAllValidPublicKeys(r.Context())
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("signing keys: %w", err)
 	}
 	peerID, err := identity.VerifyAndExtractPeerID(trustedKeys, biscuitBytes, s.config.BiscuitTimeout)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	nodeRecord, err := s.store.GetNode(r.Context(), peerID.String())
-	if err != nil || nodeRecord == nil || nodeRecord.CheckAdmission(time.Now()) != nil {
-		return nil
+	if err != nil && !errors.Is(err, storage.ErrNotFound) {
+		return nil, fmt.Errorf("node %s: %w", peerID, err)
 	}
-	return nodeRecord
+	if nodeRecord == nil || nodeRecord.CheckAdmission(time.Now()) != nil {
+		return nil, nil
+	}
+	return nodeRecord, nil
+}
+
+// writeStoreUnavailable answers a mesh request the control plane could not
+// authenticate because its own store did not answer: 503, so the member
+// retries at its next sync, and a log line, so the outage is read from the
+// control plane and not inferred from members reporting 401.
+func writeStoreUnavailable(w http.ResponseWriter, r *http.Request, err error) {
+	logger.Errorw("Store unavailable while authenticating a member", "path", r.URL.Path, "error", err)
+	http.Error(w, "Service unavailable: control plane store did not answer", http.StatusServiceUnavailable)
 }
 
 // HandleEgress HTTP GET `/egress`: the egress destinations the requesting
