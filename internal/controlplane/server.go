@@ -3105,8 +3105,12 @@ func (s *Server) HandleUserStatus(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	isAdmin := user.Role == "admin"
 
+	// A banned node is out of the mesh and only an administrator can restore
+	// it, so only the administrators' list carries banned rows: a user's
+	// list would otherwise keep every node they ever revoked, forever.
 	filter := storage.NodeFilter{States: statusNodeStates, Now: time.Now()}
 	if !isAdmin {
+		filter.States = []storage.NodeState{storage.NodeAdmitted}
 		filter.OwnerID = &user.ID
 	}
 	allNodes, err := s.store.ListNodes(ctx, filter)

@@ -2620,6 +2620,24 @@ func TestUserStatusAndTenancy(t *testing.T) {
 	if !nodeAUpdated.Banned {
 		t.Error("expected node A to be banned/revoked in DB")
 	}
+
+	// A revoked node is out of the user's list from then on: banned rows are
+	// never garbage-collected, and only an administrator can restore one.
+	req, _ = http.NewRequest("GET", baseURL+"/user/status", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenA)
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("GET /user/status after revoke failed: %v", err)
+	}
+	statusBody, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	data = &api.UserStatusResponse{}
+	if err := protojson.Unmarshal(statusBody, data); err != nil {
+		t.Fatalf("decode /user/status after revoke: %v", err)
+	}
+	if nodes := data.GetEnrolledNodes(); len(nodes) != 0 {
+		t.Errorf("after revoking its only node the user's status lists %d node(s), want none: %v", len(nodes), nodes)
+	}
 }
 
 func TestResolveRolesAndRoleImpersonationProtection(t *testing.T) {

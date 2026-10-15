@@ -4,6 +4,10 @@ const TOAST_TIMEOUT_MS = 5000;
 
 let refreshTimer = null;
 let refreshInFlight = false;
+// The session's role and user ID, learned from the first /user/status of a
+// session. An admin's later refreshes read /admin/status alone: /user/status
+// would list the same mesh a second time only to be overwritten.
+let session = null;
 // Last policy the server confirmed, so an edit is never silently overwritten by
 // a background refresh or thrown away by a stray click.
 let policyBaseline = '';
@@ -147,6 +151,7 @@ function showApp() {
 function showLandingPage() {
     stopAutoRefresh();
     resetExpiredNodes();
+    session = null;
     document.getElementById('landing-page').classList.add('active');
     document.getElementById('app-container').style.display = 'none';
 }
@@ -195,8 +200,10 @@ window.saveAdminToken = function() {
 
 async function loadData() {
     try {
-        // 1. Fetch user-scoped status
-        const response = await fetch('api/user/status');
+        // One status call per refresh: the user's own until the role is known,
+        // then the one that matches the role.
+        const endpoint = session !== null && session.role === 'admin' ? 'api/admin/status' : 'api/user/status';
+        const response = await fetch(endpoint);
         if (response.status === 401 || response.status === 403) {
             showLandingPage();
             throw new Error('Unauthorized. Please login again.');
@@ -205,15 +212,19 @@ async function loadData() {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
         let data = await response.json();
-        
-        const role = data.user ? data.user.role : 'user';
-        const userId = data.user ? data.user.id : '';
+
+        if (data.user) {
+            session = { role: data.user.role || 'user', id: data.user.id || '' };
+        }
+        const role = session !== null ? session.role : 'user';
+        const userId = session !== null ? session.id : '';
         
         // Update UI components depending on Role
         updateUIForRole(role, userId);
 
-        // 2. If user is admin, fetch full unfiltered admin status
-        if (role === 'admin') {
+        // The first call of an admin's session answered with the user's view;
+        // the mesh-wide one is what the admin console renders.
+        if (role === 'admin' && endpoint !== 'api/admin/status') {
             const adminResp = await fetch('api/admin/status');
             if (adminResp.ok) {
                 data = await adminResp.json();
