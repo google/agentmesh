@@ -28,10 +28,19 @@ const (
 	// and is what --node-retention defaults to.
 	DefaultNodeRetention = 30 * 24 * time.Hour
 
-	// nodeGCInterval is how often the sweep runs. Rows lapse on a scale of
-	// days, so nothing is gained by sweeping more often than hourly.
-	nodeGCInterval = time.Hour
+	// maxNodeGCInterval bounds how often the sweep runs. Rows lapse on a
+	// scale of days, so nothing is gained by sweeping more often than hourly;
+	// a retention far shorter than that, as a test sets, sweeps at a tenth
+	// of it so a lapsed row does not outlive the retention by much.
+	maxNodeGCInterval = time.Hour
+	minNodeGCInterval = time.Second
 )
+
+// nodeGCInterval is the sweep period for a retention: a tenth of it, within
+// [minNodeGCInterval, maxNodeGCInterval].
+func nodeGCInterval(retention time.Duration) time.Duration {
+	return min(maxNodeGCInterval, max(minNodeGCInterval, retention/10))
+}
 
 var nodesDeletedTotal = promauto.NewCounter(prometheus.CounterOpts{
 	Name: "agentmesh_control_plane_nodes_deleted_total",
@@ -45,7 +54,7 @@ func (s *Server) runNodeGCLoop() {
 	defer s.wg.Done()
 	s.gcExpiredNodes(time.Now())
 
-	ticker := time.NewTicker(nodeGCInterval)
+	ticker := time.NewTicker(nodeGCInterval(s.config.NodeRetention))
 	defer ticker.Stop()
 	for {
 		select {

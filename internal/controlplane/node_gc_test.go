@@ -91,6 +91,23 @@ func TestNodeRetentionMustBePositive(t *testing.T) {
 	}
 }
 
+// The sweep runs at a tenth of the retention, no more often than every
+// second and no less often than hourly: the default retention sweeps hourly,
+// a test's retention of seconds sweeps every second.
+func TestNodeGCIntervalFollowsRetention(t *testing.T) {
+	for retention, want := range map[time.Duration]time.Duration{
+		DefaultNodeRetention: time.Hour,
+		24 * time.Hour:       time.Hour,
+		5 * time.Hour:        30 * time.Minute,
+		time.Second:          time.Second,
+		3 * time.Second:      time.Second,
+	} {
+		if got := nodeGCInterval(retention); got != want {
+			t.Errorf("nodeGCInterval(%s) = %s, want %s", retention, got, want)
+		}
+	}
+}
+
 // A caller that leaves NodeRetention unset, such as agentmesh-one, still
 // reclaims rows whose session lapsed more than DefaultNodeRetention ago.
 func TestGCExpiredNodesDefaultsRetention(t *testing.T) {
