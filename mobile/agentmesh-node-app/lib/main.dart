@@ -1456,7 +1456,9 @@ class _NodeControlPageState extends State<NodeControlPage> {
                       const Padding(
                         padding: EdgeInsets.only(top: 6),
                         child: Text(
-                          'Joined with a token. Unenroll and join again to change labels.',
+                          'Joined with a token. To change labels, clear the device '
+                          'identity in the Unenroll view by choosing the Reset '
+                          'device identity option, then join again.',
                           style: TextStyle(fontSize: 12, color: Colors.grey),
                         ),
                       ),

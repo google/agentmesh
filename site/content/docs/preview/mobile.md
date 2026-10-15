@@ -355,9 +355,12 @@ The Config tab holds what `agentmesh-node.yaml` holds on a desktop: labels
 (one Datalog statement per line, with the same syntax and the same errors as
 the file). Labels are attested at enrollment, so changing them requires
 pressing **Re-enroll to apply**. Browser-enrolled nodes can use the saved
-login session to re-enroll while keeping their peer ID. Token-enrolled
-nodes must unenroll and join again to change labels. The tab also shows the
-API token that protects the node's local API on the phone.
+login session to re-enroll while keeping their peer ID. To change labels,
+token-enrolled nodes must clear the device identity in the **Unenroll** view
+by choosing the **Reset device identity** option, then join again, because a
+join that keeps the peer ID gets back the labels on record.
+The tab also shows the API token that protects the node's local API on the
+phone.
 
 On Android 16 the app also registers two AppFunctions, `getMeshStatus` and
 `callRemoteMeshTool`, so an on-device assistant can use the mesh without the
