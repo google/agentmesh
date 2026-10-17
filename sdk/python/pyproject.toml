@@ -8,7 +8,9 @@ version = "0.1.0"
 description = "Native SDK for joining an Agent Mesh from inside a Python agent process"
 readme = "README.md"
 license = "Apache-2.0"
-requires-python = ">=3.11"
+# <3.14: py-libp2p pins coincurve 21.0.0, which has no 3.14 wheels
+# (libp2p/py-libp2p#1140). Lift this when that is fixed.
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "anyio>=4",
     "biscuit-python>=0.4",

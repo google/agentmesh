@@ -172,8 +172,20 @@ e2e-test: build docker-build
 sdk-js:
 	cd sdk/js && npm ci --no-fund --no-audit && npm test && npm run build && npm run examples
 
+# py-libp2p pins coincurve 21.0.0, which ships no wheels past CPython 3.13
+# (libp2p/py-libp2p#1140), so the Python SDK installs on 3.11 to 3.13 only.
+# PYTHON defaults to the newest such interpreter on PATH, probed once when
+# the Makefile is read; override it with make sdk-python PYTHON=/path/to/python3.12.
+SDK_PYTHON_CHECK := import sys; sys.exit(not (3, 11) <= sys.version_info[:2] < (3, 14))
+SDK_PYTHON_AUTO := $(or $(firstword $(foreach p,python3.13 python3.12 python3.11 python3,$(shell $(p) -c '$(SDK_PYTHON_CHECK)' >/dev/null 2>&1 && echo $(p)))),python3)
+PYTHON ?= $(SDK_PYTHON_AUTO)
+
 sdk-python:
-	python3 -m venv sdk/python/.venv
+	@$(PYTHON) -c '$(SDK_PYTHON_CHECK)' 2>/dev/null || { \
+		echo "sdk-python needs Python 3.11 to 3.13 (py-libp2p has no 3.14 wheels yet, libp2p/py-libp2p#1140)."; \
+		echo "$(PYTHON) is $$($(PYTHON) --version 2>&1). Install python3.13 or run: make sdk-python PYTHON=python3.13"; \
+		exit 1; }
+	$(PYTHON) -m venv sdk/python/.venv
 	./sdk/python/.venv/bin/pip install -q -e './sdk/python[test,examples]'
 	./sdk/python/.venv/bin/python -m pytest -q sdk/python/tests
 	./sdk/python/.venv/bin/python -m pytest -q development/tools/agentmesh-cop
