@@ -54,6 +54,7 @@ export {
 } from "./challenges.ts";
 export {
   DEFAULT_ROUTERS,
+  JOIN_TIMEOUT_MS,
   MeshSession,
   ROUTER_REDIAL_BACKOFFS_MS,
   candidatesFromRouterInfos,

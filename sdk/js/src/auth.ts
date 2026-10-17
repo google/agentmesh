@@ -60,9 +60,10 @@ function framed(stream: Stream) {
 /**
  * Client side: presents frame on a new /mesh/auth/1.0.0 stream and returns
  * the peer's verified credential. trustedKeys are the control plane keys.
+ * The handshake has a timeout of its own; outer, when given, can end it sooner.
  */
-export async function authenticateWithPeer(conn: Connection, frame: Uint8Array, trustedKeys: Uint8Array[]): Promise<VerifiedBiscuit> {
-  const signal = AbortSignal.timeout(AUTH_HANDSHAKE_TIMEOUT_MS);
+export async function authenticateWithPeer(conn: Connection, frame: Uint8Array, trustedKeys: Uint8Array[], outer?: AbortSignal): Promise<VerifiedBiscuit> {
+  const signal = outer === undefined ? AbortSignal.timeout(AUTH_HANDSHAKE_TIMEOUT_MS) : AbortSignal.any([outer, AbortSignal.timeout(AUTH_HANDSHAKE_TIMEOUT_MS)]);
   // A peer behind a router is reached over a relayed, limited connection.
   const stream = await conn.newStream(AUTH_PROTOCOL, { signal, runOnLimitedConnection: true });
   try {

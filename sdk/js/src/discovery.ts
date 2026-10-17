@@ -110,7 +110,7 @@ async function ask(conn: Connection, req: DirectoryRequest, signal: AbortSignal)
  */
 export async function request(routers: DirectoryRouter[], req: DirectoryRequest, signal?: AbortSignal): Promise<DirectoryResponse> {
   const lookup = req.request.case === "findProviders" || req.request.case === "findPeer";
-  let last: unknown;
+  const failures: string[] = [];
   let asked = 0;
   let empty: DirectoryResponse | undefined;
   for (const router of routers) {
@@ -128,7 +128,7 @@ export async function request(routers: DirectoryRouter[], req: DirectoryRequest,
       }
       return resp;
     } catch (err) {
-      last = err;
+      failures.push(`${router.peerId}: ${err instanceof Error ? err.message : String(err)}`);
       if (signal?.aborted === true) {
         break;
       }
@@ -140,7 +140,7 @@ export async function request(routers: DirectoryRouter[], req: DirectoryRequest,
   if (asked === 0) {
     throw new DirectoryError("no held router to ask");
   }
-  throw new DirectoryError(`no held router answered: ${last instanceof Error ? last.message : String(last)}`);
+  throw new DirectoryError(`no held router answered: ${failures.join("; ")}`);
 }
 
 /**
