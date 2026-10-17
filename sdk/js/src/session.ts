@@ -691,6 +691,8 @@ export class MeshSession {
    */
   async topUpRouters(signal?: AbortSignal): Promise<string[]> {
     const failures: string[] = [];
+    // A function, not a narrowed value: the signal aborts across the awaits below.
+    const aborted = () => signal?.aborted === true;
     const want = this.#wantRouters();
     const candidates = this.#candidatesForHolding();
     const tried = new Set<string>();
@@ -708,6 +710,11 @@ export class MeshSession {
       }
       let progress = false;
       for (const cand of picks) {
+        // A router not dialed yet is not tried under a signal that has
+        // already aborted: it would fail at once and be shunned for nothing.
+        if (aborted()) {
+          return failures;
+        }
         tried.add(cand.peerId);
         // Each step has a timeout of its own; the failure names the one the
         // router was in, so a join that hangs says where.
@@ -728,7 +735,7 @@ export class MeshSession {
           this.#shunRouter(cand.peerId, ROUTER_SHUN_DURATION_MS);
           await this.node.hangUp(peerIdFromString(cand.peerId)).catch(() => {});
           failures.push(`${cand.peerId}: ${step}: ${errorText(err)}`);
-          if (signal?.aborted === true) {
+          if (aborted()) {
             return failures;
           }
         }

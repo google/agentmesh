@@ -668,6 +668,43 @@ test("a join bounded by its signal says when the control plane never answered", 
   }
 });
 
+test("a top-up whose signal has aborted tries no router and shuns none", async () => {
+  const second = await createLibp2p({
+    addresses: { listen: ["/ip4/127.0.0.1/tcp/0"] },
+    transports: [tcp()],
+    connectionEncrypters: [tls()],
+    streamMuxers: [yamux()],
+    services: { identify: identify(), relay: circuitRelayServer() },
+    connectionManager: { inboundConnectionThreshold: Infinity },
+  });
+  const secondId = second.peerId.toString();
+  const secondBiscuit = mint(secondId, ROLE_ROUTER);
+  await second.handle(AUTH_PROTOCOL, authStreamHandler({ ownBiscuit: () => secondBiscuit, trustedKeys: () => [cpKey] }));
+  const secondAddr = (second.getMultiaddrs()[0] as ReturnType<typeof multiaddr>).toString();
+  const listed = [routerAddr];
+  try {
+    const mesh = await AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", bootstrapToken: "sbt", fetch: fakeControlPlane(listed) });
+    const session = await mesh.join({ refreshLeadMs: 0, reserveRelay: false, controlPlaneSyncIntervalMs: 0 });
+    try {
+      // The control plane now lists a router the session has not tried.
+      listed.push(secondAddr);
+      await mesh.syncControlPlane();
+
+      const failures = await session.topUpRouters(AbortSignal.abort(new Error("join over")));
+      assert.deepEqual(failures, [], "an aborted top-up reports no router it did not try");
+      assert.equal(session.shunnedRouters.has(secondId), false, `${secondId} was shunned by a top-up that never tried it`);
+
+      // The router was eligible all along: the same top-up without the signal holds it.
+      assert.deepEqual(await session.topUpRouters(), []);
+      assert.ok(session.isHeldRouter(secondId), `held routers ${session.routers.map((r) => r.peerId).join(",")}, want ${secondId} among them`);
+    } finally {
+      await session.close();
+    }
+  } finally {
+    await second.stop();
+  }
+});
+
 test("a join without a signal of its own still has a deadline", async () => {
   const given = AbortSignal.timeout(60_000);
   const own = joinDeadline(given, 20);
