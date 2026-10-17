@@ -130,6 +130,16 @@ There is no bundled Dex. Point `controlPlane.oidcIssuer` at your identity
 provider and register `https://<control-plane-hostname><consolePath>/auth/callback` as
 a redirect URI for the OIDC client the control plane reports.
 
+## Disruption budgets (`*.podDisruptionBudget`)
+
+The control plane and the router each get a `PodDisruptionBudget` with
+`maxUnavailable: 1`, so a node drain or autoscaler scale-down evicts one pod
+at a time instead of all of them. A budget renders only when its component
+runs more than one replica: the default install covers the control plane
+(2 replicas) and leaves a single router as it is. Set
+`podDisruptionBudget.minAvailable` to use that form instead, or
+`podDisruptionBudget.enabled: false` to render none.
+
 ## Metrics (`monitoring.*`)
 
 The control plane serves Prometheus metrics on its `http` port and the router

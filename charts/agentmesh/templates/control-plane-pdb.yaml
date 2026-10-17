@@ -1,0 +1,18 @@
+{{- $pdb := .Values.controlPlane.podDisruptionBudget -}}
+{{- if and $pdb.enabled (gt (int .Values.controlPlane.replicaCount) 1) -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "agentmesh.fullname" . }}-control-plane
+  labels:
+    {{- include "agentmesh.labels" . | nindent 4 }}
+spec:
+  {{- if not (kindIs "invalid" $pdb.minAvailable) }}
+  minAvailable: {{ $pdb.minAvailable }}
+  {{- else }}
+  maxUnavailable: {{ $pdb.maxUnavailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app: {{ include "agentmesh.fullname" . }}-control-plane
+{{- end }}

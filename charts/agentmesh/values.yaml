@@ -72,6 +72,13 @@ controlPlane:
     type: ClusterIP
     port: 8080
     nodePort: null
+  # Rendered only when replicaCount > 1: on one replica a PDB either does
+  # nothing or blocks every drain. Set minAvailable to use that form instead
+  # of maxUnavailable; a PDB takes one or the other, not both.
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+    minAvailable: null
 
 database:
   type: postgres
@@ -164,6 +171,13 @@ router:
   service:
     type: ClusterIP
     port: 4501
+  # Rendered only when replicaCount > 1: on one replica a PDB either does
+  # nothing or blocks every drain. Set minAvailable to use that form instead
+  # of maxUnavailable; a PDB takes one or the other, not both.
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+    minAvailable: null
 
 console:
   enabled: true

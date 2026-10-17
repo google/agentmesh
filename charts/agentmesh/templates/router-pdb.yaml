@@ -1,0 +1,18 @@
+{{- $pdb := .Values.router.podDisruptionBudget -}}
+{{- if and .Values.router.enabled $pdb.enabled (gt (int .Values.router.replicaCount) 1) -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "agentmesh.fullname" . }}-router
+  labels:
+    {{- include "agentmesh.labels" . | nindent 4 }}
+spec:
+  {{- if not (kindIs "invalid" $pdb.minAvailable) }}
+  minAvailable: {{ $pdb.minAvailable }}
+  {{- else }}
+  maxUnavailable: {{ $pdb.maxUnavailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app: {{ include "agentmesh.fullname" . }}-router
+{{- end }}

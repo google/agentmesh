@@ -1,0 +1,80 @@
+suite: pod disruption budgets
+templates:
+  - templates/control-plane-pdb.yaml
+  - templates/router-pdb.yaml
+release:
+  # collapses fullname to "agentmesh" (see _helpers.tpl)
+  name: agentmesh
+tests:
+  - it: default values give the control plane a maxUnavailable 1 PDB on its pods
+    template: templates/control-plane-pdb.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: PodDisruptionBudget
+      - equal:
+          path: spec.maxUnavailable
+          value: 1
+      - notExists:
+          path: spec.minAvailable
+      - equal:
+          path: spec.selector.matchLabels.app
+          value: agentmesh-control-plane
+
+  - it: a single control plane replica gets no PDB
+    template: templates/control-plane-pdb.yaml
+    set:
+      controlPlane.replicaCount: 1
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: controlPlane.podDisruptionBudget.enabled false drops the PDB
+    template: templates/control-plane-pdb.yaml
+    set:
+      controlPlane.podDisruptionBudget.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: minAvailable replaces maxUnavailable when set
+    template: templates/control-plane-pdb.yaml
+    set:
+      controlPlane.replicaCount: 3
+      controlPlane.podDisruptionBudget.minAvailable: 2
+    asserts:
+      - equal:
+          path: spec.minAvailable
+          value: 2
+      - notExists:
+          path: spec.maxUnavailable
+
+  - it: the default single router gets no PDB
+    template: templates/router-pdb.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: more than one router gets a maxUnavailable 1 PDB on its pods
+    template: templates/router-pdb.yaml
+    set:
+      router.replicaCount: 3
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: spec.maxUnavailable
+          value: 1
+      - equal:
+          path: spec.selector.matchLabels.app
+          value: agentmesh-router
+
+  - it: a disabled router gets no PDB
+    template: templates/router-pdb.yaml
+    set:
+      router.enabled: false
+      router.replicaCount: 3
+    asserts:
+      - hasDocuments:
+          count: 0
