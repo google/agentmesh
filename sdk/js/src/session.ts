@@ -128,8 +128,8 @@ export interface JoinOptions extends MeshHostOptions {
   /**
    * Bounds the whole join: the control plane sync, and the dial, auth
    * handshake and relay reservation with every router tried. Without one the
-   * join is bounded by JOIN_TIMEOUT_MS (60s). An aborted join throws an error
-   * naming each router tried and the step it was in.
+   * join is bounded by JOIN_TIMEOUT_MS (60s). A join that stops throws an
+   * error naming each router tried and the step it was in.
    */
   signal?: AbortSignal;
 }
@@ -208,6 +208,12 @@ const WITHDRAW_TIMEOUT_MS = 2 * 1000;
  * its own, but a join tries them in turn over every router it is offered.
  */
 export const JOIN_TIMEOUT_MS = 60_000;
+/**
+ * Bounds the control plane sync a join starts with. The sync is best effort,
+ * so a control plane that does not answer in time leaves the join to go on
+ * with the stored credential instead of using up the whole join.
+ */
+export const JOIN_SYNC_TIMEOUT_MS = 5_000;
 /** How long a provider's positive egress verdict is kept; agentmesh-node's labelGateTTL. */
 const EGRESS_VERDICT_TTL_MS = 5 * 60 * 1000;
 
@@ -564,14 +570,15 @@ export class MeshSession {
   /**
    * Runs the handshake on a router connection once: the connection:open
    * listener and an explicit admission both call this, and the second waits
-   * for the first instead of running a second handshake.
+   * for the first instead of running a second handshake. The signal applies
+   * to a handshake this call starts; one already running keeps its own.
    */
-  #authenticateRouter(conn: Connection): Promise<VerifiedBiscuit> {
+  #authenticateRouter(conn: Connection, signal?: AbortSignal): Promise<VerifiedBiscuit> {
     const pending = this.#routerHandshakes.get(conn.id);
     if (pending !== undefined) {
       return pending;
     }
-    const run = authenticateWithPeer(conn, this.mesh.authFrame(), this.mesh.credential.controlPlaneKeys).finally(() => {
+    const run = authenticateWithPeer(conn, this.mesh.authFrame(), this.mesh.credential.controlPlaneKeys, signal).finally(() => {
       this.#routerHandshakes.delete(conn.id);
     });
     this.#routerHandshakes.set(conn.id, run);
@@ -722,22 +729,24 @@ export class MeshSession {
         try {
           const conn = await this.node.dial(cand.addresses, signal !== undefined ? { signal } : {});
           step = "auth handshake";
-          const credential = await untilAborted(this.#authenticateRouter(conn), signal);
+          const credential = await this.#authenticateRouter(conn, signal);
           requireRole(credential, ROLE_ROUTER);
           const addr = connectedAddress(conn, cand.peerId);
           if (this.#reserveRelay) {
             step = "relay reservation";
-            await untilAborted(this.#reserveOnRouter(cand.peerId, addr), signal);
+            await this.#reserveOnRouter(cand.peerId, addr);
           }
           this.#upsertHeldRouter({ peerId: cand.peerId, addr, credential });
           progress = true;
         } catch (err) {
-          this.#shunRouter(cand.peerId, ROUTER_SHUN_DURATION_MS);
-          await this.node.hangUp(peerIdFromString(cand.peerId)).catch(() => {});
           failures.push(`${cand.peerId}: ${step}: ${errorText(err)}`);
+          await this.node.hangUp(peerIdFromString(cand.peerId)).catch(() => {});
+          // A router cut off by the signal did not fail on its own, so it is
+          // not shunned.
           if (aborted()) {
             return failures;
           }
+          this.#shunRouter(cand.peerId, ROUTER_SHUN_DURATION_MS);
         }
       }
       if (!progress && picks.length < need) {
@@ -1434,30 +1443,13 @@ export function selectRouters(candidates: readonly RouterCandidate[], k: number,
 }
 
 /**
- * The signal a join runs under: the caller's, or one that aborts after ms
- * with an error saying the join timed out. clear() stops the timer once the
- * join is over.
+ * Implements AgentMesh.join(); lives here to keep mesh.ts free of libp2p.
+ * timeoutMs bounds a join whose caller passed no signal.
  */
-export function joinDeadline(signal: AbortSignal | undefined, ms = JOIN_TIMEOUT_MS): { signal: AbortSignal; clear(): void } {
-  if (signal !== undefined) {
-    return { signal, clear: () => {} };
-  }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(new Error(`join timed out after ${ms}ms`)), ms);
-  return { signal: controller.signal, clear: () => clearTimeout(timer) };
-}
-
-/** Implements AgentMesh.join(); lives here to keep mesh.ts free of libp2p. */
-export async function joinMesh(mesh: AgentMesh, options: JoinOptions = {}): Promise<MeshSession> {
-  const deadline = joinDeadline(options.signal);
-  try {
-    return await joinUnder(mesh, options, deadline.signal);
-  } finally {
-    deadline.clear();
-  }
-}
-
-async function joinUnder(mesh: AgentMesh, options: JoinOptions, signal: AbortSignal): Promise<MeshSession> {
+export async function joinMesh(mesh: AgentMesh, options: JoinOptions = {}, timeoutMs = JOIN_TIMEOUT_MS): Promise<MeshSession> {
+  const signal = options.signal ?? AbortSignal.timeout(timeoutMs);
+  // Why the join stopped: the caller's reason, or its own timeout.
+  const stopReason = () => (options.signal !== undefined ? errorText(signal.reason) : `timed out after ${timeoutMs}ms`);
   // The pull agentmesh-node makes before it starts: a member resuming from its
   // state directory after a key rotation would otherwise verify the routers,
   // which already hold credentials under the new key, against the keys it
@@ -1465,12 +1457,12 @@ async function joinUnder(mesh: AgentMesh, options: JoinOptions, signal: AbortSig
   // once joined. Best effort; the stored credential serves when the control
   // plane cannot be reached.
   try {
-    await untilAborted(mesh.syncControlPlane(), signal);
+    await mesh.syncControlPlane(AbortSignal.any([signal, AbortSignal.timeout(JOIN_SYNC_TIMEOUT_MS)]));
   } catch {
-    // Joining goes on with what the credential holds, unless the join itself
-    // ran out while the control plane kept it waiting.
+    // Joining goes on with what the credential holds, unless the caller
+    // stopped the join while the control plane kept it waiting.
     if (signal.aborted) {
-      throw new Error(`join stopped while syncing with the control plane at ${mesh.controlPlane.url}: ${errorText(signal.reason)}`);
+      throw new Error(`join stopped while syncing with the control plane: ${stopReason()}`);
     }
   }
   const rawAddrs = options.routerAddresses ?? mesh.credential.routerAddresses;
@@ -1508,13 +1500,17 @@ async function joinUnder(mesh: AgentMesh, options: JoinOptions, signal: AbortSig
 
     session = new MeshSession(mesh, node, [], authenticatedPeers, banned, options);
     const failures = await session.topUpRouters(signal);
-    if (signal.aborted || session.routers.length === 0) {
+    // One admitted router is enough to be on the mesh; only the caller's own
+    // signal turns that into a failure.
+    if (options.signal?.aborted === true || session.routers.length === 0) {
       const detail = failures.length > 0 ? `:\n  ${failures.join("\n  ")}` : "";
-      throw new Error(signal.aborted ? `join stopped: ${errorText(signal.reason)}${detail}` : `no router admitted this member${detail}`);
+      throw new Error(signal.aborted ? `join stopped: ${stopReason()}${detail}` : `no router admitted this member${detail}`);
     }
     // Best effort: a router that does not take the record is a warning the
-    // next announcement retries; the member is on the mesh regardless.
-    await session.announce(signal).catch(() => {});
+    // next announcement retries; the member is on the mesh regardless. Under
+    // the caller's signal only: a join that ran out of its own time still
+    // announces the routers it holds.
+    await session.announce(options.signal).catch(() => {});
     return session;
   } catch (err) {
     if (session !== undefined) {
@@ -1524,26 +1520,6 @@ async function joinUnder(mesh: AgentMesh, options: JoinOptions, signal: AbortSig
     }
     throw err;
   }
-}
-
-/**
- * Settles as p does, or rejects with the signal's reason as soon as it
- * aborts. p is not cancelled: it ends on its own timeout, and the caller
- * tears down what it was using.
- */
-function untilAborted<T>(p: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
-  if (signal === undefined) {
-    return p;
-  }
-  if (signal.aborted) {
-    p.catch(() => {});
-    return Promise.reject(signal.reason);
-  }
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(signal.reason);
-    signal.addEventListener("abort", onAbort, { once: true });
-    void p.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
-  });
 }
 
 function errorText(err: unknown): string {

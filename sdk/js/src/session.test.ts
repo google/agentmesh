@@ -44,7 +44,7 @@ import { Identity } from "./identity.ts";
 import { HTTP_HANDLER_OPTIONS, HTTP_PROTOCOL, a2aEndpoint, httpIngressHandler } from "./libp2p-http.ts";
 import { LabelsNotSatisfiedError } from "./mcp.ts";
 import { AgentMesh } from "./mesh.ts";
-import { MeshSession, candidatesFromRouterInfos, joinDeadline, selectRouters, type JoinOptions } from "./session.ts";
+import { JOIN_SYNC_TIMEOUT_MS, JOIN_TIMEOUT_MS, MeshSession, candidatesFromRouterInfos, joinMesh, selectRouters, type JoinOptions } from "./session.ts";
 
 type Wasm = Awaited<ReturnType<typeof loadBiscuit>>;
 type KeyPair = InstanceType<Wasm["KeyPair"]>;
@@ -125,6 +125,52 @@ function fakeControlPlane(routerAddresses: string[], routers: RouterInfo[] = [])
     }
     return new Response(`no route for ${req.method} ${path}`, { status: 404 });
   }) as typeof fetch;
+}
+
+/**
+ * A control plane whose /keys and /info, once stall() is called, take the
+ * request and never answer until it is aborted. paths lists every request
+ * made after stall(), in order.
+ */
+function stallingControlPlane(routes: typeof fetch): { fetch: typeof fetch; stall(): void; paths: string[] } {
+  let stalled = false;
+  const paths: string[] = [];
+  const stalling = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const path = new URL(new Request(input, init).url).pathname;
+    if (!stalled) {
+      return routes(input, init);
+    }
+    paths.push(path);
+    if (path !== "/keys" && path !== "/info") {
+      return routes(input, init);
+    }
+    return new Promise<Response>((_, reject) => {
+      const signal = init?.signal;
+      if (signal === undefined || signal === null) {
+        reject(new Error(`${path} was sent without a signal and would never end`));
+        return;
+      }
+      if (signal.aborted) {
+        reject(signal.reason);
+        return;
+      }
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
+  }) as typeof fetch;
+  return { fetch: stalling, stall: () => { stalled = true; }, paths };
+}
+
+/** A libp2p host that takes the auth stream and never writes back: a router whose handshake neither completes nor fails. */
+async function silentRouter(): Promise<Libp2p> {
+  const node = await createLibp2p({
+    addresses: { listen: ["/ip4/127.0.0.1/tcp/0"] },
+    transports: [tcp()],
+    connectionEncrypters: [tls()],
+    streamMuxers: [yamux()],
+    services: { identify: identify() },
+  });
+  await node.handle(AUTH_PROTOCOL, () => {});
+  return node;
 }
 
 before(async () => {
@@ -606,17 +652,8 @@ test("join reports a router that refuses the handshake", async () => {
 });
 
 test("a join bounded by its signal names the router whose handshake never answered", async () => {
-  const silent = await createLibp2p({
-    addresses: { listen: ["/ip4/127.0.0.1/tcp/0"] },
-    transports: [tcp()],
-    connectionEncrypters: [tls()],
-    streamMuxers: [yamux()],
-    services: { identify: identify() },
-  });
+  const silent = await silentRouter();
   try {
-    // Takes the auth stream and never writes back, as a router whose
-    // handshake neither completes nor fails.
-    await silent.handle(AUTH_PROTOCOL, () => {});
     const addr = (silent.getMultiaddrs()[0] as ReturnType<typeof multiaddr>).toString();
     const mesh = await AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", bootstrapToken: "sbt", fetch: fakeControlPlane([addr]) });
     const started = Date.now();
@@ -631,40 +668,34 @@ test("a join bounded by its signal names the router whose handshake never answer
   }
 });
 
-test("a join bounded by its signal says when the control plane never answered", async () => {
-  const pending: Array<() => void> = [];
-  let hang = false;
-  const routes = fakeControlPlane([routerAddr]);
-  // Once enrolled, /keys and /info take the request and never answer, until
-  // the request is aborted or the test ends.
-  const stalling = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
-    const path = new URL(new Request(input, init).url).pathname;
-    if (!hang || (path !== "/keys" && path !== "/info")) {
-      return routes(input, init);
-    }
-    return new Promise<Response>((_, reject) => {
-      const stop = () => reject(init?.signal?.reason ?? new Error("test over"));
-      pending.push(stop);
-      init?.signal?.addEventListener("abort", stop, { once: true });
-    });
-  }) as typeof fetch;
+test("a join stopped by its signal while syncing sends nothing more to the control plane", async () => {
+  const cp = stallingControlPlane(fakeControlPlane([routerAddr]));
+  const mesh = await AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", bootstrapToken: "sbt", fetch: cp.fetch });
+  cp.stall();
+  const started = Date.now();
+  await assert.rejects(mesh.join({ signal: AbortSignal.timeout(500) }), (err: Error) => {
+    assert.match(err.message, /^join stopped while syncing with the control plane: /, `got ${JSON.stringify(err.message)}, want the step the join stopped in`);
+    assert.doesNotMatch(err.message, /127\.0\.0\.1:1/, `got ${JSON.stringify(err.message)}, want no control plane URL in the error`);
+    return true;
+  });
+  const took = Date.now() - started;
+  assert.ok(took < JOIN_SYNC_TIMEOUT_MS, `join took ${took}ms, want the caller's signal to end it before the ${JOIN_SYNC_TIMEOUT_MS}ms sync timeout`);
+  // The aborted /keys request ends the sync: no /info, no refresh.
+  assert.deepEqual(cp.paths, ["/keys"], "requests after the control plane stalled");
+});
+
+test("a join goes on with the stored credential when the control plane does not answer", async () => {
+  const cp = stallingControlPlane(fakeControlPlane([routerAddr]));
+  const mesh = await AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", bootstrapToken: "sbt", fetch: cp.fetch });
+  cp.stall();
+  const started = Date.now();
+  const session = await mesh.join({ refreshLeadMs: 0, reserveRelay: false, controlPlaneSyncIntervalMs: 0 });
   try {
-    const mesh = await AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", bootstrapToken: "sbt", fetch: stalling });
-    hang = true;
-    const started = Date.now();
-    await assert.rejects(mesh.join({ signal: AbortSignal.timeout(500) }), (err: Error) => {
-      assert.match(err.message, /syncing with the control plane at http:\/\/127\.0\.0\.1:1/, `got ${JSON.stringify(err.message)}, want the control plane named`);
-      return true;
-    });
     const took = Date.now() - started;
-    assert.ok(took < 10_000, `join took ${took}ms, want the join's signal to end it, not the control plane client's 30s request timeout`);
+    assert.ok(took < JOIN_TIMEOUT_MS, `join took ${took}ms, want the sync to give up after about ${JOIN_SYNC_TIMEOUT_MS}ms`);
+    assert.ok(session.isHeldRouter(router.peerId.toString()), `held routers ${session.routers.map((r) => r.peerId).join(",")}, want the router from the stored credential`);
   } finally {
-    // The sync the join gave up on goes on to its next request; let it
-    // through so no request is left holding the client's 30s timer.
-    hang = false;
-    for (const stop of pending) {
-      stop();
-    }
+    await session.close();
   }
 });
 
@@ -705,17 +736,30 @@ test("a top-up whose signal has aborted tries no router and shuns none", async (
   }
 });
 
-test("a join without a signal of its own still has a deadline", async () => {
-  const given = AbortSignal.timeout(60_000);
-  const own = joinDeadline(given, 20);
-  assert.equal(own.signal, given, "a caller's signal bounds the join as given");
-  own.clear();
-
-  const deadline = joinDeadline(undefined, 20);
-  await new Promise((resolve) => deadline.signal.addEventListener("abort", resolve, { once: true }));
-  const reason = deadline.signal.reason as Error;
-  assert.match(reason.message, /^join timed out after 20ms$/, `abort reason ${JSON.stringify(reason.message)}`);
-  deadline.clear();
+test("a join that runs out of its own time keeps the router that admitted it", async () => {
+  const silent = await silentRouter();
+  try {
+    const silentId = silent.peerId.toString();
+    const silentAddr = (silent.getMultiaddrs()[0] as ReturnType<typeof multiaddr>).toString();
+    // The idle router is tried first, the silent one second.
+    const routers = [
+      create(RouterInfoSchema, { peerId: router.peerId.toString(), addresses: [routerAddr], connections: 0, connectionLimit: 100 }),
+      create(RouterInfoSchema, { peerId: silentId, addresses: [silentAddr], connections: 90, connectionLimit: 100 }),
+    ];
+    const mesh = await AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", bootstrapToken: "sbt", fetch: fakeControlPlane([routerAddr, silentAddr], routers) });
+    const started = Date.now();
+    const session = await joinMesh(mesh, { refreshLeadMs: 0, reserveRelay: false, controlPlaneSyncIntervalMs: 0 }, 2_000);
+    try {
+      const took = Date.now() - started;
+      assert.ok(took < AUTH_HANDSHAKE_TIMEOUT_MS, `join took ${took}ms, want its own timeout to end it before the ${AUTH_HANDSHAKE_TIMEOUT_MS}ms handshake timeout`);
+      assert.deepEqual(session.routers.map((r) => r.peerId), [router.peerId.toString()], "held routers");
+      assert.equal(session.shunnedRouters.has(silentId), false, `${silentId} was shunned for a handshake the join's timeout cut off`);
+    } finally {
+      await session.close();
+    }
+  } finally {
+    await silent.stop();
+  }
 });
 
 test("an explicit rejection is reported with its reason", async () => {

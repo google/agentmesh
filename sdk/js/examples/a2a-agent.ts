@@ -20,21 +20,15 @@ import { AgentEvent, DefaultRequestHandler, InMemoryTaskStore, type AgentExecuto
 import { UserBuilder, agentCardHandler, jsonRpcHandler } from "@a2a-js/sdk/server/express";
 import { AgentMesh, MeshSession } from "@agentmesh-p2p/sdk";
 
-// Each stage goes to stderr as it is reached, so a run that hangs shows the
-// last one it got to; stdout carries only what callers parse.
-const controlPlaneUrl = process.env.AGENTMESH_CONTROL_PLANE_URL ?? "https://mesh.example.com";
-console.error(`enrolling with ${controlPlaneUrl}`);
 const mesh = await AgentMesh.enroll({
-  controlPlaneUrl,
+  controlPlaneUrl: process.env.AGENTMESH_CONTROL_PLANE_URL ?? "https://mesh.example.com",
   bootstrapTokenPath: process.env.AGENTMESH_BOOTSTRAP_TOKEN_PATH,
   jwtPath: process.env.AGENTMESH_JWT_PATH,
   stateDir: process.env.AGENTMESH_STATE_DIR ?? `${homedir()}/.config/agentmesh/a2a-agent`,
   // A plaintext http:// control plane is otherwise accepted only on loopback.
   allowInsecure: process.env.AGENTMESH_INSECURE_CONTROL_PLANE === "true",
 });
-console.error(`enrolled ${mesh.peerId}`);
 const session = await mesh.join();
-console.error(`joined via ${session.routers.map((r) => r.peerId).join(", ")}`);
 
 // The card names the agent as the mesh reaches it: the URL an A2A client on
 // the mesh gives its fetch, http://mesh/mesh/<peer-id>/a2a/agent.

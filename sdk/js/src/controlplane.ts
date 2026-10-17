@@ -257,8 +257,8 @@ export class ControlPlaneClient {
   }
 
   /** GET /info: OIDC settings, router addresses and the ban list. Unauthenticated. */
-  async info(): Promise<ControlPlaneInfoResponse> {
-    const body = await this.#request("GET", "/info");
+  async info(signal?: AbortSignal): Promise<ControlPlaneInfoResponse> {
+    const body = await this.#request("GET", "/info", undefined, {}, signal);
     return fromBinary(ControlPlaneInfoResponseSchema, body);
   }
 
@@ -266,8 +266,8 @@ export class ControlPlaneClient {
    * GET /keys: every signing key the control plane currently trusts,
    * verified against a key the caller already trusts (the enrollment key).
    */
-  async keys(trusted: Uint8Array[]): Promise<Uint8Array[]> {
-    const body = await this.#request("GET", "/keys");
+  async keys(trusted: Uint8Array[], signal?: AbortSignal): Promise<Uint8Array[]> {
+    const body = await this.#request("GET", "/keys", undefined, {}, signal);
     return verifyKeysResponse(fromBinary(KeysResponseSchema, body), trusted, this.#now());
   }
 
@@ -426,14 +426,15 @@ export class ControlPlaneClient {
     path: string,
     body?: Uint8Array,
     headers: Record<string, string> = {},
+    signal?: AbortSignal,
   ): Promise<{ ok: boolean; status: number; buf: Uint8Array; dateHeader: string | null }> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(new Error(`control plane ${path}: timed out after ${this.#timeoutMs}ms`)), this.#timeoutMs);
+    // The caller's signal cancels the request itself, not only the wait for it.
+    const timeout = AbortSignal.timeout(this.#timeoutMs);
     try {
       const init: RequestInit = {
         method,
         headers: { Accept: PROTOBUF_CONTENT_TYPE, ...headers },
-        signal: controller.signal,
+        signal: signal === undefined ? timeout : AbortSignal.any([signal, timeout]),
       };
       if (body !== undefined) {
         init.body = new Uint8Array(body);
@@ -445,13 +446,22 @@ export class ControlPlaneClient {
         throw new Error(`control plane ${path}: response of ${buf.length} bytes exceeds the ${MAX_RESPONSE_BYTES} byte limit`);
       }
       return { ok: resp.ok, status: resp.status, buf, dateHeader: resp.headers.get("date") };
-    } finally {
-      clearTimeout(timer);
+    } catch (err) {
+      if (timeout.aborted && signal?.aborted !== true) {
+        throw new Error(`control plane ${path}: timed out after ${this.#timeoutMs}ms`);
+      }
+      throw err;
     }
   }
 
-  async #request(method: "GET" | "POST", path: string, body?: Uint8Array, headers: Record<string, string> = {}): Promise<Uint8Array> {
-    const outcome = await this.#fetchOnce(method, path, body, headers);
+  async #request(
+    method: "GET" | "POST",
+    path: string,
+    body?: Uint8Array,
+    headers: Record<string, string> = {},
+    signal?: AbortSignal,
+  ): Promise<Uint8Array> {
+    const outcome = await this.#fetchOnce(method, path, body, headers, signal);
     if (!outcome.ok) {
       throw new ControlPlaneError(path, outcome.status, new TextDecoder().decode(outcome.buf));
     }

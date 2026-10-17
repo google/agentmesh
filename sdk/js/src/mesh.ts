@@ -310,12 +310,13 @@ export class AgentMesh {
    * Trades the current biscuit for a fresh one and persists it. The control
    * plane redeems only the last biscuit it issued, so a lost refresh result
    * means re-enrolling; persisting before returning keeps that rare.
-   * Concurrent calls wait for each other.
+   * Concurrent calls wait for each other. A refresh whose signal has
+   * aborted by the time its turn comes does not start.
    */
-  async refresh(): Promise<MeshCredential> {
+  async refresh(signal?: AbortSignal): Promise<MeshCredential> {
     const run = this.#refreshChain.then(
-      () => this.#refreshOnce(),
-      () => this.#refreshOnce(),
+      () => this.#refreshOnce(signal),
+      () => this.#refreshOnce(signal),
     );
     this.#refreshChain = run.then(
       () => undefined,
@@ -324,7 +325,8 @@ export class AgentMesh {
     return run;
   }
 
-  async #refreshOnce(): Promise<MeshCredential> {
+  async #refreshOnce(signal?: AbortSignal): Promise<MeshCredential> {
+    signal?.throwIfAborted();
     let jwt: string | undefined;
     if (this.#jwtSource !== undefined) {
       try {
@@ -336,6 +338,10 @@ export class AgentMesh {
         // Best effort: fall back to session-only refresh if the token source is temporarily unavailable.
       }
     }
+    // The last point to stop. The /refresh request itself is not cut short:
+    // the control plane spends the old biscuit when it answers, so only a
+    // refresh that runs to the end can save the new one.
+    signal?.throwIfAborted();
     const result = await this.controlPlane.refresh({
       identity: this.identity,
       biscuit: this.#credential.biscuit,
@@ -379,25 +385,29 @@ export class AgentMesh {
    * addresses and the ban set. Each part is attempted even when another
    * fails; the errors are reported together. Gossip events only bring this
    * forward; they are never the only way state arrives.
+   *
+   * An aborted signal cancels the request in flight and throws its reason:
+   * nothing more is sent and nothing is written to the state directory.
    */
-  async syncControlPlane(): Promise<ControlPlaneSync> {
+  async syncControlPlane(signal?: AbortSignal): Promise<ControlPlaneSync> {
     const errors: string[] = [];
     let keysChanged = false;
     let refreshed = false;
     try {
-      const keys = await this.controlPlane.keys(this.#credential.controlPlaneKeys);
+      const keys = await this.controlPlane.keys(this.#credential.controlPlaneKeys, signal);
       if (keys.length === 0) {
         throw new Error("/keys returned no keys");
       }
       keysChanged = !sameKeySet(keys, this.#credential.controlPlaneKeys);
       this.#credential = withCredentialMethods({ ...this.#credential, controlPlaneKeys: keys });
       if (credentialPredatesRotation(this.#credential)) {
-        await this.refresh();
+        await this.refresh(signal);
         refreshed = true;
       }
     } catch (err) {
       errors.push(`keys: ${err instanceof Error ? err.message : String(err)}`);
     }
+    signal?.throwIfAborted();
 
     let bannedPeerIds: string[] | undefined;
     let routers: RouterInfo[] | undefined;
@@ -405,7 +415,7 @@ export class AgentMesh {
     // in the answer, so its absence must not be read as an unban.
     const fetchedAt = new Date();
     try {
-      const info = await this.controlPlane.info();
+      const info = await this.controlPlane.info(signal);
       routers = info.routers;
       this.#routers = info.routers;
       const discovered =
@@ -419,6 +429,7 @@ export class AgentMesh {
     } catch (err) {
       errors.push(`info: ${err instanceof Error ? err.message : String(err)}`);
     }
+    signal?.throwIfAborted();
     if (keysChanged || bannedPeerIds !== undefined) {
       await this.save();
     }
