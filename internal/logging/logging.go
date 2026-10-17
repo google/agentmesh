@@ -18,6 +18,8 @@ package logging
 import (
 	"bufio"
 	"container/ring"
+	"errors"
+	"io"
 	"strings"
 	"sync"
 
@@ -101,19 +103,33 @@ func startRingBuffer() {
 	ringBuffer = newRingBufferSink(logBufferLines)
 	pipe := golog.NewPipeReader(golog.PipeFormat(golog.JSONOutput))
 	go func() {
-		// The pipe is synchronous: a reader that stops would block every log
-		// call, so this loop must never return before the process does.
-		r := bufio.NewReader(pipe)
-		for {
-			line, err := r.ReadBytes('\n')
-			if len(line) > 0 {
-				_, _ = ringBuffer.Write(line)
-			}
-			if err != nil {
-				return
-			}
+		err := copyLines(pipe, ringBuffer)
+		// The pipe is synchronous: while it stays registered with no reader,
+		// every log call blocks, the one below included. Closing it
+		// unregisters it, so only then is it safe to say why the ring stopped.
+		_ = pipe.Close()
+		if err != nil {
+			logger.Errorf("log ring buffer stopped, /debug/logs gets no new lines: %v", err)
 		}
 	}()
+}
+
+// copyLines writes each line r yields to sink until r ends. A clean end of
+// input is not an error; a read error is returned.
+func copyLines(r io.Reader, sink io.Writer) error {
+	br := bufio.NewReader(r)
+	for {
+		line, err := br.ReadBytes('\n')
+		if len(line) > 0 {
+			_, _ = sink.Write(line)
+		}
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
 }
 
 // RecentLogs returns the most recent log lines, as JSON, captured when

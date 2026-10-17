@@ -16,10 +16,13 @@ package logging
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	golog "github.com/ipfs/go-log/v2"
@@ -183,6 +186,37 @@ func TestSetupRingBufferTwiceKeepsOneCopy(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("ring holds %d copies of %q, want 1", n, msg)
+	}
+}
+
+func TestCopyLinesEndOfInputIsNotAnError(t *testing.T) {
+	sink := newRingBufferSink(4)
+	if err := copyLines(strings.NewReader("one\ntwo\nthree"), sink); err != nil {
+		t.Fatalf("copyLines returned %v at end of input, want nil", err)
+	}
+	got := sink.lines()
+	want := []string{"one", "two", "three"}
+	if len(got) != len(want) {
+		t.Fatalf("lines = %q, want %q (a last line without a newline is kept)", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("lines[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// The ring's reader reports why it stopped, so the caller can say so in the
+// log instead of leaving /debug/logs silently stale.
+func TestCopyLinesReturnsTheReadError(t *testing.T) {
+	boom := errors.New("boom")
+	sink := newRingBufferSink(4)
+	err := copyLines(io.MultiReader(strings.NewReader("kept\n"), iotest.ErrReader(boom)), sink)
+	if !errors.Is(err, boom) {
+		t.Errorf("copyLines returned %v, want %v", err, boom)
+	}
+	if got := sink.lines(); len(got) != 1 || got[0] != "kept" {
+		t.Errorf("lines = %q, want [kept]: lines read before the error stay in the ring", got)
 	}
 }
 
