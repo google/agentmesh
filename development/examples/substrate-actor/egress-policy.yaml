@@ -1,0 +1,21 @@
+# What the actor may reach, decided by Substrate's egress gateway. One rule:
+# plain HTTP to the edge node. On every request that carries an
+# X-Mesh-Authentication header, the gateway replaces its value with the
+# credential the Agent Mesh provider mints for this actor's SPIFFE ID.
+#
+# When Substrate serves OIDC discovery for actor JWTs (agent-substrate/substrate#1756),
+# the same policy works with the provider removed:
+#   replaceHeaders:
+#   - header: X-Mesh-Authentication
+#     prefix: "Bearer "
+#     actorJwt: {audiences: ["agentmesh"], expirationSeconds: 600}
+rules:
+- http:
+    hostnames: ["edge-node.agentmesh.svc.cluster.local"]
+    ports:
+      numbers: [8080]
+    effects:
+      replaceHeaders:
+      - header: X-Mesh-Authentication
+        prefix: "Bearer "
+        credentialUri: ate-secret://agentmesh/mesh/biscuit

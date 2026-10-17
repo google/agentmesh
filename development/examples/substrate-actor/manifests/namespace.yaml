@@ -1,0 +1,17 @@
+# Created before Substrate so that the egress gateway's provider address
+# resolves from the start; the provider itself arrives with `make up`.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agentmesh
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: credential-provider
+  namespace: agentmesh
+spec:
+  selector: {app: credential-provider}
+  ports:
+  - {name: grpc, port: 50051, targetPort: grpc}
+  - {name: http, port: 8080, targetPort: http}

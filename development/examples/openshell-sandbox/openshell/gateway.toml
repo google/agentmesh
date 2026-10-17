@@ -1,0 +1,34 @@
+# OpenShell gateway configuration: deploy/docker/gateway.toml from the OpenShell
+# release, plus the one line that projects the SPIRE agent's Workload API into
+# every sandbox supervisor (provider_spiffe_workload_api_socket).
+[openshell]
+version = 2
+
+[openshell.gateway]
+bind_address        = "127.0.0.1:8080"
+# Health listens on all container interfaces so Compose can publish it on
+# the host loopback.
+health_bind_address = "0.0.0.0:8085"
+log_level           = "info"
+compute_driver      = "docker"
+disable_tls         = true
+
+[openshell.gateway.auth]
+allow_unauthenticated_users = true
+
+[openshell.gateway.gateway_jwt]
+signing_key_path = "/var/lib/openshell/tls/jwt/signing.pem"
+public_key_path  = "/var/lib/openshell/tls/jwt/public.pem"
+kid_path         = "/var/lib/openshell/tls/jwt/kid"
+gateway_id       = "openshell-agentmesh"
+
+[openshell.drivers.docker]
+default_image         = "nvcr.io/nvidia/base/ubuntu:24.04"
+sandbox_runtime_image = "ghcr.io/nvidia/openshell/sandbox:0.1.3"
+supervisor_image      = "ghcr.io/nvidia/openshell/supervisor:0.1.3"
+image_pull_policy     = "if_not_present"
+sandbox_label         = "openshell"
+app_armor_profile     = "Unconfined"
+# Host path of the SPIRE agent socket. The supervisor of each sandbox fetches
+# the sandbox's JWT-SVID here when a provider token grant needs one.
+provider_spiffe_workload_api_socket = "/var/lib/openshell/spire-agent/agent.sock"

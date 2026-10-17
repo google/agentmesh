@@ -1,0 +1,34 @@
+# SPIRE agent for the OpenShell sandbox example. It serves the Workload API on
+# a host directory that the OpenShell gateway projects into every sandbox
+# supervisor, and attests those supervisors by their Docker labels.
+agent {
+  data_dir = "/run/spire/agent-data"
+  log_level = "INFO"
+  server_address = "spire-server"
+  server_port = "8081"
+  socket_path = "/run/spire/sockets/agent.sock"
+  trust_domain = "openshell.local"
+  insecure_bootstrap = true
+  # Written by `make up` after the server mints it.
+  join_token = "${SPIRE_JOIN_TOKEN}"
+}
+
+plugins {
+  NodeAttestor "join_token" {
+    plugin_data {}
+  }
+  KeyManager "disk" {
+    plugin_data {
+      directory = "/run/spire/agent-data"
+    }
+  }
+  # The caller of the Workload API is an OpenShell supervisor container. The
+  # plugin finds its container through the host PID namespace and turns the
+  # container's labels into selectors, so one registration entry per
+  # openshell.ai/sandbox-name label gives each sandbox its own SPIFFE ID.
+  WorkloadAttestor "docker" {
+    plugin_data {
+      docker_socket_path = "unix:///var/run/docker.sock"
+    }
+  }
+}

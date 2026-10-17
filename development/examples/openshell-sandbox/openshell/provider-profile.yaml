@@ -1,0 +1,51 @@
+# OpenShell provider profile for an Agent Mesh node reachable from the gateway
+# host. The credential is not stored anywhere: for each sandbox the supervisor
+# trades the sandbox's JWT-SVID at the node's token endpoint (RFC 7523 client
+# assertion) for a Biscuit bound to that identity, caches it, and injects it as
+# X-Mesh-Authentication on every request the sandbox makes to the node.
+id: agentmesh
+display_name: Agent Mesh
+description: Mesh services and models through a local agentmesh-node, under the sandbox's own identity
+category: other
+
+credentials:
+  - name: mesh_token
+    description: Biscuit the mesh issues for this sandbox's SPIFFE identity
+    required: false
+    # Injected as "X-Mesh-Authentication: Bearer <biscuit>".
+    auth_style: bearer
+    header_name: X-Mesh-Authentication
+    token_grant:
+      grant_type: client_credentials
+      token_endpoint: http://127.0.0.1:8090/oauth/token
+      # The aud claim of the JWT-SVID; the control plane accepts it with
+      # --allowed-audiences.
+      jwt_svid_audience: agentmesh
+      client_assertion_type: urn:ietf:params:oauth:client-assertion-type:jwt-spiffe
+      # How long the supervisor keeps a Biscuit before trading a fresh SVID for
+      # a new one; a policy change reaches a sandbox within this time.
+      cache_ttl_seconds: 60
+
+endpoints:
+  # The node's MCP server: discover and call tools across the mesh.
+  - host: host.openshell.internal
+    port: 8090
+    path: /mcp
+    protocol: mcp
+    enforcement: enforce
+    allowed_ips: [127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]
+    mcp:
+      allow_all_known_mcp_methods: true
+    rules:
+      - allow: {}
+  # The node's OpenAI-compatible endpoint for models published on the mesh.
+  - host: host.openshell.internal
+    port: 8090
+    path: /v1/**
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+    allowed_ips: [127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]
+
+binaries:
+  - /**

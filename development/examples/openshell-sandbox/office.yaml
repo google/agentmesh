@@ -1,0 +1,14 @@
+# The node in the office. It publishes two MCP services backed by the same
+# calculator so the policy can allow one and refuse the other.
+version: "v1alpha1"
+labels:
+  site: office
+services:
+  - type: mcp
+    name: calc
+    description: "calculator MCP server in the office"
+    target_url: "http://calc-mcp:7777/mcp"
+  - type: mcp
+    name: payroll
+    description: "an MCP server the sandbox role may not call"
+    target_url: "http://calc-mcp:7777/mcp"

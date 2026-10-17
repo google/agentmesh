@@ -1,0 +1,205 @@
+# The Agent Mesh beside the Substrate cluster, in one namespace: agentmesh-one
+# (control plane, router, console), an edge node that is the actors' door to
+# the mesh and the provider's token endpoint, an office node fronting a
+# calculator, and the credential provider the Substrate egress gateway calls.
+#
+# Everything the actors reach is plain HTTP on cluster DNS. The egress gateway
+# verifies the actor's certificate and injects the mesh credential; the actor
+# itself holds nothing.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mesh-config
+  namespace: agentmesh
+data:
+  policy.json: |
+    {
+      "roles": [
+        {"name": "mesh:role:node", "allowed_services": ["*"], "allowed_targets": ["*"], "allowed_labels": ["*"]},
+        {"name": "mesh:role:router", "allowed_services": ["*"], "allowed_targets": ["*"]},
+        {"name": "actor",
+         "allowed_services": ["system://mesh.catalog", "mcp://calc"],
+         "allowed_targets": ["*"]}
+      ],
+      "bindings": [
+        {"role": "actor", "members": ["user:spiffe://substrate-actor.local/actor/ate-demo-sandbox/demo"]}
+      ]
+    }
+  office.yaml: |
+    version: "v1alpha1"
+    labels:
+      site: office
+    services:
+      - type: mcp
+        name: calc
+        description: "calculator MCP server in the office"
+        target_url: "http://calc-mcp.agentmesh.svc.cluster.local:7777/mcp"
+      - type: mcp
+        name: payroll
+        description: "an MCP server the actor role may not call"
+        target_url: "http://calc-mcp.agentmesh.svc.cluster.local:7777/mcp"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentmesh-one
+  namespace: agentmesh
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: agentmesh-one}
+  template:
+    metadata:
+      labels: {app: agentmesh-one}
+    spec:
+      containers:
+      - name: agentmesh-one
+        image: ${AGENTMESH_ONE_IMAGE}
+        args:
+        - --bind-address=0.0.0.0
+        - --port=8080
+        - --data-dir=/data
+        - --policy-file=/etc/agentmesh/policy.json
+        - --token-path=/run/agentmesh/join-token
+        - --admin-token-path=/run/agentmesh/admin-token
+        # The credential provider asserts actor identities; the mesh trusts
+        # it as a workload identity issuer and binds roles to the subject.
+        - --workload-issuer=http://credential-provider.agentmesh.svc.cluster.local:8080
+        - --allowed-audiences=agentmesh
+        - --enroll-qr=false
+        ports:
+        - {name: http, containerPort: 8080}
+        volumeMounts:
+        - {name: config, mountPath: /etc/agentmesh, readOnly: true}
+        - {name: tokens, mountPath: /run/agentmesh, readOnly: true}
+        - {name: data, mountPath: /data}
+      volumes:
+      - name: config
+        configMap: {name: mesh-config}
+      - name: tokens
+        secret: {secretName: agentmesh-tokens, defaultMode: 0444}
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentmesh-one
+  namespace: agentmesh
+spec:
+  selector: {app: agentmesh-one}
+  ports:
+  - {name: http, port: 8080, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: edge-node
+  namespace: agentmesh
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: edge-node}
+  template:
+    metadata:
+      labels: {app: edge-node}
+    spec:
+      containers:
+      - name: agentmesh-node
+        image: ${AGENTMESH_NODE_IMAGE}
+        args:
+        - run
+        - --control-plane=http://agentmesh-one.agentmesh.svc.cluster.local:8080
+        - --insecure-control-plane
+        - --bootstrap-token-path=/run/agentmesh/join-token
+        - --api-token-path=/run/agentmesh/api-token
+        - --data-dir=/data
+        - --bind-addr=0.0.0.0:8080
+        - --control-plane-sync-interval=30s
+        ports:
+        - {name: http, containerPort: 8080}
+        volumeMounts:
+        - {name: tokens, mountPath: /run/agentmesh, readOnly: true}
+        - {name: data, mountPath: /data}
+      volumes:
+      - name: tokens
+        secret: {secretName: agentmesh-tokens, defaultMode: 0444}
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: edge-node
+  namespace: agentmesh
+spec:
+  selector: {app: edge-node}
+  ports:
+  - {name: http, port: 8080, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: office-node
+  namespace: agentmesh
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: office-node}
+  template:
+    metadata:
+      labels: {app: office-node}
+    spec:
+      containers:
+      - name: agentmesh-node
+        image: ${AGENTMESH_NODE_IMAGE}
+        args:
+        - run
+        - --control-plane=http://agentmesh-one.agentmesh.svc.cluster.local:8080
+        - --insecure-control-plane
+        - --bootstrap-token-path=/run/agentmesh/join-token
+        - --api-token-path=/run/agentmesh/api-token
+        - --data-dir=/data
+        - --bind-addr=
+        - --config=/etc/agentmesh/office.yaml
+        - --control-plane-sync-interval=30s
+        volumeMounts:
+        - {name: config, mountPath: /etc/agentmesh, readOnly: true}
+        - {name: tokens, mountPath: /run/agentmesh, readOnly: true}
+        - {name: data, mountPath: /data}
+      volumes:
+      - name: config
+        configMap: {name: mesh-config}
+      - name: tokens
+        secret: {secretName: agentmesh-tokens, defaultMode: 0444}
+      - name: data
+        emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: calc-mcp
+  namespace: agentmesh
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: calc-mcp}
+  template:
+    metadata:
+      labels: {app: calc-mcp}
+    spec:
+      containers:
+      - name: calc-mcp
+        image: ${CALC_MCP_IMAGE}
+        ports:
+        - {name: http, containerPort: 7777}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: calc-mcp
+  namespace: agentmesh
+spec:
+  selector: {app: calc-mcp}
+  ports:
+  - {name: http, port: 7777, targetPort: http}

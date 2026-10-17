@@ -1,0 +1,189 @@
+# An OpenShell gateway, a SPIRE trust domain for its sandboxes, and a small
+# Agent Mesh, all on one machine. `make up` in this directory brings it up in
+# order; the guide at site/content/docs/guides/openshell.md walks through it.
+#
+# Host ports (loopback only):
+#   8080  OpenShell gateway API (what the openshell CLI talks to)
+#   8085  OpenShell gateway health
+#   8070  agentmesh-one API and console
+#   8090  edge agentmesh-node API: the token endpoint the sandbox supervisor
+#         calls, and the /mcp and /v1 endpoints the sandbox reaches
+
+name: openshell-agentmesh
+
+x-agentmesh-node: &agentmesh-node
+  image: ${AGENTMESH_NODE_IMAGE:-ghcr.io/google/agentmesh-node:${AGENTMESH_VERSION:-latest}}
+  restart: unless-stopped
+  depends_on:
+    agentmesh-one:
+      condition: service_started
+
+services:
+  # ---------------------------------------------------------------- SPIRE ----
+  spire-server:
+    image: ghcr.io/spiffe/spire-server:${SPIRE_VERSION:-1.14.2}
+    restart: unless-stopped
+    # The image runs as 1000:1000, but the named volumes below are created
+    # root-owned. Root keeps this local example to one file.
+    user: "0"
+    command: ["-config", "/etc/spire/server.conf"]
+    volumes:
+      - ./spire/server.conf:/etc/spire/server.conf:ro
+      - spire-server-data:/run/spire/data
+      - spire-server-socket:/tmp/spire-server/private
+
+  spire-oidc:
+    image: ghcr.io/spiffe/oidc-discovery-provider:${SPIRE_VERSION:-1.14.2}
+    restart: unless-stopped
+    user: "0"
+    command: ["-config", "/etc/spire/oidc.conf"]
+    depends_on: [spire-server]
+    volumes:
+      - ./spire/oidc.conf:/etc/spire/oidc.conf:ro
+      - spire-server-socket:/tmp/spire-server/private
+
+  spire-agent:
+    image: ghcr.io/spiffe/spire-agent:${SPIRE_VERSION:-1.14.2}
+    restart: unless-stopped
+    # The docker workload attestor locates a caller by its PID, so the agent
+    # shares the host PID namespace and reads the Docker socket.
+    pid: host
+    user: "0"
+    command: ["-config", "/run/spire/agent.conf"]
+    depends_on: [spire-server]
+    volumes:
+      - ./run/agent.conf:/run/spire/agent.conf:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - spire-agent-data:/run/spire/agent-data
+      # Host path the OpenShell gateway names in provider_spiffe_workload_api_socket.
+      - type: bind
+        source: /var/lib/openshell/spire-agent
+        target: /run/spire/sockets
+        bind:
+          create_host_path: true
+
+  # ----------------------------------------------------------- Agent Mesh ----
+  agentmesh-one:
+    image: ${AGENTMESH_ONE_IMAGE:-ghcr.io/google/agentmesh-one:${AGENTMESH_VERSION:-latest}}
+    restart: unless-stopped
+    command:
+      - --bind-address=0.0.0.0
+      - --port=8080
+      - --data-dir=/data
+      - --policy-file=/etc/agentmesh/policy.json
+      - --token-path=/run/agentmesh/join-token
+      - --admin-token-path=/run/agentmesh/admin-token
+      # Trust SPIRE as a workload identity issuer: a JWT-SVID whose aud is
+      # "agentmesh" becomes a mesh identity, with the roles policy.json binds.
+      - --workload-issuer=http://spire-oidc:8008
+      - --allowed-audiences=agentmesh
+      - --enroll-qr=false
+    depends_on: [spire-oidc]
+    ports:
+      - "127.0.0.1:8070:8080"
+    volumes:
+      - ./policy.json:/etc/agentmesh/policy.json:ro
+      - ./run/join-token:/run/agentmesh/join-token:ro
+      - ./run/admin-token:/run/agentmesh/admin-token:ro
+      - agentmesh-one-data:/data
+
+  # The node beside the sandboxes. Its API is the sandbox's only door to the
+  # mesh and the token endpoint the OpenShell supervisor uses.
+  edge-node:
+    <<: *agentmesh-node
+    command:
+      - run
+      - --control-plane=http://agentmesh-one:8080
+      # Plain HTTP to the control plane is fine on this private Compose network.
+      - --insecure-control-plane
+      - --bootstrap-token-path=/run/agentmesh/join-token
+      - --api-token-path=/run/agentmesh/api-token
+      - --data-dir=/data
+      - --bind-addr=0.0.0.0:8080
+      # Pull policy changes every 30s instead of the 15m default, so `make
+      # policy` shows up quickly.
+      - --control-plane-sync-interval=30s
+    ports:
+      - "127.0.0.1:8090:8080"
+    volumes:
+      - ./run/join-token:/run/agentmesh/join-token:ro
+      - ./run/api-token:/run/agentmesh/api-token:ro
+      - edge-node-data:/data
+
+  # The node in the office, publishing the calculator as two MCP services.
+  office-node:
+    <<: *agentmesh-node
+    command:
+      - run
+      - --control-plane=http://agentmesh-one:8080
+      - --insecure-control-plane
+      - --bootstrap-token-path=/run/agentmesh/join-token
+      - --api-token-path=/run/agentmesh/api-token
+      - --data-dir=/data
+      - --bind-addr=
+      - --config=/etc/agentmesh/office.yaml
+      - --control-plane-sync-interval=30s
+    depends_on:
+      agentmesh-one:
+        condition: service_started
+      calc-mcp:
+        condition: service_started
+    volumes:
+      - ./office.yaml:/etc/agentmesh/office.yaml:ro
+      - ./run/join-token:/run/agentmesh/join-token:ro
+      - ./run/api-token:/run/agentmesh/api-token:ro
+      - office-node-data:/data
+
+  calc-mcp:
+    build: ../calc-mcp
+    restart: unless-stopped
+
+  # ------------------------------------------------------------ OpenShell ----
+  # deploy/docker/docker-compose.yml from the OpenShell release, unchanged
+  # except for the port numbers and the config file in ./openshell.
+  openshell-init:
+    image: &openshell-image ghcr.io/nvidia/openshell/gateway:${OPENSHELL_VERSION:-0.1.3}
+    user: "0"
+    restart: "no"
+    command: ["generate-certs", "--output-dir", "/var/lib/openshell/tls"]
+    environment:
+      HOME: /var/lib/openshell
+    volumes:
+      - &openshell-data
+        type: bind
+        source: /var/lib/openshell
+        target: /var/lib/openshell
+        bind:
+          create_host_path: true
+
+  openshell-gateway:
+    image: *openshell-image
+    restart: unless-stopped
+    depends_on:
+      openshell-init:
+        condition: service_completed_successfully
+    command: []
+    user: "0"
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8085:8085"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - *openshell-data
+      - type: bind
+        source: ./openshell/gateway.toml
+        target: /etc/openshell/gateway.toml
+        read_only: true
+    environment:
+      OPENSHELL_GATEWAY_CONFIG: /etc/openshell/gateway.toml
+      OPENSHELL_DB_URL: "sqlite:/var/lib/openshell/gateway.db?mode=rwc"
+      XDG_DATA_HOME: /var/lib/openshell
+      HOME: /var/lib/openshell
+
+volumes:
+  spire-server-data:
+  spire-server-socket:
+  spire-agent-data:
+  agentmesh-one-data:
+  edge-node-data:
+  office-node-data:
