@@ -16,6 +16,7 @@ package node
 
 import (
 	"crypto/ed25519"
+	"errors"
 	"fmt"
 	"runtime/debug"
 	"sync/atomic"
@@ -223,28 +224,30 @@ func (n *AgentMeshNode) verifyBiscuitTokenWithRules(biscuitBytes []byte, reqCtx 
 	keys := n.trustedKeys
 	n.keysMu.RUnlock()
 
-	var authorized bool
-	var taskRules []*api.TaskAuthorizationRule
+	// Only a signature mismatch moves on to the next trusted key. Once a key
+	// verifies the token, that key's verdict is the answer: carrying on would
+	// replace a policy denial with the next key's "invalid signature".
 	var lastErr error
 	for _, pubKey := range keys {
+		if len(pubKey.Key) != ed25519.PublicKeySize {
+			logger.Warnf("[Auth] Skipping trusted key of invalid size %d", len(pubKey.Key))
+			continue
+		}
 		logger.Infof("[Auth] Trying key: %x", pubKey.Key)
-		if rules, err := n.authorizeWithRules(biscuitBytes, reqCtx, pubKey.Key); err == nil {
-			authorized = true
-			taskRules = rules
-			break
-		} else {
-			lastErr = err
+		rules, err := n.authorizeWithRules(biscuitBytes, reqCtx, pubKey.Key)
+		if err == nil {
+			return rules, nil
 		}
+		if !errors.Is(err, biscuit.ErrInvalidSignature) {
+			return nil, err
+		}
+		lastErr = err
 	}
 
-	if !authorized {
-		if lastErr != nil {
-			return nil, lastErr
-		}
-		return nil, fmt.Errorf("authorization failed")
+	if lastErr != nil {
+		return nil, lastErr
 	}
-
-	return taskRules, nil
+	return nil, fmt.Errorf("authorization failed")
 }
 
 func (n *AgentMeshNode) Authorize(rawToken []byte, req RequestContext, pubKey ed25519.PublicKey) error {
