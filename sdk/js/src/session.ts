@@ -125,7 +125,12 @@ export interface JoinOptions extends MeshHostOptions {
    * requiredLabels. Held on every call, MCP and HTTP alike; no call waives it.
    */
   egressRequireLabels?: Record<string, string>;
-  /** Bounds the whole join. */
+  /**
+   * Bounds the whole join: the control plane sync, and the dial, auth
+   * handshake and relay reservation with every router tried. Without one the
+   * join is bounded by JOIN_TIMEOUT_MS (60s). An aborted join throws an error
+   * naming each router tried and the step it was in.
+   */
   signal?: AbortSignal;
 }
 
@@ -198,6 +203,11 @@ const DEFAULT_RELAY_CHECK_MS = 30 * 1000;
 const DEFAULT_ANNOUNCE_MS = 5 * 60 * 1000;
 /** What close() waits for the member's record to be withdrawn. */
 const WITHDRAW_TIMEOUT_MS = 2 * 1000;
+/**
+ * Bounds a join whose caller passed no signal: each step has a timeout of
+ * its own, but a join tries them in turn over every router it is offered.
+ */
+export const JOIN_TIMEOUT_MS = 60_000;
 /** How long a provider's positive egress verdict is kept; agentmesh-node's labelGateTTL. */
 const EGRESS_VERDICT_TTL_MS = 5 * 60 * 1000;
 
@@ -394,7 +404,7 @@ export class MeshSession {
    * the mesh's record TTL. A member with no relayed address announces
    * nothing: there is nothing to reach it at.
    */
-  async announce(): Promise<void> {
+  async announce(signal?: AbortSignal): Promise<void> {
     if (this.#closed || this.#isTaskView) {
       return;
     }
@@ -402,7 +412,7 @@ export class MeshSession {
     if (addrs.length === 0) {
       return;
     }
-    await provide(this.#directoryRouters(), await peerKey(this.peerId), addrs);
+    await provide(this.#directoryRouters(), await peerKey(this.peerId), addrs, signal);
     this.#announced = addrs;
   }
 
@@ -699,20 +709,28 @@ export class MeshSession {
       let progress = false;
       for (const cand of picks) {
         tried.add(cand.peerId);
+        // Each step has a timeout of its own; the failure names the one the
+        // router was in, so a join that hangs says where.
+        let step = `dial ${cand.addresses.map(String).join(", ")}`;
         try {
           const conn = await this.node.dial(cand.addresses, signal !== undefined ? { signal } : {});
-          const credential = await this.#authenticateRouter(conn);
+          step = "auth handshake";
+          const credential = await untilAborted(this.#authenticateRouter(conn), signal);
           requireRole(credential, ROLE_ROUTER);
           const addr = connectedAddress(conn, cand.peerId);
           if (this.#reserveRelay) {
-            await this.#reserveOnRouter(cand.peerId, addr);
+            step = "relay reservation";
+            await untilAborted(this.#reserveOnRouter(cand.peerId, addr), signal);
           }
           this.#upsertHeldRouter({ peerId: cand.peerId, addr, credential });
           progress = true;
         } catch (err) {
           this.#shunRouter(cand.peerId, ROUTER_SHUN_DURATION_MS);
           await this.node.hangUp(peerIdFromString(cand.peerId)).catch(() => {});
-          failures.push(`${cand.peerId}: ${err instanceof Error ? err.message : String(err)}`);
+          failures.push(`${cand.peerId}: ${step}: ${errorText(err)}`);
+          if (signal?.aborted === true) {
+            return failures;
+          }
         }
       }
       if (!progress && picks.length < need) {
@@ -1408,8 +1426,31 @@ export function selectRouters(candidates: readonly RouterCandidate[], k: number,
   return scored.slice(0, k).map((s) => s.candidate);
 }
 
+/**
+ * The signal a join runs under: the caller's, or one that aborts after ms
+ * with an error saying the join timed out. clear() stops the timer once the
+ * join is over.
+ */
+export function joinDeadline(signal: AbortSignal | undefined, ms = JOIN_TIMEOUT_MS): { signal: AbortSignal; clear(): void } {
+  if (signal !== undefined) {
+    return { signal, clear: () => {} };
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error(`join timed out after ${ms}ms`)), ms);
+  return { signal: controller.signal, clear: () => clearTimeout(timer) };
+}
+
 /** Implements AgentMesh.join(); lives here to keep mesh.ts free of libp2p. */
 export async function joinMesh(mesh: AgentMesh, options: JoinOptions = {}): Promise<MeshSession> {
+  const deadline = joinDeadline(options.signal);
+  try {
+    return await joinUnder(mesh, options, deadline.signal);
+  } finally {
+    deadline.clear();
+  }
+}
+
+async function joinUnder(mesh: AgentMesh, options: JoinOptions, signal: AbortSignal): Promise<MeshSession> {
   // The pull agentmesh-node makes before it starts: a member resuming from its
   // state directory after a key rotation would otherwise verify the routers,
   // which already hold credentials under the new key, against the keys it
@@ -1417,9 +1458,13 @@ export async function joinMesh(mesh: AgentMesh, options: JoinOptions = {}): Prom
   // once joined. Best effort; the stored credential serves when the control
   // plane cannot be reached.
   try {
-    await mesh.syncControlPlane();
+    await untilAborted(mesh.syncControlPlane(), signal);
   } catch {
-    // Joining goes on with what the credential holds.
+    // Joining goes on with what the credential holds, unless the join itself
+    // ran out while the control plane kept it waiting.
+    if (signal.aborted) {
+      throw new Error(`join stopped while syncing with the control plane at ${mesh.controlPlane.url}: ${errorText(signal.reason)}`);
+    }
   }
   const rawAddrs = options.routerAddresses ?? mesh.credential.routerAddresses;
   if (rawAddrs.length === 0 && mesh.routers.length === 0) {
@@ -1455,14 +1500,14 @@ export async function joinMesh(mesh: AgentMesh, options: JoinOptions = {}): Prom
     );
 
     session = new MeshSession(mesh, node, [], authenticatedPeers, banned, options);
-    const failures = await session.topUpRouters(options.signal);
-    if (session.routers.length === 0) {
+    const failures = await session.topUpRouters(signal);
+    if (signal.aborted || session.routers.length === 0) {
       const detail = failures.length > 0 ? `:\n  ${failures.join("\n  ")}` : "";
-      throw new Error(`no router admitted this member${detail}`);
+      throw new Error(signal.aborted ? `join stopped: ${errorText(signal.reason)}${detail}` : `no router admitted this member${detail}`);
     }
     // Best effort: a router that does not take the record is a warning the
     // next announcement retries; the member is on the mesh regardless.
-    await session.announce().catch(() => {});
+    await session.announce(signal).catch(() => {});
     return session;
   } catch (err) {
     if (session !== undefined) {
@@ -1472,6 +1517,30 @@ export async function joinMesh(mesh: AgentMesh, options: JoinOptions = {}): Prom
     }
     throw err;
   }
+}
+
+/**
+ * Settles as p does, or rejects with the signal's reason as soon as it
+ * aborts. p is not cancelled: it ends on its own timeout, and the caller
+ * tears down what it was using.
+ */
+function untilAborted<T>(p: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) {
+    return p;
+  }
+  if (signal.aborted) {
+    p.catch(() => {});
+    return Promise.reject(signal.reason);
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    void p.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 /** The peer a multiaddr ends at, in canonical form: its trailing `/p2p/<id>`, or undefined for a relay address with no target yet. */

@@ -21,15 +21,21 @@ if (peerId === undefined) {
   throw new Error("usage: a2a-call.js <peer-id> [text]");
 }
 
+// Each stage goes to stderr as it is reached, so a run that hangs shows the
+// last one it got to; stdout carries only what callers parse.
+const controlPlaneUrl = process.env.AGENTMESH_CONTROL_PLANE_URL ?? "https://mesh.example.com";
+console.error(`enrolling with ${controlPlaneUrl}`);
 const mesh = await AgentMesh.enroll({
-  controlPlaneUrl: process.env.AGENTMESH_CONTROL_PLANE_URL ?? "https://mesh.example.com",
+  controlPlaneUrl,
   bootstrapTokenPath: process.env.AGENTMESH_BOOTSTRAP_TOKEN_PATH,
   jwtPath: process.env.AGENTMESH_JWT_PATH,
   stateDir: process.env.AGENTMESH_STATE_DIR ?? `${homedir()}/.config/agentmesh/a2a-caller`,
   // A plaintext http:// control plane is otherwise accepted only on loopback.
   allowInsecure: process.env.AGENTMESH_INSECURE_CONTROL_PLANE === "true",
 });
+console.error(`enrolled ${mesh.peerId}`);
 const session = await mesh.join();
+console.error(`joined via ${session.routers.map((r) => r.peerId).join(", ")}`);
 console.log(`on the mesh as ${session.peerId}`);
 
 // The agent's URL on the mesh, and a fetch that carries requests to it.
@@ -40,6 +46,7 @@ const factory = new ClientFactory({
   cardResolver: new DefaultAgentCardResolver({ fetchImpl }),
 });
 // The card lives under the agent's URL; the trailing slash keeps the last segment when the resolver appends the well-known path.
+console.error(`dialing ${peerId}`);
 const client = await factory.createFromUrl(agentURL + "/");
 const card = await client.getAgentCard();
 console.log(`agent: ${card.name}, ${card.description}`);

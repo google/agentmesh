@@ -36,7 +36,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { AUTH_HANDLER_OPTIONS, AUTH_PROTOCOL, AuthRejectedError, GOAWAY_MAX_RETRY_AFTER_MS, GOAWAY_PROTOCOL, ROUTER_SHUN_DURATION_MS, authenticateWithPeer, authStreamHandler, clampGoAwayRetryAfterMs } from "./auth.ts";
+import { AUTH_HANDLER_OPTIONS, AUTH_HANDSHAKE_TIMEOUT_MS, AUTH_PROTOCOL, AuthRejectedError, GOAWAY_MAX_RETRY_AFTER_MS, GOAWAY_PROTOCOL, ROUTER_SHUN_DURATION_MS, authenticateWithPeer, authStreamHandler, clampGoAwayRetryAfterMs } from "./auth.ts";
 import { BiscuitVerificationError, ROLE_ROUTER, loadBiscuit, verifyPeerBiscuit } from "./biscuit.ts";
 import { ROLE_NODE } from "./controlplane.ts";
 import { BootstrapEnrollRequestSchema, BootstrapEnrollResponseSchema, ControlPlaneInfoResponseSchema, EnrollmentStatus, KeysResponseSchema, AuthFrameSchema, DirectoryRequestSchema, DirectoryResponseSchema, PeerRecordSchema, RouterGoAwaySchema, RouterGoAway_Reason, RouterInfoSchema, TokenRefreshRequestSchema, TokenRefreshResponseSchema, type RouterInfo } from "./gen/agentmesh_pb.ts";
@@ -44,7 +44,7 @@ import { Identity } from "./identity.ts";
 import { HTTP_HANDLER_OPTIONS, HTTP_PROTOCOL, a2aEndpoint, httpIngressHandler } from "./libp2p-http.ts";
 import { LabelsNotSatisfiedError } from "./mcp.ts";
 import { AgentMesh } from "./mesh.ts";
-import { MeshSession, candidatesFromRouterInfos, selectRouters, type JoinOptions } from "./session.ts";
+import { MeshSession, candidatesFromRouterInfos, joinDeadline, selectRouters, type JoinOptions } from "./session.ts";
 
 type Wasm = Awaited<ReturnType<typeof loadBiscuit>>;
 type KeyPair = InstanceType<Wasm["KeyPair"]>;
@@ -603,6 +603,82 @@ test("join reports a router that refuses the handshake", async () => {
   } finally {
     await strict.stop();
   }
+});
+
+test("a join bounded by its signal names the router whose handshake never answered", async () => {
+  const silent = await createLibp2p({
+    addresses: { listen: ["/ip4/127.0.0.1/tcp/0"] },
+    transports: [tcp()],
+    connectionEncrypters: [tls()],
+    streamMuxers: [yamux()],
+    services: { identify: identify() },
+  });
+  try {
+    // Takes the auth stream and never writes back, as a router whose
+    // handshake neither completes nor fails.
+    await silent.handle(AUTH_PROTOCOL, () => {});
+    const addr = (silent.getMultiaddrs()[0] as ReturnType<typeof multiaddr>).toString();
+    const mesh = await AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", bootstrapToken: "sbt", fetch: fakeControlPlane([addr]) });
+    const started = Date.now();
+    await assert.rejects(mesh.join({ signal: AbortSignal.timeout(500) }), (err: Error) => {
+      assert.match(err.message, new RegExp(`${silent.peerId.toString()}: auth handshake: `), `got ${JSON.stringify(err.message)}, want the router and the step it hung in`);
+      return true;
+    });
+    const took = Date.now() - started;
+    assert.ok(took < AUTH_HANDSHAKE_TIMEOUT_MS, `join took ${took}ms, want the join's signal to end it before the ${AUTH_HANDSHAKE_TIMEOUT_MS}ms handshake timeout`);
+  } finally {
+    await silent.stop();
+  }
+});
+
+test("a join bounded by its signal says when the control plane never answered", async () => {
+  const pending: Array<() => void> = [];
+  let hang = false;
+  const routes = fakeControlPlane([routerAddr]);
+  // Once enrolled, /keys and /info take the request and never answer, until
+  // the request is aborted or the test ends.
+  const stalling = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const path = new URL(new Request(input, init).url).pathname;
+    if (!hang || (path !== "/keys" && path !== "/info")) {
+      return routes(input, init);
+    }
+    return new Promise<Response>((_, reject) => {
+      const stop = () => reject(init?.signal?.reason ?? new Error("test over"));
+      pending.push(stop);
+      init?.signal?.addEventListener("abort", stop, { once: true });
+    });
+  }) as typeof fetch;
+  try {
+    const mesh = await AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", bootstrapToken: "sbt", fetch: stalling });
+    hang = true;
+    const started = Date.now();
+    await assert.rejects(mesh.join({ signal: AbortSignal.timeout(500) }), (err: Error) => {
+      assert.match(err.message, /syncing with the control plane at http:\/\/127\.0\.0\.1:1/, `got ${JSON.stringify(err.message)}, want the control plane named`);
+      return true;
+    });
+    const took = Date.now() - started;
+    assert.ok(took < 10_000, `join took ${took}ms, want the join's signal to end it, not the control plane client's 30s request timeout`);
+  } finally {
+    // The sync the join gave up on goes on to its next request; let it
+    // through so no request is left holding the client's 30s timer.
+    hang = false;
+    for (const stop of pending) {
+      stop();
+    }
+  }
+});
+
+test("a join without a signal of its own still has a deadline", async () => {
+  const given = AbortSignal.timeout(60_000);
+  const own = joinDeadline(given, 20);
+  assert.equal(own.signal, given, "a caller's signal bounds the join as given");
+  own.clear();
+
+  const deadline = joinDeadline(undefined, 20);
+  await new Promise((resolve) => deadline.signal.addEventListener("abort", resolve, { once: true }));
+  const reason = deadline.signal.reason as Error;
+  assert.match(reason.message, /^join timed out after 20ms$/, `abort reason ${JSON.stringify(reason.message)}`);
+  deadline.clear();
 });
 
 test("an explicit rejection is reported with its reason", async () => {

@@ -99,3 +99,25 @@ test("a lookup one router answers with nothing is put to the next; an announceme
 
   await assert.rejects(request([{ peerId: "nobody", connection: () => undefined }], find), DirectoryError);
 });
+
+test("a request no router answered names every router and what each said", async () => {
+  const key = await serviceKey("mcp", "calculator");
+  const find = create(DirectoryRequestSchema, { request: { case: "findProviders", value: { key, limit: 20 } } });
+  answers.set("a", () => create(DirectoryResponseSchema, { error: "routing table empty" }));
+  answers.set("b", () => create(DirectoryResponseSchema, { error: "rate limited" }));
+  try {
+    await assert.rejects(request([held(routerA), held(routerB)], find), (err: Error) => {
+      assert.ok(err instanceof DirectoryError, `got ${err.name}, want DirectoryError`);
+      for (const [router, said] of [
+        [routerA, "routing table empty"],
+        [routerB, "rate limited"],
+      ] as const) {
+        assert.ok(err.message.includes(`${router.peerId.toString()}: ${said}`), `got ${JSON.stringify(err.message)}, want ${router.peerId.toString()} and what it said`);
+      }
+      return true;
+    });
+  } finally {
+    answers.delete("a");
+    answers.delete("b");
+  }
+});

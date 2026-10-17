@@ -22,15 +22,21 @@ if (argv[0] !== undefined && !argv[0].includes("://")) {
 }
 const [service = peerId !== undefined ? "a2a://agent" : "mcp://everything", toolOrPath = peerId !== undefined ? "/card" : "echo", args = '{"message": "hi"}'] = argv;
 
+// Each stage goes to stderr as it is reached, so a run that hangs shows the
+// last one it got to; stdout carries only what callers parse.
+const controlPlaneUrl = process.env.AGENTMESH_CONTROL_PLANE_URL ?? "https://mesh.example.com";
+console.error(`enrolling with ${controlPlaneUrl}`);
 const mesh = await AgentMesh.enroll({
-  controlPlaneUrl: process.env.AGENTMESH_CONTROL_PLANE_URL ?? "https://mesh.example.com",
+  controlPlaneUrl,
   bootstrapTokenPath: process.env.AGENTMESH_BOOTSTRAP_TOKEN_PATH,
   jwtPath: process.env.AGENTMESH_JWT_PATH,
   stateDir: process.env.AGENTMESH_STATE_DIR ?? `${homedir()}/.config/agentmesh/caller`,
   // A plaintext http:// control plane is otherwise accepted only on loopback.
   allowInsecure: process.env.AGENTMESH_INSECURE_CONTROL_PLANE === "true",
 });
+console.error(`enrolled ${mesh.peerId}`);
 const session = await mesh.join();
+console.error(`joined via ${session.routers.map((r) => r.peerId).join(", ")}`);
 console.log(`on the mesh as ${session.peerId}`);
 
 // The peer to call: an agent named by ID, or a provider of a published service.
@@ -38,9 +44,13 @@ let provider: DiscoveredProvider = { peerId: peerId ?? "", addrs: [] };
 if (peerId !== undefined) {
   // An agent is not in the discovery table; the SDK finds the path to its
   // peer ID through the routers.
+  console.error(`dialing ${peerId}`);
   await session.connect(peerId);
 } else {
   const providers = await session.discover(service);
+  for (const p of providers) {
+    console.error(`provider ${p.peerId}`);
+  }
   if (providers.length === 0) {
     throw new Error(`no member of the mesh serves ${service}`);
   }
@@ -48,6 +58,7 @@ if (peerId !== undefined) {
   let reached = false;
   for (const candidate of providers) {
     try {
+      console.error(`dialing ${candidate.peerId}`);
       await session.connect(candidate);
       provider = candidate;
       reached = true;
