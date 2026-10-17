@@ -21,6 +21,7 @@ import (
 	cryptorand "crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"io"
@@ -250,6 +251,83 @@ func TestAuthorizeRejectsExpiredBiscuit(t *testing.T) {
 
 	if err := node.Authorize(tokenBytes, req, pub); err == nil {
 		t.Fatal("Authorize succeeded with an expired biscuit; expiration is not enforced on the node dataplane")
+	}
+}
+
+// TestVerifyBiscuitTokenReportsVerdictOfSigningKey reproduces the flaky
+// policy e2e: with two trusted control-plane keys, a token whose signature
+// verifies under one key and is denied by policy was reported as
+// "invalid signature" when the other key happened to be tried last, hiding
+// the denial from the caller.
+func TestVerifyBiscuitTokenReportsVerdictOfSigningKey(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	signingPub, signingPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	caller := peer.ID("caller-peer")
+	builder := biscuit.NewBuilder(signingPriv)
+	_ = builder.AddAuthorityFact(api.MarkerFact(api.FactTargetUnrestricted))
+	_ = builder.AddAuthorityFact(biscuit.Fact{Predicate: biscuit.Predicate{
+		Name: "node",
+		IDs:  []biscuit.Term{biscuit.String(caller.String())},
+	}})
+	_ = builder.AddAuthorityFact(biscuit.Fact{Predicate: biscuit.Predicate{
+		Name: api.FactClientPeerID,
+		IDs:  []biscuit.Term{biscuit.String(caller.String())},
+	}})
+	_ = builder.AddAuthorityFact(biscuit.Fact{Predicate: biscuit.Predicate{
+		Name: api.FactGrantedServiceExact,
+		IDs:  []biscuit.Term{biscuit.String("mcp"), biscuit.String("calculator")},
+	}})
+	b, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenBytes, err := b.Serialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The token grants mcp://calculator only, so this request is denied by
+	// policy after its signature verified under signingPub.
+	req := RequestContext{
+		PeerID:   caller,
+		Protocol: "/mesh/mcp/1.0.0",
+		Target:   "mcp://unauthorized-service",
+	}
+
+	for _, tt := range []struct {
+		name string
+		keys []TrustedKey
+	}{
+		{"signing key first", []TrustedKey{{Key: signingPub}, {Key: otherPub}}},
+		{"signing key last", []TrustedKey{{Key: otherPub}, {Key: signingPub}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			node := &AgentMeshNode{
+				Store:          store,
+				trustedKeys:    tt.keys,
+				BiscuitTimeout: 500 * time.Millisecond,
+			}
+			err := node.VerifyBiscuitToken(tokenBytes, req)
+			if err == nil {
+				t.Fatal("VerifyBiscuitToken allowed a target the token does not grant")
+			}
+			if errors.Is(err, biscuit.ErrInvalidSignature) {
+				t.Fatalf("VerifyBiscuitToken = %v, want the policy denial from the key that signed the token", err)
+			}
+		})
 	}
 }
 
