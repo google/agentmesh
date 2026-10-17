@@ -1116,16 +1116,20 @@ func (n *AgentMeshNode) redialRouter(ctx context.Context, router peer.ID) {
 	}
 	if n.redialing[router] {
 		n.mu.Unlock()
+		logger.Debugf("[AuthN] Router %s dropped while a redial of it is running; that redial checks the session before it ends", router)
 		return
 	}
 	n.redialing[router] = true
 	n.mu.Unlock()
 
 	go func() {
+		released := false
 		defer func() {
-			n.mu.Lock()
-			delete(n.redialing, router)
-			n.mu.Unlock()
+			if !released {
+				n.mu.Lock()
+				delete(n.redialing, router)
+				n.mu.Unlock()
+			}
 		}()
 		biscuitBytes, err := n.loadIdentityForAuth()
 		if err != nil {
@@ -1156,7 +1160,14 @@ func (n *AgentMeshNode) redialRouter(ctx context.Context, router peer.ID) {
 				logger.Infof("[AuthN] Router %s re-admitted this node on redial %d", router, attempt)
 				// A router that restarted lost this node's records.
 				n.triggerReprovide()
-				return
+				if n.releaseRedialIfUp(router) {
+					released = true
+					return
+				}
+				// A drop since the handshake found this redial's mark and
+				// left the session to it.
+				logger.Warnf("[AuthN] Router %s dropped again as it re-admitted this node; redialing", router)
+				continue
 			}
 			if errors.Is(err, ErrFatalAuth) {
 				logger.Warnf("[AuthN] Router %s refused this node's credential on redial: %v", router, err)
@@ -1173,6 +1184,22 @@ func (n *AgentMeshNode) redialRouter(ctx context.Context, router peer.ID) {
 		n.detach(router)
 		n.shun(router, n.config.RouterShunDuration)
 	}()
+}
+
+// releaseRedialIfUp ends a redial of router that has just re-admitted this
+// node: it clears the redial's in-flight mark only while the session is
+// still up, and reports whether it did. It holds n.mu, as the disconnect
+// handler does to clear the session, so a drop either came first and is
+// seen here, and the redial goes on, or comes after, finds no mark and
+// starts a redial of its own.
+func (n *AgentMeshNode) releaseRedialIfUp(router peer.ID) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if !n.authenticatedRouters[router] || n.Host.Network().Connectedness(router) != network.Connected {
+		return false
+	}
+	delete(n.redialing, router)
+	return true
 }
 
 func (n *AgentMeshNode) loadIdentityForAuth() ([]byte, error) {
