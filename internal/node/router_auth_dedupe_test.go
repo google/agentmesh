@@ -597,8 +597,9 @@ func TestRouterDropIsRedialed(t *testing.T) {
 		t.Fatal("node does not report an authenticated session after the redial")
 	}
 
-	// Dropping it again while the first redial has finished starts another;
-	// the session comes back a second time.
+	// Dropping it again once the session is back starts another redial,
+	// whether or not the first one has released its mark yet; the session
+	// comes back a second time.
 	dropFromRouter(t, h, node)
 	deadline = time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) && handshakes.Load() < 3 {
@@ -606,6 +607,114 @@ func TestRouterDropIsRedialed(t *testing.T) {
 	}
 	if got := handshakes.Load(); got != 3 {
 		t.Fatalf("handshakes after the second drop = %d, want 3", got)
+	}
+}
+
+// A router that admits the node and drops it again at once, as one that
+// restarts twice in a row or sends members away right after admitting them
+// does, must not cost the node that router. Each drop lands either before
+// the node records the session or after it, while the redial still holds
+// its mark; in both orders the redial must go on until a session holds.
+func TestRouterDropAfterReadmitIsRedialed(t *testing.T) {
+	const drops = 2 // fewer than RouterRedialAttempts
+	r := newFakeRouter(t, "/ip4/127.0.0.1/tcp/0")
+	// The first handshake is Start's; the next drops admit the node and
+	// close its connection, and the one after them is kept.
+	var seen atomic.Int32
+	r.h.SetStreamHandler(api.AuthProtocolID, func(s network.Stream) {
+		member := s.Conn().RemotePeer()
+		n := seen.Add(1)
+		r.admit(s)
+		if n > 1 && n <= drops+1 {
+			_ = r.h.Network().ClosePeer(member)
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	// The monitor is kept out of the way: the redial must do this alone.
+	node := r.startNode(t, ctx, r.routerAddrs, func(o *Options) {
+		o.RouterRedialDelay = 100 * time.Millisecond
+		o.MonitorBootstrap = time.Hour
+	})
+	if got := r.handshakes.Load(); got != 1 {
+		t.Fatalf("handshakes after Start = %d, want 1", got)
+	}
+
+	dropFromRouter(t, r.h, node)
+
+	const want = drops + 2 // Start, the dropped redials, the one that holds
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && (!node.IsConnected() || r.handshakes.Load() != want) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := r.handshakes.Load(); got != want {
+		t.Fatalf("handshakes = %d, want %d: the node must redial a router that dropped it as it re-admitted it", got, want)
+	}
+	if !node.IsConnected() {
+		t.Fatal("node does not report an authenticated session after the redials")
+	}
+	if !node.isAttached(r.h.ID()) {
+		t.Fatal("router is no longer attached, want it kept: it admitted the node again")
+	}
+	node.mu.Lock()
+	_, shunned := node.shunned[r.h.ID()]
+	node.mu.Unlock()
+	if shunned {
+		t.Fatal("router is shunned, want it kept: it dropped the node fewer times than RouterRedialAttempts")
+	}
+}
+
+func TestReleaseRedialIfUp(t *testing.T) {
+	r := newFakeRouter(t, "/ip4/127.0.0.1/tcp/0")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// No redial and no monitor: the test sets the session and the mark itself.
+	node := r.startNode(t, ctx, r.routerAddrs, func(o *Options) {
+		o.RouterRedialDelay = -1
+		o.MonitorBootstrap = time.Hour
+	})
+	router := r.h.ID()
+	// A peer the node has never been connected to.
+	unconnectedKey, _, err := crypto.GenerateEd25519Key(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unconnected, err := peer.IDFromPrivateKey(unconnectedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		router  peer.ID
+		session bool
+		want    bool
+	}{
+		{name: "live session", router: router, session: true, want: true},
+		{name: "session cleared", router: router, session: false, want: false},
+		{name: "connection gone", router: unconnected, session: true, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			node.mu.Lock()
+			node.redialing = map[peer.ID]bool{tc.router: true}
+			if tc.session {
+				node.authenticatedRouters[tc.router] = true
+			} else {
+				delete(node.authenticatedRouters, tc.router)
+			}
+			node.mu.Unlock()
+
+			if got := node.releaseRedialIfUp(tc.router); got != tc.want {
+				t.Fatalf("releaseRedialIfUp = %v, want %v", got, tc.want)
+			}
+			node.mu.Lock()
+			marked := node.redialing[tc.router]
+			node.mu.Unlock()
+			if marked == tc.want {
+				t.Fatalf("redial mark held = %v after releaseRedialIfUp returned %v, want the mark cleared exactly when it returns true", marked, tc.want)
+			}
+		})
 	}
 }
 

@@ -1116,63 +1116,97 @@ func (n *AgentMeshNode) redialRouter(ctx context.Context, router peer.ID) {
 	}
 	if n.redialing[router] {
 		n.mu.Unlock()
+		logger.Debugf("[AuthN] Router %s dropped while a redial of it is running; that redial checks the session before it ends", router)
 		return
 	}
 	n.redialing[router] = true
 	n.mu.Unlock()
 
 	go func() {
-		defer func() {
-			n.mu.Lock()
-			delete(n.redialing, router)
-			n.mu.Unlock()
-		}()
-		biscuitBytes, err := n.loadIdentityForAuth()
-		if err != nil {
-			logger.Errorf("[AuthN] Cannot redial router %s without an identity: %v", router, err)
+		if n.redialUntilUp(ctx, router) {
 			return
 		}
-		delay := n.config.RouterRedialDelay
-		for attempt := 1; attempt <= n.config.RouterRedialAttempts; attempt++ {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(delay):
-			}
-			if n.isAuthenticatedAndConnected(router) {
-				return
-			}
-			if !n.isAttached(router) {
-				return
-			}
-			addrs := n.Host.Peerstore().Addrs(router)
-			if len(addrs) == 0 {
-				logger.Warnf("[AuthN] Router %s dropped and no address for it is known; replacing it", router)
-				n.detach(router)
-				return
-			}
-			err := n.authRouter(ctx, peer.AddrInfo{ID: router, Addrs: addrs}, biscuitBytes)
-			if err == nil {
+		n.mu.Lock()
+		delete(n.redialing, router)
+		n.mu.Unlock()
+	}()
+}
+
+// redialUntilUp runs the redial attempts of redialRouter and reports whether
+// it released the redial's in-flight mark. It releases it only on a live
+// session, through releaseRedialIfUp; on every other exit the mark is left
+// to the caller.
+func (n *AgentMeshNode) redialUntilUp(ctx context.Context, router peer.ID) bool {
+	biscuitBytes, err := n.loadIdentityForAuth()
+	if err != nil {
+		logger.Errorf("[AuthN] Cannot redial router %s without an identity: %v", router, err)
+		return false
+	}
+	delay := n.config.RouterRedialDelay
+	for attempt := 1; attempt <= n.config.RouterRedialAttempts; attempt++ {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(delay):
+		}
+		if n.releaseRedialIfUp(router) {
+			logger.Debugf("[AuthN] Router %s session was restored while its redial waited", router)
+			return true
+		}
+		if !n.isAttached(router) {
+			return false
+		}
+		addrs := n.Host.Peerstore().Addrs(router)
+		if len(addrs) == 0 {
+			logger.Warnf("[AuthN] Router %s dropped and no address for it is known; replacing it", router)
+			n.detach(router)
+			return false
+		}
+		err := n.authRouter(ctx, peer.AddrInfo{ID: router, Addrs: addrs}, biscuitBytes)
+		if err == nil {
+			if n.releaseRedialIfUp(router) {
 				logger.Infof("[AuthN] Router %s re-admitted this node on redial %d", router, attempt)
 				// A router that restarted lost this node's records.
 				n.triggerReprovide()
-				return
+				return true
 			}
+			// A drop since the handshake found this redial's mark and left
+			// the session to it, or came before the session was recorded.
+			logger.Warnf("[AuthN] Router %s admitted this node on redial %d and dropped it again", router, attempt)
+		} else {
 			if errors.Is(err, ErrFatalAuth) {
 				logger.Warnf("[AuthN] Router %s refused this node's credential on redial: %v", router, err)
 				n.detach(router)
 				n.shun(router, n.config.RouterShunDuration)
-				return
+				return false
 			}
 			logger.Debugf("[AuthN] Redial %d of router %s failed: %v", attempt, router, err)
-			delay *= 2
 		}
-		// Given up: the monitor tops up from the other routers, and this one
-		// is a candidate again once it is back on /info and the shun lapses.
-		logger.Warnf("[AuthN] Router %s did not come back within %d redials; replacing it", router, n.config.RouterRedialAttempts)
-		n.detach(router)
-		n.shun(router, n.config.RouterShunDuration)
-	}()
+		delay *= 2
+	}
+	// Given up: the monitor tops up from the other routers, and this one
+	// is a candidate again once it is back on /info and the shun lapses.
+	logger.Warnf("[AuthN] Router %s did not keep a session with this node within %d redials; replacing it", router, n.config.RouterRedialAttempts)
+	n.detach(router)
+	n.shun(router, n.config.RouterShunDuration)
+	return false
+}
+
+// releaseRedialIfUp ends a redial of router on a live session: it clears the
+// redial's in-flight mark only while the session is up, and reports whether
+// it did. It holds n.mu, as the disconnect handler does to clear the
+// session, so a drop either came first and is seen here, and the redial goes
+// on, or comes after, finds no mark and starts a redial of its own. The
+// connection is checked as well as the session flag, since a drop that
+// lands before the handshake records the session clears nothing.
+func (n *AgentMeshNode) releaseRedialIfUp(router peer.ID) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if !n.authenticatedRouters[router] || n.Host.Network().Connectedness(router) != network.Connected {
+		return false
+	}
+	delete(n.redialing, router)
+	return true
 }
 
 func (n *AgentMeshNode) loadIdentityForAuth() ([]byte, error) {
@@ -1299,7 +1333,19 @@ func (n *AgentMeshNode) authenticateRouterSession(ctx context.Context, router pe
 	}
 	_ = s.Close()
 
+	// A router that closes the connection right after admitting the node can
+	// do so before the session is recorded, and the disconnect handler then
+	// finds none to clear. Recorded anyway, it would outlive the connection,
+	// and the next connection to the router, which AutoRelay opens within
+	// milliseconds, would make it look live although the router never
+	// authenticated it. The swarm closes a connection before it notifies
+	// the handler, and the handler takes n.mu, so a close either came first
+	// and is seen here or comes after and clears what is recorded now.
 	n.mu.Lock()
+	if s.Conn().IsClosed() {
+		n.mu.Unlock()
+		return fmt.Errorf("router %s closed the connection as it admitted this node", router)
+	}
 	n.authenticatedRouters[router] = true
 	n.RouterPeerID = router
 	n.mu.Unlock()
