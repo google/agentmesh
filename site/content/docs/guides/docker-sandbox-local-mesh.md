@@ -287,11 +287,12 @@ with containerd size-validation errors through the available network path
 replace a previously good local copy of the same digest with the truncated
 one. Pulling **by digest** succeeded, after which the kit build resolved its
 frontend locally. For anyone reproducing on a filtered network: pull
-`docker.io/docker/sandbox-kit@sha256:2da64d51…` first, and give the `sbx`
-daemon the same upstream proxy the rest of the machine uses
-(`sbx settings set proxy`, then `sbx daemon restart`); the sandbox **egress**
-policy is separate from that and stays `deny-all` plus the kit's one
-control-plane entry.
+`docker.io/docker/sandbox-kit@sha256:2da64d51eea5598c7439daaad9c62be92956983c61806f1753f708a86cffe11b`
+(linux/amd64; the arm64 digest is `sha256:51a9ae9fd93e0a9349621a0f977c1e106facc64958f507e6a8bed168de29c9de`)
+first, and give the `sbx` daemon the same upstream proxy the rest of the
+machine uses (`sbx settings set proxy`, then `sbx daemon restart`); the
+sandbox **egress** policy is separate from that and stays `deny-all` plus the
+kit's one control-plane entry.
 
 ## What is next
 
