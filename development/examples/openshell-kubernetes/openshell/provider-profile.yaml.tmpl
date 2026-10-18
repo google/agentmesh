@@ -1,0 +1,67 @@
+# OpenShell provider profile for the Agent Mesh edge node running in the
+# cluster. The credential is not stored anywhere: for each sandbox the
+# supervisor (a pod on the cluster network) trades the sandbox's JWT-SVID at the
+# node's token endpoint (RFC 7523 client assertion) for a Biscuit bound to that
+# identity, caches it, and injects it as X-Mesh-Authentication on every request
+# the sandbox makes to the node. OpenShell accepts a plaintext token endpoint
+# only on loopback or on an in-cluster Service host, which this is.
+#
+# allowed_ips pins the endpoint to the edge node Service's ClusterIP, which the
+# Makefile reads from the cluster: the supervisor refuses a name that resolves
+# outside this list (policy_dns_no_valid_address), and Service CIDRs differ per
+# cluster (kind 10.96.0.0/16, GKE 34.118.224.0/20).
+id: agentmesh
+display_name: Agent Mesh
+description: Mesh services and models through the cluster's agentmesh-node, under the sandbox's own identity
+category: other
+
+credentials:
+  - name: mesh_token
+    description: Biscuit the mesh issues for this sandbox's SPIFFE identity
+    required: false
+    auth_style: bearer
+    header_name: X-Mesh-Authentication
+    token_grant:
+      grant_type: client_credentials
+      token_endpoint: http://edge-node.agentmesh.svc.cluster.local:8080/oauth/token
+      # The aud claim of the JWT-SVID; the control plane accepts it with
+      # --allowed-audiences.
+      jwt_svid_audience: agentmesh
+      client_assertion_type: urn:ietf:params:oauth:client-assertion-type:jwt-spiffe
+      # How long the supervisor keeps a Biscuit before trading a fresh SVID for
+      # a new one; a policy change reaches a sandbox within this time.
+      cache_ttl_seconds: 60
+
+endpoints:
+  # The node's MCP server: discover and call tools across the mesh.
+  - host: edge-node.agentmesh.svc.cluster.local
+    port: 8080
+    path: /mcp
+    protocol: mcp
+    enforcement: enforce
+    allowed_ips: [${EDGE_NODE_IP}/32]
+    mcp:
+      allow_all_known_mcp_methods: true
+    rules:
+      - allow: {}
+  # The node's OpenAI-compatible endpoint for models published on the mesh.
+  - host: edge-node.agentmesh.svc.cluster.local
+    port: 8080
+    path: /v1/**
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+    allowed_ips: [${EDGE_NODE_IP}/32]
+  # Services another node serves, reached through this node by peer id:
+  # /mesh/<peer>/egress/<destination>/... for an egress destination. Which
+  # destinations, methods and paths the sandbox may use is the mesh policy.
+  - host: edge-node.agentmesh.svc.cluster.local
+    port: 8080
+    path: /mesh/**
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+    allowed_ips: [${EDGE_NODE_IP}/32]
+
+binaries:
+  - /**

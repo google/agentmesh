@@ -1,0 +1,53 @@
+# agentmesh-one in the cluster, used with HUB=local. With HUB=<url> the
+# nodes and the provider use an agentmesh-one elsewhere and this is not applied.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentmesh-one
+  namespace: agentmesh
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: agentmesh-one}
+  template:
+    metadata:
+      labels: {app: agentmesh-one}
+    spec:
+      containers:
+      - name: agentmesh-one
+        image: ${AGENTMESH_ONE_IMAGE}
+        args:
+        - --bind-address=0.0.0.0
+        - --port=8080
+        - --data-dir=/data
+        - --policy-file=/etc/agentmesh/policy.json
+        - --token-path=/run/agentmesh/join-token
+        - --admin-token-path=/run/agentmesh/admin-token
+        # The credential provider asserts actor identities; the mesh trusts
+        # it as a workload identity issuer and binds roles to the subject.
+        - --workload-issuer=${ISSUER}
+        - --allowed-audiences=agentmesh
+        - --enroll-qr=false
+        ports:
+        - {name: http, containerPort: 8080}
+        volumeMounts:
+        - {name: config, mountPath: /etc/agentmesh, readOnly: true}
+        - {name: tokens, mountPath: /run/agentmesh, readOnly: true}
+        - {name: data, mountPath: /data}
+      volumes:
+      - name: config
+        configMap: {name: mesh-config}
+      - name: tokens
+        secret: {secretName: agentmesh-tokens, defaultMode: 0444}
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentmesh-one
+  namespace: agentmesh
+spec:
+  selector: {app: agentmesh-one}
+  ports:
+  - {name: http, port: 8080, targetPort: http}

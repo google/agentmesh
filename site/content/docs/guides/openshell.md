@@ -67,9 +67,9 @@ flowchart LR
   gateway keeps its state in `/var/lib/openshell`).
 - The `openshell` CLI, 0.1.3 or later, from the
   [OpenShell installation page](https://docs.openshell.ai/about/installation).
-- `agentmesh-one` and `agentmesh-node` images newer than v0.1.0-rc.9, which
-  is when the node's token endpoint learned the client assertion grant. The
-  Compose project uses the `latest` images; set `AGENTMESH_VERSION` to pin a
+- `agentmesh-one` and `agentmesh-node` images at `v0.1.0` or newer, the first
+  release whose node token endpoint takes the client assertion grant. The
+  Compose project defaults to `v0.1.1`; set `AGENTMESH_VERSION` for another
   release.
 - `python3` and `curl`.
 

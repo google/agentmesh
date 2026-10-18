@@ -3,6 +3,7 @@
     {
       "name": "mesh:role:node",
       "allowed_services": ["*"],
+      "allowed_publish": ["*"],
       "allowed_targets": ["*"],
       "allowed_labels": ["*"]
     },

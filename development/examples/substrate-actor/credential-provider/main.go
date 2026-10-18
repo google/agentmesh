@@ -47,6 +47,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -82,6 +83,10 @@ var (
 	issuer           = flag.String("issuer", "", "iss of the assertions this provider signs; the control plane fetches <issuer>/.well-known/openid-configuration (required)")
 	audience         = flag.String("audience", "agentmesh", "aud of the assertions; one of the control plane's --allowed-audiences")
 	cacheTTL         = flag.Duration("cache-ttl", time.Minute, "longest a minted credential is reused; also how long a mesh policy change takes to reach an actor")
+	signingKeyPath   = flag.String("signing-key-path", "", "PEM file (PKCS#8 or SEC 1) with the P-256 key the assertions are signed with; generated per run when empty, in which case the issuer must be this provider's own HTTP address")
+	jwksURI          = flag.String("jwks-uri", "", "jwks_uri the discovery document names; defaults to <issuer>/keys. Set it when the documents are published elsewhere (a bucket) and the issuer is not this process")
+	printDiscovery   = flag.Bool("print-discovery", false, "write the discovery document and the JWKS for --signing-key-path to --print-discovery-dir and exit, for publishing them where the control plane reads the issuer")
+	printDiscoveryTo = flag.String("print-discovery-dir", ".", "directory --print-discovery writes .well-known/openid-configuration and keys into")
 )
 
 func main() {
@@ -95,6 +100,16 @@ func main() {
 }
 
 func run(ctx context.Context) error {
+	if *printDiscovery {
+		if *issuer == "" || *signingKeyPath == "" {
+			return errors.New("--print-discovery needs --issuer and --signing-key-path")
+		}
+		signer, err := newSigner(*issuer, *audience, *signingKeyPath, *jwksURI)
+		if err != nil {
+			return err
+		}
+		return signer.writeDiscovery(*printDiscoveryTo)
+	}
 	for name, value := range map[string]string{
 		"--server-cred-bundle": *serverBundle, "--client-ca-file": *clientCAFile,
 		"--node-url": *nodeURL, "--issuer": *issuer,
@@ -106,7 +121,7 @@ func run(ctx context.Context) error {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	signer, err := newSigner(*issuer, *audience)
+	signer, err := newSigner(*issuer, *audience, *signingKeyPath, *jwksURI)
 	if err != nil {
 		return err
 	}
@@ -305,10 +320,27 @@ type signer struct {
 	jwks, discovery  []byte
 }
 
-func newSigner(issuer, audience string) (*signer, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, err
+// newSigner signs with the P-256 key at keyPath, or with one generated for
+// this run when keyPath is empty. A persistent key is what lets the
+// discovery document and the JWKS be published as static files somewhere
+// the control plane can read (a bucket), with the issuer naming that place
+// and jwksURI the JWKS there; an ephemeral key needs the issuer to be this
+// process, since the keys change with every start.
+func newSigner(issuer, audience, keyPath, jwksURI string) (*signer, error) {
+	var key *ecdsa.PrivateKey
+	if keyPath == "" {
+		var err error
+		if key, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader); err != nil {
+			return nil, err
+		}
+	} else {
+		var err error
+		if key, err = loadP256Key(keyPath); err != nil {
+			return nil, err
+		}
+	}
+	if jwksURI == "" {
+		jwksURI = issuer + "/keys"
 	}
 	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
 	if err != nil {
@@ -327,13 +359,55 @@ func newSigner(issuer, audience string) (*signer, error) {
 	}}})
 	s.discovery, _ = json.Marshal(map[string]any{
 		"issuer":                                issuer,
-		"jwks_uri":                              issuer + "/keys",
+		"jwks_uri":                              jwksURI,
 		"response_types_supported":              []string{"id_token"},
 		"subject_types_supported":               []string{"public"},
 		"id_token_signing_alg_values_supported": []string{"ES256"},
 		"claims_supported":                      []string{"iss", "sub", "aud", "exp", "iat", "nbf", "jti", "ate.dev"},
 	})
 	return s, nil
+}
+
+// loadP256Key reads one PEM private key, PKCS#8 or SEC 1, and requires P-256.
+func loadP256Key(path string) (*ecdsa.PrivateKey, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read signing key: %w", err)
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return nil, fmt.Errorf("signing key %s: no PEM block", path)
+	}
+	var parsed any
+	switch block.Type {
+	case "PRIVATE KEY":
+		parsed, err = x509.ParsePKCS8PrivateKey(block.Bytes)
+	case "EC PRIVATE KEY":
+		parsed, err = x509.ParseECPrivateKey(block.Bytes)
+	default:
+		return nil, fmt.Errorf("signing key %s: unsupported PEM block %q", path, block.Type)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("signing key %s: %w", path, err)
+	}
+	key, ok := parsed.(*ecdsa.PrivateKey)
+	if !ok || key.Curve != elliptic.P256() {
+		return nil, fmt.Errorf("signing key %s: want a P-256 key, got %T", path, parsed)
+	}
+	return key, nil
+}
+
+// writeDiscovery writes the two documents an OIDC relying party fetches,
+// at the paths they are fetched from, so a bucket mirrors the issuer.
+func (s *signer) writeDiscovery(dir string) error {
+	wk := filepath.Join(dir, ".well-known")
+	if err := os.MkdirAll(wk, 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(wk, "openid-configuration"), s.discovery, 0o644); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "keys"), s.jwks, 0o644)
 }
 
 func (s *signer) assertion(subject string, actor map[string]string) (string, error) {

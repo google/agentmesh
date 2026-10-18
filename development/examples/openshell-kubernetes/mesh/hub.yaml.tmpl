@@ -1,0 +1,65 @@
+# agentmesh-one in the cluster: control plane, router and console on one port.
+# Used when HUB=local (the default on kind). With HUB=<url> the nodes join an
+# agentmesh-one running elsewhere, such as Cloud Run, and this file is not
+# applied.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hub-config
+  namespace: agentmesh
+data:
+  policy.json: |
+${POLICY_JSON_INDENTED}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentmesh-one
+  namespace: agentmesh
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: agentmesh-one}
+  template:
+    metadata:
+      labels: {app: agentmesh-one}
+    spec:
+      containers:
+      - name: agentmesh-one
+        image: ${AGENTMESH_ONE_IMAGE}
+        args:
+        - --bind-address=0.0.0.0
+        - --port=8080
+        - --data-dir=/data
+        - --policy-file=/etc/agentmesh/policy.json
+        - --token-path=/run/agentmesh/join-token
+        - --admin-token-path=/run/agentmesh/admin-token
+        # SPIRE's OIDC discovery provider is the workload identity issuer; a
+        # JWT-SVID from it with aud=agentmesh is an identity the control plane
+        # accepts at /token/exchange and binds roles to.
+        - --workload-issuer=${JWT_ISSUER}
+        - --allowed-audiences=agentmesh
+        - --enroll-qr=false
+        ports:
+        - {name: http, containerPort: 8080}
+        volumeMounts:
+        - {name: config, mountPath: /etc/agentmesh, readOnly: true}
+        - {name: tokens, mountPath: /run/agentmesh, readOnly: true}
+        - {name: data, mountPath: /data}
+      volumes:
+      - name: config
+        configMap: {name: hub-config}
+      - name: tokens
+        secret: {secretName: agentmesh-tokens, defaultMode: 0444}
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentmesh-one
+  namespace: agentmesh
+spec:
+  selector: {app: agentmesh-one}
+  ports:
+  - {name: http, port: 8080, targetPort: http}
