@@ -1,0 +1,11 @@
+# OpenShell Helm chart values for the Agent Mesh walkthrough. Everything is the
+# chart's default except the one setting the integration needs: the SPIFFE
+# Workload API socket the Kubernetes driver projects into the gateway pod and
+# into every sandbox supervisor pod, so that supervisors can ask SPIRE for a
+# JWT-SVID when a provider profile declares a token grant.
+#
+# The chart's PKI job generates the gateway's server/client mTLS material; the
+# CLI uses the client bundle over a port-forward (see the Makefile).
+gatewayConfig:
+  openshell.drivers.kubernetes:
+    provider_spiffe_workload_api_socket_path: /spiffe-workload-api/spire-agent.sock

@@ -17,7 +17,9 @@ import urllib.request
 
 ROUTER = "http://127.0.0.1:" + os.environ.get("ROUTER_PORT", "8000")
 ATESPACE = os.environ.get("ATESPACE", "ate-demo-sandbox")
-NODE = "http://edge-node.agentmesh.svc.cluster.local:8080/mcp"
+# Absolute name: the actor's DNS relay answers REFUSED for the search-domain
+# expansions musl tries first under ndots:5, and musl treats that as failure.
+NODE = "http://edge-node.agentmesh.svc.cluster.local.:8080/mcp"
 
 
 def in_actor(actor, command, timeout="60s"):

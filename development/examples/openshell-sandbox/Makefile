@@ -20,7 +20,7 @@ TRUST_DOMAIN := openshell.local
 SPIRE := docker compose exec -T --interactive=false spire-server /opt/spire/bin/spire-server
 SANDBOX_IMAGE := openshell-agentmesh-sandbox:local
 
-.PHONY: up sandbox call rogue policy status down
+.PHONY: up sandbox call rogue policy status down select-gateway
 
 up: run/join-token run/api-token run/admin-token
 	@command -v openshell >/dev/null || { echo "openshell CLI not found: https://docs.openshell.ai/about/installation"; exit 1; }
@@ -39,6 +39,7 @@ up: run/join-token run/api-token run/admin-token
 	@for _ in $$(seq 1 60); do curl -sf http://127.0.0.1:8085/healthz >/dev/null && break; sleep 1; done
 	curl -sf http://127.0.0.1:8085/healthz >/dev/null
 	openshell gateway list 2>/dev/null | grep -q '^$(GATEWAY)\b' || openshell gateway add http://127.0.0.1:8080 --name $(GATEWAY)
+	openshell gateway select $(GATEWAY) >/dev/null
 	openshell profile import -f openshell/provider-profile.yaml
 	openshell provider list 2>/dev/null | grep -q '^agentmesh\b' || openshell provider create --name agentmesh --type agentmesh --runtime-credentials
 	@echo
@@ -48,7 +49,10 @@ up: run/join-token run/api-token run/admin-token
 # The sandbox's identity is a SPIRE registration entry keyed on the label
 # OpenShell puts on the sandbox's supervisor container. The mesh policy
 # (policy.json) says what that identity may call.
-sandbox:
+# The CLI keeps one selected gateway; the targets that talk to this one
+# select it, so another cluster's gateway on the same workstation does not
+# receive the commands.
+sandbox: select-gateway
 	entry=$$($(SPIRE) entry show -spiffeID spiffe://$(TRUST_DOMAIN)/sandbox/$(NAME) | awk '/^Entry ID/ {print $$4}')
 	if [ -z "$$entry" ]; then
 	  entry=$$($(SPIRE) entry create \
@@ -65,7 +69,7 @@ sandbox:
 	openshell sandbox create --name $(NAME) --from $(SANDBOX_IMAGE) --provider agentmesh --detach -- sleep infinity
 	@echo "sandbox $(NAME) is spiffe://$(TRUST_DOMAIN)/sandbox/$(NAME) (SPIRE entry $$entry); try: make call NAME=$(NAME)"
 
-call:
+call: select-gateway
 	@echo "== tools the mesh offers sandbox $(NAME)"
 	python3 mcp.py tools $(NAME)
 	@echo "== mcp://calc, allowed for the sandbox role"
@@ -110,3 +114,6 @@ run/admin-token:
 
 run/api-token:
 	mkdir -p run && umask 022 && head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' > $@
+
+select-gateway:
+	@openshell gateway select $(GATEWAY) >/dev/null

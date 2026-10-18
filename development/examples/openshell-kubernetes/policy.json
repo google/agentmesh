@@ -1,0 +1,39 @@
+{
+  "roles": [
+    {
+      "name": "mesh:role:node",
+      "allowed_services": [
+        "*"
+      ],
+      "allowed_publish": [
+        "*"
+      ],
+      "allowed_targets": [
+        "*"
+      ],
+      "allowed_labels": [
+        "*"
+      ]
+    },
+    {
+      "name": "mesh:role:router",
+      "allowed_services": [
+        "*"
+      ],
+      "allowed_targets": [
+        "*"
+      ]
+    },
+    {
+      "name": "sandbox",
+      "allowed_services": [
+        "system://mesh.catalog",
+        "mcp://calc"
+      ],
+      "allowed_targets": [
+        "*"
+      ]
+    }
+  ],
+  "bindings": []
+}

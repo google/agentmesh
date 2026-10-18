@@ -85,8 +85,8 @@ issuer directly. The last section shows that change.
 - Docker, kind, ko, kubectl, Go and python3.
 - A checkout of Agent Substrate; the example installs it from source with
   Substrate's own scripts.
-- `agentmesh-one` and `agentmesh-node` images newer than v0.1.0-rc.9. The
-  manifests use the `latest` images; set `AGENTMESH_VERSION` to pin a release.
+- `agentmesh-one` and `agentmesh-node` images at `v0.1.0` or newer. The
+  Makefile defaults to `v0.1.1`; set `AGENTMESH_VERSION` for another release.
 
 ```bash
 cd development/examples/substrate-actor

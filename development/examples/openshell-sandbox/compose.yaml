@@ -12,7 +12,7 @@
 name: openshell-agentmesh
 
 x-agentmesh-node: &agentmesh-node
-  image: ${AGENTMESH_NODE_IMAGE:-ghcr.io/google/agentmesh-node:${AGENTMESH_VERSION:-latest}}
+  image: ${AGENTMESH_NODE_IMAGE:-ghcr.io/google/agentmesh-node:${AGENTMESH_VERSION:-v0.1.1}}
   restart: unless-stopped
   depends_on:
     agentmesh-one:
@@ -64,7 +64,7 @@ services:
 
   # ----------------------------------------------------------- Agent Mesh ----
   agentmesh-one:
-    image: ${AGENTMESH_ONE_IMAGE:-ghcr.io/google/agentmesh-one:${AGENTMESH_VERSION:-latest}}
+    image: ${AGENTMESH_ONE_IMAGE:-ghcr.io/google/agentmesh-one:${AGENTMESH_VERSION:-v0.1.1}}
     restart: unless-stopped
     command:
       - --bind-address=0.0.0.0

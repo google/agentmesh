@@ -1,0 +1,55 @@
+# SPIRE for OpenShell sandboxes on Kubernetes (SPIFFE hardened chart `spire`).
+#
+# - trust domain openshell.local; the OIDC discovery provider serves plain HTTP
+#   in-cluster (tls.spire.enabled=false puts an nginx in front of it on :80),
+#   which the mesh control plane names with --workload-issuer.
+# - the CSI driver mounts the Workload API socket into any pod that declares a
+#   csi.spiffe.io volume; OpenShell's gateway and every sandbox supervisor do
+#   when provider_spiffe_workload_api_socket_path is set.
+# - one ClusterSPIFFEID gives every sandbox supervisor an identity derived from
+#   the sandbox id OpenShell puts on the supervisor pod. This is NVIDIA's own
+#   template from deploy/helm/openshell/ci/values-spire-stack.yaml, narrowed to
+#   supervisor pods; a second entry identifies the gateway pod so it can fetch
+#   JWT bundles to verify supervisors.
+global:
+  spire:
+    clusterName: ${CLUSTER_NAME}
+    trustDomain: openshell.local
+    jwtIssuer: ${JWT_ISSUER}
+
+spire-server:
+  defaultJwtSvidTTL: 5m
+  controllerManager:
+    identities:
+      clusterSPIFFEIDs:
+        default:
+          enabled: false
+        openshell-sandboxes:
+          enabled: true
+          spiffeIDTemplate: 'spiffe://{{ .TrustDomain }}/openshell/sandbox/{{ index .PodMeta.Labels "openshell.ai/sandbox-id" }}'
+          namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshell
+          podSelector:
+            matchLabels:
+              openshell.ai/managed-by: openshell
+              openshell.ai/component: supervisor
+        openshell-gateway:
+          enabled: true
+          spiffeIDTemplate: 'spiffe://{{ .TrustDomain }}/openshell/gateway'
+          namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshell
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: openshell
+              app.kubernetes.io/instance: openshell
+
+spiffe-oidc-discovery-provider:
+  enabled: true
+  tls:
+    spire:
+      enabled: false
+  service:
+    type: ${OIDC_SERVICE_TYPE}
+    loadBalancerIP: "${OIDC_LOAD_BALANCER_IP}"
