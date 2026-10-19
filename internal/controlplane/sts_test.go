@@ -15,6 +15,7 @@
 package controlplane
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/ecdsa"
@@ -40,6 +41,7 @@ import (
 	"github.com/google/agentmesh/internal/identity"
 	"github.com/google/agentmesh/internal/node"
 	"github.com/google/agentmesh/internal/storage"
+	golog "github.com/ipfs/go-log/v2"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"google.golang.org/protobuf/proto"
@@ -1010,5 +1012,119 @@ func TestRevokeBiscuitIDPrunesExpiredEntries(t *testing.T) {
 	}
 	if _, ok := srv.revokedBiscuits["live"]; !ok {
 		t.Error("live revocation missing")
+	}
+}
+
+// TestSTSTokenBorderCrossingNamesTheOriginPeer checks that both Border Crossing
+// lines at /sts/token name the origin peer of the caller's Biscuit next to the
+// egress node, for a Task Biscuit attenuated from a Member Biscuit: the case
+// that carries client_peer_id but no actor_node.
+func TestSTSTokenBorderCrossingNamesTheOriginPeer(t *testing.T) {
+	issuer, mintOIDC := startCustomMockOIDC(t)
+	srv, store, baseURL := setupTestServer(t, issuer)
+	defer func() { _ = srv.Close() }()
+
+	roles := []*api.PolicyRole{
+		{Name: api.RoleNode, AllowedServices: []string{"egress://bigquery.googleapis.com"}, AllowedTargets: []string{"*"}},
+	}
+	bindings := []*api.PolicyBinding{
+		{Role: api.RoleNode, Members: []string{api.SystemAuthenticated}},
+	}
+	if err := store.SavePolicyDocument(context.Background(), roles, bindings, nil); err != nil {
+		t.Fatalf("SavePolicyDocument: %v", err)
+	}
+
+	_, originPeerID, originBiscuit, _ := enrollTestNodeForSTS(t, baseURL, mintOIDC)
+	egressPriv, egressPeerID, egressBiscuit, _ := enrollTestNodeForSTS(t, baseURL, mintOIDC)
+	taskBiscuit, err := identity.AttenuateBiscuit(originBiscuit, &api.TaskAuthorizationRule{
+		Name:  "bq-export",
+		Rules: []*api.TaskRule{{AllowedServices: []string{"egress://bigquery.googleapis.com"}}},
+	})
+	if err != nil {
+		t.Fatalf("attenuate the Member Biscuit: %v", err)
+	}
+
+	const subsystem = "agentmesh-control-plane"
+	prevLevel, err := golog.SubsystemLevelName(subsystem)
+	if err != nil {
+		t.Fatalf("read the %s log level: %v", subsystem, err)
+	}
+	if err := golog.SetLogLevel(subsystem, "info"); err != nil {
+		t.Fatalf("set the %s log level: %v", subsystem, err)
+	}
+	t.Cleanup(func() { _ = golog.SetLogLevel(subsystem, prevLevel) })
+
+	// The pipe sees every logger, including other tests running in parallel,
+	// so the reader keeps only this egress node's /sts/token lines and drops
+	// the rest instead of letting the pipe block a writer.
+	pipe := golog.NewPipeReader()
+	t.Cleanup(func() { _ = pipe.Close() })
+	crossings := make(chan map[string]any, 4)
+	go func() {
+		scanner := bufio.NewScanner(pipe)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+		for scanner.Scan() {
+			var entry map[string]any
+			if json.Unmarshal(scanner.Bytes(), &entry) != nil {
+				continue
+			}
+			if entry["msg"] == "Border Crossing" && entry["endpoint"] == "/sts/token" && entry["actor_node"] == egressPeerID.String() {
+				crossings <- entry
+			}
+		}
+	}()
+
+	postSTS := func(destination, audience string) int {
+		t.Helper()
+		ts := time.Now().UnixMilli()
+		sig, err := egressPriv.Sign(api.STSTokenChallenge(egressPeerID.String(), ts))
+		if err != nil {
+			t.Fatalf("sign the STS challenge: %v", err)
+		}
+		reqBytes, err := proto.Marshal(&api.STSTokenRequest{
+			Biscuit:            taskBiscuit,
+			Destination:        destination,
+			Audience:           audience,
+			ChallengeUnixMs:    ts,
+			ChallengeSignature: sig,
+		})
+		if err != nil {
+			t.Fatalf("marshal STSTokenRequest: %v", err)
+		}
+		req, err := http.NewRequest(http.MethodPost, baseURL+"/sts/token", bytes.NewReader(reqBytes))
+		if err != nil {
+			t.Fatalf("build POST /sts/token: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+base64.StdEncoding.EncodeToString(egressBiscuit))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /sts/token for %s: %v", destination, err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if status := postSTS("bigquery.googleapis.com", "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/agentmesh/providers/cp"); status != http.StatusOK {
+		t.Fatalf("POST /sts/token for bigquery.googleapis.com returned %d, want 200", status)
+	}
+	if status := postSTS("api.github.com", "https://api.github.com"); status != http.StatusForbidden {
+		t.Fatalf("POST /sts/token for api.github.com returned %d, want 403", status)
+	}
+
+	seen := map[string]bool{}
+	for len(seen) < 2 {
+		select {
+		case entry := <-crossings:
+			decision, _ := entry["decision"].(string)
+			if entry["client_peer_id"] != originPeerID.String() {
+				t.Fatalf("Border Crossing decision=%s logged client_peer_id = %v, want the origin peer %s", decision, entry["client_peer_id"], originPeerID)
+			}
+			seen[decision] = true
+		case <-time.After(5 * time.Second):
+			t.Fatalf("got Border Crossing lines for decisions %v, want allow and deny", seen)
+		}
+	}
+	if !seen["allow"] || !seen["deny"] {
+		t.Fatalf("got Border Crossing lines for decisions %v, want allow and deny", seen)
 	}
 }

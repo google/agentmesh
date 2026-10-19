@@ -307,7 +307,11 @@ minted statelessly on the control plane with zero database writes:
   node's libp2p connection (`check if client_peer_id($id), connection_peer_id($id)`),
   so an exfiltrated token cannot be replayed from another peer.
 - `actor_node("<origin_node_peer_id>")` records the acting node for audit logs
-  and `ext_proc` attributes. No policy rule grants permissions on `actor_node`.
+  and `ext_proc` attributes: the node that called `POST /token/exchange`. For
+  `POST /oauth/token` it is the node whose credential came with the request, or
+  else a claimed peer: the `actor_peer_id` the client named (checked only for
+  admission) or the control plane's own peer ID. No policy rule grants
+  permissions on `actor_node`.
 - `user(...)`, `email(...)`, `group(...)`, `idp_role(...)`, and `role(...)` are
   resolved strictly from the caller's `subject_token`.
 - No `node()` fact is minted, which prevents `node:<peer_id>` policy bindings on
@@ -338,7 +342,7 @@ as a standard OIDC issuer:
 | :--- | :--- |
 | **Signing key** | **ES256** (P-256 ECDSA), rotated with overlap and `kid` (`internal/controlplane/sts.go`). Google Cloud and AWS STS accept RS256 and ES256, not Ed25519; Ed25519 remains the Biscuit authority key. |
 | **Discovery & JWKS** | `GET /.well-known/openid-configuration` and `GET /jwks` on the control plane. For air-gapped or private control planes, the JWKS can be uploaded directly to the cloud workload identity pool. |
-| **Mint endpoint** | `POST /sts/token` (protobuf over HTTP): accepts the caller's Biscuit and `destination` name, verifies the Biscuit and the full `tar_block` chain against `egress://<destination>`, writes a `Border Crossing` audit log, and returns a short-lived ES256 JWT. |
+| **Mint endpoint** | `POST /sts/token` (protobuf over HTTP): accepts the caller's Biscuit and `destination` name, verifies the Biscuit and the full `tar_block` chain against `egress://<destination>`, writes a `Border Crossing` audit log, and returns a short-lived ES256 JWT. In the `/sts/token` lines, `actor_node` is the egress node that called it and `client_peer_id` is the origin peer the caller's Biscuit is bound to, on allow and on deny once the Biscuit has verified; in the `/token/exchange` lines, `actor_node` is the exchanging node, which becomes that Biscuit's `client_peer_id`. |
 | **JWT claims** | `iss` = control plane URL; `sub` = caller principal (`email` or `issuer#subject`); `act` = `{"sub": "<egress_node_peer_id>"}`; `aud` = destination audience from `EgressDestination` (one audience per destination); `mesh_roles` = authority-block roles (mapped to `google.groups` for `principalSet` bindings); `mesh_task` = innermost `TaskAuthorizationRule.name` (audit-only). |
 | **TAR narrows, never selects** | Nothing in a holder-appended `tar_block` can select a broker, role ARN, service account, or audience; every claim that cloud IAM binds on (`sub`, `mesh_roles`, `act.sub`, `aud`) comes from Block 0 or the control plane's `EgressDestination` policy. |
 | **Caching** | The egress node caches minted border JWTs and upstream cloud tokens by Biscuit SHA-256 digest, keeping the control plane off the per-request hot path. |

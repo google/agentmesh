@@ -79,10 +79,13 @@ const (
 	// Example Datalog: check if client_peer_id($id), connection_peer_id($id)
 	FactClientPeerID = "client_peer_id"
 
-	// FactActorNode names the origin agentmesh-node PeerID that exchanged a delegated
-	// subject credential at POST /token/exchange, for audit logs and for ext_proc
-	// attributes["mesh"].actor_node. It grants nothing: no baseline rule and no
-	// policy binding reads it.
+	// FactActorNode names the origin agentmesh-node PeerID of a delegated Biscuit:
+	// the node that exchanged the subject credential at POST /token/exchange. For
+	// a Biscuit the control plane mints at /oauth/*, it is the node whose
+	// credential came with the request, or else the actor_peer_id the client
+	// named (checked only for admission) or the control plane's own peer ID. It
+	// is for audit logs and for ext_proc attributes["mesh"].actor_node. It grants
+	// nothing: no baseline rule and no policy binding reads it.
 	FactActorNode = "actor_node"
 
 	// FactGroup defines the group claim extracted from the OIDC token.

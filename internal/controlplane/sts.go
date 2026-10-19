@@ -1039,11 +1039,16 @@ func (s *Server) HandleSTSToken(w http.ResponseWriter, r *http.Request) {
 
 	claims, status, err := s.authorizeBiscuitForEgress(r.Context(), req.Biscuit, req.Destination)
 	if err != nil {
+		clientPeerID := ""
+		if claims != nil {
+			clientPeerID = claims.ClientPeerID
+		}
 		logger.Infow("Border Crossing",
 			"direction", "outbound",
 			"endpoint", "/sts/token",
 			"decision", "deny",
 			"actor_node", nodeRecord.PeerID,
+			"client_peer_id", clientPeerID,
 			"audience", audience,
 			"destination", req.Destination,
 			"reason", err.Error(),
@@ -1170,6 +1175,10 @@ func mustParseSTSRule(s string) biscuit.Rule {
 	return r
 }
 
+// authorizeBiscuitForEgress verifies the caller's Biscuit and its tar_block chain
+// against egress://<destination>. Once the Biscuit has verified, it returns the
+// claims even when it refuses the request, so the caller's Border Crossing line
+// can name the origin peer the Biscuit is bound to.
 func (s *Server) authorizeBiscuitForEgress(ctx context.Context, rawBiscuit []byte, destination string) (*identity.VerifiedBiscuitClaims, int, error) {
 	trustedKeys, err := s.store.GetAllValidPublicKeys(ctx)
 	if err != nil {
@@ -1180,22 +1189,22 @@ func (s *Server) authorizeBiscuitForEgress(ctx context.Context, rawBiscuit []byt
 		return nil, http.StatusForbidden, fmt.Errorf("invalid caller biscuit: %w", err)
 	}
 	if status, revErr := s.checkBiscuitRevocationAndBans(ctx, claims); revErr != nil {
-		return nil, status, revErr
+		return claims, status, revErr
 	}
 	if claims.ClientPeerID == "" {
-		return nil, http.StatusForbidden, errors.New("caller biscuit lacks client_peer_id")
+		return claims, http.StatusForbidden, errors.New("caller biscuit lacks client_peer_id")
 	}
 	clientPeer, err := peer.Decode(claims.ClientPeerID)
 	if err != nil {
-		return nil, http.StatusForbidden, fmt.Errorf("invalid client_peer_id in biscuit: %w", err)
+		return claims, http.StatusForbidden, fmt.Errorf("invalid client_peer_id in biscuit: %w", err)
 	}
 	if err := identity.RequireAuthorityRequestBinding(claims.Biscuit, clientPeer); err != nil {
-		return nil, http.StatusForbidden, err
+		return claims, http.StatusForbidden, err
 	}
 
 	authorizer, err := claims.Biscuit.Authorizer(claims.VerifyingKey, identity.AuthorizerOptions(s.config.BiscuitTimeout)...)
 	if err != nil {
-		return nil, http.StatusForbidden, err
+		return claims, http.StatusForbidden, err
 	}
 	authorizer.AddFact(biscuit.Fact{
 		Predicate: biscuit.Predicate{
@@ -1232,11 +1241,11 @@ func (s *Server) authorizeBiscuitForEgress(ctx context.Context, rawBiscuit []byt
 
 	roles, bindings, err := s.store.GetMeshPolicy(ctx)
 	if err != nil && err != storage.ErrNotFound {
-		return nil, http.StatusInternalServerError, fmt.Errorf("failed to load mesh policy: %w", err)
+		return claims, http.StatusInternalServerError, fmt.Errorf("failed to load mesh policy: %w", err)
 	}
 	egressDests, err := s.store.GetEgressDestinations(ctx)
 	if err != nil && err != storage.ErrNotFound {
-		return nil, http.StatusInternalServerError, fmt.Errorf("failed to load egress destinations: %w", err)
+		return claims, http.StatusInternalServerError, fmt.Errorf("failed to load egress destinations: %w", err)
 	}
 	policyRules, _ := api.BuildPolicyRules(roles, bindings)
 	policyRules = append(policyRules, api.BuildEgressServingRules(egressDests)...)
@@ -1245,11 +1254,11 @@ func (s *Server) authorizeBiscuitForEgress(ctx context.Context, rawBiscuit []byt
 	}
 
 	if err := authorizer.Authorize(); err != nil {
-		return nil, http.StatusForbidden, fmt.Errorf("standing policy denied egress://%s: %w", destination, err)
+		return claims, http.StatusForbidden, fmt.Errorf("standing policy denied egress://%s: %w", destination, err)
 	}
 
 	if err := api.EvaluateTaskRulesForDestination(claims.TaskRules, "egress", destination, time.Now()); err != nil {
-		return nil, http.StatusForbidden, err
+		return claims, http.StatusForbidden, err
 	}
 
 	// Collect any roles derived via Datalog policy bindings so mesh_roles is complete.
