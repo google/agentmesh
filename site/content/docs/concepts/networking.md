@@ -72,8 +72,7 @@ MCP or A2A service that would fail. The node advertises inference and
 egress services without a probe.
 
 Discovery results are hints. They tell the caller who claims to provide a
-service and, if the provider declared labels, what those labels are. Nothing
-is authorized on that basis. The provider's credential is verified when the
+service. Nothing is authorized on that basis. The provider's credential is verified when the
 connection is made.
 
 Every node also runs the built-in `system://mesh.catalog` service, which

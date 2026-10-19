@@ -289,8 +289,7 @@ The header, the operator floor and the router selector follow the same
 matching rule: a map of `key=value` pairs, one value per key, and the peer
 must attest every pair. Listing more pairs narrows the set of acceptable
 peers, as it does in a Kubernetes label selector or a Prometheus matcher.
-Labels seen in discovery results are only used to rank candidates. The only
-labels that authorize anything are the signed ones in a credential.
+The only labels that authorize anything are the signed ones in a credential.
 
 ## See also
 

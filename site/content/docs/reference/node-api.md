@@ -169,11 +169,11 @@ Services this node publishes.
 | `name` | Optional service name. Omit to list every reachable service of the type. |
 | `limit`, `offset` | Pagination. Defaults are 20 and 0. |
 
-Each result has `peer_id`, `srv_name`, `srv_description` and, when the
-provider declared them, `labels`. Service names are not unique across the
-mesh. The peer ID identifies the provider. For `type: inference` the
-response adds a `local_proxy_url` per provider and a note that inference is
-called over HTTP and not with `call_remote_tool`.
+Each result has `peer_id`, `srv_name`, `srv_description` and
+`local_proxy_url`, the proxy path to that provider's service. Service names
+are not unique across the mesh. The peer ID identifies the provider. For
+`type: inference` the response adds a note that inference is called over
+HTTP and not with `call_remote_tool`.
 
 ### `find_remote_tools`
 
@@ -185,7 +185,7 @@ called over HTTP and not with `call_remote_tool`.
 | `intent` | Accepted and ignored. Reserved for later use. |
 
 Returns one row per tool with `peer_id`, `tool_name` (namespaced as
-`mcp://service/tool`), `description` and `labels`. A peer that could not be
+`mcp://service/tool`) and `description`. A peer that could not be
 queried appears as a row with an `error` field. The call itself does not
 fail.
 
