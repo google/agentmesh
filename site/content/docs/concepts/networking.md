@@ -142,9 +142,9 @@ deliver every event to them, and run the gossip mesh among themselves.
 LiteLLM, or a hosted API behind a local proxy. The node's `/v1` endpoint
 hides which node serves a model. It keeps a short-lived view of the model
 list of every reachable provider. It prefers a local provider when one
-serves the model, and otherwise picks among remote providers, ranked by the
-labels it knows about and by load. Backends are registered by their root URL
-and the node adds the `/v1` prefix. The same backend is therefore reachable
+serves the model. Otherwise it rotates among the remote providers that serve
+the model, and skips a provider that failed recently. Backends are
+registered by their root URL and the node adds the `/v1` prefix. The same backend is therefore reachable
 through the `/v1` endpoint and, with `/v1/...` appended, through the proxy
 path.
 

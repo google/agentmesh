@@ -301,9 +301,11 @@ a2a send -a $CARD "hello"
 `/v1/models` collects the model list of every reachable `inference` provider
 (cached for 30 seconds) and returns the union. `owned_by` on each entry is
 the peer that serves the model. A completion request names a model, and the
-node picks a provider that serves it. It prefers a local provider, and ranks
-remote providers by the labels the caller required, the operator's floor,
-and load. A model that no provider lists answers `404`.
+node picks a provider that serves it. It prefers a local provider.
+Otherwise it rotates among the remote providers that serve the model, and
+skips one that failed recently. A remote provider must attest the labels the
+caller required and the operator's floor before the node sends it the
+request. A model that no provider lists answers `404`.
 
 ```bash
 curl -s --unix-socket $SOCK http://localhost/v1/models
