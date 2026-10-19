@@ -27,7 +27,8 @@ providers and peers. The router keeps the member's records, places each
 on the routers closest to its key (three, the mesh's replication,
 `agentmesh-control-plane --dht-replication`), and answers each lookup
 from its own records and those routers', asked at once. The member keeps
-no DHT and connects to no router it does not hold. It re-announces every
+no DHT and asks only the routers it holds. It connects to another router
+only to reach a peer behind that router. The member re-announces every
 5 minutes (the mesh's `--dht-reprovide-interval`) and withdraws a record
 when it stops the service or leaves. A member connects to another member only to
 call it, through that member's router, where it runs the credential

@@ -58,7 +58,9 @@ on the routers closest to its key, which it finds in the Kademlia table
 the routers keep among themselves. A node that looks for a service, or
 for a peer, asks a router it holds, and the router answers from its own
 records and from those closest routers. A node keeps no DHT of its own
-and connects to no router it does not hold. It re-announces every
+and asks only the routers it holds. A node connects to another router only
+to reach a peer behind that router, as [Connecting](#connecting) describes.
+It re-announces every
 reprovide interval of the mesh (`/info`), withdraws a record when it
 stops the service or leaves, and a record a provider stopped announcing
 without withdrawing it leaves the directory after three intervals.

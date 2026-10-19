@@ -90,7 +90,8 @@ replica count.
    withdraws them from the same routers. A member asks for providers of
    a key or for a peer; the router answers from its own records and from
    the routers closest to the key, asked at once. A member keeps no DHT
-   and connects to no router it does not hold.
+   and asks only the routers it holds. It connects to another router only
+   to reach a peer behind that router.
 6. Refreshes its own credential before it expires, like a node, at the
    pass that finds less than a fifth of its lifetime left.
 7. Every 5 seconds, compares the members it holds, the peers that passed
