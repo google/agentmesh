@@ -1997,8 +1997,8 @@ type RouterInfo struct {
 	// The router's labels, the same labels as a node's: declared at
 	// enrollment (agentmesh-router --label), signed by the control plane only
 	// if the router's role allows them (PolicyRole.allowed_labels), and
-	// carried as label() facts in the router's credential, where a member
-	// verifies them at the handshake. A member selects routers by them
+	// carried as label() facts in the router's credential. A member selects
+	// routers by the labels listed here, before it connects
 	// (--router-selector, every pair must match) or prefers routers by them
 	// (--router-prefer). They place a router; they grant it nothing.
 	Labels map[string]string `protobuf:"bytes,3,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`

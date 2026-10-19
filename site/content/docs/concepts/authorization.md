@@ -278,11 +278,12 @@ Labels are used in four places:
 - **A node choosing routers** sets `--router-selector key=value` to attach
   only to routers that attest every pair, and `--router-prefer key=value`
   to attach to routers that attest more of those pairs before routers that
-  attest fewer. The control plane lists each router's labels on `/info`, so
-  the node chooses before it connects, and the node verifies them in the
-  router's credential at the handshake, so a router that does not attest
-  the selector is dropped. This places a node on routers; it grants the
-  routers nothing, and a call still reaches any peer on any router.
+  attest fewer. The control plane lists on `/info` the labels it attested
+  in each router's credential, and the node chooses from that list before
+  it connects. The handshake checks that the router's credential is valid
+  and holds the router role, but it does not check the labels again. This
+  places a node on routers; it grants the routers nothing, and a call still
+  reaches any peer on any router.
 
 The header, the operator floor and the router selector follow the same
 matching rule: a map of `key=value` pairs, one value per key, and the peer
