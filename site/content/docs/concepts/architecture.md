@@ -128,7 +128,8 @@ any rule changing.
 | Is this provider acceptable to me? | the calling node, before sending data | the provider's credential and attested labels |
 
 Every one of these decisions is deny by default. A new control plane with
-no policy admits nodes but grants them nothing, and a node with no services
+no policy admits only nodes that present a bootstrap token, and grants them
+nothing. A node with no services
 configured publishes nothing. [Authorization](../authorization/) explains
 the policy model.
 
