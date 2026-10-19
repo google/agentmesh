@@ -64,17 +64,20 @@ spent as soon as one node is approved with it. This is how machines without
 an identity of their own enroll, and how `agentmesh-one` enrolls devices by QR
 code.
 
-For all three paths, the control plane checks the same things before it
+For all three paths, the control plane checks these things before it
 mints a credential:
 
 1. The peer ID matches the submitted public key, and the challenge signature
    verifies under that key. This proves that the requester holds the key it
    is registering.
 2. Neither the peer ID nor the identity behind it is banned.
-3. The identity resolves, through the bindings in the mesh policy, to the
-   role being requested. `agentmesh-node` requests `mesh:role:node` and `agentmesh-router`
-   requests `mesh:role:router`. If the policy binds nobody to `mesh:role:node`,
-   no node can enroll.
+3. The requester may hold the role it requests. `agentmesh-node` requests
+   `mesh:role:node` and `agentmesh-router` requests `mesh:role:router`. On
+   the two OIDC paths, the identity must resolve to that role through the
+   bindings in the mesh policy. If the policy binds nobody to
+   `mesh:role:node`, no node can enroll with an OIDC identity. On the
+   bootstrap token path, the requested role must be the token's role. The
+   control plane does not consult the bindings for the role.
 4. Every label the node declared is permitted by the `allowed_labels` of a
    role it holds. A role without `allowed_labels` permits no labels.
 

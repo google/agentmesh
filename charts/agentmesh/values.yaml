@@ -204,8 +204,8 @@ bootstrap:
   bindings: []
   # Identities that may enroll as mesh:role:node ("user:<sub>", "group:<name>",
   # "email:<addr>", or "mesh:system:authenticated" for an intentionally open
-  # mesh). Empty means no node can enroll until an operator grants it (fail
-  # closed). Ignored when bindings is set: then you own the whole list.
+  # mesh). Empty means no node can enroll with an OIDC identity until an
+  # operator grants it (fail closed). Ignored when bindings is set: then you own the whole list.
   nodeMembers: []
   # Services mesh:role:node may call, as "type://name" entries (e.g.
   # "mcp://calculator"). Any authenticated identity can claim mesh:role:node,

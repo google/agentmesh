@@ -55,7 +55,7 @@ does not need the flag.
 The four `bootstrap.*` values write the initial policy:
 
 - `nodeMembers`: the identities that may enroll as `mesh:role:node`. If
-  empty, no node can join until you post a policy.
+  empty, no node can enroll with an OIDC identity until you post a policy.
 - `nodeServices`: the services that nodes may call. If empty, nodes can call
   nothing.
 - `nodePublish`: the services that nodes may serve: announce to the

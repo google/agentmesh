@@ -99,8 +99,10 @@ Roles are never members and never claims. `role:x` is not a valid member,
 and an identity provider cannot give out a mesh role by putting it in a
 `roles` claim. Such a claim becomes an `idp_role` fact, and a binding can
 choose to honour it. The two built-in roles, `mesh:role:node` and
-`mesh:role:router`, follow the same rule: a binary can only enroll if a
-binding gives its identity the role it needs.
+`mesh:role:router`, follow the same rule. A binary that enrolls with an
+OIDC identity gets the role only if a binding gives the role to that
+identity. A binary that enrolls with a bootstrap token gets the token's
+role without a binding.
 
 The control plane validates a policy when it is posted. It rejects a policy
 that references an undefined role, uses an unknown member prefix, or would
