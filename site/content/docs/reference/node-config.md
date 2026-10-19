@@ -95,9 +95,10 @@ Rules by type:
   `/.well-known/agent-card.json` on the backend and served again with mesh
   URLs. The card must use the A2A 1.0 format.
 
-Before a service is advertised, the node probes the backend
+Before an MCP or A2A service is advertised, the node probes the backend
 (`--backend-probe-timeout`, 2 seconds). A backend that does not answer is
-not advertised, and the log records this.
+not advertised, and the log records this. An inference service is
+advertised without a probe.
 
 Services exist only through this file and through the control plane's
 egress assignments. There is no runtime API that adds a service. An agent

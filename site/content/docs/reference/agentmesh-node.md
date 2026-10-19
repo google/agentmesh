@@ -118,7 +118,7 @@ explains how to enroll.
 | `--discovery-interval` | `30s` | Delay before the first announcement of this node's services to the directory, capped at 5 s; services are re-announced every reprovide interval of the mesh after that (`agentmesh-control-plane --dht-reprovide-interval`, 5 minutes by default). |
 | `--dht-lookup-limit` | `20` | Providers a directory lookup asks for. |
 | `--discovery-concurrency` | `10` | Concurrent catalog fetches during discovery. |
-| `--backend-probe-timeout` | `2s` | How long a service backend may take to answer before the node declines to advertise it. Raise it for subprocesses that start slowly. |
+| `--backend-probe-timeout` | `2s` | How long an MCP or A2A backend may take to answer before the node declines to advertise it. Raise it for subprocesses that start slowly. |
 | `--secrets-dir` | `/etc/agentmesh/secrets` | Directory holding the credentials that the control plane's [egress destinations](../policy/#egress-destinations) name, one file per credential name. The platform puts the files there; the node reads a file on every request to the destination. |
 | `--control-plane-sync-interval` | `15m` | How often signing keys, the ban set, router addresses and the mesh policy are pulled from the control plane. Keep it well below the control plane's `--key-grace-period`; raise it on large meshes. |
 | `--key-grace-period` | `24h` | How long a rotated-out control plane key is still accepted for verifying peers. |

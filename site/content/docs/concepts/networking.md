@@ -65,10 +65,11 @@ reprovide interval of the mesh (`/info`), withdraws a record when it
 stops the service or leaves, and a record a provider stopped announcing
 without withdrawing it leaves the directory after three intervals.
 
-Before a node advertises a backend, it probes the backend
+Before a node advertises an MCP or A2A service, it probes the backend
 (`--backend-probe-timeout`, 2 seconds by default). A backend that does not
-answer is not advertised, so `discover_remote_services` does not list
-services that would fail on the first call.
+answer is not advertised, so `discover_remote_services` does not list an
+MCP or A2A service that would fail. The node advertises inference and
+egress services without a probe.
 
 Discovery results are hints. They tell the caller who claims to provide a
 service and, if the provider declared labels, what those labels are. Nothing
