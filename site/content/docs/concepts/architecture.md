@@ -123,6 +123,7 @@ any rule changing.
 |---|---|---|
 | May this identity join, with this role and these labels? | control plane, at enrollment | OIDC token or bootstrap token, mesh policy bindings, `allowed_labels` |
 | Is this peer's credential genuine and current? | every node and router, on every connection | control plane public keys, expiration, ban list |
+| May this member serve this service? | the router, when the member announces it, and the calling node, before sending data | `allowed_publish` grants in the member's credential, the synced mesh policy |
 | May this caller use this service? | the node hosting the service | grants in the caller's credential, the synced mesh policy, the host's own local rules |
 | Is this provider acceptable to me? | the calling node, before sending data | the provider's credential and attested labels |
 
