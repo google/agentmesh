@@ -92,8 +92,8 @@ component refers to the node by that ID.
 Towards the mesh, a node:
 
 - publishes the services declared in its configuration file (MCP servers,
-  OpenAI-compatible inference backends, A2A agents) to the directory and, on
-  request, to the control plane's catalog
+  OpenAI-compatible inference backends, A2A agents) to the directory, and
+  reports them to the control plane every minute for the console to show
 - accepts connections from other nodes, verifies their credential, evaluates
   policy for the requested service, and proxies the request to the local
   backend if the check passes
