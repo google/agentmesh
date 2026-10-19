@@ -110,3 +110,21 @@ tests:
       - matchRegex:
           path: spec.template.spec.containers[0].args[0]
           pattern: '"name": "mesh:role:node".*"allowed_labels": \["region=\*","team=platform"\]'
+
+  - it: seeds the policy only when the control plane has none
+    documentSelector:
+      path: kind
+      value: Job
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].args[0]
+          pattern: '(?s)"\$\{CP_URL\}/admin/policy"\)\s+if echo "\$\{POLICY\}" \| grep -q .*\belse\b.*"\$\{CP_URL\}/policies" >/dev/null\s+fi'
+
+  - it: seeds no role for the removed agentmesh-box
+    documentSelector:
+      path: kind
+      value: Job
+    asserts:
+      - notMatchRegex:
+          path: spec.template.spec.containers[0].args[0]
+          pattern: 'agentmesh-box'

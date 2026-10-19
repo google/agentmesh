@@ -200,6 +200,9 @@ console:
     port: 8081
     nodePort: null
 
+# The bootstrap Job seeds this policy only when the control plane has none.
+# After that, edit the policy in the console or with POST /policies: changing
+# these values on a later helm upgrade does not change it.
 bootstrap:
   bindings: []
   # Identities that may enroll as mesh:role:node ("user:<sub>", "group:<name>",

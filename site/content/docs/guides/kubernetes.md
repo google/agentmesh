@@ -67,8 +67,9 @@ The four `bootstrap.*` values write the initial policy:
 If you want to bind more roles than the node role, `bootstrap.bindings`
 replaces the whole bindings list. Everything the bootstrap job seeds can be
 changed later through the console or `POST /policies`. The job runs on
-install and on upgrade, but once the database has a policy, the database is
-the source of truth.
+install and on upgrade, but it seeds the policy only when the database has
+none. After that, the database is the source of truth, and changing the
+`bootstrap.*` values on a `helm upgrade` does not change the policy.
 
 The chart generates an admin token and a database password and stores them
 in the `agentmesh-secrets` Secret. The release notes print the command to

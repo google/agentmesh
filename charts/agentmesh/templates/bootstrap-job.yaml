@@ -100,31 +100,34 @@ spec:
             sleep 2
           done
 
-          echo "Seeding default policies..."
-          {{- $bindings := .Values.bootstrap.bindings -}}
-          {{- if not $bindings -}}
-            {{- $defaultRouterSA := printf "user:system:serviceaccount:%s:%s-router-sa" .Release.Namespace (include "agentmesh.fullname" .) -}}
-            {{- $bindings = list
-              (dict "role" "mesh:role:router" "members" (list "group:routers" $defaultRouterSA))
-              (dict "role" "mesh:role:agentmesh-box" "members" (list (printf "user:system:serviceaccount:%s:agentmesh-box-sa" .Release.Namespace)))
-            -}}
-            {{- if .Values.bootstrap.nodeMembers -}}
-              {{- $bindings = append $bindings (dict "role" "mesh:role:node" "members" .Values.bootstrap.nodeMembers) -}}
-            {{- end -}}
-          {{- end }}
-          curl -sf -X POST \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-            -d '{
-              "roles": [
-                {"name": "mesh-admin", "allowed_services": ["*"], "allowed_targets": ["*"]},
-                {"name": "mesh:role:agentmesh-box", "allowed_services": ["*"], "allowed_publish": ["*"], "allowed_targets": ["*"]},
-                {"name": "mesh:role:router", "allowed_services": ["*"], "allowed_targets": ["*"]},
-                {"name": "mesh:role:node", "allowed_services": {{ toJson .Values.bootstrap.nodeServices }}, "allowed_publish": {{ toJson .Values.bootstrap.nodePublish }}, "allowed_targets": ["*"], "allowed_labels": {{ toJson .Values.bootstrap.nodeLabels }}}
-              ],
-              "bindings": {{ toJson $bindings }}
-            }' \
-            "${CP_URL}/policies" >/dev/null
+          # Seed only a mesh with no policy: after that the database is the source
+          # of truth, and an upgrade must not overwrite edits made in the console.
+          POLICY=$(curl -sf -H "Authorization: Bearer ${ADMIN_TOKEN}" "${CP_URL}/admin/policy")
+          if echo "${POLICY}" | grep -q '"roles"[[:space:]]*:'; then
+            echo "Mesh policy already present; not seeding it (edit it in the console or with POST /policies)."
+          else
+            echo "Seeding default policies..."
+            {{- $bindings := .Values.bootstrap.bindings -}}
+            {{- if not $bindings -}}
+              {{- $defaultRouterSA := printf "user:system:serviceaccount:%s:%s-router-sa" .Release.Namespace (include "agentmesh.fullname" .) -}}
+              {{- $bindings = list (dict "role" "mesh:role:router" "members" (list "group:routers" $defaultRouterSA)) -}}
+              {{- if .Values.bootstrap.nodeMembers -}}
+                {{- $bindings = append $bindings (dict "role" "mesh:role:node" "members" .Values.bootstrap.nodeMembers) -}}
+              {{- end -}}
+            {{- end }}
+            curl -sf -X POST \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+              -d '{
+                "roles": [
+                  {"name": "mesh-admin", "allowed_services": ["*"], "allowed_targets": ["*"]},
+                  {"name": "mesh:role:router", "allowed_services": ["*"], "allowed_targets": ["*"]},
+                  {"name": "mesh:role:node", "allowed_services": {{ toJson .Values.bootstrap.nodeServices }}, "allowed_publish": {{ toJson .Values.bootstrap.nodePublish }}, "allowed_targets": ["*"], "allowed_labels": {{ toJson .Values.bootstrap.nodeLabels }}}
+                ],
+                "bindings": {{ toJson $bindings }}
+              }' \
+              "${CP_URL}/policies" >/dev/null
+          fi
 
 
           echo "Generating bootstrap token for agentmesh-router..."
