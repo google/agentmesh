@@ -16,8 +16,13 @@ the answer, and the destination node combines them:
    credential, which narrow authority for a specific task or sub-agent hop.
 4. **The hosting node's local `attenuation` configuration**.
 
-Each layer can only narrow what the others allow. If standing policy or any
-appended task block denies the request, the answer is no.
+The credential and the standing policy say what the caller is granted. A
+task block can only narrow those grants. The node's local
+[`attenuation`](../../reference/node-config/#attenuation) can narrow them or
+widen them, because its policies run before the baseline policies and the
+first match wins. A local `deny` overrides a mesh grant. A local `allow`
+admits a caller that the mesh did not grant. No layer admits a caller that
+fails a check, such as the target check, or an appended task block.
 
 ## Services and task operations
 
