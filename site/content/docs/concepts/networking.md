@@ -161,12 +161,13 @@ An operator can set a floor that every provider must meet with
 
 ## Mesh events
 
-The control plane publishes bans and signing-key rotations as signed events.
-Routers inject them into a GossipSub topic that every node subscribes to. A
-node that receives a ban event drops the banned peer immediately. A node
-that receives a rotation event fetches the new key set. Each event is
-verified against the control plane's key before a node acts on it or
-forwards it.
+The control plane publishes bans, signing-key rotations and policy updates
+as signed events. It joins the routers' gossip as a publish-only peer, and
+the routers forward each event to every member. A node that receives a ban
+event drops the banned peer immediately. A node that receives a rotation
+event trusts the new key and brings its next pull forward. A policy update
+event brings the node's next policy pull forward. Each event is verified against the control plane's key
+before a node acts on it or forwards it.
 
 ## Resource limits
 
