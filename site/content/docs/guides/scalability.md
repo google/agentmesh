@@ -223,9 +223,10 @@ service type, lands on the same r routers for all of them; those r
 routers hold a record per publisher and answer every lookup of it, and
 a lookup of it returns at most 100 providers.
 
-What bounds the total is the router's libp2p connection cap, twice the
-high watermark: a router past it refuses the next connection, session or
-not. What is left in passing, a call to a peer on this router, two
+What bounds the total is the router's libp2p connection cap. The cap is
+twice the larger of `--high-watermark` and `--conns-per-source-ip`, and
+at least 8000. A router past the cap refuses the next connection, session
+or not. What is left in passing, a call to a peer on this router, two
 connections each while members enroll, fits in the gap between the
 watermark and the cap.
 
@@ -236,7 +237,7 @@ at its default of 2, and size for the day one router is down:
 
 - `--high-watermark` at least 1.2 × F × K / (N − 1). Each router then
   holds F × K / N sessions in normal running, with room for the members
-  of a stopped router, and the connection cap at twice the high mark
+  of a stopped router, and the connection cap above the high mark
   holds what members open in passing. 5000 members on four routers need
   4000; 10,000 members on six routers need 4800, on twelve 2200. The
   testnets deploy with 6000 (`ROUTER_HIGH_WATERMARK` in the deploy
@@ -283,11 +284,11 @@ and no limit, as `charts/agentmesh` and the testnet manifests do; the
 testnet runs its routers on 2 vCPU without a limit. The router sizes its
 libp2p stream limits from the watermarks, so a small VM admits as many
 members as its watermarks say; what a small VM cannot do is handshake them
-quickly. Its libp2p connection cap is twice the high watermark: between
-the two, the connection manager trims and the router sheds, and the cap
-refuses only what neither has handled yet. A router that reads
+quickly. Its libp2p connection cap is at least twice the high watermark.
+Between the two, the connection manager trims and the router sheds, and
+the cap refuses only what neither has handled yet. A router that reads
 `agentmesh_router_inbound_connections_refused_total{reason="scope_limit"}`
-rising has more connections than two watermarks, which a rollout of a
+rising has more connections than the cap, which a rollout of a
 mesh at capacity produces when the stopped router's members land on the
 others; the fix is a router or a higher watermark.
 
