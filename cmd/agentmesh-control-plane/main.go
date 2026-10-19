@@ -203,7 +203,7 @@ func main() {
 	issuerFlags.Register(rootCmd.Flags(), "")
 	rootCmd.Flags().StringVar(&oidcClientID, "oidc-client-id", "", "OAuth client ID advertised to joining nodes via /info (defaults to the first allowed audience)")
 	rootCmd.Flags().StringVar(&allowedAudiencesFlag, "allowed-audiences", api.DefaultAudience, "Comma-separated list of allowed OIDC audiences")
-	rootCmd.Flags().DurationVar(&keyRotationInterval, "key-rotation-interval", 24*time.Hour, "Key rotation interval (e.g. 24h). 0 disables rotation.")
+	rootCmd.Flags().DurationVar(&keyRotationInterval, "key-rotation-interval", 24*time.Hour, "Key rotation interval (e.g. 24h). 0 means the default, 24h. --signing-key-path turns rotation off.")
 	rootCmd.Flags().DurationVar(&keyGracePeriod, "key-grace-period", 1*time.Hour, "Key grace period for rotated keys.")
 	rootCmd.Flags().StringVar(&signingKeyPath, "signing-key-path", "", "PEM file with the control plane's private signing keys (PKCS#8 or SEC 1): Ed25519 for Biscuits, P-256 for the ES256 JWTs; the first key of each kind signs, later ones only verify. Turns automatic key rotation off: rotate by publishing a new first key and keeping the previous one for the grace period")
 	rootCmd.Flags().DurationVar(&leaseDuration, "lease-duration", 15*time.Minute, "Router lease registration TTL.")
