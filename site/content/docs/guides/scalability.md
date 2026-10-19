@@ -433,8 +433,9 @@ room for their backends.
 
 ## What to watch
 
-The router and the control plane serve Prometheus metrics on
-`--metrics-addr`. These are the ones that say a bound is near:
+The router and the node serve Prometheus metrics on `--metrics-addr`. The
+control plane serves Prometheus metrics on its HTTP listen address,
+`--bind-address`. The metrics below are the ones that say a bound is near:
 
 | Metric | Reads as |
 |---|---|
