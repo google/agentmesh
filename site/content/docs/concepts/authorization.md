@@ -117,14 +117,14 @@ control plane resolves the identity's roles from the bindings and writes the
 result into the credential's authority block as Datalog facts: one `role(...)`
 fact per role, plus the grants compiled from the lists of every role. For
 example, `allowed_services: ["mcp://calculator"]` becomes
-`granted_service_exact("mcp", "calculator")`, `mcp://*` becomes
+`granted_service_set("mcp", ["calculator"])`, `mcp://*` becomes
 `granted_service_all("mcp")`, and `mcp://*.internal` becomes
 `granted_service_suffix("mcp", ".internal")`. Wildcards keep their dot, so
 `*.acme.example` matches `svc.acme.example` but not `evil-acme.example`.
 
 The control plane also renders the policy as Datalog rules such as
 `role("developer") <- group("eng")` and
-`granted_service_exact("mcp", "calculator") <- role("developer")`. Nodes
+`granted_service_set("mcp", ["calculator"]) <- role("developer")`. Nodes
 fetch this text every `--control-plane-sync-interval` (15 minutes by default,
 sooner when a policy update event reaches them) and add it to their
 authorizer as it arrives. When a node verifies a credential, these rules run

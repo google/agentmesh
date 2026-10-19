@@ -84,7 +84,7 @@ rejected, because the path belongs in the role's `http` entry or a
 
 | Pattern | Compiles to | Matches |
 |---|---|---|
-| `mcp://calculator` | `granted_service_exact("mcp", "calculator")`. Several exact entries of one type are merged into one `granted_service_set`. | that service |
+| `mcp://calculator` | `granted_service_set("mcp", ["calculator"])`. All exact entries of one type share one `granted_service_set` fact. | that service |
 | `mcp://*.internal` | `granted_service_suffix("mcp", ".internal")` | `a.internal` and `b.c.internal`, but not `xinternal` |
 | `mcp://build.*` | `granted_service_prefix("mcp", "build.")` | `build.runner`, but not `builder` |
 | `mcp://*` | `granted_service_all("mcp")` | every MCP service |
@@ -100,7 +100,7 @@ runs. A role that should be able to list the tools of a node needs it.
 ### Publishing
 
 `allowed_publish` takes the same patterns and compiles them to
-`granted_publish_*` facts: `granted_publish_exact("mcp", "calculator")`,
+`granted_publish_*` facts: `granted_publish_set("mcp", ["calculator"])`,
 `granted_publish_all("mcp")`, `granted_publish_all_types(true)` and so on.
 They say what a member may serve, where `allowed_services` says what it may
 call, and the two are independent: a role that may call `mcp://calc` may
@@ -118,7 +118,7 @@ SDKs make the check; a member's own record under its peer ID, and a node's
 catalog (`system://mesh.catalog`), name no service and need no grant.
 
 An egress destination needs no entry: `served_by` selects the nodes that
-serve it, and the control plane mints `granted_publish_exact("egress", "<name>")`
+serve it, and the control plane mints `granted_publish_set("egress", ["<name>"])`
 into their credentials with the destination.
 
 A change to `allowed_publish` takes effect without a new credential. The
