@@ -69,6 +69,7 @@ contentDir = "content"
   github_repo = "https://github.com/google/agentmesh"
   github_subdir = "site"
   github_branch = "main"
+  offlineSearch = true
 
   [params.ui]
     showLightDarkModeMenu = true
