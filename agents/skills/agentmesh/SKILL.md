@@ -117,7 +117,7 @@ A running node serves them under `/debug`, and the `agentmesh-node` CLI wraps ea
 endpoint over the node's Unix socket — no token involved:
 
 ```bash
-agentmesh-node debug mesh-info                 # connected peers, DHT size, router peer ID
+agentmesh-node debug mesh-info                 # connected peers, attached routers, router peer ID
 agentmesh-node debug connectivity [peer-id]    # ping the Agent Mesh router, or a specific peer
 agentmesh-node debug network-info              # listen and announced addresses
 agentmesh-node debug token-info                # local auth token expiration and status
@@ -141,7 +141,7 @@ expired token before restarting or re-enrolling anything.
 
 Start by understanding the local node and mesh state:
 
-- Use `get_mesh_info` with `{}` to inspect `connected_peers`, `dht_size`, and
+- Use `get_mesh_info` with `{}` to inspect `connected_peers`, `attached_routers`, and
   `router_peer_id`.
 - Use `list_local_services` with `{}` to see services registered on the local
   node.

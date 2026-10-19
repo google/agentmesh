@@ -181,7 +181,7 @@ called over HTTP and not with `call_remote_tool`.
 |---|---|
 | `peer_id` | Restrict the search to one peer. |
 | `service_name` | Restrict the search to one service, bare (`code-reviewer`) or namespaced (`mcp://code-reviewer`). |
-| `tool_name` | Exact tool name to locate across the mesh (`review_pr`). Answered from gossip announcements when they are fresh. |
+| `tool_name` | Exact tool name to locate across the mesh (`review_pr`). |
 | `intent` | Accepted and ignored. Reserved for later use. |
 
 Returns one row per tool with `peer_id`, `tool_name` (namespaced as
