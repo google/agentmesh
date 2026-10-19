@@ -26,9 +26,11 @@ is a good setup when everything that uses the node runs as the same user.
 The token travels in `X-Mesh-Authentication` and not in `Authorization`, so
 that `Authorization` always means the same thing: the credential for the
 service that is being called through the node. On the proxy path that header
-is forwarded unchanged. The endpoints that never forward anything (`/mcp`,
-`/v1/*`, `/mesh/service/*`) also accept the token in `Authorization`, for
-clients that cannot set a custom header.
+is forwarded unchanged. Every other route that needs the token also
+accepts it in `Authorization`, for clients that cannot set a custom header.
+The node removes the header that carried the token. On `/v1/*`, an
+`Authorization` header that is still present is the backend's credential.
+The node forwards it as on the proxy path.
 
 The API has four parts:
 

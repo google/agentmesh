@@ -315,8 +315,9 @@ curl -s --unix-socket $SOCK http://localhost/v1/chat/completions \
 
 Any OpenAI SDK works with `base_url` set to `http://127.0.0.1:8080/v1` and
 the API token, Task Biscuit, or platform JWT as `api_key`. The node accepts
-the token in `Authorization` here because nothing on this path forwards that
-header. Streaming responses are passed through. One provider can also be
+the token in `Authorization` here and removes it. An `Authorization` header
+that is not the token is the backend's credential, and the node forwards
+it. Streaming responses are passed through. One provider can also be
 addressed directly, at `/mesh/<peer-id>/inference/<name>/v1/chat/completions`.
 
 ## Egress
