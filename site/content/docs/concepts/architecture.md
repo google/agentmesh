@@ -17,7 +17,7 @@ flowchart LR
     CP --- DB
   end
   IDP["identity provider<br/>(OIDC)"]
-  R["agentmesh-router<br/>bootstrap · relay · DHT"]
+  R["agentmesh-router<br/>bootstrap · relay · directory"]
   A["agentmesh-node A"]
   B["agentmesh-node B"]
   AG["agent"]
@@ -64,8 +64,11 @@ covers all of that.
 
 `agentmesh-router` is a libp2p peer with a stable address. It serves the
 mesh's directory, where nodes advertise their services and look up who
-provides what; the routers keep it as a Kademlia DHT (a distributed hash
-table) among themselves. It also relays traffic for nodes that cannot
+provides what. A router keeps the records that its members announce and
+places a copy of each on the routers closest to the record's key. A Kademlia
+routing table among the routers picks those closest routers.
+[Networking](../networking/#discovery) describes the lookup. A router also
+relays traffic for nodes that cannot
 accept inbound connections. A router has no policy of its own. It verifies every peer's
 credential and refuses peers it cannot verify and peers that have been
 banned.
