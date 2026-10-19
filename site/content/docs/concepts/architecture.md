@@ -69,9 +69,10 @@ places a copy of each on the routers closest to the record's key. A Kademlia
 routing table among the routers picks those closest routers.
 [Networking](../networking/#discovery) describes the lookup. A router also
 relays traffic for nodes that cannot
-accept inbound connections. A router has no policy of its own. It verifies every peer's
-credential and refuses peers it cannot verify and peers that have been
-banned.
+accept inbound connections. A router verifies every peer's credential and
+refuses peers it cannot verify and peers that have been banned. It also
+syncs the mesh policy and refuses a directory record for a service that the
+member's credential does not grant serving (`allowed_publish`).
 
 Routers keep no state apart from their key file, which fixes their peer ID.
 You can run any number of them; they connect to one another so the DHT
