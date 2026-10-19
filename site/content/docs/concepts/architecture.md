@@ -159,7 +159,7 @@ The same three programs ship in several forms:
 - **`agentmesh-one`**, a single binary that runs the control plane, a router and
   the console in one process on one port, for laptops, Cloud Run and small
   meshes.
-- **Helm charts**: `agentmesh-p2p` deploys the control plane, router, console and
+- **Helm charts**: `agentmesh` deploys the control plane, router, console and
   PostgreSQL. `agentmesh-node` deploys a node beside a service container.
 
 The web console (`agentmesh-console`) is a separate program that talks to the

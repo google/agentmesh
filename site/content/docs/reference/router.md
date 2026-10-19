@@ -25,7 +25,7 @@ A router enrolls like a node, requesting `mesh:role:router`, with one of:
 | `--label` | A `key=value` label declared at enrollment, repeatable (`--label region=eu --label zone=eu-west1-b`). The control plane signs it only if `mesh:role:router` allows it in `allowed_labels`, lists it on `/info`, and nodes choose routers by it with `--router-selector` and `--router-prefer`. The same labels, with the same meaning, as a node's; see [labels](../../concepts/authorization/#labels). |
 
 The mesh policy must bind the router's identity to `mesh:role:router`. The
-`agentmesh-p2p` Helm chart handles this: its bootstrap job binds the router's
+`agentmesh` Helm chart handles this: its bootstrap job binds the router's
 service account and mints a bootstrap token with `max_usages` equal to the
 replica count.
 

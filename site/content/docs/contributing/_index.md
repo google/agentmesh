@@ -21,7 +21,7 @@ in the repository has the details.
 | `cmd/` | One directory per binary: `agentmesh-node`, `agentmesh-control-plane`, `agentmesh-router`, `agentmesh-one`, `agentmesh-console`, `mcp-client`, `agentmesh-bench`, and smaller tools. |
 | `api/` | The wire contract: `agentmesh.proto` and its generated code, plus the Go types for the JSON admin API and the validation and Datalog helpers both sides share. |
 | `internal/` | Implementation, one package per component (`node`, `controlplane`, `router`, `standalone`, `console`, `identity`, `storage`, ...). |
-| `charts/` | The `agentmesh-p2p` and `agentmesh-node` Helm charts. |
+| `charts/` | The `agentmesh` and `agentmesh-node` Helm charts. |
 | `tests/integration/` | Go tests that start several components in one process. |
 | `tests/e2e/` | Bats tests that drive the built binaries and containers. |
 | `development/` | The kind environment and example services. |

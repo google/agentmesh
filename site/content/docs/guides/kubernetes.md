@@ -7,7 +7,7 @@ aliases:
 ---
 
 This guide deploys a control plane, a router and a console into a cluster
-with the `agentmesh-p2p` Helm chart, then puts services on the mesh with the
+with the `agentmesh` Helm chart, then puts services on the mesh with the
 `agentmesh-node` chart. The last section lists the settings to change when you
 move from a test cluster to one that you keep. The public testnets run this
 setup on GKE. Their manifests are in `.github/k8s/` in the repository.
