@@ -90,10 +90,11 @@ from a file (`--policy-file`).
 
 A member is one of: `user:`, `email:`, `group:` or `idp_role:` followed by a
 value from the identity's OIDC claims; `node:` followed by a peer ID; or the
-special value `mesh:system:authenticated`, which matches every identity that
-the identity provider authenticates. Be careful with the last one. On a
-public identity provider it means everyone, so bind it only to roles with
-few grants.
+special value `mesh:system:authenticated`, which matches every holder of a
+valid credential. That includes members that enrolled with a bootstrap token
+and delegated sessions, not only the identities that the identity provider
+authenticates. Be careful with this member. On a public identity provider
+it means everyone, so bind it only to roles with few grants.
 
 Roles are never members and never claims. `role:x` is not a valid member,
 and an identity provider cannot give out a mesh role by putting it in a

@@ -223,7 +223,7 @@ A member is one of:
 | `group:<name>` | an entry of the `groups` claim |
 | `idp_role:<name>` | an entry of the issuer's `roles` claim |
 | `node:<peer-id>` | one node, by key (exact peer ID only; wildcards are not permitted on `node:`) |
-| `mesh:system:authenticated` | every identity that the identity provider authenticates |
+| `mesh:system:authenticated` | every holder of a valid credential, including members enrolled with a bootstrap token and delegated sessions |
 
 Each claim-backed member (`user:`, `email:`, `group:`, `idp_role:`) may carry
 a single trailing `*` (prefix match, compiled to `$v.starts_with("<prefix>")`)
@@ -241,9 +241,9 @@ and UTF-8 (for example `group:Engineering Team`), and may not contain `"`,
 `\`, or control characters.
 
 `role:` is not a member, because a role cannot grant a role. A bootstrap
-token enrollment carries no OIDC claims. Such a node receives exactly the
-token's role and nothing that a binding on claims would add, so the grants
-must be on the role itself.
+token enrollment carries no OIDC claims. Such a node receives the token's
+role and the roles bound to `mesh:system:authenticated` or to its
+`node:<peer-id>`. A binding on claims adds nothing to such a node.
 
 ## Egress destinations
 
