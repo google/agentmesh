@@ -125,8 +125,10 @@ Node and Python SDKs use, or Noise, which a browser can speak. Routers and
 nodes offer TLS first and accept Noise; two peers that both have TLS land on
 it. A relay forwards ciphertext and learns
 only that the two peers are talking. The control plane sees enrollments,
-refreshes, router leases, policy fetches and catalog reports. It never sees a
-request.
+refreshes, router leases, catalog reports, and token exchanges
+(`/token/exchange`, `/sts/token`). It also sees each member's scheduled
+pulls of keys, routers, policy, egress assignments and revocations. It never
+sees a request.
 
 Traffic to the control plane is protobuf over HTTPS. Traffic between nodes is
 HTTP over libp2p streams for service requests, and protobuf frames for the
