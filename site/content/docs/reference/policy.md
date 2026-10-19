@@ -68,7 +68,7 @@ notice.
 | `name` | string, required, unique | The role name. `mesh:role:node` and `mesh:role:router` are the roles that the two binaries request at enrollment. Any other name is an ordinary role. |
 | `allowed_services` | list of service patterns | Services that holders may call. |
 | `allowed_publish` | list of service patterns | Services that holders may serve. A router keeps a member's directory record only for a service its credential grants here, and a caller sends a request to a provider it reached by name only when the provider's credential does. If absent, holders may publish nothing. See [Publishing](#publishing). |
-| `allowed_targets` | list of target patterns | Nodes that holders may call. If absent, any node may be called. |
+| `allowed_targets` | list of target patterns | Nodes that holders may call. `*` means any node. If absent, holders may call no node. |
 | `allowed_labels` | list of label patterns | Labels that a node holding this role may declare at enrollment. If absent, no labels may be declared. |
 | `custom_datalog` | list of Datalog statements | Facts are minted into the credentials of holders. Rules are distributed to nodes and applied when a holder is verified. |
 | `http` | list of HTTP grants | Narrows an `allowed_services` entry to HTTP methods and paths. See [HTTP grants](#http-grants). |
@@ -387,7 +387,7 @@ statements.
 | `user`, `email`, `group`, `idp_role` | string | control plane, from OIDC claims |
 | `label` | key, value | control plane |
 | `right` | `relay` | control plane, for routers |
-| `target_unrestricted` | `true` | control plane, for roles with `allowed_targets: ["*"]` or none |
+| `target_unrestricted` | `true` | control plane for routers, and policy rules for roles with `allowed_targets: ["*"]` |
 | `granted_service_exact`, `_set`, `_prefix`, `_suffix`, `_all`, `_all_types` | type, name/set/pattern | control plane and node rules |
 | `granted_target_exact`, `_set`, `_prefix`, `_suffix`, `_all`, `_all_facts` | fact, value/set/pattern | control plane and node rules |
 | `http_granted_service_exact`, `_prefix`, `_suffix`, `_all`, `_all_types` | type, name/pattern | control plane and node rules, for an `http` entry |

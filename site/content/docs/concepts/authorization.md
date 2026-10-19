@@ -68,8 +68,8 @@ from a file (`--policy-file`).
   separately: a role that may call `mcp://calculator` does not serve it.
 - `allowed_targets`: the nodes holders may call, as facts about the
   destination node's identity: `node:<peer-id>`, `user:<sub>`,
-  `email:<addr>`, `group:<name>`, `idp_role:<name>`, or `*`. If absent, any
-  node may be called.
+  `email:<addr>`, `group:<name>`, `idp_role:<name>`, or `*`. If absent,
+  holders may call no node.
 - `allowed_labels`: the labels a node with this role may declare at
   enrollment: `key=value`, `key=*` or `*`. If absent, the node may declare
   no labels.
