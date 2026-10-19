@@ -32,7 +32,7 @@ The node removes the header that carried the token. On `/v1/*`, an
 `Authorization` header that is still present is the backend's credential.
 The node forwards it as on the proxy path.
 
-The API has four parts:
+An agent mostly uses four parts of the API:
 
 | Path | What it is |
 |---|---|
@@ -41,7 +41,12 @@ The API has four parts:
 | `/mesh/<peer-id>/<type>/<name>/<path>` | A reverse proxy to one specific service on one specific node, for every service type. `<type>` is `mcp`, `inference` or `a2a`, and `<path>` is passed through to the backend. This is how a caller reaches an A2A agent: `/mesh/<peer-id>/a2a/<name>/` serves the agent's card, rewritten for the mesh, and its JSON-RPC endpoint. |
 | `/mesh/service/discover` | Service discovery over plain HTTP, with the same results as the `discover_remote_services` tool. |
 
-The [node API reference](../../reference/node-api/) lists every route.
+Other routes serve token exchange (`/oauth/token`), revocation
+(`/oauth/revoke`), the egress destinations that this node serves
+(`/egress/`), and the Envoy `ext_authz` and `ext_proc` integration. The
+node also serves identity evidence (`/mesh/identity`) and operator
+diagnostics (`/debug/`). The [node API reference](../../reference/node-api/)
+lists every route.
 
 ## Discovery
 
