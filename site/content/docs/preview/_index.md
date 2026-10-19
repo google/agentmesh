@@ -17,8 +17,6 @@ you find.
   identity, and how an agent serves.
 - [Agent Mesh Connect](mobile/): the Android and iOS app that turns a phone into a
   node.
-- [Scale report](scale-report/) and [how to reproduce it](scale-experiment/):
-  what a sandboxed agent costs, measured up to a thousand agents on one host.
 
 Everything outside this section (the node, the routers, the control plane,
 identity, policy and the deployment guides) is the stable core.

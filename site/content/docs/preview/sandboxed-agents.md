@@ -47,13 +47,12 @@ flowchart LR
 1. **Mint and seal a task token before starting the task:**
    The orchestrator calls `POST /oauth/token` on the local `agentmesh-node` with a
    `TaskAuthorizationRule` (and `seal=true`), receiving a **sealed Task
-   Biscuit** scoped to the single task:
+   Biscuit** scoped to the single task. The request carries no
+   `subject_token`, so the node narrows its own Biscuit:
    ```bash
    TASK_TOKEN=$(curl -sS --unix-socket ~/.config/agentmesh/agentmesh.sock \
      http://localhost/oauth/token \
      -d 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' \
-     -d 'subject_token_type=urn:agentmesh:params:oauth:token-type:biscuit' \
-     -d "subject_token=$(jq -r .biscuit ~/.config/agentmesh/credential.json 2>/dev/null || true)" \
      -d 'seal=true' \
      --data-urlencode 'options={"name":"tasks/pr-review-42","rules":[{"allowed_services":["mcp://github","inference://*"],"operation":{"allowed_tools":["get_pull_request","list_PullRequest_files"]}}]}' \
      | jq -r .access_token)
@@ -177,7 +176,7 @@ offline in memory using the TypeScript or Python SDK (or `POST /oauth/token` on
 ```python
 from datetime import datetime, timedelta, timezone
 from google.protobuf.timestamp_pb2 import Timestamp
-from agent_mesh import AgentMesh, agentmesh_pb2
+from agent_mesh._proto import agentmesh_pb2
 
 # Hop 1: Orchestrator narrows its session to read-only BigQuery sales_2026
 # and two MCP tools for 15 minutes.
@@ -237,36 +236,30 @@ hop2_session = hop1_session.attenuate(
 ### Example: two-hop attenuation in TypeScript
 
 ```typescript
-import { create } from "@bufbuild/protobuf";
 import { timestampFromDate } from "@bufbuild/protobuf/wkt";
-import { TaskAuthorizationRuleSchema } from "@agentmesh-p2p/sdk/gen/agentmesh_pb.ts";
 
-const hop1 = session.attenuate(
-  create(TaskAuthorizationRuleSchema, {
-    name: "tasks/session-bq-read-sales",
-    expireTime: timestampFromDate(new Date(Date.now() + 15 * 60_000)),
+const hop1 = await session.attenuate({
+  name: "tasks/session-bq-read-sales",
+  expireTime: timestampFromDate(new Date(Date.now() + 15 * 60_000)),
+  rules: [
+    {
+      allowedServices: ["mcp://bigquery"],
+      operation: { allowedTools: ["list_tables", "query_sales"] },
+    },
+  ],
+});
+
+const leafSession = await (
+  await hop1.attenuate({
+    name: "tasks/subagent-q1-only",
     rules: [
       {
         allowedServices: ["mcp://bigquery"],
-        operation: { allowedTools: ["list_tables", "query_sales"] },
+        operation: { allowedTools: ["query_sales"] },
       },
     ],
-  }),
-);
-
-const leafSession = hop1
-  .attenuate(
-    create(TaskAuthorizationRuleSchema, {
-      name: "tasks/subagent-q1-only",
-      rules: [
-        {
-          allowedServices: ["mcp://bigquery"],
-          operation: { allowedTools: ["query_sales"] },
-        },
-      ],
-    }),
-  )
-  .seal();
+  })
+).seal();
 ```
 
 When `hop2_session` calls `egress://bigquery.googleapis.com`, the egress

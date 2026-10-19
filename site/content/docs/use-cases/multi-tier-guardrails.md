@@ -31,7 +31,7 @@ The runnable example in [`development/examples/multi-tier-guardrails/`](https://
 | :--- | :--- | :--- |
 | **1. Agent Developer (Alice)** | Onboarding & iterating on `a2a://support.acme` (`support_agent.py`) | Enrolls `agentmesh-node` in `env=staging` quarantine; zero code changes to promote to `env=prod` |
 | **2. Platform / Networking** | Service discovery, outbound floor & replica lifecycle | Input-node `egress.require_labels: {env: prod}`, logical URI `a2a://support.acme`, and `contextId` continuity from Laptop (`v1`) to Cloud Run (`v2`) |
-| **3. Central Security (CISO)** | Org-wide baseline RBAC, Quality Gate & Secret Brokering | Control-plane `policy.json` (`allowed_labels`, HTTP method/path rules on `egress://api.github.com`, `secret_ref: github-ro`) |
+| **3. Central Security (CISO)** | Org-wide baseline RBAC, Quality Gate & Secret Brokering | Control-plane `policy.json` (`allowed_labels`, HTTP method/path rules on `egress://api.github.com`, `credential: github-ro`) |
 | **4. Department Lead & End-User** | Local team gate + per-task tool narrowing | Egress-node `attenuation` (`check if label("team", "support");`) + RFC 8693 `/oauth/token` minting a sealed Task Biscuit (`tar_block`) |
 | **5. Day-2 Operations (SRE)** | Real-time audit correlation & incident response | Structured `ALLOW`/`DENY` audit stream (`audit.py`) + instant mesh-wide revocation (`agentmesh-one admin ban`) |
 
@@ -108,7 +108,7 @@ Effective Permission = (Layer 1: Central Security Block 0 Policy)
 ```
 
 #### Layer 1 — Central Security (Org Baseline & Secret Broker)
-In `policy.json`, Central Security assigns `egress://api.github.com` (`https://api.github.com`) to nodes labelled `team=support` with `secret_ref: "github-ro"`, and restricts callers to `GET /repos/google/agentmesh/pulls*`:
+In `policy.json`, Central Security assigns `egress://api.github.com` (`https://api.github.com`) to nodes labelled `site=office` with `credential: "github-ro"`, and restricts callers to `GET /repos/google/agentmesh/pulls*`:
 
 * `GET /repos/google/agentmesh/pulls?state=open&per_page=1` $\rightarrow$ **`200 OK`** (the hosting node injects the read-only GitHub token from `secrets/github-ro`; the caller never holds the credential).
 * `POST /repos/google/agentmesh/pulls` $\rightarrow$ **`403 Forbidden`** (blocked by the Block 0 HTTP rule before GitHub ever receives the request).

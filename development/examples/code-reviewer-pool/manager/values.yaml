@@ -10,3 +10,10 @@ config:
 service:
   name: pool-manager
   image: pool-manager:local
+  # The manager calls its node's API with the token the chart generates.
+  env:
+    - name: AGENTMESH_API_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: manager-agentmesh-node-api-token
+          key: api-token
