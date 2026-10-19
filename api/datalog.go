@@ -84,8 +84,10 @@ const (
 	// a Biscuit the control plane mints at /oauth/*, it is the node whose
 	// credential came with the request, or else the actor_peer_id the client
 	// named (checked only for admission) or the control plane's own peer ID. It
-	// is for audit logs and for ext_proc attributes["mesh"].actor_node. It grants
-	// nothing: no baseline rule and no policy binding reads it.
+	// is for audit logs, for ext_proc attributes["mesh"].actor_node, and,
+	// together with client_peer_id, for the authority-block request binding
+	// (identity.RequireAuthorityRequestBinding). No baseline rule and no policy
+	// binding reads it, so it grants nothing.
 	FactActorNode = "actor_node"
 
 	// FactGroup defines the group claim extracted from the OIDC token.

@@ -307,11 +307,13 @@ minted statelessly on the control plane with zero database writes:
   node's libp2p connection (`check if client_peer_id($id), connection_peer_id($id)`),
   so an exfiltrated token cannot be replayed from another peer.
 - `actor_node("<origin_node_peer_id>")` records the acting node for audit logs
-  and `ext_proc` attributes: the node that called `POST /token/exchange`. For
-  `POST /oauth/token` it is the node whose credential came with the request, or
-  else a claimed peer: the `actor_peer_id` the client named (checked only for
-  admission) or the control plane's own peer ID. No policy rule grants
-  permissions on `actor_node`.
+  and `ext_proc` attributes and, together with `client_peer_id`, binds a token
+  without `node()` to the presenting peer (`identity.RequireAuthorityRequestBinding`).
+  It is the node that called `POST /token/exchange`. For `POST /oauth/token` it
+  is the node whose credential came with the request, or else a claimed peer:
+  the `actor_peer_id` the client named (checked only for admission) or the
+  control plane's own peer ID. No policy rule grants permissions on
+  `actor_node`.
 - `user(...)`, `email(...)`, `group(...)`, `idp_role(...)`, and `role(...)` are
   resolved strictly from the caller's `subject_token`.
 - No `node()` fact is minted, which prevents `node:<peer_id>` policy bindings on
