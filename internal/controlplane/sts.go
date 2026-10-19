@@ -1098,6 +1098,7 @@ func (s *Server) HandleSTSToken(w http.ResponseWriter, r *http.Request) {
 		"endpoint", "/sts/token",
 		"decision", "allow",
 		"actor_node", nodeRecord.PeerID,
+		"client_peer_id", claims.ClientPeerID,
 		"subject", subject,
 		"audience", audience,
 		"destination", req.Destination,

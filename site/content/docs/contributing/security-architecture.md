@@ -306,9 +306,8 @@ minted statelessly on the control plane with zero database writes:
 - `client_peer_id("<origin_node_peer_id>")` binds the token to the origin
   node's libp2p connection (`check if client_peer_id($id), connection_peer_id($id)`),
   so an exfiltrated token cannot be replayed from another peer.
-- `actor_node("<origin_node_peer_id>")` records the acting node for audit logs,
-  `act.sub` in outbound border JWTs, and `ext_proc` attributes. No policy rule
-  grants permissions on `actor_node`.
+- `actor_node("<origin_node_peer_id>")` records the acting node for audit logs
+  and `ext_proc` attributes. No policy rule grants permissions on `actor_node`.
 - `user(...)`, `email(...)`, `group(...)`, `idp_role(...)`, and `role(...)` are
   resolved strictly from the caller's `subject_token`.
 - No `node()` fact is minted, which prevents `node:<peer_id>` policy bindings on
