@@ -61,7 +61,7 @@ Authorization Server.
 | `CONNECT {destination}:{port}` | token | Named TCP tunnel to an `EGRESS_MODE_TCP` destination assigned to this node. |
 | `GET /mesh/identity` | token, socket or mTLS only | `IdentityEvidenceResponse`: this node's credential and the control plane keys it trusts. |
 | `GET /mesh/peer/{peer-id}/evidence` | token, socket or mTLS only | `PeerEvidenceResponse`: a peer's credential as this node last verified it. |
-| `GET /debug/*` | token | Operator diagnostics. These answer even when the mesh is unreachable. |
+| `GET /debug/*`, `POST /debug/connect-peer` | token | Operator diagnostics. These answer even when the mesh is unreachable. |
 
 `--metrics-addr` serves `/metrics`, `/healthz` and `/readyz` on a second
 listener without authentication, for scrapers that hold no token. Besides
