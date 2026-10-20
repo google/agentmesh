@@ -271,8 +271,11 @@ Labels are used in four places:
   to its `attenuation.checks`. Every caller's credential must then carry
   that label.
 - **A caller choosing providers** sends `X-Mesh-Required-Labels: region=eu`
-  on the node's `/v1` inference endpoints or on a proxied A2A request, or
-  passes `required_labels` to `call_remote_tool`. Before it sends any request
+  on a request to the node, or passes `required_labels` to
+  `call_remote_tool`. The node honours the header on `/v1/chat/completions`
+  and `/v1/completions`, on every `/mesh/<peer-id>/<type>/<name>/` request,
+  on `/egress/<destination>/` and on `CONNECT`. A node that serves the
+  request itself checks its own labels. Before it sends any request
   data, the calling node fetches the provider's credential through the
   mutual handshake, verifies it, and confirms that every label named is
   attested in it. A provider that cannot show them all is skipped.
