@@ -94,8 +94,9 @@ A fact whose only meaning is that a grant exists carries the single term
 `true`, because the Biscuit grammar requires at least one term per predicate.
 The same holds for `target_unrestricted(true)` below.
 
-`system://mesh.catalog` is the built-in discovery service that every node
-runs. A role that should be able to list the tools of a node needs it.
+`system://mesh.catalog` is the built-in service on every node that lists the
+services the node hosts. A role that should be able to list the tools of a
+node needs it.
 
 ### Publishing
 

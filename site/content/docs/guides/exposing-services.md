@@ -187,9 +187,10 @@ curl -fsS -X POST https://mesh.example.com/policies \
   --data @policy.json
 ```
 
-Discovery (`system://mesh.catalog`) follows the same rule. A role that should
-be able to browse what a node offers needs `system://mesh.catalog` in its
-grants. On a mesh where everyone may browse, grant it to `mesh:role:node`.
+The node's catalog (`system://mesh.catalog`) follows the same rule. A role
+that should be able to browse what a node offers needs
+`system://mesh.catalog` in its grants. On a mesh where everyone may browse,
+grant it to `mesh:role:node`.
 
 ## Labels
 
@@ -246,7 +247,9 @@ If the service is missing, check these causes in order:
 
 1. The backend did not answer the probe. Look for "Withholding" in the
    node log.
-2. The caller's role lacks `system://mesh.catalog`.
+2. This node's role does not grant `mcp://calculator` in `allowed_publish`,
+   so the router refused its directory record. Look for "Record denied" in
+   the router log.
 3. The two nodes have not exchanged discovery state yet. Wait a few seconds
    and try again.
 
