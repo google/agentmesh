@@ -59,7 +59,7 @@ bootstrap token, `join` runs an interactive OIDC login.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--bootstrap-token-path` | | File containing a bootstrap token. A node that keeps this file can also recover on its own: when the control plane answers `401` to one of its authenticated calls (a control plane that lost its store, such as a new Cloud Run revision without a database), the node reads the token again and enrolls again at the next sync, without a restart; `agentmesh_node_reenrollments_total{result}` counts it. |
+| `--bootstrap-token-path` | | File containing a bootstrap token. |
 | `--bootstrap-token` | | The token as a value. Visible in process listings. The file form is preferred. |
 | `--offline-access` | `false` | Request an OIDC refresh token, so that the node can re-enroll on its own when its credential expires. |
 | `--allow-loopback` | `false` | Advertise and dial loopback and link-local addresses. For several nodes on one host. |
@@ -87,7 +87,7 @@ explains how to enroll.
 | `--jwt-path` | | File containing an OIDC token to enroll and refresh with, for example a Kubernetes projected service account token or a `spiffe-helper` JWT-SVID file. |
 | `--jwt` | | The token as a value. Logged as a warning. The file form is preferred. |
 | `--cloud-provider` | | Cloud metadata provider for workload identity enrollment and refresh: `gcp` (GCE and Cloud Run metadata identity endpoint) or `auto` (probe GCE/Cloud Run metadata at startup). |
-| `--bootstrap-token-path`, `--bootstrap-token` | | As for `join`. |
+| `--bootstrap-token-path`, `--bootstrap-token` | | As for `join`. A node started with `--bootstrap-token-path` can also recover on its own. When the control plane answers `401` to an authenticated call, the node reads the token and enrolls again at the next sync, without a restart. One cause is a control plane that lost its store, such as a new Cloud Run revision without a database. `agentmesh_node_reenrollments_total{result}` counts the re-enrollments. |
 | `--client-id`, `--client-secret-path` | | OAuth client-credentials grant against `--oidc-issuer`. The secret can also come from `AGENTMESH_CLIENT_SECRET`. |
 | `--offline-access` | `false` | With `--join`, as for `join`. |
 | `--control-plane-public-key` | stored value | Control plane Ed25519 public key, 32 bytes in hex. Only needed when the store lacks it. |
