@@ -265,7 +265,7 @@ their own, and `type: egress` in `agentmesh-node.yaml` is refused.
 | `broker` | `CredentialBroker` configuring how the egress node obtains the upstream credential. See [Credential brokers](#credential-brokers). |
 | `inspection` | `Inspection` pipeline executed at the egress node before the upstream credential is injected. See [Content inspection](#content-inspection). |
 | `mode` | `EGRESS_MODE_HTTP` (default) or `EGRESS_MODE_TCP` (named `CONNECT` tunnel). |
-| `ports` | Allowed TCP destination ports when `mode` is `EGRESS_MODE_TCP` (for example, `[5432]`). Empty denies every tunnel. |
+| `ports` | Allowed TCP destination ports when `mode` is `EGRESS_MODE_TCP` (for example, `[5432]`). Required in that mode. Each port is from 1 to 65535. |
 | `preserve_host` | Keep the destination hostname (`name`) in the `Host` header when `target_url` points at an operator inspection chain. |
 | `forward_context` | Forward `X-Mesh-Principal`, `X-Mesh-Roles` and `X-Mesh-Task` to `target_url` when `target_url` is an operator inspection chain. |
 
