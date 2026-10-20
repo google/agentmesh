@@ -118,14 +118,20 @@ evaluate.
 ## From policy to facts
 
 At enrollment, refresh, and token exchange (`POST /token/exchange`), the
-control plane resolves the identity's roles from the bindings and writes the
-result into the credential's authority block as Datalog facts: one `role(...)`
-fact per role, plus the grants compiled from the lists of every role. For
-example, `allowed_services: ["mcp://calculator"]` becomes
+control plane writes the credential's authority block as Datalog facts: one
+`role(...)` fact per role, plus the grants compiled from the lists of those
+roles. For example, `allowed_services: ["mcp://calculator"]` becomes
 `granted_service_set("mcp", ["calculator"])`, `mcp://*` becomes
 `granted_service_all("mcp")`, and `mcp://*.internal` becomes
 `granted_service_suffix("mcp", ".internal")`. Wildcards keep their dot, so
 `*.acme.example` matches `svc.acme.example` but not `evil-acme.example`.
+
+The roles in the block depend on how the member enrolled. For an identity
+that the identity provider authenticates, the control plane resolves the
+roles from the bindings. For a member that enrolled with a bootstrap token,
+the authority block carries only the token's role. A role bound to
+`node:<peer-id>` or to `mesh:system:authenticated` reaches that member
+through the policy rules described next, not through its credential.
 
 The control plane also renders the policy as Datalog rules such as
 `role("developer") <- group("eng")` and
@@ -135,9 +141,9 @@ sooner when a policy update event reaches them) and add it to their
 authorizer as it arrives. When a node verifies a credential, these rules run
 against the identity facts in it. A grant added to the policy therefore
 reaches every node within the sync interval, with no need to reissue
-credentials. Removing a grant takes effect through the credential instead:
-the facts already in a token stay valid until the token is refreshed or
-expires.
+credentials. A removed grant stays in the tokens that already carry it,
+until each token is refreshed or expires. A grant that reaches a member only
+through these rules ends when each node next fetches the policy.
 
 ## What the hosting node checks
 
