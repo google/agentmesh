@@ -232,10 +232,13 @@ already trust. The first key comes from enrollment, and each later key is
 vouched for by the key it replaces.
 
 Nobody can verify a credential signed by a retired key, including the
-control plane. A node that was offline for a whole grace period therefore
-cannot refresh. This is intentional. The grace period is the deadline after
-which a machine that went quiet cannot come back unnoticed. How it comes back
-depends on how it enrolled:
+control plane. Under automatic rotation, the control plane retires the key
+that signed a credential one grace period after the next rotation. With the
+defaults, the retirement comes at most 25 hours after the credential was
+issued. A node that was offline past that point therefore cannot refresh.
+This is intentional. The retirement is the deadline after which a machine
+that went quiet cannot come back unnoticed. How it comes back depends on how
+it enrolled:
 
 - An OIDC node with a refresh token re-enrolls on its own.
 - A bootstrap node needs an operator to mint a new token and run

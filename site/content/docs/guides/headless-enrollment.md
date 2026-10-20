@@ -196,19 +196,19 @@ A node or router enrolled with a platform token (`--jwt-path`,
 `TokenRefreshRequest.jwt` on every `POST /refresh`. As long as the token's
 `iss|sub` matches the enrolled record, the control plane re-attests the member
 in place, updates its stored claims and extends its session
-(`--workload-session-ttl`, `48h` by default) without re-enrolling. If the
-member was offline longer than the session or key grace period, its renewal
-loop automatically re-enrolls with a fresh platform token under the same peer
-ID.
+(`--workload-session-ttl`, `48h` by default) without re-enrolling. A member
+can stay offline past the retirement of the key that signed its credential.
+Its renewal loop then re-enrolls with a fresh platform token under the same
+peer ID.
 
 A node enrolled with a bootstrap token has no login or platform token source
-to fall back on. Its credential is refreshed automatically while it runs. But if the node is off
-for longer than the control plane's key grace period (`--key-grace-period`,
-one hour by default), it comes back with a credential signed by a retired
-key, and `/refresh` refuses it. An SDK member in the same position enrolls
-again on start when its `enroll` call is given a token, and otherwise
-fails with `CredentialRetiredError` naming the state directory. There are
-three ways out, in order of preference.
+to fall back on. The node refreshes its credential automatically while it
+runs. But the control plane retires the key that signed the credential one
+`--key-grace-period` (one hour by default) after the next key rotation. If
+the node is off past that point, `/refresh` refuses its credential. An SDK
+member in the same position enrolls again on start when its `enroll` call is
+given a token. Otherwise the SDK member fails with `CredentialRetiredError`
+naming the state directory. There are three ways out, in order of preference.
 
 **Enroll again.** Mint a new token and run `agentmesh-node join` with it. The
 control plane already knows the peer ID, so it mints a new credential

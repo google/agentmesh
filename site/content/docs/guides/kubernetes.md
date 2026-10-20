@@ -207,9 +207,12 @@ keep, review these settings:
   `mesh:system:authenticated` to a role with wide grants: on a public
   identity provider it means everyone. The testnets bind it on purpose. A
   private mesh should bind groups or service accounts.
-- **Signing keys.** `--key-grace-period` defaults to one hour. A node that is
-  down for longer must enroll again. The testnets use 48 hours. Pick a value
-  that matches how long your nodes can legitimately be off.
+- **Signing keys.** `--key-grace-period` defaults to one hour. The control
+  plane retires a key one grace period after the next rotation. A node that
+  is down past the retirement of the key that signed its credential must
+  enroll again. With the defaults, that retirement comes between about one
+  and 25 hours after the node goes down. The testnets use 48 hours. Pick a
+  value that matches how long your nodes can legitimately be off.
 - **Console origin.** When a proxy terminates TLS in front of the console,
   set `console.externalUrl` so that the OIDC redirect URI and the cookie
   `Secure` flag do not depend on forwarded headers.

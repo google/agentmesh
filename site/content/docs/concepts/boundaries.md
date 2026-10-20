@@ -95,9 +95,12 @@ Both results can be verified offline with the control plane's public key.
 A credential lasts 24 hours by default and is renewed in the background.
 Short lifetimes make revocation work without a central check on every
 request. A stolen credential is useful for at most its remaining lifetime. A
-banned node cannot renew. A node that has been offline for longer than the
-signing key's grace period has to come back through enrollment instead of
-reappearing without notice. The lifetime, the session length, the rotation
+banned node cannot renew. Under automatic rotation, the control plane
+retires each signing key one grace period after the next rotation. A node
+that was offline past the retirement of the key that signed its credential
+has to come back through enrollment. So the node cannot reappear without
+notice. The one exception is a node that an administrator opted in to
+autonomous recovery. The lifetime, the session length, the rotation
 interval and the grace period are all control plane flags that the operator
 sets.
 
