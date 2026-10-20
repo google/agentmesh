@@ -70,9 +70,12 @@ from a file (`--policy-file`).
   service.
 - `allowed_publish`: the services holders may serve, in the same syntax.
   A member announces a service to the directory, and is accepted as its
-  provider by callers, only when its own credential grants it here. If
-  absent, holders may publish nothing. Calling and serving are granted
-  separately: a role that may call `mcp://calculator` does not serve it.
+  provider by callers, only when its own credential grants serving it. If
+  absent, holders may publish nothing but an egress destination whose
+  `served_by` selects them. Such a destination needs no entry here, because
+  the control plane grants `egress://<name>` to the nodes that `served_by`
+  selects. Calling and serving are granted separately: a role that may call
+  `mcp://calculator` does not serve it.
 - `allowed_targets`: the nodes holders may call, as facts about the
   destination node's identity: `node:<peer-id>`, `user:<sub>`,
   `email:<addr>`, `group:<name>`, `idp_role:<name>`, or `*`. If absent,
