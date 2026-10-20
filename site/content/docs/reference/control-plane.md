@@ -73,7 +73,10 @@ Responses that carry credentials are sent with `Cache-Control: no-store`.
 
 ### Enrollment, refresh, and STS
 
-Every request below carries a `challenge_unix_ms` and a `challenge_signature`.
+Every request below carries a signed challenge. Most carry it in the
+message, as `challenge_unix_ms` and `challenge_signature`. The routes the
+table marks carry it in the `X-Mesh-Challenge-Ts` and `X-Mesh-Challenge-Sig`
+headers, and answer `401` without them.
 The enrollee signs `mesh:<endpoint>:<peer_id>:<challenge_unix_ms>` with its
 key, and the control plane accepts the signature within five minutes of that
 instant. This proves that the caller holds the key behind the peer ID it
@@ -97,11 +100,11 @@ arithmetic. A client of your own should retry the same way.
 | `POST /refresh` | `TokenRefreshRequest` (optional `jwt`), current credential as `Authorization: Bearer <base64>` | Exchange a credential for a new one. When `jwt` is present and its `iss|sub` matches the enrolled node record, re-attests the node in place, updates stored claims and extends the session. Refuses a replayed (superseded) credential, a banned node, an expired session without a matching `jwt`, and a credential signed by a retired key unless the node has `autonomous_recovery`. |
 | `POST /token/exchange` | `TokenExchangeRequest` (`subject_token`, optional `task_rule` and `seal`, challenge signature), node credential as bearer | Stateless JWT-to-Biscuit exchange. Mints a Delegated Session Biscuit bound to the calling node (`actor_node`, `client_peer_id`) with zero database writes. |
 | `POST /sts/token` | `STSTokenRequest` (`biscuit`, `destination`, optional `audience`, challenge signature), node credential as bearer | Stateless Biscuit-to-JWT minting. Verifies the Biscuit and `tar_block` chain against `egress://<destination>` and mints a short-lived ES256 border JWT (`sub`, `act.sub`, `aud`, `mesh_roles`, `mesh_task`). |
-| `GET /revocations` | credential as `Authorization: Bearer <base64>` | `RevocationsResponse`: revoked root Biscuit revocation IDs (`revocation_ids`) and banned peer IDs (`banned_peer_ids`). |
+| `GET /revocations` | credential as `Authorization: Bearer <base64>`, headers `X-Mesh-Challenge-Ts`, `X-Mesh-Challenge-Sig` | `RevocationsResponse`: revoked root Biscuit revocation IDs (`revocation_ids`) and banned peer IDs (`banned_peer_ids`). |
 | `POST /routers/lease` | `RouterLeaseRequest` (credential, addresses, telemetry: connected peers, DHT size, open connections against the connection limit) | Register or renew a router lease. Requires `role("mesh:role:router")`. Announced addresses must end in the router's own peer ID. The load is what `/info` lists for the router. |
-| `GET /policies` | credential as `Authorization: Bearer <base64>` | The mesh policy as `PolicyConfigGetResponse`: the Datalog rules a member adds to its authorizer, one per entry. Operators read the document at `GET /admin/policy`. |
-| `GET /egress` | credential as `Authorization: Bearer <base64>` | `EgressAssignmentsResponse`: the [egress destinations](../policy/#egress-destinations) whose `served_by` selects the calling node, by its roles or labels. A node registers and serves what it receives here. |
-| `POST /nodes/catalog` | `NodeCatalogReport`, credential as bearer | A node's report of the services it publishes, for the console. Display only. Never used for authorization. |
+| `GET /policies` | credential as `Authorization: Bearer <base64>`, headers `X-Mesh-Challenge-Ts`, `X-Mesh-Challenge-Sig` | The mesh policy as `PolicyConfigGetResponse`: the Datalog rules a member adds to its authorizer, one per entry. Operators read the document at `GET /admin/policy`. |
+| `GET /egress` | credential as `Authorization: Bearer <base64>`, headers `X-Mesh-Challenge-Ts`, `X-Mesh-Challenge-Sig` | `EgressAssignmentsResponse`: the [egress destinations](../policy/#egress-destinations) whose `served_by` selects the calling node, by its roles or labels. A node registers and serves what it receives here. |
+| `POST /nodes/catalog` | `NodeCatalogReport`, credential as bearer, headers `X-Mesh-Challenge-Ts`, `X-Mesh-Challenge-Sig` | A node's report of the services it publishes, for the console. Display only. Never used for authorization. |
 
 ### Admin
 
