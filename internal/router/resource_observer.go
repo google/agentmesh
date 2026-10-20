@@ -35,7 +35,7 @@ var inboundRefusedTotal = promauto.NewCounterVec(
 var streamsRefusedTotal = promauto.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "agentmesh_router_streams_refused_total",
-		Help: "Streams the resource manager refused, by scope and protocol (or service); a member whose DHT or gossip stream is refused drops out of discovery",
+		Help: "Streams the resource manager refused, by scope and protocol (or service); a member whose directory stream is refused asks another router",
 	},
 	[]string{"scope", "protocol"},
 )
