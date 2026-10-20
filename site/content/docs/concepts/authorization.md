@@ -28,7 +28,9 @@ fails a check, such as the target check, or an appended task block.
 
 A node publishes services, each with a type and a name: `mcp://calculator`,
 `inference://vllm-eu`, `a2a://triage`, `egress://bigquery.googleapis.com`, and
-the built-in `system://mesh.catalog` that answers discovery queries.
+the built-in `system://mesh.catalog`, which lists the services the node hosts
+to a peer that asks. The routers' directory, not the catalog, tells a caller
+who provides a name.
 
 Standing mesh roles grant access to services by name (`allowed_services`),
 grant the right to serve them (`allowed_publish`) and can narrow HTTP
