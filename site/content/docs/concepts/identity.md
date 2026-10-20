@@ -257,8 +257,11 @@ Revocation operates at two levels:
 
 1. **Mesh-wide node, identity, and root-prefix Biscuit revocation:**
    `POST /admin/revoke` with a peer ID (or `agentmesh-one admin ban`, or the console)
-   marks the node as banned. Its next refresh is refused and the node daemon
-   exits. The control plane publishes banned peer IDs in `/info` and
+   marks the node as banned. Routers and peers drop the node as soon as the
+   ban event reaches them. The control plane refuses the node's next refresh,
+   but the node keeps its current credential. The daemon exits when its
+   connection monitor fails three router checks in a row, one minute apart by
+   default. The control plane publishes banned peer IDs in `/info` and
    `GET /revocations`, together with revoked root Biscuit revocation IDs
    (`RevocationIds()[0]`). Because every offline-attenuated child Biscuit
    shares the root authority block's `RevocationIds()[0]`, revoking the root
