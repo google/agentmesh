@@ -16,7 +16,7 @@ served on the same listeners.
 
 | Listener | Requirement |
 |---|---|
-| TCP (`--bind-addr`) | `X-Mesh-Authentication: Bearer <token>` on every request, or `Authorization: Bearer <token>` on non-proxy endpoints (`/mcp`, `/v1/*`, `/egress/*`, `/oauth/*`), or a client certificate when `--tls-ca` is set. |
+| TCP (`--bind-addr`) | `X-Mesh-Authentication: Bearer <token>` on every request, or a client certificate when `--tls-ca` is set. Every route except the proxy path `/mesh/{peer-id}/...` also accepts `Authorization: Bearer <token>`. |
 | Unix socket (`--socket-path`) | None required for node-level access (the socket has mode `0600`). A caller may still pass an Agent Mesh Task Biscuit or platform JWT in `X-Mesh-Authentication` or `Authorization` to scope the request to that caller's identity and task rules. |
 
 The bearer `<token>` accepted by `agentmesh-node` can be:
@@ -45,22 +45,23 @@ Authorization Server.
 
 | Route | Auth | Purpose |
 |---|---|---|
-| `GET /healthz`, `GET /readyz` | none | `200` while the process is up. Every other route except `/debug/*` and `/.well-known/*` answers `503` until the node is connected to the mesh. |
+| `GET /healthz` | none | `200` while the process is up. |
+| `GET /readyz` | none | `200` once the node is connected to the mesh, that is, holds an authenticated connection to a router. Until then `/readyz`, `/mcp`, `/v1/*`, `/mesh/service/discover`, `/mesh/{peer-id}/...` and `/mesh/peer/*` answer `503`. Every other route answers while the node is disconnected. |
 | `GET /.well-known/oauth-protected-resource` | none | RFC 9728 OAuth 2.1 Protected Resource Metadata naming the Agent Mesh control plane in `authorization_servers`. |
 | `GET /.well-known/oauth-authorization-server` | none | RFC 8414 metadata for this node's token endpoint: the grant types and client authentication methods it accepts. |
-| `POST /oauth/token` | token or client assertion | Token endpoint: RFC 8693 token exchange, RFC 7523 client assertion and JWT authorization grants. Every grant returns a Delegated or Task-Attenuated Biscuit. See [Token endpoint (`/oauth/token`)](#token-endpoint-oauthtoken). |
-| `POST /oauth/revoke` | token | RFC 7009 Token Revocation: revokes a task Biscuit in this node's local revocation cache. |
+| `POST /oauth/token` | token or client assertion | Token endpoint: RFC 8693 token exchange, RFC 7523 client assertion and JWT authorization grants. Every grant returns a Delegated or Task-Attenuated Biscuit. See [Token endpoint (`/oauth/token`)](#token-endpoint-oauthtoken-and-revocation-oauthrevoke). |
+| `POST /oauth/revoke` | token, or none when the Biscuit verifies | RFC 7009 Token Revocation: revokes a task Biscuit in this node's local revocation cache. |
 | `GET /metrics` | token | Prometheus metrics (`agentmesh_node_*`). |
-| `POST /mcp` | token | The MCP server (Streamable HTTP, sessionless: no `Mcp-Session-Id`, `GET` answers `405`). `/` is an alias. |
+| `POST /mcp` | token | The MCP server (Streamable HTTP, sessionless: no `Mcp-Session-Id`, `GET` answers `405`). |
 | `GET /v1/models` | token | Models served by every reachable inference provider. |
 | `POST /v1/chat/completions`, `POST /v1/completions` | token | OpenAI-compatible inference, routed to a provider of the requested model. |
 | `GET /mesh/service/discover` | token | Discover services on the mesh. |
 | `ANY /mesh/{peer-id}/{type}/{name}[/{path}]` | token | Reverse proxy to one service on one peer. |
 | `ANY /egress/{destination}[/{path}]` | token | HTTP proxy to an external destination assigned to this node. See [Egress](#egress). |
 | `CONNECT {destination}:{port}` | token | Named TCP tunnel to an `EGRESS_MODE_TCP` destination assigned to this node. |
-| `GET /mesh/identity` | token, socket or mTLS only | This node's credential and the key it verifies under. |
-| `GET /mesh/peer/{peer-id}/evidence` | token, socket or mTLS only | A peer's credential as this node last verified it. |
-| `GET /debug/*` | token | Operator diagnostics. These answer even when the mesh is unreachable. |
+| `GET /mesh/identity` | token, socket or mTLS only | `IdentityEvidenceResponse`: this node's credential and the control plane keys it trusts. |
+| `GET /mesh/peer/{peer-id}/evidence` | token, socket or mTLS only | `PeerEvidenceResponse`: a peer's credential as this node last verified it. |
+| `GET /debug/*`, `POST /debug/connect-peer` | token | Operator diagnostics. These answer even when the mesh is unreachable. |
 
 `--metrics-addr` serves `/metrics`, `/healthz` and `/readyz` on a second
 listener without authentication, for scrapers that hold no token. Besides
@@ -116,13 +117,16 @@ token_grant:
 
 `POST /oauth/revoke` accepts `token=<base64-biscuit>` and records its leaf
 revocation ID in the node's local revocation cache until the token expires.
+When the Biscuit verifies under a trusted control plane key, the node revokes
+the Biscuit without authenticating the caller.
 
 ## Envoy `ext_authz` and `ext_proc` gateway integration
 
 On the local API listeners, `agentmesh-node` serves:
 
 - **Envoy HTTP `ext_authz` (`/ext_authz`, `/ext_authz/*`)** and **gRPC
-  `envoy.service.auth.v3.Authorization/Check`**: evaluates standing Datalog
+  `envoy.service.auth.v3.Authorization/Check`** (also served at the v2 path,
+  `envoy.service.auth.v2.Authorization/Check`): evaluates standing Datalog
   policy and any `tar_block` chain on the request. The credential is read
   from `X-Mesh-Biscuit`, or from a Bearer value in `X-Mesh-Authentication` or
   `Authorization`. A Bearer value that is a platform JWT is exchanged at the
@@ -141,13 +145,14 @@ On the local API listeners, `agentmesh-node` serves:
 
 ## MCP tools
 
-The `/mcp` endpoint speaks Streamable HTTP. The older SSE transport is
-refused with `400`. The server's instructions field tells a client how the
-tools fit together. The tools are:
+The `/mcp` endpoint speaks Streamable HTTP and takes `POST` only. The
+older SSE transport opens with `GET`, and the node answers that `GET` with
+`405`. The server's instructions field tells a client how the tools fit
+together. The tools are:
 
 ### `get_mesh_info`
 
-No parameters. Returns `router_peer_id`, `connected_peers`,
+No parameters. Returns `peer_id`, `router_peer_id`, `connected_peers`,
 `attached_routers` and `local_api_socket`. `attached_routers` are the
 routers the node holds, which answer its directory requests;
 `connected_peers` is every peer it has a connection with, the routers
@@ -367,10 +372,14 @@ agentmesh-node forward egress://pg.internal.example:5432 127.0.0.1:15432
 
 ## Identity evidence
 
-`GET /mesh/identity` returns the node's credential (base64), the control
-plane public key it verifies under (SPKI DER), the peer ID, roles, labels
-and expiry. `GET /mesh/peer/{peer-id}/evidence` returns the same for a peer
-that the node has authenticated. Both refuse plain TCP. They are reachable
+`GET /mesh/identity` returns `IdentityEvidenceResponse` as protojson:
+`peer_id`, `biscuit` (the credential, base64), `biscuit_expire_time`,
+`control_plane_url`, `trusted_control_plane_keys` (Ed25519 SPKI DER, base64)
+and `check_time`. `GET /mesh/peer/{peer-id}/evidence` returns
+`PeerEvidenceResponse` for a peer that the node has authenticated. Its
+fields are `peer_id`, `biscuit`, `verifying_key` (the trusted key the
+credential verified under), `roles`, `labels`, `expire_time`,
+`revocation_ids` and `check_time`. Both refuse plain TCP. They are reachable
 only over the Unix socket or over an mTLS-verified connection, because this
 material is meant for the node's owner and for auditors, not for agents.
 

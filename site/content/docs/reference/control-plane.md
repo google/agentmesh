@@ -48,14 +48,27 @@ agentmesh-control-plane admin unban --peer <id>     lift a ban
 
 ## HTTP API
 
-Every request and response is a message in `api/agentmesh.proto`, in one of two
-encodings. Routes that mesh components call use binary protobuf
-(`application/x-protobuf`). Routes for operators and the console use
-protojson of the same messages, with proto field names; unknown fields are
-rejected. `POST /policies` accepts either and answers in the encoding of the
-request.
+Every request body and every successful response body is a message in
+`api/agentmesh.proto`, in one of two encodings. Routes that mesh components
+call use binary protobuf (`application/x-protobuf`). Routes for operators and
+the console use protojson of the same messages, with proto field names;
+unknown fields are rejected. `POST /policies` accepts either and answers in
+the encoding of the request. These routes answer in other formats:
+
+- `GET /healthz` and `GET /readyz` answer a JSON status.
+- `GET /metrics` answers Prometheus text.
+- The OAuth, OIDC and JWKS routes follow their standards.
+- A route whose row says so answers plain text.
 
 Responses that carry credentials are sent with `Cache-Control: no-store`.
+
+The routes a member may call from a browser send
+`Access-Control-Allow-Origin: *` and answer `OPTIONS` with `204`. These are
+the unauthenticated routes other than `/healthz`, `/readyz`, `/metrics` and
+`/oauth/authorize`, and the enrollment, refresh and STS routes other than
+`/routers/lease` and `/nodes/catalog`. Routes under `/admin/` and `/user/`
+send no CORS headers. `POST /policies` and `PUT /policies` do send them,
+because they share the `/policies` route with `GET /policies`.
 
 ### Unauthenticated
 
@@ -68,11 +81,14 @@ Responses that carry credentials are sent with `Cache-Control: no-store`.
 | `GET /keys` | The current set of signing public keys, signed by every key in the set. A caller accepts the set only if one signature verifies under a key it already trusts. |
 | `GET /.well-known/openid-configuration`, `GET /.well-known/oauth-authorization-server` | OIDC Discovery and OAuth 2.1 Authorization Server metadata for outbound STS federation and MCP OAuth 2.1 clients. |
 | `GET /jwks` | JSON Web Key Set (`ES256` public keys) for verifying border JWTs minted by `POST /sts/token`. |
-| `GET /oauth/authorize`, `POST /oauth/token` | OAuth 2.1 Authorization Code + PKCE endpoints (honouring RFC 8707 `resource` indicators to scope the issued Task Biscuit). Tokens from `--workload-issuer` are refused at `/oauth/authorize` with `403`. |
+| `GET /oauth/authorize`, `POST /oauth/authorize`, `POST /oauth/token` | OAuth 2.1 Authorization Code + PKCE endpoints (honouring RFC 8707 `resource` indicators to scope the issued Task Biscuit). `POST /oauth/token` also serves RFC 8693 token exchange (`grant_type=urn:ietf:params:oauth:grant-type:token-exchange`). For a JWT `subject_token` the control plane mints a Delegated Session Biscuit. For a Biscuit `subject_token` the control plane returns that Biscuit, attenuated by the request's task parameters when there are any. Tokens from `--workload-issuer` are refused at `/oauth/authorize` with `403`. |
 
 ### Enrollment, refresh, and STS
 
-Every request below carries a `challenge_unix_ms` and a `challenge_signature`.
+Every request below carries a signed challenge. Most carry it in the
+message, as `challenge_unix_ms` and `challenge_signature`. The routes the
+table marks carry it in the `X-Mesh-Challenge-Ts` and `X-Mesh-Challenge-Sig`
+headers, and answer `401` without them.
 The enrollee signs `mesh:<endpoint>:<peer_id>:<challenge_unix_ms>` with its
 key, and the control plane accepts the signature within five minutes of that
 instant. This proves that the caller holds the key behind the peer ID it
@@ -96,17 +112,19 @@ arithmetic. A client of your own should retry the same way.
 | `POST /refresh` | `TokenRefreshRequest` (optional `jwt`), current credential as `Authorization: Bearer <base64>` | Exchange a credential for a new one. When `jwt` is present and its `iss|sub` matches the enrolled node record, re-attests the node in place, updates stored claims and extends the session. Refuses a replayed (superseded) credential, a banned node, an expired session without a matching `jwt`, and a credential signed by a retired key unless the node has `autonomous_recovery`. |
 | `POST /token/exchange` | `TokenExchangeRequest` (`subject_token`, optional `task_rule` and `seal`, challenge signature), node credential as bearer | Stateless JWT-to-Biscuit exchange. Mints a Delegated Session Biscuit bound to the calling node (`actor_node`, `client_peer_id`) with zero database writes. |
 | `POST /sts/token` | `STSTokenRequest` (`biscuit`, `destination`, optional `audience`, challenge signature), node credential as bearer | Stateless Biscuit-to-JWT minting. Verifies the Biscuit and `tar_block` chain against `egress://<destination>` and mints a short-lived ES256 border JWT (`sub`, `act.sub`, `aud`, `mesh_roles`, `mesh_task`). |
-| `GET /revocations` | credential as `Authorization: Bearer <base64>` | `RevocationsResponse`: revoked root Biscuit revocation IDs (`revocation_ids`) and banned peer IDs (`banned_peer_ids`). |
+| `GET /revocations` | credential as `Authorization: Bearer <base64>`, headers `X-Mesh-Challenge-Ts`, `X-Mesh-Challenge-Sig` | `RevocationsResponse`: revoked root Biscuit revocation IDs (`revocation_ids`) and banned peer IDs (`banned_peer_ids`). |
 | `POST /routers/lease` | `RouterLeaseRequest` (credential, addresses, telemetry: connected peers, DHT size, open connections against the connection limit) | Register or renew a router lease. Requires `role("mesh:role:router")`. Announced addresses must end in the router's own peer ID. The load is what `/info` lists for the router. |
-| `GET /policies` | credential as `Authorization: Bearer <base64>` | The mesh policy as `PolicyConfigGetResponse`: the Datalog rules a member adds to its authorizer, one per entry. Operators read the document at `GET /admin/policy`. |
-| `GET /egress` | credential as `Authorization: Bearer <base64>` | `EgressAssignmentsResponse`: the [egress destinations](../policy/#egress-destinations) whose `served_by` selects the calling node, by its roles or labels. A node registers and serves what it receives here. |
-| `POST /nodes/catalog` | `NodeCatalogReport`, credential as bearer | A node's report of the services it publishes, for the console. Display only. Never used for authorization. |
+| `GET /policies` | credential as `Authorization: Bearer <base64>`, headers `X-Mesh-Challenge-Ts`, `X-Mesh-Challenge-Sig` | The mesh policy as `PolicyConfigGetResponse`: the Datalog rules a member adds to its authorizer, one per entry. Operators read the document at `GET /admin/policy`. |
+| `GET /egress` | credential as `Authorization: Bearer <base64>`, headers `X-Mesh-Challenge-Ts`, `X-Mesh-Challenge-Sig` | `EgressAssignmentsResponse`: the [egress destinations](../policy/#egress-destinations) whose `served_by` selects the calling node, by its roles or labels. A node registers and serves what it receives here. |
+| `POST /nodes/catalog` | `NodeCatalogReport`, credential as bearer, headers `X-Mesh-Challenge-Ts`, `X-Mesh-Challenge-Sig` | A node's report of the services it publishes, for the console. Display only. Never used for authorization. |
 
 ### Admin
 
-All routes require `Authorization: Bearer <admin-token>`. Request and
-response bodies are protojson of the messages named below, with proto field
-names; unknown fields are rejected.
+All routes require `Authorization: Bearer <admin-token>`. A request body is
+protojson of the message the row names, with proto field names. Unknown
+fields are rejected. A route whose row names a response message answers it
+as protojson. `POST /admin/revoke`, `POST /policies` and `PUT /policies`
+also accept binary protobuf, and answer in the encoding of the request.
 
 | Route | Purpose |
 |---|---|
@@ -117,9 +135,9 @@ names; unknown fields are rejected.
 | `POST /admin/bootstrap-tokens` | Mint a token. Body `BootstrapTokenCreateRequest`: `role` (required), `ttl_hours` (default 24), `max_usages` (default 1), `description`, `autonomous_recovery` (default false), `ephemeral` (default false: nodes enrolled with the token are kept for `--ephemeral-node-retention` after their last refresh instead of `--node-retention`). Returns `201` with `BootstrapTokenCreateResponse`: `id`, `token` (shown once), `role`, `expire_time`. |
 | `DELETE /admin/bootstrap-tokens/{id}` | Revoke a token. Can be repeated. The token stays in the list with `revoke_time` set. |
 | `GET /admin/enrollments` | `EnrollmentRequestListResponse`: bootstrap enrollment requests, pending and decided. |
-| `POST /admin/enrollments/{id}/approve` | Approve. Spends a token usage. Checks the token again, and checks the labels against the role's `allowed_labels`. |
-| `POST /admin/enrollments/{id}/reject` | Reject. |
-| `POST /admin/revoke` | Body `{"peer_id": "..."}`. Ban the node and, for an OIDC enrollment, the identity behind it. |
+| `POST /admin/enrollments/{id}/approve` | Approve. Spends a token usage. Checks the token again, and checks the labels against the role's `allowed_labels`. Answers `200` with a plain-text body, or `409` when the request is already resolved. The route answers `410` when the token was revoked, expired or spent after the request was queued, and `403` when the token's owner is banned. |
+| `POST /admin/enrollments/{id}/reject` | Reject. Answers `200` with a plain-text body, or `409` when the request is already resolved. |
+| `POST /admin/revoke` | Body `TokenRevokeRequest` (`peer_id`), as protojson or binary protobuf. Answers `TokenRevokeResponse` in the encoding of the request. Ban the node and, for an OIDC enrollment, the identity behind it. |
 | `POST /admin/nodes/{peer_id}/unban` | Lift both bans. |
 | `POST /admin/nodes/{peer_id}/autonomous-recovery` | Body `{"enabled": true}`. Toggle the flag on an enrolled node. |
 
@@ -133,8 +151,8 @@ with `403`). The console uses these routes.
 |---|---|
 | `GET /user/status` | `UserStatusResponse`: the caller, their enrolled nodes and tokens. For an administrator it also carries the routers and the policy. Nodes whose session expired are left out. |
 | `GET /user/nodes` | `NodeListResponse`: one page of enrolled nodes, most recent enrollment first. `state` (`admitted`, `expired` or `banned`, repeatable) and `role` narrow the list. An expired OIDC enrollment can renew in place, so the console pages `state=expired` to keep those nodes revocable. An administrator sees every owner's nodes and may pick one with `owner_id`; a user sees only their own. Query `page_size` (default 50, at most 200) and `page_token`, the `next_page_token` of the previous page. |
-| `POST /user/bootstrap-tokens` | Mint a token owned by the caller; body and response as on the admin route. `role` defaults to `mesh:role:node`. Banning the owner disables the tokens they minted. |
-| `POST /user/revoke` | Ban one of the caller's own nodes. |
+| `POST /user/bootstrap-tokens` | Mint a token owned by the caller; body and response as on the admin route. `role` defaults to `mesh:role:node`. A caller who is not an administrator may mint only `mesh:role:node` tokens without `autonomous_recovery`, otherwise `403`. For such a caller `ttl_hours` is at most `168` and `max_usages` at most `10`, otherwise `400`. Banning the owner disables the tokens they minted. |
+| `POST /user/revoke?id=` | Ban one of the caller's own nodes. An administrator may ban any node. Answers `200` with a plain-text body, `403` for a node the caller does not own, and `404` for an unknown node. |
 
 ## Notes
 
