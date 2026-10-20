@@ -261,7 +261,7 @@ their own, and `type: egress` in `agentmesh-node.yaml` is refused.
 | `name` | Required and unique in the policy. The destination hostname, lowercase, without a port or a path. It is the service name in grants (`egress://<name>`) and in the `service()` fact. One hostname; no wildcard. |
 | `target_url` | Where the serving node forwards HTTP requests. Optional; `https://<name>` when empty. `http` or `https`, no credential, no query. |
 | `served_by` | Role names or `key=value` labels selecting the serving nodes. At least one entry is required. A node matches when any entry names one of its roles or attested labels. |
-| `credential` | Shorthand for `broker.static_secret`: name of a file in `<--secrets-dir>/<credential>`. Cannot be combined with `broker`. |
+| `credential` | Shorthand for `broker.static_secret`: name of a file in `<--secrets-dir>/<credential>`. Cannot be combined with `broker`, unless `broker.static_secret` names the same file. |
 | `broker` | `CredentialBroker` configuring how the egress node obtains the upstream credential. See [Credential brokers](#credential-brokers). |
 | `inspection` | `Inspection` pipeline executed at the egress node before the upstream credential is injected. See [Content inspection](#content-inspection). |
 | `mode` | `EGRESS_MODE_HTTP` (default) or `EGRESS_MODE_TCP` (named `CONNECT` tunnel). |
