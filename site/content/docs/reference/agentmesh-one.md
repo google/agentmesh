@@ -55,7 +55,8 @@ downloaded tunnel connector.
 ### Embedded component tunables
 
 These flags pass through to the embedded control plane and router. A value
-of zero leaves the default of that component unchanged.
+of zero leaves the default of that component unchanged, except where the
+row says otherwise.
 
 | Flag | Corresponds to |
 |---|---|
@@ -72,8 +73,8 @@ of zero leaves the default of that component unchanged.
 | `--router-low-watermark`, `--router-high-watermark` | `--low-watermark`, `--high-watermark` |
 | `--router-conns-per-source-ip` | `--conns-per-source-ip`. `0` follows the high watermark, because peers behind a proxy share source IPs. |
 | `--router-relay-limit-duration`, `--router-relay-limit-data` | `--relay-limit-duration`, `--relay-limit-data`. `0` keeps `1h` and no data limit, so set a long duration such as `24h` instead of an unlimited one. |
-| `--router-shutdown-lease-ttl` | `--shutdown-lease-ttl`, default `30s`. |
-| `--router-auth-deadline` | `--auth-deadline`, default `1m`. |
+| `--router-shutdown-lease-ttl` | `--shutdown-lease-ttl`, default `30s`. `0` sends no last lease. |
+| `--router-auth-deadline` | `--auth-deadline`, default `1m`. `0` keeps every connection. |
 | `--router-allow-loopback` | `--allow-loopback`. Defaults to `true` here, for a laptop. Disable it on a public deployment. |
 
 ## The banner
