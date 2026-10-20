@@ -69,7 +69,7 @@ Responses that carry credentials are sent with `Cache-Control: no-store`.
 | `GET /keys` | The current set of signing public keys, signed by every key in the set. A caller accepts the set only if one signature verifies under a key it already trusts. |
 | `GET /.well-known/openid-configuration`, `GET /.well-known/oauth-authorization-server` | OIDC Discovery and OAuth 2.1 Authorization Server metadata for outbound STS federation and MCP OAuth 2.1 clients. |
 | `GET /jwks` | JSON Web Key Set (`ES256` public keys) for verifying border JWTs minted by `POST /sts/token`. |
-| `GET /oauth/authorize`, `POST /oauth/token` | OAuth 2.1 Authorization Code + PKCE endpoints (honouring RFC 8707 `resource` indicators to scope the issued Task Biscuit). Tokens from `--workload-issuer` are refused at `/oauth/authorize` with `403`. |
+| `GET /oauth/authorize`, `POST /oauth/authorize`, `POST /oauth/token` | OAuth 2.1 Authorization Code + PKCE endpoints (honouring RFC 8707 `resource` indicators to scope the issued Task Biscuit). `POST /oauth/token` also serves RFC 8693 token exchange (`grant_type=urn:ietf:params:oauth:grant-type:token-exchange`). For a JWT `subject_token` the control plane mints a Delegated Session Biscuit. For a Biscuit `subject_token` the control plane returns that Biscuit, attenuated by the request's task parameters when there are any. Tokens from `--workload-issuer` are refused at `/oauth/authorize` with `403`. |
 
 ### Enrollment, refresh, and STS
 
