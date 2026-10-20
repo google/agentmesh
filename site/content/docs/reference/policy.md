@@ -162,8 +162,8 @@ Exact entries of one fact are merged into one `granted_target_set` fact.
 | `*` | any label |
 
 Keys match `[a-zA-Z0-9_.-]{1,63}`. Values are up to 255 characters with no
-`,`, `=` or control characters. Every label that a node declares must be
-permitted by a role it holds, or enrollment fails. Manual approval of a
+`,`, `=`, `"`, `\` or control characters. Every label that a node declares
+must be permitted by a role it holds, or enrollment fails. Manual approval of a
 bootstrap enrollment does not bypass this check.
 
 ### HTTP grants

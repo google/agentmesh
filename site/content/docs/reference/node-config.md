@@ -59,10 +59,12 @@ does not know.
 
 ## `labels`
 
-A map of `key: value`. Keys are 1 to 63 characters from `[a-zA-Z0-9_.-]`.
-Values are non-empty, at most 255 characters, and contain no `,`, `=` or
-control characters, because the wire form is a comma-separated `key=value`
-list. A malformed label stops the node at start.
+A map of `key: value`, at most 64 entries. Keys are 1 to 63 characters from
+`[a-zA-Z0-9_.-]`. Values are non-empty and at most 255 characters. Values
+contain no `,` or `=`, because the wire form is a comma-separated `key=value`
+list. Values also contain no `"`, `\` or control characters, because the
+control plane writes the value into Datalog. A malformed label, or more than
+64 labels, stops the node at start.
 
 Labels are sent at enrollment. The control plane writes them into the node's
 credential as `label(key, value)` facts, but only if a role the node holds
