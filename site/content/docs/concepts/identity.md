@@ -224,8 +224,9 @@ the operator puts a new key first and keeps the previous key in the file
 until every credential that key signed has expired. `GET /keys`
 returns the current set of keys, signed by each key in the set. Routers and
 nodes fetch it at enrollment and then every `--control-plane-sync-interval`,
-together with the ban set, revocation list, and the mesh policy. A rotation
-event only brings the next pull forward. Both
+together with the ban set and the mesh policy. Nodes also pull the revocation
+list and their egress assignments. A rotation event only brings the next pull
+forward. Both
 accept a new set only if one of its signatures verifies under a key they
 already trust. The first key comes from enrollment, and each later key is
 vouched for by the key it replaces.
