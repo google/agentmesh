@@ -16,7 +16,7 @@ served on the same listeners.
 
 | Listener | Requirement |
 |---|---|
-| TCP (`--bind-addr`) | `X-Mesh-Authentication: Bearer <token>` on every request, or `Authorization: Bearer <token>` on non-proxy endpoints (`/mcp`, `/v1/*`, `/egress/*`, `/oauth/*`), or a client certificate when `--tls-ca` is set. |
+| TCP (`--bind-addr`) | `X-Mesh-Authentication: Bearer <token>` on every request, or a client certificate when `--tls-ca` is set. Every route except the proxy path `/mesh/{peer-id}/...` also accepts `Authorization: Bearer <token>`. |
 | Unix socket (`--socket-path`) | None required for node-level access (the socket has mode `0600`). A caller may still pass an Agent Mesh Task Biscuit or platform JWT in `X-Mesh-Authentication` or `Authorization` to scope the request to that caller's identity and task rules. |
 
 The bearer `<token>` accepted by `agentmesh-node` can be:
