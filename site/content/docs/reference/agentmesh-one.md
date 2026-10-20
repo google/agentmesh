@@ -38,6 +38,7 @@ downloaded tunnel connector.
 | `--data-dir` | `.` | See above. On stateless platforms where `router.key` is absent and `AGENTMESH_ADMIN_TOKEN` / `--admin-token-path` is supplied, `router.key` is derived deterministically so the router keeps its PeerID across restarts. |
 | `--db-driver` | `sqlite` | `sqlite` or `postgres`. |
 | `--db-dsn` | `<data-dir>/agentmesh.db` | Database DSN. |
+| `--db-dsn-path` | | File containing the DSN. Overrides `--db-dsn`. Can also be set with `AGENTMESH_DB_DSN`. A PostgreSQL DSN contains a password, so use the file or the variable for PostgreSQL. |
 | `--token-path` | | File containing the standing join token. Can also be set with `AGENTMESH_TOKEN`. Generated and saved to the data directory when neither is set. |
 | `--no-join-token` | `false` | Run without a standing join token. Devices can then enroll only with minted tokens or OIDC. |
 | `--admin-token-path` | | File containing the admin token. Can also be set with `AGENTMESH_ADMIN_TOKEN`. Generated and saved to the data directory when neither is set. |
