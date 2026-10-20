@@ -40,12 +40,12 @@ services:
 
 attenuation:
   rules:
-    - 'maintenance() <- time($t), $t > 2026-12-31T00:00:00Z;'
+    - 'maintenance(true) <- time($t), $t > 2026-12-31T00:00:00Z;'
   checks:
     - 'check if label("team", "platform");'
   policies:
     - 'deny if service("mcp", "filesystem"), group("contractors");'
-    - 'deny if maintenance();'
+    - 'deny if maintenance(true);'
 
 egress:
   require_labels:
