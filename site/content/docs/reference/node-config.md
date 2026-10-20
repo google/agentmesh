@@ -130,7 +130,7 @@ Facts available:
 | `role($r)` | The caller's mesh roles. |
 | `label($k, $v)` | The caller's attested labels. |
 | `node($id)`, `client_peer_id($id)`, `expiration($t)` | The caller's credential binding and expiry. |
-| `granted_service_*`, `granted_target_*`, `granted_agent_*` | The caller's grants. |
+| `granted_*`, `http_granted_service_*` | The caller's grants. [Datalog vocabulary](../policy/#datalog-vocabulary) lists them. |
 | `target_fact($name, $value)` | This node's own identity facts, for target matching. |
 | `agent($id)` | The agent the caller says it acts for, when present. |
 | `method($m)`, `path($p)` | The request, when it is HTTP: the method as received and the path as the backend sees it. On a tunnel, `CONNECT` and an empty path. Absent on a stream that carries no HTTP request. |
