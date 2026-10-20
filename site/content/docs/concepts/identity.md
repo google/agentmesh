@@ -83,9 +83,11 @@ mints a credential:
 
 The node stores the credential, the control plane's public key, the control
 plane URL and the router addresses it received. From then on it is a member
-of that mesh only. If you point it at a different control plane later, it
-refuses until you reset it, because a credential is only valid for the mesh
-that issued it.
+of that mesh only, because a credential is only valid for the mesh that
+issued it. If you point `agentmesh-node run --join` at a different control
+plane on a terminal, the node asks for a confirmation. Then the node replaces
+the stored credential and keeps its peer ID. Without a terminal, the node
+refuses until you run `agentmesh-node reset`.
 
 ## The credential
 
