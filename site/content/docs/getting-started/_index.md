@@ -4,9 +4,12 @@ linkTitle: "Getting started"
 weight: 1
 ---
 
-Every Agent Mesh has a **control plane** (which enrolls members, distributes
-policy, and runs the router) and the **members** (`agentmesh-node` or native SDK
-programs) that connect to it.
+Every Agent Mesh has a **control plane**, one or more **routers** and the
+**members** (`agentmesh-node` or native SDK programs). The control plane
+enrolls members and distributes policy. The routers keep the directory of
+members and their services. A router relays traffic between two members
+that cannot connect directly. The members enroll with the control plane and
+connect to the routers.
 
 To connect an agent or machine to a mesh, you need **a running control plane
 and its URL** (`https://...`).
