@@ -243,7 +243,8 @@ list and their egress assignments. A rotation event brings the next pull
 forward. A node also trusts the event's `new_public_key` at once. Routers and
 nodes accept a new set only if one of its signatures verifies under a key they
 already trust. The first key comes from enrollment, and each later key is
-vouched for by the key it replaces.
+vouched for by the key it replaces. A node or router whose credential predates
+a key in the new set refreshes that credential on the same sync pass.
 
 Nobody can verify a credential signed by a retired key, including the
 control plane. Under automatic rotation, the control plane retires the key
