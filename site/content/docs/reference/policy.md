@@ -391,13 +391,16 @@ statements.
 | `label` | key, value | control plane |
 | `right` | `relay` | control plane, for routers |
 | `target_unrestricted` | `true` | control plane for routers, and policy rules for roles with `allowed_targets: ["*"]` |
+| `target_restricted` | `true` | node rules, for a role with an `allowed_targets` entry other than `*` |
 | `granted_service_exact`, `_set`, `_prefix`, `_suffix`, `_all`, `_all_types` | type, name/set/pattern | control plane and node rules |
+| `granted_publish_exact`, `_set`, `_prefix`, `_suffix`, `_all`, `_all_types` | type, name/set/pattern | control plane and node rules, from `allowed_publish` and `served_by` |
 | `granted_target_exact`, `_set`, `_prefix`, `_suffix`, `_all`, `_all_facts` | fact, value/set/pattern | control plane and node rules |
 | `http_granted_service_exact`, `_prefix`, `_suffix`, `_all`, `_all_types` | type, name/pattern | control plane and node rules, for an `http` entry |
 | `granted_method`, `granted_method_any` | type, key, set | control plane and node rules, for an `http` entry |
 | `granted_path_exact`, `granted_path_prefix`, `granted_path_any` | type, key, set/prefix | control plane and node rules, for an `http` entry |
 | `tar_block` | base64url `TaskAuthorizationRule` | holder, in appended blocks `1..k` |
 | `service` | type, name | destination node, per request |
+| `publish` | type, name | the router before it keeps a directory record, and a caller before it sends to a provider reached by name |
 | `connection_peer_id` | peer ID | destination node, per request |
 | `time` | date | destination node, per request |
 | `method` | string | destination node, on an HTTP request: the method as received; `CONNECT` on a tunnel |
