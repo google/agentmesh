@@ -75,12 +75,15 @@ notice.
 
 ### Service patterns
 
-`type://name`, where `type` is `mcp`, `inference`, `a2a`, `egress` or
-`system`, and `name` consists of dot-separated DNS-style labels. For
-`egress` the name is the hostname of a destination outside the mesh, written
-lowercase, with no scheme, port or path: `egress://api.github.com/v3` is
-rejected, because the path belongs in the role's `http` entry or a
-`TaskAuthorizationRule`. See [Egress destinations](#egress-destinations).
+`type://name`. The types are `mcp`, `inference`, `a2a`, `egress` and
+`system`. The control plane checks the form of an entry and not the type, so
+a type outside this list passes too. `name` is dot-separated labels, each 1
+to 63 characters of `[a-zA-Z0-9_-]` with no leading `-`. A `/path` after the
+name is part of the name. For `egress` the name is the hostname of a
+destination outside the mesh. It is lowercase, with no scheme, port or path.
+The control plane rejects `egress://api.github.com/v3`, because the path
+belongs in the role's `http` entry or a `TaskAuthorizationRule`. See
+[Egress destinations](#egress-destinations).
 
 | Pattern | Compiles to | Matches |
 |---|---|---|
