@@ -252,9 +252,9 @@ role and the roles bound to `mesh:system:authenticated` or to its
 
 An entry of `egress` is a destination outside the mesh that selected nodes
 serve as `egress://<name>`. The admin writes it once; each selected node
-receives it at `GET /egress`, registers the service, announces it on the DHT
-and forwards requests to it. Nodes hold no egress configuration of their
-own, and `type: egress` in `agentmesh-node.yaml` is refused.
+receives it at `GET /egress`, registers the service, announces it to the
+directory and forwards requests to it. Nodes hold no egress configuration of
+their own, and `type: egress` in `agentmesh-node.yaml` is refused.
 
 | Field | Meaning |
 |---|---|
