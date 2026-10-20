@@ -15,10 +15,15 @@ deployment and the mechanism that enforces each of them.
   bootstrap tokens that you mint. The bindings in the control plane decide
   which identities receive which roles. An identity without a binding cannot
   enroll a node.
-- **The signing key.** The control plane generates its Ed25519 signing keys
-  and stores them in its database. Every credential in the mesh is signed by
-  one of these keys, and nobody outside the deployment can mint or extend a
-  credential. The keys rotate on the schedule you set.
+- **The signing key.** By default the control plane generates its Ed25519
+  signing keys, stores them in its database and rotates them on the schedule
+  you set. With `--signing-key-path` you supply the keys in a PEM file
+  instead, and the control plane does not rotate them. To rotate, put a new
+  key first in the file. Keep the previous key in the file until every
+  credential it signed has expired. The control plane re-reads the file
+  every 30 seconds, so a rotation needs no restart. Every credential in the
+  mesh is signed by one of these keys, and nobody outside the deployment can
+  mint or extend a credential.
 - **The policy.** What each role may call, on which nodes and with which
   labels, is stored in your database. It can only be changed with your admin
   token or through your console.
