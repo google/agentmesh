@@ -138,8 +138,8 @@ single pass, and evaluate the rules directly in host code.
   **at least one** `TaskRule`. An empty `rules` list denies everything.
 - Across appended blocks `1..k`, semantics are **strict intersection (logical
   AND)**: the request must be permitted by Block 0's standing Datalog policy,
-  arrive before every block's `expire_time`, and match at least one `TaskRule`
-  in **every** appended `TaskAuthorizationRule` block.
+  arrive at or before every block's `expire_time`, and match at least one
+  `TaskRule` in **every** appended `TaskAuthorizationRule` block.
 
 Each `TaskRule` scopes:
 
