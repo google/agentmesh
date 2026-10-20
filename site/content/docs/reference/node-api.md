@@ -59,8 +59,8 @@ Authorization Server.
 | `ANY /mesh/{peer-id}/{type}/{name}[/{path}]` | token | Reverse proxy to one service on one peer. |
 | `ANY /egress/{destination}[/{path}]` | token | HTTP proxy to an external destination assigned to this node. See [Egress](#egress). |
 | `CONNECT {destination}:{port}` | token | Named TCP tunnel to an `EGRESS_MODE_TCP` destination assigned to this node. |
-| `GET /mesh/identity` | token, socket or mTLS only | This node's credential and the key it verifies under. |
-| `GET /mesh/peer/{peer-id}/evidence` | token, socket or mTLS only | A peer's credential as this node last verified it. |
+| `GET /mesh/identity` | token, socket or mTLS only | `IdentityEvidenceResponse`: this node's credential and the control plane keys it trusts. |
+| `GET /mesh/peer/{peer-id}/evidence` | token, socket or mTLS only | `PeerEvidenceResponse`: a peer's credential as this node last verified it. |
 | `GET /debug/*` | token | Operator diagnostics. These answer even when the mesh is unreachable. |
 
 `--metrics-addr` serves `/metrics`, `/healthz` and `/readyz` on a second
@@ -373,10 +373,14 @@ agentmesh-node forward egress://pg.internal.example:5432 127.0.0.1:15432
 
 ## Identity evidence
 
-`GET /mesh/identity` returns the node's credential (base64), the control
-plane public key it verifies under (SPKI DER), the peer ID, roles, labels
-and expiry. `GET /mesh/peer/{peer-id}/evidence` returns the same for a peer
-that the node has authenticated. Both refuse plain TCP. They are reachable
+`GET /mesh/identity` returns `IdentityEvidenceResponse` as protojson:
+`peer_id`, `biscuit` (the credential, base64), `biscuit_expire_time`,
+`control_plane_url`, `trusted_control_plane_keys` (Ed25519 SPKI DER, base64)
+and `check_time`. `GET /mesh/peer/{peer-id}/evidence` returns
+`PeerEvidenceResponse` for a peer that the node has authenticated. Its
+fields are `peer_id`, `biscuit`, `verifying_key` (the trusted key the
+credential verified under), `roles`, `labels`, `expire_time`,
+`revocation_ids` and `check_time`. Both refuse plain TCP. They are reachable
 only over the Unix socket or over an mTLS-verified connection, because this
 material is meant for the node's owner and for auditors, not for agents.
 

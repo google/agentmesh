@@ -94,10 +94,11 @@ Two endpoints on the node's local API expose what the node knows, for audit
 or automation. They are reachable only over the node's Unix socket or over
 mTLS.
 
-- `GET /mesh/identity` returns the node's own credential, the control plane
-  public key it was verified against, and its roles, labels and expiry.
-- `GET /mesh/peer/{peer-id}/evidence` returns the same information for a peer
-  that the node has authenticated.
+- `GET /mesh/identity` returns the node's own credential, its expiry, and
+  the control plane public keys the node trusts.
+- `GET /mesh/peer/{peer-id}/evidence` returns a peer's credential as the
+  node last verified it. The response adds the key the credential verified
+  under, and the peer's roles, labels and expiry.
 
 Both results can be verified offline with the control plane's public key.
 
