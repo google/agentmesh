@@ -12,6 +12,7 @@ weight: 1
 agentmesh-node join [control-plane-url] [flags]            enroll and store a credential
 agentmesh-node run [flags]                                 run the node
 agentmesh-node forward egress://<name>:<port> [local-addr] forward a local TCP port to a named egress tunnel
+agentmesh-node debug <command>                             diagnose a running node over its Unix socket
 agentmesh-node reset [--all] [--yes]                       forget the credential or everything
 agentmesh-node state export|import <dir>                   move the identity to or from a state directory
 agentmesh-node skill install|list|show                     manage the agent skill document
@@ -127,6 +128,26 @@ explains how to enroll.
 | `--autorelay-min-interval`, `--autorelay-boot-delay`, `--autorelay-backoff` | `30s`, `0s`, `3s` | libp2p AutoRelay tuning. |
 | `--log-level` | `info` | `debug`, `info`, `warn` or `error`. |
 | `--log-format` | `text` | `text` or `json`. |
+
+## `debug`
+
+Diagnostics for a running node, over its Unix socket. Each command prints
+the answer of the matching [`/debug/*` route](../node-api/#debug) of the
+local API. The answer's shape is not stable across releases.
+
+| Command | Prints |
+|---|---|
+| `debug mesh-info` | The routers the node holds and every peer it is connected to. |
+| `debug network-info` | The addresses the node listens on, announces, and last announced to the directory. |
+| `debug token-info` | Whether the node holds a credential, and how long until the credential expires. |
+| `debug logs` | The last lines of the node's log. |
+| `debug connectivity [peer-id]` | Connected and known peer counts. Whether a dial of the node's router, or of the named peer, succeeds, and how long it takes. |
+| `debug peer-addrs <peer-id>` | The addresses the directory holds for a peer, looked up and not dialed. |
+| `debug connect-peer <multiaddr>` | Connects the node to a peer by its full multiaddress, then prints `{"status":"connected"}`. |
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--socket-path` | `<data-dir>/agentmesh.sock` | Unix socket of the running node. |
 
 ## `reset`
 
