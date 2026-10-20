@@ -9,7 +9,7 @@ weight: 1
 `agentmesh-node` is the mesh member that runs beside an agent or a service.
 
 ```text
-agentmesh-node join [control-plane-url] [flags]            enroll and store a credential
+agentmesh-node join <control-plane-url> [flags]            enroll and store a credential
 agentmesh-node run [flags]                                 run the node
 agentmesh-node forward egress://<name>:<port> [local-addr] forward a local TCP port to a named egress tunnel
 agentmesh-node debug <command>                             diagnose a running node over its Unix socket
@@ -42,7 +42,7 @@ Accepted by every subcommand.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--control-plane` | stored value | Control plane URL. `join` takes it as a positional argument. `https://` is required unless the host is loopback. |
+| `--control-plane` | stored value | Control plane URL. `join` enrolls with the URL given as its argument, not with this flag. `https://` is required unless the host is loopback. |
 | `--insecure-control-plane` | `false` | Accept a plaintext `http://` URL to a non-loopback host. Whoever answers that URL becomes the node's trust root. Intended for networks that are already trusted, such as a cluster. |
 | `--config` | `agentmesh-node.yaml` | Node configuration file. |
 | `--data-dir` | see above | Data directory. |

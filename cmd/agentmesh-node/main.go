@@ -667,7 +667,7 @@ func main() {
 	}
 
 	joinCmd := &cobra.Command{
-		Use:   "join [control_plane_url]",
+		Use:   "join <control-plane-url>",
 		Short: "Join the Agent Mesh",
 		Args:  cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
