@@ -6,7 +6,7 @@ This provides a realistic workload for the Agent Mesh scale testing experiment. 
 
 ## How it works
 
-1. It connects to the `agentmesh-node` MCP endpoint via SSE (or `agentmesh-box` proxy in the microVM).
+1. It connects to the `agentmesh-node` MCP endpoint via Streamable HTTP (or `agentmesh-box` proxy in the microVM).
 2. It dynamically converts all discovered MCP tools into LangChain `Tool` objects with JSON schemas.
 3. It initializes a LangChain `create_agent` tool-calling agent using the Agent Mesh's OpenAI-compatible inference endpoint (`/v1/chat/completions`).
 4. It is given an adversarial prompt to explore all tools, fuzz them with extreme inputs, and find bugs.

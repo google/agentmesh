@@ -144,9 +144,10 @@ On the local API listeners, `agentmesh-node` serves:
 
 ## MCP tools
 
-The `/mcp` endpoint speaks Streamable HTTP. The older SSE transport is
-refused with `400`. The server's instructions field tells a client how the
-tools fit together. The tools are:
+The `/mcp` endpoint speaks Streamable HTTP and takes `POST` only. The
+older SSE transport opens with `GET`, and the node answers that `GET` with
+`405`. The server's instructions field tells a client how the tools fit
+together. The tools are:
 
 ### `get_mesh_info`
 

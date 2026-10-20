@@ -86,9 +86,9 @@ async def main():
     print(f"Connecting to MCP at {args.mcp_url}...")
     
     # Connect to MCP over Streamable HTTP, which is what the mesh serves; the
-    # older SSE transport is answered with 400. The transport takes no headers
-    # of its own -- they belong to the HTTP client -- and inside a sandbox
-    # there are none to send, because the boundary does the authenticating.
+    # older SSE transport opens with GET, which the node answers with 405. The
+    # transport takes no headers of its own -- they belong to the HTTP client --
+    # and inside a sandbox there are none, because the boundary authenticates.
     transport_args = {}
     if headers:
         import httpx2
