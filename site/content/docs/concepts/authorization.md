@@ -155,8 +155,12 @@ The node builds a Biscuit authorizer over Block 0 and adds, in this order:
    destination outside the mesh (`egress://`) it adds `host(...)` and
    `port(...)`.
 2. **The baseline checks**: `client_peer_id($id), connection_peer_id($id)`
-   (the token belongs to the peer that presents it), and the expiration
-   check against the current time.
+   (the token belongs to the peer that presents it), the expiration check
+   against the current time, and the target check
+   `allow_network_target($fact, $val) or target_unrestricted(true)`. The
+   node adds the target check after its local rules. The position of a
+   check does not change its result, because Biscuit runs every check after
+   it has applied all rules.
 3. **The node's own identity facts**, taken from its own credential, as
    `target_fact("group", "dev-nodes")` and similar. The caller's
    `allowed_targets` are matched against these facts.
@@ -165,10 +169,9 @@ The node builds a Biscuit authorizer over Block 0 and adds, in this order:
    `deny` policies.
 5. **The baseline policies**: `allow if service($t,$n), granted_service_exact($t,$n)`
    and the equivalent policies for sets, prefixes, suffixes, per-type and
-   global wildcards, plus the target check
-   `allow_network_target(...) or target_unrestricted(true)`, and the rules
-   that turn an [HTTP grant](../../reference/policy/#http-grants) into a
-   service grant when the request's method and path match it.
+   global wildcards, and the rules that turn an
+   [HTTP grant](../../reference/policy/#http-grants) into a service grant
+   when the request's method and path match it.
 6. **The synced mesh policy rules** described above.
 
 Biscuit evaluates every `check` and requires all of them to pass. It then
