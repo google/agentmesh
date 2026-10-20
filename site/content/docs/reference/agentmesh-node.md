@@ -197,7 +197,7 @@ node.
 | `skill install` | Write to `~/.claude/skills/agentmesh/SKILL.md` and `~/.gemini/config/skills/agentmesh/SKILL.md`. |
 | `skill install --project` | Write to `./.claude/skills/agentmesh/` and `./.agents/skills/agentmesh/` in the current directory. |
 | `skill install --dir DIR` | Write to `DIR/agentmesh/SKILL.md`. |
-| `skill list` | Show each install location and whether the copy matches this binary. |
+| `skill list` | Show each install location and whether the copy matches this binary. Takes `--project` and `--dir DIR` as `skill install` does. |
 | `skill show` | Print the document. |
 
 ## Environment variables
