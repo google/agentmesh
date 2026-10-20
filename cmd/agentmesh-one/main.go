@@ -224,7 +224,7 @@ func main() {
 
 	// Embedded control plane tunables.
 	rootCmd.Flags().DurationVar(&cpTunables.LeaseDuration, "control-plane-lease-duration", 0, "Router lease validity (0 keeps the component default)")
-	rootCmd.Flags().IntVar(&cpTunables.DHTReplication, "dht-replication", 0, "How many routers hold each service a member publishes and answer each lookup (0 keeps the component default of 3); published on /info for the whole mesh")
+	rootCmd.Flags().IntVar(&cpTunables.DHTReplication, "dht-replication", 0, "How many routers closest to the key get a copy of each record a member announces, besides the router that keeps it (0 keeps the component default of 3); published on /info for the whole mesh")
 	rootCmd.Flags().DurationVar(&cpTunables.DHTReprovideInterval, "dht-reprovide-interval", 0, "How often a member re-announces each service it publishes (0 keeps the component default of 5m); a stopped provider stays listed for three intervals; published on /info for the whole mesh")
 	rootCmd.Flags().DurationVar(&cpTunables.KeyRotationInterval, "control-plane-key-rotation-interval", 0, "Biscuit signing key rotation interval (0 keeps the component default)")
 	rootCmd.Flags().DurationVar(&cpTunables.KeyGracePeriod, "control-plane-key-grace-period", 0, "How long rotated-out keys stay valid for verification (0 keeps the component default)")
