@@ -79,7 +79,7 @@ A list. Each entry has these keys:
 | Key | Required | Meaning |
 |---|---|---|
 | `type` | yes | `mcp`, `inference` or `a2a`. `egress` is refused here: a destination outside the mesh is assigned to nodes by the control plane, in the [egress section](../policy/#egress-destinations) of the mesh policy. |
-| `name` | yes | Unique on this node. DNS-style labels separated by dots (`db-reader`, `build.runner`). Policy grants refer to `type://name`. |
+| `name` | yes | Unique on this node. Dot-separated labels, each 1 to 63 characters of `[a-zA-Z0-9_-]` with no leading `-` (`db-reader`, `build.runner`). The node checks the name as a [service pattern](../policy/#service-patterns), so a wildcard form or a `/path` suffix passes too. Policy grants refer to `type://name`. |
 | `description` | no | Shown in discovery results and in the console. |
 | `target_url` | `mcp`: this or `command`; `inference` and `a2a`: yes | Backend URL that the node proxies to. Embedded credentials (`http://user:pass@`) are refused. |
 | `command` | `mcp` only: this or `target_url` | Argument vector of a subprocess that speaks MCP over stdio. The node starts and supervises it. |

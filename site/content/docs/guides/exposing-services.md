@@ -31,8 +31,8 @@ one, so an agent with access to the node cannot make it publish a new
 backend. To change the services, edit the file and restart the node. The
 [node configuration reference](../../reference/node-config/) lists every key.
 
-A `name` must be a valid DNS-style label sequence (`db-reader`,
-`build.runner`), because the mesh uses it in URLs and in policy. A policy
+Write a `name` as dot-separated labels of letters, digits, `_` and `-`
+(`db-reader`, `build.runner`), because the mesh uses it in URLs and in policy. A policy
 grant refers to the pair `type://name`, so `mcp://calculator` in the policy
 means this service and no other.
 
