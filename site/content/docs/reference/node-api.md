@@ -45,7 +45,8 @@ Authorization Server.
 
 | Route | Auth | Purpose |
 |---|---|---|
-| `GET /healthz`, `GET /readyz` | none | `200` while the process is up. Every other route except `/debug/*` and `/.well-known/*` answers `503` until the node is connected to the mesh. |
+| `GET /healthz` | none | `200` while the process is up. |
+| `GET /readyz` | none | `200` once the node is connected to the mesh, that is, holds an authenticated connection to a router, and `503` until then. Every other route except `/debug/*` and `/.well-known/*` answers `503` until the node is connected to the mesh. |
 | `GET /.well-known/oauth-protected-resource` | none | RFC 9728 OAuth 2.1 Protected Resource Metadata naming the Agent Mesh control plane in `authorization_servers`. |
 | `GET /.well-known/oauth-authorization-server` | none | RFC 8414 metadata for this node's token endpoint: the grant types and client authentication methods it accepts. |
 | `POST /oauth/token` | token or client assertion | Token endpoint: RFC 8693 token exchange, RFC 7523 client assertion and JWT authorization grants. Every grant returns a Delegated or Task-Attenuated Biscuit. See [Token endpoint (`/oauth/token`)](#token-endpoint-oauthtoken). |
