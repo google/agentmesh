@@ -145,7 +145,7 @@ with `403`). The console uses these routes.
 | `GET /user/status` | `UserStatusResponse`: the caller, their enrolled nodes and tokens. For an administrator it also carries the routers and the policy. Nodes whose session expired are left out. |
 | `GET /user/nodes` | `NodeListResponse`: one page of enrolled nodes, most recent enrollment first. `state` (`admitted`, `expired` or `banned`, repeatable) and `role` narrow the list. An expired OIDC enrollment can renew in place, so the console pages `state=expired` to keep those nodes revocable. An administrator sees every owner's nodes and may pick one with `owner_id`; a user sees only their own. Query `page_size` (default 50, at most 200) and `page_token`, the `next_page_token` of the previous page. |
 | `POST /user/bootstrap-tokens` | Mint a token owned by the caller; body and response as on the admin route. `role` defaults to `mesh:role:node`. A caller who is not an administrator may mint only `mesh:role:node` tokens without `autonomous_recovery`, otherwise `403`. For such a caller `ttl_hours` is at most `168` and `max_usages` at most `10`, otherwise `400`. Banning the owner disables the tokens they minted. |
-| `POST /user/revoke` | Ban one of the caller's own nodes. |
+| `POST /user/revoke?id=` | Ban one of the caller's own nodes. An administrator may ban any node. Answers `200` with a plain-text body, `403` for a node the caller does not own, and `404` for an unknown node. |
 
 ## Notes
 
