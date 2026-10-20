@@ -151,7 +151,7 @@ together. The tools are:
 
 ### `get_mesh_info`
 
-No parameters. Returns `router_peer_id`, `connected_peers`,
+No parameters. Returns `peer_id`, `router_peer_id`, `connected_peers`,
 `attached_routers` and `local_api_socket`. `attached_routers` are the
 routers the node holds, which answer its directory requests;
 `connected_peers` is every peer it has a connection with, the routers
