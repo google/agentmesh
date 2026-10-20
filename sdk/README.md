@@ -353,8 +353,8 @@ This is how an SDK agent is reached.
 
 A node that serves a tool evaluates the caller's biscuit with an authorizer
 that has, in this order: the biscuit's own authority facts (`node`, `role`,
-`label`, `agent`), injected facts `service(<type>, <name>)`,
-`connection_peer_id(<peer>)`, `time(<now>)` and optionally `agent(<claim>)`,
+`label`), injected facts `service(<type>, <name>)`,
+`connection_peer_id(<peer>)` and `time(<now>)`,
 the baseline checks, rules and policies from `api/datalog.go`, the
 `target_fact` facts derived from the provider's own biscuit, and the mesh
 policy rules. Deny by default.
