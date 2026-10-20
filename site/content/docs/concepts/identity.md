@@ -216,7 +216,12 @@ any user action.
 
 The control plane rotates its Biscuit Ed25519 signing key every
 `--key-rotation-interval` (24 hours by default). The previous key stays valid
-for `--key-grace-period` (1 hour by default) and is then retired. `GET /keys`
+for `--key-grace-period` (1 hour by default) and is then retired. With
+`--signing-key-path`, the operator supplies the keys in a PEM file instead,
+and automatic rotation is off. The first Ed25519 key in the file signs
+Biscuits. The control plane re-reads the file every 30 seconds. To rotate,
+the operator puts a new key first and keeps the previous key in the file
+until every credential that key signed has expired. `GET /keys`
 returns the current set of keys, signed by each key in the set. Routers and
 nodes fetch it at enrollment and then every `--control-plane-sync-interval`,
 together with the ban set, revocation list, and the mesh policy. A rotation
