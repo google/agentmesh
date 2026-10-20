@@ -322,7 +322,7 @@ func (s *Server) Init() error {
 			"ed25519_keys", len(s.operatorKeys.ed25519),
 			"es256_keys", len(s.operatorKeys.es256),
 			"reload_interval", operatorSigningKeysReloadInterval.String(),
-			"rotation", "put the new key first in the file and keep the previous one for the grace period")
+			"rotation", "put the new key first in the file and keep the previous one until every credential it signed has expired")
 		s.wg.Add(1)
 		go s.watchOperatorSigningKeys()
 	}
