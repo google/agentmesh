@@ -110,7 +110,10 @@ contains:
 | `role("mesh:role:node")`, `role("developer")` | The roles the identity resolved to, one fact each. |
 | `user("...")`, `email("...")`, `group("...")`, `idp_role("...")` | Claims copied from the OIDC token: subject, verified email, each group, each entry of the issuer's `roles` claim. Absent for bootstrap enrollments. |
 | `label("region", "eu")` | One fact per declared and permitted label. |
-| `granted_service_*`, `granted_target_*` | What the roles allow, compiled from `allowed_services` and `allowed_targets`. [Authorization](../authorization/) describes them. |
+| `granted_service_*`, `granted_target_*`, `granted_publish_*` | What the roles allow, compiled from `allowed_services`, `allowed_targets`, and `allowed_publish`. [Authorization](../authorization/) describes them. |
+| `http_granted_service_*`, `granted_method`, `granted_method_any`, `granted_path_*` | The service, method, and path limits of each `http` entry. The control plane mints these facts in place of `granted_service_*` for an `allowed_services` entry that an `http` entry narrows. |
+| Facts from `custom_datalog` | Each fact written in a role's `custom_datalog`. A rule written there is not minted. The control plane ships it to the nodes with the policy. |
+| `right("relay")`, `target_unrestricted(true)` | The control plane mints them for `mesh:role:router` in place of grants. A router may relay, and no target check applies to it. |
 
 The node does not set any of these facts. Roles come from the bindings in
 the mesh policy, not from the identity provider: an issuer's `roles` claim
