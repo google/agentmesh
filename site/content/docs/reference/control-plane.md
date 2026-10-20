@@ -63,6 +63,14 @@ the encoding of the request. These routes answer in other formats:
 
 Responses that carry credentials are sent with `Cache-Control: no-store`.
 
+The routes a member may call from a browser send
+`Access-Control-Allow-Origin: *` and answer `OPTIONS` with `204`. These are
+the unauthenticated routes other than `/healthz`, `/readyz`, `/metrics` and
+`/oauth/authorize`, and the enrollment, refresh and STS routes other than
+`/routers/lease` and `/nodes/catalog`. Routes under `/admin/` and `/user/`
+send no CORS headers. `POST /policies` and `PUT /policies` do send them,
+because they share the `/policies` route with `GET /policies`.
+
 ### Unauthenticated
 
 | Route | Purpose |
