@@ -222,10 +222,11 @@ plane gives a quiet node more time to refresh. The trade-off is that a
 machine that has been lost or stolen can keep renewing for the same time.
 
 **Allow autonomous recovery.** A node whose record has
-`autonomous_recovery` set may refresh on proof of its own key alone, even
-after the signing key that issued its credential is gone. Set it on the token
-so that every node enrolled with it inherits the flag, or set it on one node
-afterwards:
+`autonomous_recovery` set may refresh even after the signing key that issued
+its credential is gone. The node presents the exact last credential the
+control plane issued to it, with a signature by its key. Set the flag on the
+token, so that every node enrolled with that token inherits the flag, or set
+the flag on one node afterwards:
 
 ```bash
 # on the token, at mint time

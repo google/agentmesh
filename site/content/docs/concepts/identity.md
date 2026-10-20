@@ -245,8 +245,9 @@ it enrolled:
   `agentmesh-node join` again (or to restart the router with the new token). The
   node keeps its peer ID. The control plane recognises the approved peer and
   mints a new credential without going through the approval queue.
-- A bootstrap node whose record has `autonomous_recovery` set may refresh on
-  proof of possession of its key alone. This is off by default, and an
+- A bootstrap node whose record has `autonomous_recovery` set may still
+  refresh. The node presents the exact last credential the control plane
+  issued to it, with a signature by its key. This is off by default, and an
   administrator sets it per token or per node. A node that can always
   recover holds a credential that never expires, and only a ban stops it.
 
