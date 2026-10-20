@@ -183,7 +183,7 @@ block has **0 rules, 0 checks, and 1 `tar_block("<base64url-proto>")` fact**.
 After Stage 1 succeeds, the verifier evaluates the decoded
 `TaskAuthorizationRule` chain against the request:
 
-- The current time must be strictly before every block's `expire_time` (when
+- The current time must be at or before every block's `expire_time` (when
   set).
 - In **every** appended `TaskAuthorizationRule` block, at least one `TaskRule`
   must match the request's `service`, HTTP `method` and `path` (when
