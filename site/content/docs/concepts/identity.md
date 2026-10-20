@@ -52,7 +52,12 @@ Routers enroll in the same way with `agentmesh-router --jwt-path`. The control
 plane marks workload issuers with `--workload-issuer` (`<issuer>` or
 `<issuer>=<email-suffix>`) so workload tokens can enroll, refresh, and
 exchange credentials while being refused at human operator endpoints
-(`/user/*`, `/oauth/authorize`).
+(`/user/*`, `/oauth/authorize`). A workload issuer that does not answer at
+start-up does not stop the control plane. The control plane retries the
+issuer's discovery in the background, with a delay that grows from 5 seconds
+to 5 minutes. Until the issuer answers, the control plane refuses tokens from
+it. `agentmesh_control_plane_workload_issuer_ready{issuer}` shows which
+issuers have resolved.
 
 **Bootstrap token.** An operator mints a token with the admin API, the
 console, or `agentmesh-one token create`, and copies it to the machine. The node
