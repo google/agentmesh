@@ -159,10 +159,13 @@ caller's credential and the mesh policy on every request.
 
 The service `type` is a contract. `inference` is an OpenAI-compatible API,
 `mcp` an MCP server, `a2a` an A2A agent, and the node speaks that protocol
-to the backend and to nobody else: an `inference` backend is offered for the
-models it lists on `/v1/models`, an `mcp` server once the node has completed
-an MCP session with it, an `a2a` agent once it has served its agent card. A
-plain web server declared under any of these types is never advertised.
+to the backend and to nobody else. Before the node advertises an `mcp`
+server, the node completes an MCP session with the server. Before the node
+advertises an `a2a` agent, the node fetches the agent card. The node does
+not advertise a backend that fails its probe. An `inference` backend has no
+probe, so the node advertises the service as declared. The node offers the
+models that the backend lists on `/v1/models`. The node therefore advertises
+a plain web server declared as `inference`.
 
 ## 3. See it in the console
 
