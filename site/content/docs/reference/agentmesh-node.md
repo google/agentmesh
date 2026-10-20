@@ -68,8 +68,9 @@ bootstrap token, `join` runs an interactive OIDC login.
 
 Labels declared in the configuration file are sent with the enrollment.
 Running `join` for a node that already holds a credential for the same
-control plane enrolls it again. For a different control plane, `join`
-refuses until `agentmesh-node reset` has been run.
+control plane enrolls it again. To move a node to a different control
+plane, run `agentmesh-node reset` first, or use `run --join`, which asks
+for a confirmation before it switches.
 
 ## `run`
 
