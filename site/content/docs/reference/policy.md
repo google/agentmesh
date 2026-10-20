@@ -396,8 +396,9 @@ statements.
 | `granted_publish_exact`, `_set`, `_prefix`, `_suffix`, `_all`, `_all_types` | type, name/set/pattern | control plane and node rules, from `allowed_publish` and `served_by` |
 | `granted_target_exact`, `_set`, `_prefix`, `_suffix`, `_all`, `_all_facts` | fact, value/set/pattern | control plane and node rules |
 | `http_granted_service_exact`, `_prefix`, `_suffix`, `_all`, `_all_types` | type, name/pattern | control plane and node rules, for an `http` entry |
-| `granted_method`, `granted_method_any` | type, key, set | control plane and node rules, for an `http` entry |
-| `granted_path_exact`, `granted_path_prefix`, `granted_path_any` | type, key, set/prefix | control plane and node rules, for an `http` entry |
+| `granted_method` | type, key, set | control plane and node rules, for an `http` entry |
+| `granted_path_exact`, `granted_path_prefix` | type, key, set/prefix | control plane and node rules, for an `http` entry |
+| `granted_method_any`, `granted_path_any` | type, key | control plane and node rules, for an `http` entry with no `methods` or no `paths` |
 | `tar_block` | base64url `TaskAuthorizationRule` | holder, in appended blocks `1..k` |
 | `service` | type, name | destination node, per request |
 | `publish` | type, name | the router before it keeps a directory record, and a caller before it sends to a provider reached by name |
