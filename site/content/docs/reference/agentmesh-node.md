@@ -46,7 +46,7 @@ Accepted by every subcommand.
 | `--insecure-control-plane` | `false` | Accept a plaintext `http://` URL to a non-loopback host. Whoever answers that URL becomes the node's trust root. Intended for networks that are already trusted, such as a cluster. |
 | `--config` | `agentmesh-node.yaml` | Node configuration file. |
 | `--data-dir` | see above | Data directory. |
-| `--audience` | `agentmesh-audience` | OIDC audience to request. |
+| `--audience` | `agentmesh-audience` | Audience of the identity token that `run --cloud-provider` fetches from the metadata server. The interactive login uses the audience that `/info` advertises. |
 | `--oidc-issuer` | from `/info` | Override the identity provider that the control plane advertises. |
 | `--device-auth-url` | discovered | Override the device authorization endpoint. |
 | `--headless` | `false` | Force the out-of-band login flow. |
