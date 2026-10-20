@@ -27,9 +27,12 @@ deployment and the mechanism that enforces each of them.
 - **The policy.** What each role may call, on which nodes and with which
   labels, is stored in your database. It can only be changed with your admin
   token or through your console.
-- **Revocation.** A ban takes effect on the next credential refresh (within
-  the credential TTL, 24 hours by default) and, through the mesh event
-  channel, immediately on every connected node.
+- **Revocation.** The control plane publishes a ban as a mesh event.
+  Every connected node and router enforces the ban at once. A node or
+  router that missed the event picks the ban up on its next pull from the
+  control plane. By default a node pulls every 15 minutes and a router
+  every 5 minutes. The control plane refuses the banned node's next
+  credential refresh.
 - **Where the software runs.** Agent Mesh is Apache-2.0, sends no telemetry, and
   does not depend on any hosted service. The control plane, routers and
   nodes run wherever you put them: a laptop, a private cluster, an
