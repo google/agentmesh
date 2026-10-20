@@ -258,9 +258,9 @@ their own, and `type: egress` in `agentmesh-node.yaml` is refused.
 
 | Field | Meaning |
 |---|---|
-| `name` | The destination hostname, lowercase, without a port or a path. It is the service name in grants (`egress://<name>`) and in the `service()` fact. One hostname; no wildcard. |
+| `name` | Required and unique in the policy. The destination hostname, lowercase, without a port or a path. It is the service name in grants (`egress://<name>`) and in the `service()` fact. One hostname; no wildcard. |
 | `target_url` | Where the serving node forwards HTTP requests. Optional; `https://<name>` when empty. `http` or `https`, no credential, no query. |
-| `served_by` | Role names or `key=value` labels selecting the serving nodes. A node matches when any entry names one of its roles or attested labels. |
+| `served_by` | Role names or `key=value` labels selecting the serving nodes. At least one entry is required. A node matches when any entry names one of its roles or attested labels. |
 | `credential` | Shorthand for `broker.static_secret`: name of a file in `<--secrets-dir>/<credential>`. Cannot be combined with `broker`. |
 | `broker` | `CredentialBroker` configuring how the egress node obtains the upstream credential. See [Credential brokers](#credential-brokers). |
 | `inspection` | `Inspection` pipeline executed at the egress node before the upstream credential is injected. See [Content inspection](#content-inspection). |
@@ -281,15 +281,15 @@ None of the fields in `broker` is a secret value:
   JWT at the control plane (`POST /sts/token`) and exchanges it at an RFC 8693
   token endpoint:
   - `token_endpoint`: STS URL (for example, `https://sts.googleapis.com/v1/token`).
-  - `audience`: provider audience (for example, a Google Workload or Workforce
-    Identity Pool provider resource name).
+  - `audience`: required. Provider audience (for example, a Google Workload or
+    Workforce Identity Pool provider resource name).
   - `impersonate`: optional Google Cloud service account email or resource URL
     for `iamcredentials.generateAccessToken`.
   - `scopes`: OAuth scopes requested for the upstream token; a
     `TaskAuthorizationRule` can narrow them further, never widen them.
 - **`aws_assume_role`** (`AWSAssumeRole`): mints a border JWT at the control
   plane and calls AWS STS `AssumeRoleWithWebIdentity`:
-  - `role_arn`: IAM role ARN to assume.
+  - `role_arn`: required. IAM role ARN to assume.
   - `session_policy`: optional IAM session policy JSON template intersected with
     the caller's `TaskAuthorizationRule` (`allowed_permissions` $\rightarrow$
     `Action`, `allowed_resources` $\rightarrow$ `Resource`).
@@ -305,14 +305,14 @@ credential:
 - **`model_armor`**: calls Google Cloud Model Armor `sanitizeUserPrompt` and
   (when `response` is `RESPONSE_INSPECTION_BUFFERED`) `sanitizeModelResponse`
   for Gemini, OpenAI chat, MCP `tools/call`, and A2A payloads:
-  - `template`: `projects/<P>/locations/<L>/templates/<T>`.
+  - `template`: required. `projects/<P>/locations/<L>/templates/<T>`.
   - `response`: `RESPONSE_INSPECTION_BUFFERED` (default) or
     `RESPONSE_INSPECTION_REQUEST_ONLY`.
   - `fail_open`: default `false`.
   - `timeout`: per-call timeout (`google.protobuf.Duration`).
 - **`ext_proc`**: streams the request and response to an Envoy external
   processor (`envoy.service.ext_proc.v3.ExternalProcessor`) over HTTP/2 gRPC:
-  - `target`: `host:port` or `unix:/path/to.sock`.
+  - `target`: required. `host:port` or `unix:/path/to.sock`.
   - `ca`, `client_certificate`: optional file names in `--secrets-dir` for TLS /
     mTLS to the processor.
   - `processing_mode`: `request_header_mode`, `response_header_mode`,
