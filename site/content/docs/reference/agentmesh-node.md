@@ -47,7 +47,7 @@ Accepted by every subcommand.
 | `--config` | `agentmesh-node.yaml` | Node configuration file. |
 | `--data-dir` | see above | Data directory. |
 | `--audience` | `agentmesh-audience` | Audience of the identity token that `run --cloud-provider` fetches from the metadata server. The interactive login uses the audience that `/info` advertises. |
-| `--oidc-issuer` | from `/info` | Override the identity provider that the control plane advertises. |
+| `--oidc-issuer` | | Issuer of the client-credentials grant that `run` enrolls with (`--client-id`, `--client-secret-path`). The interactive login ignores it and uses the issuer that `/info` advertises. |
 | `--device-auth-url` | discovered | Override the device authorization endpoint. |
 | `--headless` | `false` | Force the out-of-band login flow. |
 | `--auth-mode` | `auto` | Login flow: `auto`, `device`, `oob` or `browser`. `auto` uses the browser when one can be opened and the device flow otherwise. `device` fails if the provider has no device endpoint. |
