@@ -213,9 +213,14 @@ node.
 
 ## Exit behaviour
 
-The node exits when its credential can no longer be refreshed. The causes are
-a ban, an expired session, or a signing key that was retired after its grace
-period while the node had no way to enroll again. The last lines of the log
-name the cause. A node that loses its routers keeps running and reconnects.
+The node exits in two cases. The last lines of the log name the cause.
+
+- No router admits the node for three connection checks in a row,
+  `--monitor-interval` (1 minute) apart. A ban ends this way, because the
+  routers drop a banned node and refuse it afterwards.
+- The node's credential has expired, and the node can neither refresh it
+  nor enroll again. An expired session or a retired signing key ends this
+  way.
+
 A node whose control plane is unreachable keeps serving with its current
 credential until that credential expires.
