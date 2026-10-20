@@ -270,7 +270,11 @@ Labels are used in four places:
   passes `required_labels` to `call_remote_tool`. Before it sends any request
   data, the calling node fetches the provider's credential through the
   mutual handshake, verifies it, and confirms that every label named is
-  attested in it. A provider that cannot show them all is skipped.
+  attested in it. When the request names the provider, the node refuses the
+  request if the provider cannot show them all. On the `/v1` inference
+  endpoints and on a `CONNECT` tunnel the node picks the provider itself.
+  There the node skips a provider that fails the check and tries the next
+  one.
 - **An operator drawing a boundary** sets `egress.require_labels` in the
   node configuration. Every provider this node talks to must attest all of
   those labels, whether or not the caller asked for any. The caller can add

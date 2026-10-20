@@ -67,15 +67,18 @@ a boundary:
   regardless of what the mesh policy granted.
 - **A caller refuses providers outside the boundary.** With
   `X-Mesh-Required-Labels` on a request, the calling node verifies the
-  provider's credential before it sends anything. A provider that cannot
-  show every label named is skipped.
+  provider's credential before it sends anything. When the request names
+  the provider, the node refuses the request if the provider cannot show
+  every label named. On the `/v1` inference endpoints and on a `CONNECT`
+  tunnel the node picks the provider itself. There the node skips a
+  provider that fails the check and tries the next one.
 - **An operator sets a floor for a whole node.** `egress.require_labels` in
   the node configuration applies to every outbound request from that node.
   Callers cannot lower it.
 
 All three mechanisms act on signed facts, not on discovery data, and all
-three fail closed. A provider whose credential cannot be fetched or verified
-is treated as if it did not have the label.
+three fail closed. A provider whose credential does not verify, or that
+does not answer, gets no request.
 
 ## The host has the final say
 
