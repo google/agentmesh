@@ -112,10 +112,12 @@ contains:
 | `label("region", "eu")` | One fact per declared and permitted label. |
 | `granted_service_*`, `granted_target_*` | What the roles allow, compiled from `allowed_services` and `allowed_targets`. [Authorization](../authorization/) describes them. |
 
-The node does not set any of these facts. Roles come from the bindings in
-the mesh policy, not from the identity provider: an issuer's `roles` claim
-is stored as `idp_role()`, which grants nothing by itself. Labels are the
-ones the node asked for and the policy allowed. Grants come from the policy.
+The node does not set any of these facts. For an OIDC enrollment, roles
+come from the bindings in the mesh policy, never from the identity provider.
+A bootstrap enrollment gets only the role of its bootstrap token. An
+issuer's `roles` claim is stored as `idp_role()`, which grants nothing by
+itself. Labels are the ones the node asked for and the policy allowed.
+Grants come from the policy.
 
 ### 2. Delegated Session Biscuit (`POST /token/exchange`, `/oauth/token`)
 

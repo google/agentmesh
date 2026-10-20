@@ -351,9 +351,11 @@ appended `TaskAuthorizationRule` block.
 
 ## Evaluation
 
-At enrollment, refresh, and token exchange, the control plane resolves the
-identity's roles from the bindings and mints into the credential one `role()`
-fact per role and the compiled `granted_*` facts of every role. The control
+At enrollment, refresh, and token exchange, the control plane mints into the
+credential one `role()` fact per role and the compiled `granted_*` facts of
+every role. For an identity that the identity provider authenticates, the
+control plane resolves the roles from the bindings. A member that enrolled
+with a bootstrap token gets only the token's role. The control
 plane also renders the policy as Datalog rules served as `datalog_rules` at
 `GET /policies`. Nodes, routers and SDK members fetch this text
 (`--control-plane-sync-interval`, 15 minutes for a node, 5 for a router) and
