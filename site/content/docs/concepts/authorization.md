@@ -161,8 +161,8 @@ The node builds a Biscuit authorizer over Block 0 and adds, in this order:
    `target_fact("group", "dev-nodes")` and similar. The caller's
    `allowed_targets` are matched against these facts.
 4. **The node's local rules**, from the `attenuation` block of its
-   configuration file: extra facts, extra checks, and `allow` and `deny`
-   policies.
+   configuration file: the `rules`, the `checks`, and the `allow` and
+   `deny` policies.
 5. **The baseline policies**: `allow if service($t,$n), granted_service_exact($t,$n)`
    and the equivalent policies for sets, prefixes, suffixes, per-type and
    global wildcards, plus the target check
