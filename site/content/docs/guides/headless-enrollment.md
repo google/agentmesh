@@ -186,8 +186,10 @@ curl -fsS -X DELETE https://mesh.example.com/admin/bootstrap-tokens/<id> \
 ```
 
 The token stays in the list, marked as revoked, so the record of what it
-enrolled is kept. Nodes that already enrolled with it are not affected. To
-remove one of those, ban the node.
+enrolled is kept. The control plane deletes the token once the token has
+been expired for `--node-retention` and no enrollment request made with it
+is left. Nodes that already enrolled with it are not affected. To remove one
+of those, ban the node.
 
 ## When the credential expires
 
