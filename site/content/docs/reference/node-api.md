@@ -52,7 +52,7 @@ Authorization Server.
 | `POST /oauth/token` | token or client assertion | Token endpoint: RFC 8693 token exchange, RFC 7523 client assertion and JWT authorization grants. Every grant returns a Delegated or Task-Attenuated Biscuit. See [Token endpoint (`/oauth/token`)](#token-endpoint-oauthtoken). |
 | `POST /oauth/revoke` | token, or none when the Biscuit verifies | RFC 7009 Token Revocation: revokes a task Biscuit in this node's local revocation cache. |
 | `GET /metrics` | token | Prometheus metrics (`agentmesh_node_*`). |
-| `POST /mcp` | token | The MCP server (Streamable HTTP, sessionless: no `Mcp-Session-Id`, `GET` answers `405`). `/` is an alias. |
+| `POST /mcp` | token | The MCP server (Streamable HTTP, sessionless: no `Mcp-Session-Id`, `GET` answers `405`). |
 | `GET /v1/models` | token | Models served by every reachable inference provider. |
 | `POST /v1/chat/completions`, `POST /v1/completions` | token | OpenAI-compatible inference, routed to a provider of the requested model. |
 | `GET /mesh/service/discover` | token | Discover services on the mesh. |
