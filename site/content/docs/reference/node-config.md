@@ -88,7 +88,8 @@ A list. Each entry has these keys:
 
 Rules by type:
 
-- **`mcp`**: `command` or `target_url`, not both. A `target_url` must be a
+- **`mcp`**: `command` or `target_url`. When both are set, the node uses
+  `target_url` and ignores `command` and `env`. A `target_url` must be a
   Streamable HTTP MCP endpoint.
 - **`inference`**: `target_url` only. It must be the root URL of the backend
   without `/v1`. The node adds the prefix. Callers reach the service through

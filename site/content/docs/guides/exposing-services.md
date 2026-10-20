@@ -64,10 +64,10 @@ and does not manage it:
     target_url: "http://127.0.0.1:7777/mcp"
 ```
 
-`command` and `target_url` are mutually exclusive. Before the node advertises
-a service of either kind, it probes the backend. A subprocess that needs more
-than two seconds to answer its first request is not advertised unless you
-raise `--backend-probe-timeout`.
+When both `command` and `target_url` are set, the node uses `target_url`.
+Before the node advertises a service of either kind, it probes the backend. A
+subprocess that needs more than two seconds to answer its first request is
+not advertised unless you raise `--backend-probe-timeout`.
 
 Callers see the whole tool list of the server. If a third-party server
 bundles tools that you do not want to offer, put a small MCP server in front
