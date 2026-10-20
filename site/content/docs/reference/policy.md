@@ -390,7 +390,7 @@ statements.
 | `user`, `email`, `group`, `idp_role` | string | control plane, from OIDC claims |
 | `label` | key, value | control plane |
 | `right` | `relay` | control plane, for routers |
-| `target_unrestricted` | `true` | control plane for routers, and policy rules for roles with `allowed_targets: ["*"]` |
+| `target_unrestricted` | `true` | control plane, for routers. Node rules, for a role with `allowed_targets: ["*"]`. The destination node, for a request from its local API to a service it serves itself. |
 | `target_restricted` | `true` | node rules, for a role with an `allowed_targets` entry other than `*` |
 | `granted_service_exact`, `_set`, `_prefix`, `_suffix`, `_all`, `_all_types` | type, name/set/pattern | control plane and node rules |
 | `granted_publish_exact`, `_set`, `_prefix`, `_suffix`, `_all`, `_all_types` | type, name/set/pattern | control plane and node rules, from `allowed_publish` and `served_by` |
