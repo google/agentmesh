@@ -129,6 +129,20 @@ explains how to enroll.
 | `--log-level` | `info` | `debug`, `info`, `warn` or `error`. |
 | `--log-format` | `text` | `text` or `json`. |
 
+## `forward`
+
+Opens a local TCP listener and forwards each connection through the running
+node's `CONNECT` proxy to a named [egress destination](../policy/#egress-destinations)
+in `EGRESS_MODE_TCP`. The [node API](../node-api/#named-tcp-tunnels-connect-and-agentmesh-node-forward)
+describes the tunnel. `<local-addr>` is the address to listen on, such as
+`127.0.0.1:15432`.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--socket-path` | `<data-dir>/agentmesh.sock` | Unix socket of the running node. |
+| `--api-addr` | | TCP address of the running node, used instead of the socket. Can also be set with `AGENTMESH_API_ADDR`. |
+| `--api-token-path` | | File containing the bearer token for the node's TCP listener (`run --bind-addr`). The token can also come from `AGENTMESH_TASK_TOKEN`, or else from `AGENTMESH_API_TOKEN`. |
+
 ## `debug`
 
 Diagnostics for a running node, over its Unix socket. Each command prints
@@ -190,9 +204,11 @@ node.
 
 | Variable | Equivalent |
 |---|---|
+| `AGENTMESH_API_ADDR` | `forward --api-addr` |
 | `AGENTMESH_API_TOKEN` | `--api-token-path` contents |
 | `AGENTMESH_CLIENT_SECRET` | `--client-secret-path` contents |
 | `AGENTMESH_DATA_DIR` | `--data-dir` |
+| `AGENTMESH_TASK_TOKEN` | `forward --api-token-path` contents, read before `AGENTMESH_API_TOKEN` |
 
 ## Exit behaviour
 
