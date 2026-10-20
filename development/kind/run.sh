@@ -286,8 +286,8 @@ echo
 echo "To drive the mesh, enroll a local node in another shell (it stays in the foreground):"
 echo "  make build && make kind-local-node"
 echo "then call its MCP API on 127.0.0.1:9099:"
-echo "  ./bin/mcp-client -url http://127.0.0.1:9099/mcp -token devtoken -tool get_mesh_info -args '{}'"
-echo "  ./bin/mcp-client -url http://127.0.0.1:9099/mcp -token devtoken -tool find_remote_tools -args '{}'"
+echo "  AGENTMESH_API_TOKEN=devtoken ./bin/mcp-client -url http://127.0.0.1:9099/mcp -tool get_mesh_info -args '{}'"
+echo "  AGENTMESH_API_TOKEN=devtoken ./bin/mcp-client -url http://127.0.0.1:9099/mcp -tool find_remote_tools -args '{}'"
 
 if [[ "${1:-}" != "-s" ]]; then
   show_cluster_logs

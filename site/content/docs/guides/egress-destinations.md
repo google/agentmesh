@@ -157,7 +157,7 @@ A member whose role grants `egress://api.github.com` reaches the same
 destination through its own node, which finds the serving node by name:
 
 ```bash
-curl -sS -H "X-Mesh-Authentication: Bearer $TOKEN" \
+curl -sS -H "X-Mesh-Authentication: Bearer $AGENTMESH_API_TOKEN" \
   "http://127.0.0.1:8080/mesh/$PEP_PEER_ID/egress/api.github.com/repos/acme/dubbing/pulls"
 ```
 

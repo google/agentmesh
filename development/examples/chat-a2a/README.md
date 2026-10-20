@@ -33,7 +33,7 @@ Sidecar API lands on `127.0.0.1:9099` with token `devtoken`.
 ## 4. Find the provider peer
 
 ```sh
-./bin/mcp-client -url http://127.0.0.1:9099/mcp -token devtoken \
+AGENTMESH_API_TOKEN=devtoken ./bin/mcp-client -url http://127.0.0.1:9099/mcp \
   -tool discover_remote_services -args '{"type":"a2a","name":"chat"}'
 ```
 

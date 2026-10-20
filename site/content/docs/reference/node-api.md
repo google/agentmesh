@@ -270,7 +270,7 @@ curl -s --unix-socket $SOCK $URL \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
 ```
 
-Over TCP, add `-H "X-Mesh-Authentication: Bearer $TOKEN"` and use
+Over TCP, add `-H "X-Mesh-Authentication: Bearer $AGENTMESH_API_TOKEN"` and use
 `http://127.0.0.1:8080` as the base URL.
 
 ### Talking A2A through the proxy
@@ -291,7 +291,7 @@ line; `X-Mesh-Required-Labels` goes in the same variable, comma-separated:
 
 ```bash
 CARD=http://127.0.0.1:8080/mesh/<peer-id>/a2a/triage/.well-known/agent-card.json
-export A2ACLI_SVC_PARAM="X-Mesh-Authentication=Bearer $TOKEN"
+export A2ACLI_SVC_PARAM="X-Mesh-Authentication=Bearer $AGENTMESH_API_TOKEN"
 a2a card get $CARD
 a2a send -a $CARD "hello"
 ```

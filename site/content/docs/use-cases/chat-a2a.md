@@ -104,7 +104,7 @@ The local node is your entry point. Its API listens on
 ### 4. Find the provider peer
 
 ```bash
-./bin/mcp-client -url http://127.0.0.1:9099/mcp -token devtoken \
+AGENTMESH_API_TOKEN=devtoken ./bin/mcp-client -url http://127.0.0.1:9099/mcp \
   -tool discover_remote_services -args '{"type":"a2a","name":"chat"}'
 ```
 

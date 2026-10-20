@@ -123,7 +123,7 @@ To use the mesh from a node built from your working tree:
 make kind-local-node                   # mints a bootstrap token, runs ./bin/agentmesh-node, API on 127.0.0.1:9099 with token "devtoken"
 make kind-local-node ARGS="--config my-node.yaml"
 
-./bin/mcp-client -url http://127.0.0.1:9099/mcp -token devtoken -tool find_remote_tools -args '{}'
+AGENTMESH_API_TOKEN=devtoken ./bin/mcp-client -url http://127.0.0.1:9099/mcp -tool find_remote_tools -args '{}'
 ```
 
 `make kind-e2e-mesh` runs the whole loop without interaction. It deploys

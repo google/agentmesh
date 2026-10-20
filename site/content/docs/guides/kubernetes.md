@@ -179,10 +179,11 @@ kind cluster. See [Contributing](../../contributing/#a-local-mesh-in-kind).
 kubectl -n agentmesh-nodes logs deploy/calc-mcp -c agentmesh-node | grep -E "Online|PeerID"
 ```
 
-From a node enrolled anywhere in the mesh:
+From a node enrolled anywhere in the mesh, with `AGENTMESH_API_TOKEN` set to
+that node's API token as in the [quick start](../../getting-started/quickstart/#4-call-a-tool-on-the-mesh):
 
 ```bash
-mcp-client -url http://127.0.0.1:8080/mcp -token "$TOKEN" \
+mcp-client -url http://127.0.0.1:8080/mcp \
   -tool discover_remote_services -args '{"type":"mcp","name":"calculator"}'
 ```
 

@@ -368,11 +368,14 @@ app in the foreground.
 
 ## Calling the phone from elsewhere
 
-From any enrolled node, the phone is a peer with an MCP service:
+From any enrolled node, the phone is a peer with an MCP service. Set
+`AGENTMESH_API_TOKEN` to the calling node's API token as in
+the [quick start](../../getting-started/quickstart/#4-call-a-tool-on-the-mesh),
+then run:
 
 ```bash
-mcp-client -url "http://127.0.0.1:8080/mesh/<phone-peer-id>/mcp/phone-sensors" -token "$TOKEN" -list
-mcp-client -url "http://127.0.0.1:8080/mesh/<phone-peer-id>/mcp/phone-sensors" -token "$TOKEN" -tool get_battery_status
+mcp-client -url "http://127.0.0.1:8080/mesh/<phone-peer-id>/mcp/phone-sensors" -list
+mcp-client -url "http://127.0.0.1:8080/mesh/<phone-peer-id>/mcp/phone-sensors" -tool get_battery_status
 ```
 
 ```json

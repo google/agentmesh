@@ -235,10 +235,11 @@ and the `granted_*` facts), plus `service($type, $name)` for the request and
 
 ## Checking that it worked
 
-From another enrolled node:
+From another enrolled node, with `AGENTMESH_API_TOKEN` set to that node's API
+token as in the [quick start](../../getting-started/quickstart/#4-call-a-tool-on-the-mesh):
 
 ```bash
-mcp-client -url http://127.0.0.1:8080/mcp -token "$TOKEN" \
+mcp-client -url http://127.0.0.1:8080/mcp \
   -tool discover_remote_services -args '{"type":"mcp","name":"calculator"}'
 ```
 

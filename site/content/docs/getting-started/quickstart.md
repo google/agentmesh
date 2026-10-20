@@ -87,29 +87,31 @@ address of the running node and exits.
 ## 4. Call a tool on the mesh
 
 The node's local API is an MCP server. `mcp-client` is installed together
-with `agentmesh-node` and is the quickest way to talk to it. Export the token once:
+with `agentmesh-node` and is the quickest way to talk to it. `mcp-client`
+reads the token from `AGENTMESH_API_TOKEN` or from the file named by
+`-token-path`. Export the token once:
 
 ```bash
-export TOKEN=$(cat ~/.config/agentmesh/api-token)
+export AGENTMESH_API_TOKEN=$(cat ~/.config/agentmesh/api-token)
 ```
 
 List the tools the node itself offers:
 
 ```bash
-mcp-client -url http://127.0.0.1:8080/mcp -token "$TOKEN" -list
+mcp-client -url http://127.0.0.1:8080/mcp -list
 ```
 
 Find MCP services other nodes are publishing:
 
 ```bash
-mcp-client -url http://127.0.0.1:8080/mcp -token "$TOKEN" \
+mcp-client -url http://127.0.0.1:8080/mcp \
   -tool discover_remote_services -args '{"type":"mcp"}'
 ```
 
 Each result carries a `peer_id`. Ask one of them which tools it hosts:
 
 ```bash
-mcp-client -url http://127.0.0.1:8080/mcp -token "$TOKEN" \
+mcp-client -url http://127.0.0.1:8080/mcp \
   -tool find_remote_tools -args '{"peer_id":"<peer-id>"}'
 ```
 
@@ -117,7 +119,7 @@ Then call one. The testnet runs the MCP reference `everything` server as a
 demo. Its `add` tool adds two numbers:
 
 ```bash
-mcp-client -url http://127.0.0.1:8080/mcp -token "$TOKEN" \
+mcp-client -url http://127.0.0.1:8080/mcp \
   -tool call_remote_tool \
   -args '{"peer_id":"<peer-id>","tool_name":"mcp://everything/add","arguments":{"a":2,"b":3}}'
 ```
