@@ -125,7 +125,8 @@ the Biscuit without authenticating the caller.
 On the local API listeners, `agentmesh-node` serves:
 
 - **Envoy HTTP `ext_authz` (`/ext_authz`, `/ext_authz/*`)** and **gRPC
-  `envoy.service.auth.v3.Authorization/Check`**: evaluates standing Datalog
+  `envoy.service.auth.v3.Authorization/Check`** (also served at the v2 path,
+  `envoy.service.auth.v2.Authorization/Check`): evaluates standing Datalog
   policy and any `tar_block` chain on the request. The credential is read
   from `X-Mesh-Biscuit`, or from a Bearer value in `X-Mesh-Authentication` or
   `Authorization`. A Bearer value that is a platform JWT is exchanged at the
