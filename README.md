@@ -19,7 +19,7 @@ Two properties hold everywhere:
   configuration says so, and no node may call a service the mesh policy has
   not granted. Grants are evaluated on service names, never on addresses.
 - **Identity comes from your identity provider.** A node enrolls with an
-  OpenID Connect token or a one-time bootstrap token, and the control plane
+  OpenID Connect token or a bootstrap token, and the control plane
   turns that into a short-lived, offline-verifiable credential bound to the
   node's own key.
 

@@ -27,7 +27,7 @@ Two rules apply to every mesh:
   configure one, and a node cannot call a service unless the mesh policy
   grants it. Policy is written in terms of service names, not IP addresses.
 - **Identity comes from your identity provider.** A node enrolls with an
-  OpenID Connect token or with a one-time bootstrap token. The control plane
+  OpenID Connect token or with a bootstrap token. The control plane
   turns that into a short-lived credential
   ([Biscuit](https://www.biscuitsec.org/)) that is bound to the node's own
   key and that any node can verify offline.
