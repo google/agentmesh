@@ -181,8 +181,12 @@ Workforce Identity Federation or AWS `AssumeRoleWithWebIdentity`).
 A Member Biscuit is valid for `--biscuit-ttl`, 24 hours by default (or the
 OIDC token's expiry if sooner). Delegated Session Biscuits default to 1 hour
 (bounded by the subject JWT's expiry and any `TaskAuthorizationRule.expire_time`).
-Nodes and routers check their Member Biscuit every ten minutes, and when less
-than a fifth of the lifetime remains they call `POST /refresh` with the
+A node sets one timer from its credential's expiry. While more than six hours
+remain, the timer fires 4.8 hours before the expiry. With less time left, the
+timer fires halfway to the expiry. A router checks on every control plane
+sync pass, each `--control-plane-sync-interval` (5 minutes by default), and
+refreshes once less than 4.8 hours remain. These thresholds stay the same
+when `--biscuit-ttl` changes. Both call `POST /refresh` with the
 current token and a signature over a fresh challenge. When the member has a
 live platform token source (`--jwt-path`, `--cloud-provider`, `--client-id`,
 or an SDK `jwtPath` / `jwt` callback), it also sends a fresh platform JWT in
