@@ -116,8 +116,8 @@ arithmetic. A client of your own should retry the same way.
 All routes require `Authorization: Bearer <admin-token>`. A request body is
 protojson of the message the row names, with proto field names. Unknown
 fields are rejected. A route whose row names a response message answers it
-as protojson. `POST /policies` and `PUT /policies` also accept binary
-protobuf, and answer in the encoding of the request.
+as protojson. `POST /admin/revoke`, `POST /policies` and `PUT /policies`
+also accept binary protobuf, and answer in the encoding of the request.
 
 | Route | Purpose |
 |---|---|
@@ -130,7 +130,7 @@ protobuf, and answer in the encoding of the request.
 | `GET /admin/enrollments` | `EnrollmentRequestListResponse`: bootstrap enrollment requests, pending and decided. |
 | `POST /admin/enrollments/{id}/approve` | Approve. Spends a token usage. Checks the token again, and checks the labels against the role's `allowed_labels`. Answers `200` with a plain-text body, or `409` when the request is already resolved. The route answers `410` when the token was revoked, expired or spent after the request was queued, and `403` when the token's owner is banned. |
 | `POST /admin/enrollments/{id}/reject` | Reject. Answers `200` with a plain-text body, or `409` when the request is already resolved. |
-| `POST /admin/revoke` | Body `{"peer_id": "..."}`. Ban the node and, for an OIDC enrollment, the identity behind it. |
+| `POST /admin/revoke` | Body `TokenRevokeRequest` (`peer_id`), as protojson or binary protobuf. Answers `TokenRevokeResponse` in the encoding of the request. Ban the node and, for an OIDC enrollment, the identity behind it. |
 | `POST /admin/nodes/{peer_id}/unban` | Lift both bans. |
 | `POST /admin/nodes/{peer_id}/autonomous-recovery` | Body `{"enabled": true}`. Toggle the flag on an enrolled node. |
 
