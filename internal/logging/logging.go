@@ -16,20 +16,20 @@
 package logging
 
 import (
+	"bufio"
 	"container/ring"
-	"net/url"
+	"errors"
+	"io"
 	"strings"
 	"sync"
 
 	golog "github.com/ipfs/go-log/v2"
-	"go.uber.org/zap"
 )
 
 var logger = golog.Logger("logging")
 
 const (
-	ringBufferScheme = "ringbuffer"
-	logBufferLines   = 500
+	logBufferLines = 500
 	// maxLogLineBytes bounds each retained line so the ring's memory is
 	// bounded too (logBufferLines * maxLogLineBytes), whatever a remote peer
 	// manages to get logged.
@@ -44,9 +44,11 @@ var (
 // Options selects how a binary logs. Zero values keep the defaults: info
 // level, text format and no in-memory ring buffer.
 type Options struct {
-	Level      string // log level: debug, info, warn or error (default: info)
-	Format     string // output format: text or json (default: text)
-	RingBuffer bool   // also retain the most recent lines in memory (see RecentLogs)
+	Level string // log level: debug, info, warn or error (default: info)
+	// Format is the output format on stderr: text or json (default: text). The
+	// ring buffer is always JSON, so tools never parse the human format.
+	Format     string
+	RingBuffer bool // also retain the most recent lines in memory as JSON (see RecentLogs)
 }
 
 // Setup applies opts process-wide.
@@ -62,17 +64,7 @@ func Setup(opts Options) {
 
 	cfg := golog.GetConfig()
 	cfg.Level = lvl
-	if opts.RingBuffer {
-		ringBufferOnce.Do(func() {
-			ringBuffer = newRingBufferSink(logBufferLines)
-			_ = zap.RegisterSink(ringBufferScheme, func(*url.URL) (zap.Sink, error) {
-				return ringBuffer, nil
-			})
-		})
-		cfg.URL = ringBufferScheme + "://"
-	} else {
-		cfg.URL = ""
-	}
+	cfg.URL = ""
 	badFormat := false
 	switch opts.Format {
 	case "json":
@@ -84,6 +76,9 @@ func Setup(opts Options) {
 		cfg.Format = golog.PlaintextOutput
 	}
 	golog.SetupLogging(cfg)
+	if opts.RingBuffer {
+		ringBufferOnce.Do(startRingBuffer)
+	}
 
 	// go-log starts at error level, so warnings only show after SetAllLoggers.
 	if levelErr != nil {
@@ -101,8 +96,44 @@ func Setup(opts Options) {
 	}
 }
 
-// RecentLogs returns the most recent log lines captured when Options.RingBuffer
-// was enabled in Setup.
+// startRingBuffer attaches the ring buffer to every logger as a second sink
+// with its own JSON encoder. go-log registers the sink once, outside the
+// primary output, so later Setup calls reconfigure stderr and leave it alone.
+func startRingBuffer() {
+	ringBuffer = newRingBufferSink(logBufferLines)
+	pipe := golog.NewPipeReader(golog.PipeFormat(golog.JSONOutput))
+	go func() {
+		err := copyLines(pipe, ringBuffer)
+		// The pipe is synchronous: while it stays registered with no reader,
+		// every log call blocks, the one below included. Closing it
+		// unregisters it, so only then is it safe to say why the ring stopped.
+		_ = pipe.Close()
+		if err != nil {
+			logger.Errorf("log ring buffer stopped, /debug/logs gets no new lines: %v", err)
+		}
+	}()
+}
+
+// copyLines writes each line r yields to sink until r ends. A clean end of
+// input is not an error; a read error is returned.
+func copyLines(r io.Reader, sink io.Writer) error {
+	br := bufio.NewReader(r)
+	for {
+		line, err := br.ReadBytes('\n')
+		if len(line) > 0 {
+			_, _ = sink.Write(line)
+		}
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+// RecentLogs returns the most recent log lines, as JSON, captured when
+// Options.RingBuffer was enabled in Setup.
 func RecentLogs() []string {
 	if ringBuffer == nil {
 		return []string{}
@@ -132,9 +163,6 @@ func (s *ringBufferSink) Write(p []byte) (int, error) {
 	s.buffer = s.buffer.Next()
 	return len(p), nil
 }
-
-func (s *ringBufferSink) Sync() error  { return nil }
-func (s *ringBufferSink) Close() error { return nil }
 
 func (s *ringBufferSink) lines() []string {
 	s.mu.Lock()

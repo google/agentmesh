@@ -868,7 +868,7 @@ func main() {
 	runCmd.Flags().BoolVar(&enableRelayFlag, "enable-relay", false, "Allow this node to serve as a relay for others")
 	runCmd.Flags().BoolVar(&daemonizeFlag, "daemonize", false, "Run the node in the background and return once its local API answers (writes agentmesh-node.log and agentmesh-node.pid to the data directory, and generates an API token there if none is configured)")
 	runCmd.Flags().StringVar(&logLevelFlag, "log-level", "info", "Log level (debug, info, warn, error)")
-	runCmd.Flags().StringVar(&logFormatFlag, "log-format", "text", "Log format (text, json)")
+	runCmd.Flags().StringVar(&logFormatFlag, "log-format", "text", "Log format on stderr and in the log file (text, json); /debug/logs is always JSON")
 	runCmd.Flags().DurationVar(&keyGracePeriodFlag, "key-grace-period", 24*time.Hour, "Key grace period for old keys (e.g. 24h)")
 	runCmd.Flags().BoolVar(&allowLoopbackFlag, "allow-loopback", false, "Allow publishing and connecting to loopback/link-local addresses")
 	runCmd.Flags().BoolVar(&announcePrivateFlag, "announce-private", true, "Publish this host's private (RFC1918/ULA) addresses to the mesh; keep enabled for LAN or on-premises meshes, disable when peers are only reachable through routers or public addresses")

@@ -128,7 +128,7 @@ explains how to enroll.
 | `--monitor-interval` | `1m` | How often the monitor checks that a router is connected. |
 | `--autorelay-min-interval`, `--autorelay-boot-delay`, `--autorelay-backoff` | `30s`, `0s`, `3s` | libp2p AutoRelay tuning. |
 | `--log-level` | `info` | `debug`, `info`, `warn` or `error`. |
-| `--log-format` | `text` | `text` or `json`. |
+| `--log-format` | `text` | `text` or `json`: the format of the node's log output on stderr, and of the log file under `--daemonize`. `agentmesh-node debug logs` is always JSON, one object per line, whatever this is set to. |
 
 ## `forward`
 

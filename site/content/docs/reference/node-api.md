@@ -388,6 +388,9 @@ every peer it is connected to; `network-info` lists the addresses the node
 listens on, the ones it announces, and the ones in the records it last
 announced to the directory (`directory_addresses`), which follow the
 announced ones at the next announcement pass; `peer-addrs` is where the
-directory says a peer is reached, looked up and not dialed. `agentmesh-node
+directory says a peer is reached, looked up and not dialed. `logs` returns the
+node's most recent log lines as `logs`, a list of strings; each is one JSON
+object (`ts`, `level`, `logger`, `caller`, `msg`), whatever `--log-format`
+sets for stderr, so a tool needs no console-format parsing. `agentmesh-node
 debug` on the command line wraps them. Their output is not stable across
 releases.
