@@ -50,7 +50,7 @@ Authorization Server.
 | `GET /.well-known/oauth-protected-resource` | none | RFC 9728 OAuth 2.1 Protected Resource Metadata naming the Agent Mesh control plane in `authorization_servers`. |
 | `GET /.well-known/oauth-authorization-server` | none | RFC 8414 metadata for this node's token endpoint: the grant types and client authentication methods it accepts. |
 | `POST /oauth/token` | token or client assertion | Token endpoint: RFC 8693 token exchange, RFC 7523 client assertion and JWT authorization grants. Every grant returns a Delegated or Task-Attenuated Biscuit. See [Token endpoint (`/oauth/token`)](#token-endpoint-oauthtoken). |
-| `POST /oauth/revoke` | token | RFC 7009 Token Revocation: revokes a task Biscuit in this node's local revocation cache. |
+| `POST /oauth/revoke` | token, or none when the Biscuit verifies | RFC 7009 Token Revocation: revokes a task Biscuit in this node's local revocation cache. |
 | `GET /metrics` | token | Prometheus metrics (`agentmesh_node_*`). |
 | `POST /mcp` | token | The MCP server (Streamable HTTP, sessionless: no `Mcp-Session-Id`, `GET` answers `405`). `/` is an alias. |
 | `GET /v1/models` | token | Models served by every reachable inference provider. |
@@ -117,6 +117,8 @@ token_grant:
 
 `POST /oauth/revoke` accepts `token=<base64-biscuit>` and records its leaf
 revocation ID in the node's local revocation cache until the token expires.
+When the Biscuit verifies under a trusted control plane key, the node revokes
+the Biscuit without authenticating the caller.
 
 ## Envoy `ext_authz` and `ext_proc` gateway integration
 

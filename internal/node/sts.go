@@ -706,9 +706,8 @@ func authenticateSidecarCaller(node *AgentMeshNode, sidecarToken string, r *http
 }
 
 // handleNodeOAuthRevoke implements RFC 7009 Token Revocation (POST /oauth/revoke)
-// on agentmesh-node, adding the Biscuit's root Block 0 revocation ID to the local
-// revocation cache so any call carrying it (or any child attenuated from it)
-// is immediately rejected.
+// on agentmesh-node. It caches the revocation ID of the Biscuit's last block, so
+// the token and its attenuated children are rejected and its parent is not.
 func handleNodeOAuthRevoke(node *AgentMeshNode, sidecarToken string, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeNodeOAuthError(w, http.StatusMethodNotAllowed, "invalid_request", "Method not allowed")
