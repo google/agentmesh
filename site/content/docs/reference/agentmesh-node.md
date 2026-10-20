@@ -11,7 +11,7 @@ weight: 1
 ```text
 agentmesh-node join <control-plane-url> [flags]            enroll and store a credential
 agentmesh-node run [flags]                                 run the node
-agentmesh-node forward egress://<name>:<port> [local-addr] forward a local TCP port to a named egress tunnel
+agentmesh-node forward egress://<name>:<port> <local-addr> forward a local TCP port to a named egress tunnel
 agentmesh-node debug <command>                             diagnose a running node over its Unix socket
 agentmesh-node reset [--all] [--yes]                       forget the credential or everything
 agentmesh-node state export|import <dir>                   move the identity to or from a state directory
