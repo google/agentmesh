@@ -49,12 +49,17 @@ agentmesh-control-plane admin unban --peer <id>     lift a ban
 
 ## HTTP API
 
-Every request and response is a message in `api/agentmesh.proto`, in one of two
-encodings. Routes that mesh components call use binary protobuf
-(`application/x-protobuf`). Routes for operators and the console use
-protojson of the same messages, with proto field names; unknown fields are
-rejected. `POST /policies` accepts either and answers in the encoding of the
-request.
+Every request body and every successful response body is a message in
+`api/agentmesh.proto`, in one of two encodings. Routes that mesh components
+call use binary protobuf (`application/x-protobuf`). Routes for operators and
+the console use protojson of the same messages, with proto field names;
+unknown fields are rejected. `POST /policies` accepts either and answers in
+the encoding of the request. These routes answer in other formats:
+
+- `GET /healthz` and `GET /readyz` answer a JSON status.
+- `GET /metrics` answers Prometheus text.
+- The OAuth, OIDC and JWKS routes follow their standards.
+- A route whose row says so answers plain text.
 
 Responses that carry credentials are sent with `Cache-Control: no-store`.
 
@@ -108,9 +113,11 @@ arithmetic. A client of your own should retry the same way.
 
 ### Admin
 
-All routes require `Authorization: Bearer <admin-token>`. Request and
-response bodies are protojson of the messages named below, with proto field
-names; unknown fields are rejected.
+All routes require `Authorization: Bearer <admin-token>`. A request body is
+protojson of the message the row names, with proto field names. Unknown
+fields are rejected. A route whose row names a response message answers it
+as protojson. `POST /policies` and `PUT /policies` also accept binary
+protobuf, and answer in the encoding of the request.
 
 | Route | Purpose |
 |---|---|
@@ -121,8 +128,8 @@ names; unknown fields are rejected.
 | `POST /admin/bootstrap-tokens` | Mint a token. Body `BootstrapTokenCreateRequest`: `role` (required), `ttl_hours` (default 24), `max_usages` (default 1), `description`, `autonomous_recovery` (default false), `ephemeral` (default false: nodes enrolled with the token are kept for `--ephemeral-node-retention` after their last refresh instead of `--node-retention`). Returns `201` with `BootstrapTokenCreateResponse`: `id`, `token` (shown once), `role`, `expire_time`. |
 | `DELETE /admin/bootstrap-tokens/{id}` | Revoke a token. Can be repeated. The token stays in the list with `revoke_time` set. |
 | `GET /admin/enrollments` | `EnrollmentRequestListResponse`: bootstrap enrollment requests, pending and decided. |
-| `POST /admin/enrollments/{id}/approve` | Approve. Spends a token usage. Checks the token again, and checks the labels against the role's `allowed_labels`. |
-| `POST /admin/enrollments/{id}/reject` | Reject. |
+| `POST /admin/enrollments/{id}/approve` | Approve. Spends a token usage. Checks the token again, and checks the labels against the role's `allowed_labels`. Answers `200` with a plain-text body, or `409` when the request is already resolved. The route answers `410` when the token was revoked, expired or spent after the request was queued, and `403` when the token's owner is banned. |
+| `POST /admin/enrollments/{id}/reject` | Reject. Answers `200` with a plain-text body, or `409` when the request is already resolved. |
 | `POST /admin/revoke` | Body `{"peer_id": "..."}`. Ban the node and, for an OIDC enrollment, the identity behind it. |
 | `POST /admin/nodes/{peer_id}/unban` | Lift both bans. |
 | `POST /admin/nodes/{peer_id}/autonomous-recovery` | Body `{"enabled": true}`. Toggle the flag on an enrolled node. |
