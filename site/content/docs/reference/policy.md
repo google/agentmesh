@@ -345,8 +345,8 @@ a single `tar_block("<base64url-proto>")` fact encoding `TaskAuthorizationRule`:
 ```
 
 Across appended blocks `1..k` (up to `MaxAttenuationBlocks = 8`), evaluation is
-strict intersection: a request must pass Block 0 Datalog policy, be before
-every block's `expire_time`, and match at least one `TaskRule` in every
+strict intersection: a request must pass Block 0 Datalog policy, arrive at or
+before every block's `expire_time`, and match at least one `TaskRule` in every
 appended `TaskAuthorizationRule` block.
 
 ## Evaluation
