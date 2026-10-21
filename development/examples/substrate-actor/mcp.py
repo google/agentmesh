@@ -93,14 +93,20 @@ def add(actor, service, a, b):
         print(f"  (no tool of mcp://{service} is visible to this actor; calling the office node directly)")
         peers = {r["peer_id"] for r in rpc(actor, "discover_remote_services", {"type": "mcp"})[0] or []}
     if not peers:
+        # The mesh shows this actor no provider of the service: no role binds
+        # its identity to it, so discovery returns nothing and no node ever
+        # sees a call. Exit 4 keeps this apart from a server-side refusal (3),
+        # so a caller cannot mistake "never asked" for "asked and denied".
         print(f"mcp://{service}/add({a}, {b}) -> refused: the mesh shows this actor no MCP provider at all (no role binds its identity)")
-        sys.exit(3)
+        sys.exit(4)
     peer = sorted(peers)[0]
     result, text = rpc(actor, "call_remote_tool", {
         "peer_id": peer, "tool_name": f"mcp://{service}/add",
         "arguments": {"a": float(a), "b": float(b)},
     })
     if result is None:
+        # A provider was reached and the serving node refused the call. This is
+        # the enforced deny: exit 3, distinct from the no-provider case above.
         print(f"mcp://{service}/add({a}, {b}) -> refused: {text}")
         sys.exit(3)
     print(f"mcp://{service}/add({a}, {b}) = {text}")
