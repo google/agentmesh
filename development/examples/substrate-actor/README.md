@@ -24,9 +24,19 @@ make call NAME=demo                          # tools, calc allowed, payroll refu
 make rogue                                   # an actor the policy does not bind: refused
 make gemini NAME=demo GCP_PROJECT=<project>   # Gemini on Vertex AI through the mesh; see the guide
 make policy                                  # push the policy after editing manifests/mesh.yaml.tmpl
+make check                                   # demo and ledger, different grants: each reaches only its own tool
 make down                                    # the actors and the agentmesh namespace
 make clean                                   # the kind cluster
 ```
+
+`make check` runs two actors bound to different roles: `demo` to `actor`
+(`mcp://calc`) and `ledger` to `ledger` (`mcp://payroll`). `check.sh` prints
+one line per case and exits non-zero on a mismatch. A refusal counts only
+when the serving node refuses the call (`mcp.py` exit 3), not when the mesh
+offers the actor no provider at all (exit 4). `make check` restarts the
+credential provider so the policy it pushes applies at once instead of
+waiting out the cache. The worker pool of the demo template holds two actors,
+so suspend `rogue` before `make check`.
 
 The provider has its own Go module (`credential-provider/go.mod`) that
 depends on the Substrate release it builds against. `go test ./...` in that

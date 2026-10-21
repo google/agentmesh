@@ -19,10 +19,14 @@ data:
         {"name": "mesh:role:router", "allowed_services": ["*"], "allowed_targets": ["*"]},
         {"name": "actor",
          "allowed_services": ["system://mesh.catalog", "mcp://calc"],
+         "allowed_targets": ["*"]},
+        {"name": "ledger",
+         "allowed_services": ["system://mesh.catalog", "mcp://payroll"],
          "allowed_targets": ["*"]}
       ],
       "bindings": [
-        {"role": "actor", "members": ["user:spiffe://substrate-actor.local/actor/ate-demo-sandbox/demo"]}
+        {"role": "actor", "members": ["user:spiffe://substrate-actor.local/actor/ate-demo-sandbox/demo"]},
+        {"role": "ledger", "members": ["user:spiffe://substrate-actor.local/actor/ate-demo-sandbox/ledger"]}
       ]
     }
   office.yaml: |

@@ -7,6 +7,7 @@
 #   make call NAME=demo     from inside the actor: tools, calc allowed, payroll refused
 #   make rogue              an actor the mesh policy does not bind: refused
 #   make policy             push the mesh policy after editing manifests/mesh.yaml.tmpl
+#   make check              two actors, different grants: assert each reaches only its own tool
 #   make down               remove the actors, the mesh and the provider
 #   make clean              delete the kind cluster
 #
@@ -68,7 +69,7 @@ endif
 KUBECTL_CONTEXT := $(CTX)
 export KIND_CLUSTER_NAME KUBECTL_CONTEXT KO_DOCKER_REPO
 
-.PHONY: cluster up issuer-docs actor call gemini rogue policy status down clean
+.PHONY: cluster up issuer-docs actor call gemini rogue policy check status down clean
 
 cluster:
 	@for t in docker kind ko kubectl go python3; do command -v $$t >/dev/null || { echo "$$t not found"; exit 1; }; done
@@ -198,13 +199,29 @@ policy:
 	  --data-binary "$$($(KUBECTL) -n agentmesh get configmap mesh-config -o jsonpath='{.data.policy\.json}')"
 	@echo
 
+# check asserts the mesh keeps two authorized actors with different grants
+# apart: demo (the `actor` role, mcp://calc) and ledger (the `ledger` role,
+# mcp://payroll) each reach only their own tool. It pushes the policy first so
+# the ledger binding is live, brings both actors up, then restarts the
+# credential provider so its in-memory cache is empty and the actors' next
+# request is minted under the policy just pushed, without waiting out
+# --cache-ttl. The worker pool holds two actors, so a `rogue` left over from
+# `make rogue` must be suspended first.
+check:
+	$(MAKE) policy
+	$(MAKE) actor NAME=demo
+	$(MAKE) actor NAME=ledger
+	$(KUBECTL) -n agentmesh rollout restart deployment/credential-provider
+	$(KUBECTL) -n agentmesh rollout status deployment/credential-provider --timeout=90s
+	ROUTER_PORT=$(ROUTER_PORT) ATESPACE=$(ATESPACE) KUBE_CONTEXT=$(CTX) ./check.sh
+
 status:
 	$(KUBECTL) -n agentmesh get pods
 	$(KATE) get actors -a $(ATESPACE)
 	$(KUBECTL) -n ate-system logs deployment/atenet-egress -c ext-proc --tail=20 2>/dev/null | grep -iE 'agentmesh|credential|denied' || true
 
 down:
-	-for a in demo rogue; do $(KATE) suspend actor $$a -a $(ATESPACE) >/dev/null 2>&1; $(KATE) delete actor $$a -a $(ATESPACE) >/dev/null 2>&1; done
+	-for a in demo ledger rogue; do $(KATE) suspend actor $$a -a $(ATESPACE) >/dev/null 2>&1; $(KATE) delete actor $$a -a $(ATESPACE) >/dev/null 2>&1; done
 	# The namespace and the credential-provider Service stay: the egress gateway
 	# was installed with that Service's address and holds its ClusterIP.
 	-$(KUBECTL) -n agentmesh delete deployment,configmap,secret,networkpolicy --all --timeout=120s
