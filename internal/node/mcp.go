@@ -289,6 +289,13 @@ func (n *AgentMeshNode) connectMCPSessionWithRetry(ctx context.Context, targetPe
 var ErrAuthRejected = errors.New("auth rejected")
 
 func (n *AgentMeshNode) ConnectMCPSession(ctx context.Context, targetPeer peer.ID, targetService string, requiredLabels map[string]string) (*mcp.ClientSession, func(), error) {
+	// The AuthFrame below carries the caller's credential, so the provider is
+	// verified first over AuthProtocolID with this node's own, as the HTTP
+	// path does: an unverified peer never receives the caller's Biscuit.
+	if err := n.VerifyProvider(ctx, targetPeer, requiredLabels, targetService); err != nil {
+		return nil, nil, err
+	}
+
 	// Open stream
 	logger.Debugf("Dialing %s for MCP...\n", targetPeer)
 	// For discovery, we want a fast failure, but for tool calls, we can wait a bit. We'll use the context's deadline,
