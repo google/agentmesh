@@ -189,10 +189,12 @@ async def dial_addrs(addr: multiaddr.Multiaddr) -> list[multiaddr.Multiaddr]:
     hands out router addresses as `/dnsaddr/<host>/p2p/<id>`, resolved here
     through the host's `_dnsaddr` TXT records (and `/dns4`, `/dns6`, `/dns`
     through A and AAAA records) the way go-libp2p and js-libp2p do before
-    dialing; py-libp2p's TCP transport does not, and would report no
-    transport for them. A WebSocket address keeps its DNS name: the name is
-    the TLS server name and the Host header, which a TLS-terminating edge in
-    front of the router (agentmesh-one behind a tunnel) selects the origin by.
+    dialing. py-libp2p has no transport for a `/dnsaddr` address; its TCP
+    transport resolves `/dns4`, `/dns6` and `/dns` itself, and they are
+    resolved here too, so the peerstore holds the concrete addresses. A
+    WebSocket address keeps its DNS name: the name is the TLS server name
+    and the Host header, which a TLS-terminating edge in front of the router
+    (agentmesh-one behind a tunnel) selects the origin by.
     Addresses on transports this host lacks are left out."""
     protocols = [p.name for p in addr.protocols()]
     first = protocols[0] if protocols else ""
