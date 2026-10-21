@@ -248,7 +248,7 @@ and `.well-known/agent-card.json` is rewritten for the mesh.
 
 | Header | Effect |
 |---|---|
-| `X-Mesh-Required-Labels: k=v[,k=v]` | Forward only to a peer whose credential attests every listed pair. Otherwise `403`. Removed before forwarding. Also honoured on `/v1/*`. |
+| `X-Mesh-Required-Labels: k=v[,k=v]` | Forward only to a peer whose credential attests every listed pair. Otherwise `403`. Removed before forwarding. Also honoured on `/v1/chat/completions`, `/v1/completions` and `CONNECT`. On `/egress/*` this node is the provider, so it checks its own labels. |
 
 ### Talking MCP through the proxy
 

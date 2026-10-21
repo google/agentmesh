@@ -67,7 +67,7 @@ notice.
 |---|---|---|
 | `name` | string, required, unique | The role name. `mesh:role:node` and `mesh:role:router` are the roles that the two binaries request at enrollment. Any other name is an ordinary role. |
 | `allowed_services` | list of service patterns | Services that holders may call. |
-| `allowed_publish` | list of service patterns | Services that holders may serve. A router keeps a member's directory record only for a service its credential grants here, and a caller sends a request to a provider it reached by name only when the provider's credential does. If absent, holders may publish nothing. See [Publishing](#publishing). |
+| `allowed_publish` | list of service patterns | Services that holders may serve. A router keeps a member's directory record only for a service its credential grants here, and a caller sends a request to a provider it reached by name only when the provider's credential does. If absent, holders may publish nothing but an egress destination whose `served_by` selects them. See [Publishing](#publishing). |
 | `allowed_targets` | list of target patterns | Nodes that holders may call. `*` means any node. If absent, holders may call no node. |
 | `allowed_labels` | list of label patterns | Labels that a node holding this role may declare at enrollment. If absent, no labels may be declared. |
 | `custom_datalog` | list of Datalog statements | Facts are minted into the credentials of holders. Rules are distributed to nodes and applied when a holder is verified. |
@@ -94,8 +94,9 @@ A fact whose only meaning is that a grant exists carries the single term
 `true`, because the Biscuit grammar requires at least one term per predicate.
 The same holds for `target_unrestricted(true)` below.
 
-`system://mesh.catalog` is the built-in discovery service that every node
-runs. A role that should be able to list the tools of a node needs it.
+`system://mesh.catalog` is the built-in service on every node that lists the
+services the node hosts. A role that should be able to list the tools of a
+node needs it.
 
 ### Publishing
 
@@ -344,15 +345,17 @@ a single `tar_block("<base64url-proto>")` fact encoding `TaskAuthorizationRule`:
 ```
 
 Across appended blocks `1..k` (up to `MaxAttenuationBlocks = 8`), evaluation is
-strict intersection: a request must pass Block 0 Datalog policy, be before
-every block's `expire_time`, and match at least one `TaskRule` in every
+strict intersection: a request must pass Block 0 Datalog policy, arrive at or
+before every block's `expire_time`, and match at least one `TaskRule` in every
 appended `TaskAuthorizationRule` block.
 
 ## Evaluation
 
-At enrollment, refresh, and token exchange, the control plane resolves the
-identity's roles from the bindings and mints into the credential one `role()`
-fact per role and the compiled `granted_*` facts of every role. The control
+At enrollment, refresh, and token exchange, the control plane mints into the
+credential one `role()` fact per role and the compiled `granted_*` facts of
+every role. For an identity that the identity provider authenticates, the
+control plane resolves the roles from the bindings. A member that enrolled
+with a bootstrap token gets only the token's role. The control
 plane also renders the policy as Datalog rules served as `datalog_rules` at
 `GET /policies`. Nodes, routers and SDK members fetch this text
 (`--control-plane-sync-interval`, 15 minutes for a node, 5 for a router) and
