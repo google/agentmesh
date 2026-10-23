@@ -123,6 +123,8 @@ type Options struct {
 func (o *Options) Default() {
 	if o.ControlPlaneURL == "" {
 		o.ControlPlaneURL = "http://127.0.0.1:8080"
+	} else {
+		o.ControlPlaneURL = api.NormalizeControlPlaneURL(o.ControlPlaneURL)
 	}
 	if len(o.ListenAddrs) == 0 {
 		o.ListenAddrs = []string{"/ip4/0.0.0.0/tcp/5001", "/ip6/::/tcp/5001"}
