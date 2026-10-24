@@ -1128,3 +1128,176 @@ func TestSTSTokenBorderCrossingNamesTheOriginPeer(t *testing.T) {
 		t.Fatalf("got Border Crossing lines for decisions %v, want allow and deny", seen)
 	}
 }
+
+// TestSTSTokenBorderCrossingDeniesBeforeBiscuit checks that the two /sts/token
+// refusals that happen before the caller's Biscuit is verified (served_by and
+// audience) still write a Border Crossing deny line naming the calling node,
+// the destination, the requested audience and the reason, with client_peer_id
+// left empty because nothing in the Biscuit has been verified yet.
+func TestSTSTokenBorderCrossingDeniesBeforeBiscuit(t *testing.T) {
+	issuer, mintOIDC := startCustomMockOIDC(t)
+	srv, store, baseURL := setupTestServer(t, issuer)
+	defer func() { _ = srv.Close() }()
+
+	const (
+		servedByDest = "s3.amazonaws.com"
+		audienceDest = "bigquery.googleapis.com"
+		policyAud    = "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/agentmesh/providers/cp"
+	)
+	roles := []*api.PolicyRole{
+		{Name: api.RoleNode, AllowedServices: []string{"egress://" + servedByDest, "egress://" + audienceDest}, AllowedTargets: []string{"*"}},
+		{Name: "egress-gateway", AllowedServices: []string{"egress://" + servedByDest}, AllowedTargets: []string{"*"}},
+	}
+	bindings := []*api.PolicyBinding{
+		{Role: api.RoleNode, Members: []string{api.SystemAuthenticated}},
+	}
+	egress := []*api.EgressDestination{
+		{
+			Name:     servedByDest,
+			ServedBy: []string{"egress-gateway"},
+			Broker: &api.CredentialBroker{
+				Kind: &api.CredentialBroker_AwsAssumeRole{
+					AwsAssumeRole: &api.AWSAssumeRole{RoleArn: "arn:aws:iam::123456789012:role/agentmesh-s3"},
+				},
+			},
+		},
+		{
+			Name: audienceDest,
+			Broker: &api.CredentialBroker{
+				Kind: &api.CredentialBroker_OidcFederation{
+					OidcFederation: &api.OIDCFederation{
+						TokenEndpoint: "https://sts.googleapis.com/v1/token",
+						Audience:      policyAud,
+					},
+				},
+			},
+		},
+	}
+	if err := store.SavePolicyDocument(context.Background(), roles, bindings, egress); err != nil {
+		t.Fatalf("SavePolicyDocument: %v", err)
+	}
+
+	_, _, originBiscuit, _ := enrollTestNodeForSTS(t, baseURL, mintOIDC)
+	egressPriv, egressPeerID, egressBiscuit, _ := enrollTestNodeForSTS(t, baseURL, mintOIDC)
+	// A Task Biscuit bound to the origin peer: if either refusal were logged
+	// only after the Biscuit verified, the line would carry that peer.
+	taskBiscuit, err := identity.AttenuateBiscuit(originBiscuit, &api.TaskAuthorizationRule{
+		Name:  "export",
+		Rules: []*api.TaskRule{{AllowedServices: []string{"egress://" + servedByDest, "egress://" + audienceDest}}},
+	})
+	if err != nil {
+		t.Fatalf("attenuate the Member Biscuit: %v", err)
+	}
+
+	const subsystem = "agentmesh-control-plane"
+	prevLevel, err := golog.SubsystemLevelName(subsystem)
+	if err != nil {
+		t.Fatalf("read the %s log level: %v", subsystem, err)
+	}
+	if err := golog.SetLogLevel(subsystem, "info"); err != nil {
+		t.Fatalf("set the %s log level: %v", subsystem, err)
+	}
+	t.Cleanup(func() { _ = golog.SetLogLevel(subsystem, prevLevel) })
+
+	// The pipe sees every logger, including other tests running in parallel,
+	// so the reader keeps only this egress node's /sts/token lines.
+	pipe := golog.NewPipeReader()
+	t.Cleanup(func() { _ = pipe.Close() })
+	crossings := make(chan map[string]any, 4)
+	go func() {
+		scanner := bufio.NewScanner(pipe)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+		for scanner.Scan() {
+			var entry map[string]any
+			if json.Unmarshal(scanner.Bytes(), &entry) != nil {
+				continue
+			}
+			if entry["msg"] == "Border Crossing" && entry["endpoint"] == "/sts/token" && entry["actor_node"] == egressPeerID.String() {
+				crossings <- entry
+			}
+		}
+	}()
+
+	postSTS := func(destination, audience string) int {
+		t.Helper()
+		ts := time.Now().UnixMilli()
+		sig, err := egressPriv.Sign(api.STSTokenChallenge(egressPeerID.String(), ts))
+		if err != nil {
+			t.Fatalf("sign the STS challenge: %v", err)
+		}
+		reqBytes, err := proto.Marshal(&api.STSTokenRequest{
+			Biscuit:            taskBiscuit,
+			Destination:        destination,
+			Audience:           audience,
+			ChallengeUnixMs:    ts,
+			ChallengeSignature: sig,
+		})
+		if err != nil {
+			t.Fatalf("marshal STSTokenRequest: %v", err)
+		}
+		req, err := http.NewRequest(http.MethodPost, baseURL+"/sts/token", bytes.NewReader(reqBytes))
+		if err != nil {
+			t.Fatalf("build POST /sts/token: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+base64.StdEncoding.EncodeToString(egressBiscuit))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /sts/token for %s: %v", destination, err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	cases := []struct {
+		name        string
+		destination string
+		audience    string
+		reason      string
+	}{
+		{
+			name:        "served_by",
+			destination: servedByDest,
+			audience:    "sts.amazonaws.com",
+			reason:      "calling node " + egressPeerID.String() + " is not in served_by for egress://" + servedByDest,
+		},
+		{
+			name:        "audience",
+			destination: audienceDest,
+			audience:    "https://evil.example.com",
+			reason:      `requested audience "https://evil.example.com" does not match policy audience for egress://` + audienceDest,
+		},
+	}
+	for _, tc := range cases {
+		if status := postSTS(tc.destination, tc.audience); status != http.StatusForbidden {
+			t.Fatalf("%s: POST /sts/token for %s returned %d, want 403", tc.name, tc.destination, status)
+		}
+		select {
+		case entry := <-crossings:
+			if entry["decision"] != "deny" {
+				t.Fatalf("%s: Border Crossing decision = %v, want deny", tc.name, entry["decision"])
+			}
+			if entry["direction"] != "outbound" {
+				t.Errorf("%s: Border Crossing direction = %v, want outbound", tc.name, entry["direction"])
+			}
+			if entry["destination"] != tc.destination {
+				t.Errorf("%s: Border Crossing destination = %v, want %s", tc.name, entry["destination"], tc.destination)
+			}
+			if entry["audience"] != tc.audience {
+				t.Errorf("%s: Border Crossing audience = %v, want the requested %s", tc.name, entry["audience"], tc.audience)
+			}
+			if entry["reason"] != tc.reason {
+				t.Errorf("%s: Border Crossing reason = %v, want %q", tc.name, entry["reason"], tc.reason)
+			}
+			if cp, ok := entry["client_peer_id"]; ok && cp != "" {
+				t.Errorf("%s: Border Crossing client_peer_id = %v, want empty", tc.name, cp)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: no Border Crossing line for the refused /sts/token request", tc.name)
+		}
+	}
+	select {
+	case entry := <-crossings:
+		t.Fatalf("got an extra Border Crossing line %v, want exactly one per refusal", entry)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
