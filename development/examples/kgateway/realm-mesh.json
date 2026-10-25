@@ -1,0 +1,54 @@
+{
+  "realm": "mesh",
+  "enabled": true,
+  "accessTokenLifespan": 300,
+  "groups": [{ "name": "devs" }, { "name": "ops" }],
+  "clients": [
+    {
+      "clientId": "agentmesh",
+      "publicClient": true,
+      "directAccessGrantsEnabled": true,
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "config": {
+            "claim.name": "groups",
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "other-app",
+      "publicClient": true,
+      "directAccessGrantsEnabled": true
+    }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@example.test",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Dev",
+      "groups": ["/devs"],
+      "credentials": [{ "type": "password", "value": "alice-test-only", "temporary": false }]
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "email": "bob@example.test",
+      "emailVerified": true,
+      "firstName": "Bob",
+      "lastName": "Ops",
+      "groups": ["/ops"],
+      "credentials": [{ "type": "password", "value": "bob-test-only", "temporary": false }]
+    }
+  ]
+}

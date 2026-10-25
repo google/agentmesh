@@ -1,0 +1,202 @@
+# Keycloak, the control plane, a router and the node kgateway asks over
+# ext_authz. run.sh creates the secrets and the realm ConfigMap.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mesh
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: mesh
+spec:
+  selector:
+    matchLabels: { app: keycloak }
+  template:
+    metadata:
+      labels: { app: keycloak }
+    spec:
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.4.0
+          # start-dev: plain http, no database. Local testing only.
+          args: ["start-dev", "--import-realm"]
+          env:
+            - { name: KC_HEALTH_ENABLED, value: "true" }
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet: { path: /health/ready, port: 9000 }
+            periodSeconds: 5
+            failureThreshold: 60
+          volumeMounts:
+            - { name: realm, mountPath: /opt/keycloak/data/import, readOnly: true }
+      volumes:
+        - name: realm
+          configMap: { name: keycloak-realm }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: mesh
+spec:
+  selector: { app: keycloak }
+  ports:
+    - { name: http, port: 8080 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: control-plane
+  namespace: mesh
+spec:
+  selector:
+    matchLabels: { app: control-plane }
+  template:
+    metadata:
+      labels: { app: control-plane }
+    spec:
+      containers:
+        - name: control-plane
+          image: agentmesh-control-plane:local
+          imagePullPolicy: Never
+          args:
+            - --issuer=http://keycloak.mesh:8080/realms/mesh
+            - --allowed-audiences=agentmesh
+            - --admin-token-path=/run/example/admin.token
+            - --db-dsn=/data/control-plane.db
+            # So the router and nodes enroll without a manual approval.
+            # User access is still decided by the policy bindings.
+            - --auto-approve-enrollment
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet: { path: /info, port: 8080 }
+            periodSeconds: 2
+          volumeMounts:
+            - { name: admin, mountPath: /run/example, readOnly: true }
+            - { name: data, mountPath: /data }
+      volumes:
+        - name: admin
+          secret: { secretName: control-plane-admin }
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: control-plane
+  namespace: mesh
+spec:
+  selector: { app: control-plane }
+  ports:
+    - { name: http, port: 8080 }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: router
+  namespace: mesh
+spec:
+  selector:
+    matchLabels: { app: router }
+  template:
+    metadata:
+      labels: { app: router }
+    spec:
+      containers:
+        - name: router
+          image: agentmesh-router:local
+          imagePullPolicy: Never
+          args:
+            - --control-plane=http://control-plane.mesh:8080
+            - --insecure-control-plane
+            - --bootstrap-token-path=/run/example/bootstrap.token
+            - --keys-path=/data/router.key
+            - --control-plane-sync-interval=10s
+          volumeMounts:
+            - { name: bootstrap, mountPath: /run/example, readOnly: true }
+            - { name: data, mountPath: /data }
+      volumes:
+        - name: bootstrap
+          secret: { secretName: router-bootstrap }
+        - name: data
+          emptyDir: {}
+---
+# Answers kgateway's ext_authz checks, and is the backend for routes into
+# the mesh. Its own credential grants no service.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mesh-node
+  namespace: mesh
+spec:
+  selector:
+    matchLabels: { app: mesh-node }
+  template:
+    metadata:
+      labels: { app: mesh-node }
+    spec:
+      containers:
+        - name: mesh-node
+          image: agentmesh-node:local
+          imagePullPolicy: Never
+          args:
+            - run
+            - --control-plane=http://control-plane.mesh:8080
+            - --insecure-control-plane
+            - --bootstrap-token-path=/run/example/bootstrap.token
+            - --data-dir=/data
+            - --bind-addr=0.0.0.0:8080
+            - --api-token-path=/run/example/api.token
+            - --control-plane-sync-interval=10s
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet: { path: /readyz, port: 8080 }
+            periodSeconds: 2
+          volumeMounts:
+            - { name: tokens, mountPath: /run/example, readOnly: true }
+            - { name: data, mountPath: /data }
+      volumes:
+        - name: tokens
+          secret: { secretName: mesh-node-tokens }
+        - name: data
+          emptyDir: {}
+---
+# Same port, two Services: h2c for ext_authz, plain HTTP for /mesh/.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mesh-node-authz
+  namespace: mesh
+spec:
+  selector: { app: mesh-node }
+  ports:
+    - { name: grpc, port: 8080, appProtocol: kubernetes.io/h2c }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mesh-node
+  namespace: mesh
+spec:
+  selector: { app: mesh-node }
+  ports:
+    - { name: http, port: 8080 }
+---
+# Lets the gateway in apps use these Services.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: apps-gateway
+  namespace: mesh
+spec:
+  from:
+    - { group: gateway.networking.k8s.io, kind: HTTPRoute, namespace: apps }
+    - { group: gateway.kgateway.dev, kind: GatewayExtension, namespace: apps }
+  to:
+    - { group: "", kind: Service, name: mesh-node }
+    - { group: "", kind: Service, name: mesh-node-authz }

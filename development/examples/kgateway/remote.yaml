@@ -1,0 +1,87 @@
+# An MCP server no gateway routes to, published on the mesh as mcp://calc.
+# Stands in for another cluster or network.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: remote
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: calc
+  namespace: remote
+spec:
+  selector:
+    matchLabels: { app: calc }
+  template:
+    metadata:
+      labels: { app: calc }
+    spec:
+      containers:
+        - name: calc
+          image: agentmesh-kgateway/calc-mcp:local
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 7777
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: calc
+  namespace: remote
+spec:
+  selector: { app: calc }
+  ports:
+    - { name: http, port: 7777 }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: provider
+  namespace: remote
+data:
+  provider.yaml: |
+    version: "v1alpha1"
+    services:
+      - type: mcp
+        name: calc
+        description: "add and multiply"
+        target_url: "http://calc.remote:7777/mcp"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: provider
+  namespace: remote
+spec:
+  selector:
+    matchLabels: { app: provider }
+  template:
+    metadata:
+      labels: { app: provider }
+    spec:
+      containers:
+        - name: provider
+          image: agentmesh-node:local
+          imagePullPolicy: Never
+          args:
+            - run
+            - --control-plane=http://control-plane.mesh:8080
+            - --insecure-control-plane
+            - --bootstrap-token-path=/run/example/bootstrap.token
+            - --config=/etc/agentmesh/provider.yaml
+            - --data-dir=/data
+            - --api-token-path=/run/example/api.token
+            - --discovery-interval=1s
+            - --control-plane-sync-interval=10s
+          volumeMounts:
+            - { name: tokens, mountPath: /run/example, readOnly: true }
+            - { name: config, mountPath: /etc/agentmesh, readOnly: true }
+            - { name: data, mountPath: /data }
+      volumes:
+        - name: tokens
+          secret: { secretName: provider-tokens }
+        - name: config
+          configMap: { name: provider }
+        - name: data
+          emptyDir: {}

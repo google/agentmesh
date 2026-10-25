@@ -1,0 +1,95 @@
+# The kgateway side. Plain Gateway API routes, plus an ext_authz extension
+# pointing at the node and a policy attaching it. run.sh fills in
+# __PROVIDER__.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: apps-gateway
+  namespace: apps
+spec:
+  gatewayClassName: kgateway
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 8080
+---
+# Local server: kgateway routes, the node only decides.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: greeter
+  namespace: apps
+spec:
+  parentRefs:
+    - name: apps-gateway
+  rules:
+    - matches:
+        - path: { type: PathPrefix, value: /mcp/greeter }
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path: { type: ReplaceFullPath, replaceFullPath: /mcp }
+        # Runs after ext_authz, so the backend never gets the token.
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            remove: ["Authorization"]
+      backendRefs:
+        - name: greeter
+          port: 7778
+---
+# Remote server: kgateway routes to the node, the node goes over the mesh.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: calc
+  namespace: apps
+spec:
+  parentRefs:
+    - name: apps-gateway
+  rules:
+    - matches:
+        - path: { type: PathPrefix, value: /mcp/calc }
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path: { type: ReplaceFullPath, replaceFullPath: /mesh/__PROVIDER__/mcp/calc }
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            remove: ["Authorization"]
+      backendRefs:
+        - name: mesh-node
+          namespace: mesh
+          port: 8080
+---
+apiVersion: gateway.kgateway.dev/v1alpha1
+kind: GatewayExtension
+metadata:
+  name: mesh-authz
+  namespace: apps
+spec:
+  type: ExtAuth
+  extAuth:
+    grpcService:
+      backendRef:
+        name: mesh-node-authz
+        namespace: mesh
+        port: 8080
+    # The node only needs the token; the service comes from the path.
+    headersToForward: ["authorization"]
+    # Default, but worth being explicit: no answer, no request.
+    failOpen: false
+    # 503 instead of 403, so a node outage doesn't look like a denial.
+    statusOnError: 503
+---
+apiVersion: gateway.kgateway.dev/v1alpha1
+kind: TrafficPolicy
+metadata:
+  name: mesh-authz
+  namespace: apps
+spec:
+  targetRefs:
+    - { group: gateway.networking.k8s.io, kind: HTTPRoute, name: greeter }
+    - { group: gateway.networking.k8s.io, kind: HTTPRoute, name: calc }
+  extAuth:
+    extensionRef:
+      name: mesh-authz
