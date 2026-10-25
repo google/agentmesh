@@ -156,7 +156,11 @@ rm -rf "${RUN_DIR}"
 mkdir -p "${RUN_DIR}"
 
 echo "== Creating the kind cluster '${CLUSTER}'"
-kind create cluster --name "${CLUSTER}" --wait 120s >/dev/null 2>&1
+kind create cluster --name "${CLUSTER}" --wait 120s >"${RUN_DIR}/kind.log" 2>&1 || {
+  echo "Failed to create kind cluster. Log:" >&2
+  cat "${RUN_DIR}/kind.log" >&2
+  exit 1
+}
 
 echo "== Installing Gateway API ${GATEWAY_API_VERSION} and kgateway ${KGATEWAY_VERSION}"
 "${K[@]}" apply --server-side -f \
