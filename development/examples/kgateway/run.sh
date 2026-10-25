@@ -163,7 +163,11 @@ echo "== Installing Gateway API ${GATEWAY_API_VERSION} and kgateway ${KGATEWAY_V
   "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml" >/dev/null
 for chart in kgateway-crds kgateway; do
   helm --kube-context "kind-${CLUSTER}" upgrade -i --create-namespace --namespace kgateway-system \
-    --version "${KGATEWAY_VERSION}" --wait "${chart}" "oci://cr.kgateway.dev/kgateway-dev/charts/${chart}" >/dev/null 2>&1
+    --version "${KGATEWAY_VERSION}" --wait "${chart}" "oci://cr.kgateway.dev/kgateway-dev/charts/${chart}" >"${RUN_DIR}/helm-${chart}.log" 2>&1 || {
+      echo "Failed to install helm chart ${chart}. Log:" >&2
+      cat "${RUN_DIR}/helm-${chart}.log" >&2
+      exit 1
+    }
 done
 
 # The published control plane and router images are amd64 only.
