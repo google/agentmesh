@@ -65,6 +65,28 @@ func TestValidateControlPlaneTransport(t *testing.T) {
 	}
 }
 
+func TestNormalizeControlPlaneURL(t *testing.T) {
+	cases := map[string]string{
+		"":                                  "",
+		"   ":                               "",
+		"bananas.sam-mesh.dev":              "https://bananas.sam-mesh.dev",
+		"http://localhost:8080":             "http://localhost:8080",
+		"https://bananas.sam-mesh.dev/":     "https://bananas.sam-mesh.dev",
+		"https://bananas.sam-mesh.dev//":    "https://bananas.sam-mesh.dev",
+		"https://bananas.sam-mesh.dev///":   "https://bananas.sam-mesh.dev",
+		"  https://bananas.sam-mesh.dev/  ": "https://bananas.sam-mesh.dev",
+		"http://127.0.0.1:8080/":            "http://127.0.0.1:8080",
+		"http://127.0.0.1:8080///":          "http://127.0.0.1:8080",
+		"https://":                          "https://",
+		"http://":                           "http://",
+	}
+	for in, want := range cases {
+		if got := NormalizeControlPlaneURL(in); got != want {
+			t.Errorf("NormalizeControlPlaneURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func genKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)

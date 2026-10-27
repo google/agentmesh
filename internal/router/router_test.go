@@ -961,6 +961,14 @@ func TestRouterDefaultBiscuitTimeout(t *testing.T) {
 	}
 }
 
+func TestRouterDefaultNormalizesControlPlaneURL(t *testing.T) {
+	opts := Options{ControlPlaneURL: "https://cp.example.com///"}
+	opts.Default()
+	if opts.ControlPlaneURL != "https://cp.example.com" {
+		t.Fatalf("expected normalized ControlPlaneURL %q, got %q", "https://cp.example.com", opts.ControlPlaneURL)
+	}
+}
+
 // TestPerformMutualAuth covers the two decisions the client side makes about
 // the remote biscuit. Rotated key: the biscuit is signed by the second trusted
 // key, so the role check must run under the key that verified, not
