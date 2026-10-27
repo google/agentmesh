@@ -42,7 +42,7 @@ metadata:
 spec:
   containers:
     - name: curl
-      image: curlimages/curl:8.11.1
+      image: curlimages/curl:8.22.0
       command: ["sleep", "infinity"]
       volumeMounts:
         - { name: admin, mountPath: /run/example, readOnly: true }
