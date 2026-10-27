@@ -1,6 +1,6 @@
-a2a-sdk>=1.2.2
-google-genai>=2.30.0
+a2a-sdk>=1.2.3
+google-genai>=2.31.0
 httpx>=0.28.1
 sse-starlette>=3.5.0
-starlette>=1.7.0
+starlette>=1.9.0
 uvicorn>=0.54.0
