@@ -6,6 +6,6 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.0",
     "express": "^4.19.0",
-    "zod": "^3.23.0"
+    "zod": "^4.6.7"
   }
 }
