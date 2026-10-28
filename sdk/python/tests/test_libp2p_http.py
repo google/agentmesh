@@ -313,6 +313,15 @@ def test_rewrite_agent_card_keeps_only_what_the_mesh_carries():
     }
 
 
+def test_rewrite_agent_card_declares_no_extended_card():
+    # As agentmesh-node's regenerated card (issue #675): the extended card would come back
+    # with the agent's own interface URLs, so the rewritten card declares none.
+    iface = {"url": "http://localhost:7777/", "protocolBinding": "JSONRPC"}
+    assert rewrite_agent_card({"capabilities": {"streaming": True, "extendedAgentCard": True}, "supportedInterfaces": [iface]}, "http://mesh/x")["capabilities"] == {"streaming": True}
+    assert rewrite_agent_card({"capabilities": {"extendedAgentCard": False}, "supportedInterfaces": [iface]}, "http://mesh/x")["capabilities"] == {}
+    assert rewrite_agent_card({"capabilities": {"streaming": False}, "supportedInterfaces": [iface]}, "http://mesh/x")["capabilities"] == {"streaming": False}
+
+
 def test_rewrite_agent_card_keeps_the_interface_path_the_provider_names():
     # As agentmesh-node's TestA2AServiceCardKeepsInterfacePaths: the provider's node names
     # each interface relative to its target URL, and the caller's card resolves it under

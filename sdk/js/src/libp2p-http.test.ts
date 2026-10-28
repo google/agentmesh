@@ -314,6 +314,17 @@ test("rewriteAgentCard keeps only what the mesh carries", () => {
   });
 });
 
+// As agentmesh-node's regenerated card (issue #675): the extended card would come back
+// with the agent's own interface URLs, so the rewritten card declares none.
+test("rewriteAgentCard declares no extended card", () => {
+  const iface = { url: "http://localhost:7777/", protocolBinding: "JSONRPC" };
+  assert.deepEqual(rewriteAgentCard({ capabilities: { streaming: true, extendedAgentCard: true }, supportedInterfaces: [iface] }, "http://mesh/x").capabilities, {
+    streaming: true,
+  });
+  assert.deepEqual(rewriteAgentCard({ capabilities: { extendedAgentCard: false }, supportedInterfaces: [iface] }, "http://mesh/x").capabilities, {});
+  assert.deepEqual(rewriteAgentCard({ capabilities: { streaming: false }, supportedInterfaces: [iface] }, "http://mesh/x").capabilities, { streaming: false });
+});
+
 // As agentmesh-node's TestA2AServiceCardKeepsInterfacePaths: the provider's node names
 // each interface relative to its target URL, and the caller's card resolves it under
 // the mesh URL, so an agent whose JSON-RPC endpoint is "/invoke" stays reachable there.

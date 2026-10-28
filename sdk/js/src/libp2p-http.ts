@@ -414,7 +414,9 @@ function agentCardService(method: string, target: string): string | undefined {
 /**
  * An agent card rebuilt for the mesh, as agentmesh-node's egress proxy serves it:
  * HTTP interfaces resolve under base (meshInterfaceURL), gRPC ones go, signatures no longer match.
- * Streaming stays as declared, this transport streams. Throws when no interface remains.
+ * Streaming stays as declared, this transport streams. The extended card does not: it is
+ * relayed with the agent's own interface URLs, so the card declares none. Throws when no
+ * interface remains.
  */
 export function rewriteAgentCard(card: unknown, base: string): Record<string, unknown> {
   if (typeof card !== "object" || card === null || Array.isArray(card)) {
@@ -429,6 +431,13 @@ export function rewriteAgentCard(card: unknown, base: string): Record<string, un
   });
   if (kept.length === 0) {
     throw new Error("agent card advertises no supported interface the mesh can carry (JSONRPC or HTTP+JSON); is the agent serving a pre-1.0 A2A card?");
+  }
+  const capabilities = out.capabilities;
+  if (typeof capabilities === "object" && capabilities !== null && !Array.isArray(capabilities) && "extendedAgentCard" in capabilities) {
+    // Dropped rather than set false, as agentmesh-node's omitempty encoding leaves it out.
+    const rest = { ...(capabilities as Record<string, unknown>) };
+    delete rest.extendedAgentCard;
+    out.capabilities = rest;
   }
   return { ...out, supportedInterfaces: kept };
 }

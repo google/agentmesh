@@ -166,7 +166,7 @@ func TestA2AServeAgentCardRegenerates(t *testing.T) {
 	  "name": "T",
 	  "description": "d",
 	  "version": "1.0.0",
-	  "capabilities": {"streaming": true},
+	  "capabilities": {"streaming": true, "extendedAgentCard": true},
 	  "supportedInterfaces": [
 	    {"url": "http://localhost:7777/", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"},
 	    {"url": "localhost:50051", "protocolBinding": "GRPC", "protocolVersion": "1.0"}
@@ -221,6 +221,9 @@ func TestA2AServeAgentCardRegenerates(t *testing.T) {
 	}
 	if !card.Capabilities.Streaming {
 		t.Errorf("streaming = %v, want true as the agent declares it", card.Capabilities.Streaming)
+	}
+	if card.Capabilities.ExtendedAgentCard {
+		t.Error("extendedAgentCard must be off in the regenerated card: the extended card is relayed with the agent's own URLs")
 	}
 	if len(card.Signatures) != 0 {
 		t.Error("stale signatures must be dropped from the regenerated card")

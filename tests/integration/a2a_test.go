@@ -16,6 +16,7 @@ package integration_test
 
 import (
 	"context"
+	"errors"
 	"iter"
 	"net/http"
 	"net/http/httptest"
@@ -71,7 +72,9 @@ func TestA2ACUJ(t *testing.T) {
 	// interface and a stale signature, which the mesh must drop on
 	// regeneration, and streaming, which it must keep and carry. Its
 	// JSON-RPC endpoint is "/invoke", as in the a2a-go samples, not the
-	// root: the mesh URL must keep that path. The backend exists before
+	// root: the mesh URL must keep that path. It also serves an extended
+	// card naming its private interfaces, which the mesh must not offer
+	// (issue #675). The backend exists before
 	// the node: services are declared in the node's configuration, never
 	// registered at runtime.
 	var sendCount atomic.Int32
@@ -99,16 +102,27 @@ func TestA2ACUJ(t *testing.T) {
 		Name:         "echo-agent",
 		Description:  "test a2a agent",
 		Version:      "1.0.0",
-		Capabilities: a2a.AgentCapabilities{Streaming: true},
+		Capabilities: a2a.AgentCapabilities{Streaming: true, ExtendedAgentCard: true},
 		SupportedInterfaces: []*a2a.AgentInterface{
 			{URL: "http://localhost:9999/invoke", ProtocolBinding: a2a.TransportProtocolJSONRPC, ProtocolVersion: "1.0"},
 			{URL: "localhost:50051", ProtocolBinding: a2a.TransportProtocolGRPC, ProtocolVersion: "1.0"},
 		},
 		Signatures: []a2a.AgentCardSignature{{Protected: "eyJhbGciOiJFUzI1NiJ9", Signature: "c3RhbGU"}},
 	}
+	extendedCard := *agentCard
+	extendedCard.Description = "extended"
+	extendedCard.SupportedInterfaces = []*a2a.AgentInterface{
+		{URL: "http://127.0.0.1:7777", ProtocolBinding: a2a.TransportProtocolJSONRPC, ProtocolVersion: "1.0"},
+		{URL: "10.0.0.5:50051", ProtocolBinding: a2a.TransportProtocolGRPC, ProtocolVersion: "1.0"},
+	}
+	var extendedCardServed atomic.Bool
 	mux := http.NewServeMux()
 	mux.Handle(a2asrv.WellKnownAgentCardPath, a2asrv.NewStaticAgentCardHandler(agentCard))
-	mux.Handle("/invoke", a2asrv.NewJSONRPCHandler(a2asrv.NewHandler(echo)))
+	mux.Handle("/invoke", a2asrv.NewJSONRPCHandler(a2asrv.NewHandler(echo,
+		a2asrv.WithExtendedAgentCardProducer(a2asrv.ExtendedAgentCardProducerFn(func(context.Context, *a2a.GetExtendedAgentCardRequest) (*a2a.AgentCard, error) {
+			extendedCardServed.Store(true)
+			return &extendedCard, nil
+		})))))
 	agent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get(api.HeaderMeshRequiredLabels) != "" {
 			sawLabelsHeader.Store(true)
@@ -173,6 +187,9 @@ func TestA2ACUJ(t *testing.T) {
 	if !card.Capabilities.Streaming {
 		t.Errorf("streaming = %v, want true as the agent declares it", card.Capabilities.Streaming)
 	}
+	if card.Capabilities.ExtendedAgentCard {
+		t.Error("extendedAgentCard = true, want false: the extended card would carry the agent's own URLs")
+	}
 	if len(card.Signatures) != 0 {
 		t.Error("stale signatures must be dropped from the regenerated card")
 	}
@@ -203,6 +220,15 @@ func TestA2ACUJ(t *testing.T) {
 	}
 	if len(reply.Parts) == 0 || reply.Parts[0].Text() != "echo from eu" {
 		t.Fatalf("unexpected reply: %+v", reply)
+	}
+
+	// CUJ step 2a: the card declares no extended card, so the stock client
+	// does not ask for one and never sees the agent's private interfaces.
+	if ext, err := euClient.GetExtendedAgentCard(ctx, &a2a.GetExtendedAgentCardRequest{}); !errors.Is(err, a2a.ErrExtendedCardNotConfigured) {
+		t.Errorf("GetExtendedAgentCard through the mesh = %+v, %v; want %v", ext, err, a2a.ErrExtendedCardNotConfigured)
+	}
+	if extendedCardServed.Load() {
+		t.Error("the agent served its extended card through the mesh")
 	}
 
 	// CUJ step 2b: the card keeps streaming, so the same client may stream

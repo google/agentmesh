@@ -416,7 +416,9 @@ def rewrite_agent_card(card: object, base: str) -> dict:
     """An agent card rebuilt for the mesh, as agentmesh-node's egress proxy serves
     it: HTTP interfaces resolve under base (mesh_interface_url), gRPC ones go,
     signatures no longer match.
-    Streaming stays as declared, this transport streams. Raises when no interface remains."""
+    Streaming stays as declared, this transport streams. The extended card does
+    not: it is relayed with the agent's own interface URLs, so the card declares
+    none. Raises when no interface remains."""
     if not isinstance(card, dict):
         raise ValueError("agent card is not a JSON object")
     interfaces = card.get("supportedInterfaces")
@@ -427,7 +429,12 @@ def rewrite_agent_card(card: object, base: str) -> dict:
     ]
     if not kept:
         raise ValueError("agent card advertises no supported interface the mesh can carry (JSONRPC or HTTP+JSON); is the agent serving a pre-1.0 A2A card?")
-    return {**{k: v for k, v in card.items() if k != "signatures"}, "supportedInterfaces": kept}
+    out = {**{k: v for k, v in card.items() if k != "signatures"}, "supportedInterfaces": kept}
+    capabilities = out.get("capabilities")
+    if isinstance(capabilities, dict) and "extendedAgentCard" in capabilities:
+        # Dropped rather than set false, as agentmesh-node's omitempty encoding leaves it out.
+        out["capabilities"] = {k: v for k, v in capabilities.items() if k != "extendedAgentCard"}
+    return out
 
 
 class StreamedResponse:

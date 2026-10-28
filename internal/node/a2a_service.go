@@ -247,10 +247,16 @@ func fetchRemoteAgentCard(node *AgentMeshNode, rt http.RoundTripper, r *http.Req
 // regenerateAgentCardForMesh rebuilds a fetched agent card for mesh use:
 // interface URLs point back at the mesh path, bindings the mesh cannot carry
 // (gRPC) are dropped, and the original signatures are removed since they no
-// longer match the content. Capabilities stay as the agent declares them:
-// the egress proxy relays an SSE stream as it arrives, and a card that turned
-// streaming off would oblige the agent behind it to refuse SendStreamingMessage
-// and SubscribeToTask (A2A 1.0, section 3.3.4), which it does not do.
+// longer match the content. Capabilities stay as the agent declares them,
+// except the extended card: the egress proxy relays an SSE stream as it
+// arrives, and a card that turned streaming off would oblige the agent behind
+// it to refuse SendStreamingMessage and SubscribeToTask (A2A 1.0, section
+// 3.3.4), which it does not do. The extended card, though, is relayed as the
+// agent wrote it, private interface URLs included, and a client that follows
+// section 3.1.11 replaces this card with it and dials the agent directly. So
+// the regenerated card declares no extended card, and stock clients do not
+// ask for one (a2a-go's GetExtendedAgentCard returns
+// ErrExtendedCardNotConfigured without sending anything).
 func regenerateAgentCardForMesh(card *a2a.AgentCard, base string) error {
 	kept := make([]*a2a.AgentInterface, 0, len(card.SupportedInterfaces))
 	for _, iface := range card.SupportedInterfaces {
@@ -265,6 +271,7 @@ func regenerateAgentCardForMesh(card *a2a.AgentCard, base string) error {
 	}
 	card.SupportedInterfaces = kept
 	card.Signatures = nil
+	card.Capabilities.ExtendedAgentCard = false
 	// Required list fields must stay arrays: encoding/json marshals nil
 	// slices as null, which strict SDK card parsers (pydantic) reject.
 	if card.Skills == nil {
