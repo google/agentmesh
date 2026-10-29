@@ -43,7 +43,7 @@ const meshInstructions = `This MCP server connects this node to an Agent Mesh: a
 
 The mesh allows you to discover these remote services, list their tools, and call them.
 To use these remote services and their tools, the client can use the following flow:
-  1. find_remote_tools — discover what tools exist across the mesh (returns peer_id + namespaced tool_name + description). Optionally narrow by service_name or peer_id.
+  1. find_remote_tools — discover what tools exist across the mesh (returns peer_id + namespaced tool_name + description). Optionally narrow by service_name or peer_id; provide intent to rank tools by words in their names and descriptions.
   2. describe_remote_tool — fetch a specific tool's input_schema before calling it. Always do this so you know the argument shape.
   3. call_remote_tool — invoke it. Pass peer_id, the namespaced tool_name (scheme://service/tool, e.g. 'mcp://code-reviewer/review_pr'), and arguments as a JSON object whose keys match the input_schema.
 
@@ -97,7 +97,7 @@ func NewMCPServer(node *AgentMeshNode) *mcp.Server {
 	// Add the find_remote_tools tool.
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "find_remote_tools",
-		Description: "Discover MCP tools available on hosted services across the mesh. Returns name + description per tool, plus the provider's declared labels (e.g. region) when known. Optionally narrow by peer_id, service_name, or tool_name (exact tool name; fastest — served from mesh announcements when available). intent is reserved for future ranking and is accepted-but-ignored.",
+		Description: "Discover MCP tools available on hosted services across the mesh. Returns name + description per tool, plus the provider's declared labels (e.g. region) when known. Optionally narrow by peer_id, service_name, or tool_name (exact tool name; fastest — served from mesh announcements when available). intent ranks by matching words in names and descriptions, retaining nonmatching tools; tool_name takes precedence.",
 	}, node.handleFindRemoteTools)
 
 	// Add the describe_remote_tool tool.
