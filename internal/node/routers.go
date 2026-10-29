@@ -197,6 +197,11 @@ func (n *AgentMeshNode) refreshRouterCatalog(ctx context.Context) error {
 func (n *AgentMeshNode) wantRouters() int {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	return n.wantRoutersLocked()
+}
+
+// wantRoutersLocked requires n.mu.
+func (n *AgentMeshNode) wantRoutersLocked() int {
 	matched := 0
 	for _, c := range n.routerCatalog {
 		if len(n.config.RouterSelector) == 0 || api.LabelsSatisfy(n.config.RouterSelector, c.Labels) {
@@ -234,13 +239,53 @@ func (n *AgentMeshNode) RefreshRouters(ctx context.Context) error { return n.ref
 // a reservation.
 func (n *AgentMeshNode) attach(router peer.ID) {
 	n.mu.Lock()
+	want := n.wantRoutersLocked()
+	live := 0
+	var dropped []peer.ID
+	for pid := range n.attached {
+		if n.authenticatedRouters[pid] && n.Host.Network().Connectedness(pid) == network.Connected {
+			live++
+		} else {
+			dropped = append(dropped, pid)
+		}
+	}
+	// A redial or another top-up may have filled the target while this
+	// handshake was in flight. Check and record the attachment under one lock.
+	if !n.attached[router] && live >= want {
+		n.mu.Unlock()
+		logger.Infof("[AuthN] Not attaching admitted router %s: holding %d live routers, target %d", router, live, want)
+		return
+	}
 	if n.attached == nil {
 		n.attached = map[peer.ID]bool{}
 	}
+	if !n.attached[router] && n.authenticatedRouters[router] && n.Host.Network().Connectedness(router) == network.Connected {
+		live++
+	}
 	n.attached[router] = true
-	n.mu.Unlock()
+	// Protection changes share the attachment lock, so a concurrent detach
+	// cannot leave a router protected after its attachment has been removed.
 	if n.connMgr != nil {
 		n.connMgr.Protect(router, routerTag)
+	}
+	if live >= want {
+		// Keep trying a dropped router while still short. Once replacements
+		// fill the target, retire it even if its redial is already in flight:
+		// redial never attaches on success, so it cannot restore a K+1th hold.
+		// Use the same snapshot as the count: a live router that drops
+		// during this decision must keep its own redial intent.
+		for _, pid := range dropped {
+			delete(n.attached, pid)
+			if n.connMgr != nil {
+				n.connMgr.Unprotect(pid, routerTag)
+			}
+		}
+	} else {
+		dropped = nil
+	}
+	n.mu.Unlock()
+	for _, pid := range dropped {
+		logger.Infof("[AuthN] Releasing dropped router %s: %d live routers fill the target %d", pid, live, want)
 	}
 	n.refreshRelays()
 	// A router to announce to: services registered before this one was
@@ -253,10 +298,10 @@ func (n *AgentMeshNode) attach(router peer.ID) {
 func (n *AgentMeshNode) detach(router peer.ID) {
 	n.mu.Lock()
 	delete(n.attached, router)
-	n.mu.Unlock()
 	if n.connMgr != nil {
 		n.connMgr.Unprotect(router, routerTag)
 	}
+	n.mu.Unlock()
 	n.refreshRelays()
 }
 
