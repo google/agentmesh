@@ -439,6 +439,7 @@ test('an admin restores a revoked node from the Nodes view', async ({ page }) =>
 
   await login(page);
   await page.click('.nav-item[data-target="nodes"]');
+  await page.click('#revoked-nodes summary');
   page.once('dialog', (d) => d.accept());
   await page.locator('#table-revoked-nodes tr', { hasText: REVOKED }).locator('button:has-text("Restore")').click();
   await expect.poll(() => unban).toBe(`POST /api/admin/nodes/${REVOKED}/unban`);
