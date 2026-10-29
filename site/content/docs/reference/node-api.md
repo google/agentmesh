@@ -182,12 +182,24 @@ HTTP and not with `call_remote_tool`.
 | `peer_id` | Restrict the search to one peer. |
 | `service_name` | Restrict the search to one service, bare (`code-reviewer`) or namespaced (`mcp://code-reviewer`). |
 | `tool_name` | Exact tool name to locate across the mesh (`review_pr`). |
-| `intent` | Accepted and ignored. Reserved for later use. |
+| `intent` | Rank results by words in service/tool names and descriptions. Ignored when `tool_name` is set. |
 
 Returns one row per tool with `peer_id`, `tool_name` (namespaced as
 `mcp://service/tool`) and `description`. A peer that could not be
 queried appears as a row with an `error` field. The call itself does not
 fail.
+
+Intent ranking is lexical: it counts distinct matching words, preferring name
+matches when coverage is equal. Matching ignores case, splits punctuation
+(including underscores and hyphens), and skips common English function words.
+It does not infer synonyms. Ties sort by namespaced tool name, then peer ID.
+Nonmatching tools remain after matching tools; error rows remain last. An empty
+or function-word-only intent preserves the unranked catalogue order. Peer and
+service filters and authorization apply before ranking.
+
+For example, `{"intent":"review pull request","service_name":"code-reviewer"}`
+puts a tool described as "Review a pull request" ahead of an unrelated comment
+tool, while still returning both. Use `tool_name` for exact lookups.
 
 ### `describe_remote_tool`
 
