@@ -9,6 +9,9 @@
     "directory": "sdk/js"
   },
   "type": "module",
+  "bin": {
+    "agentmesh": "./dist/cli.js"
+  },
   "engines": {
     "node": ">=22.18"
   },
@@ -72,5 +75,6 @@
     "esbuild": "^0.28.2",
     "express": "^5.2.1",
     "typescript": "^7.0.2"
-  }
+  },
+  "mcpName": "dev.sam-mesh/mesh"
 }

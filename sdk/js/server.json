@@ -1,0 +1,55 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "dev.sam-mesh/mesh",
+  "title": "Agent Mesh",
+  "description": "Discover and call remote MCP tools as your own authenticated Agent Mesh member.",
+  "repository": {
+    "url": "https://github.com/google/agentmesh",
+    "source": "github",
+    "subfolder": "sdk/js"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@agentmesh-p2p/sdk",
+      "version": "0.1.0",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "AGENTMESH_CONTROL_PLANE_URL",
+          "description": "Control plane URL supplied by your mesh operator. HTTPS is required beyond loopback unless explicitly permitted below.",
+          "format": "string",
+          "isRequired": true
+        },
+        {
+          "name": "AGENTMESH_BOOTSTRAP_TOKEN_PATH",
+          "description": "Absolute path to a bootstrap token file for first enrollment. Set this OR AGENTMESH_JWT_PATH; leave both empty only when resuming saved credentials.",
+          "format": "filepath",
+          "isSecret": true
+        },
+        {
+          "name": "AGENTMESH_JWT_PATH",
+          "description": "Absolute path to an OIDC/workload token file. Alternative to the bootstrap token; reread during credential refresh.",
+          "format": "filepath",
+          "isSecret": true
+        },
+        {
+          "name": "AGENTMESH_STATE_DIR",
+          "description": "Absolute directory for this client identity. Use a distinct directory per client and mesh. If omitted, uses ~/.config/agentmesh/mcp.",
+          "format": "filepath"
+        },
+        {
+          "name": "AGENTMESH_INSECURE_CONTROL_PLANE",
+          "description": "Allow plaintext HTTP beyond loopback. Development only: exposes enrollment traffic to the network.",
+          "format": "boolean",
+          "default": "false"
+        }
+      ]
+    }
+  ]
+}
