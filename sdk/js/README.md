@@ -24,6 +24,71 @@ Requires Node.js 22.18 or later. In a browser, bundle it with the page
 [In a browser](https://google.github.io/agentmesh/docs/guides/native-sdks/#in-a-browser)
 section has the details and an example page.
 
+## MCP client over stdio
+
+The package's `agentmesh` executable joins as its own mesh member and exposes
+five MCP tools: `get_mesh_info`, `discover_remote_services`, `find_remote_tools`,
+`describe_remote_tool` and `call_remote_tool`. A stdio-capable MCP client starts
+and stops the process; no node daemon is needed for this caller. Providers still
+publish their services through `agentmesh-node`.
+
+To try the executable from a source checkout:
+
+```bash
+cd sdk/js
+npm ci
+npm run build
+```
+
+Use absolute paths in your MCP client's configuration:
+
+```json
+{
+  "mcpServers": {
+    "agentmesh": {
+      "command": "node",
+      "args": ["/absolute/path/to/agentmesh/sdk/js/dist/cli.js"],
+      "env": {
+        "AGENTMESH_CONTROL_PLANE_URL": "https://your-control-plane.example",
+        "AGENTMESH_BOOTSTRAP_TOKEN_PATH": "/absolute/path/to/join-token",
+        "AGENTMESH_STATE_DIR": "/absolute/path/to/this-client-identity"
+      }
+    }
+  }
+}
+```
+
+Get the control plane URL and token file from your mesh operator or
+[`agentmesh-one`](https://google.github.io/agentmesh/docs/guides/native-sdks/).
+Alternatively, set `AGENTMESH_JWT_PATH` to a workload/OIDC token file; do not set
+both token paths. Credentials are read from files, never command-line values.
+
+The first run enrolls and saves its identity; later runs resume from the state
+directory without the bootstrap token. JWT enrollment rereads the token file
+when refreshing. Use a distinct state directory for each client identity and
+mesh; do not run multiple processes against the same directory. The default is
+`~/.config/agentmesh/mcp`. Plain HTTP is allowed on loopback only unless
+`AGENTMESH_INSECURE_CONTROL_PLANE=true` explicitly permits it elsewhere.
+
+Stdout contains only MCP messages; diagnostics go to stderr. Closing stdin or
+sending SIGINT/SIGTERM shuts down the mesh session. Tool calls use the member's
+existing authenticated streams and policy, including provider label checks.
+Remote tool results retain text, non-text content, structured output and errors.
+Discovery follows tool pagination, rejects looping catalogs and bounds each
+search to 64 providers, 256 services per provider, 256 tools per service and
+1024 results. Requests have a 10-second deadline; narrow a large search by peer
+or service. `intent` is accepted but ignored, matching the node's current tool.
+
+This member publishes no services, so it has no `list_local_services` tool.
+Inference and A2A discovery return metadata, but this executable provides no
+HTTP proxy, `/v1` endpoint, local socket or `local_proxy_url`. Use an SDK client
+or an `agentmesh-node` HTTP proxy to invoke those protocols.
+
+This source implementation is the executable portion of
+[#544](https://github.com/google/agentmesh/issues/544). Official MCP registry
+registration and release automation are separate work; this configuration does
+not depend on a published registry entry.
+
 ## Use
 
 Both programs below are in
