@@ -12,239 +12,152 @@ aliases:
   - /docs/integrations/vscode-copilot/
 ---
 
-An agent uses the mesh through the `agentmesh-node` that runs on its own machine.
-The node is an MCP server, so you can point any MCP client at it. This guide
-gives the configuration for the common clients and explains what the agent
-gets.
+An MCP client can join Agent Mesh as its own member and call remote MCP tools
+through the published **`dev.sam-mesh/mesh`** server. The server runs locally
+over stdio. It enrolls directly with your mesh control plane, so it does not
+need an `agentmesh-node` process beside it.
 
-## What every client needs
+## Install from the MCP registry
 
-Three values, all printed by `agentmesh-node run --daemonize`:
-
-- **The endpoint**: `http://127.0.0.1:8080/mcp` (Streamable HTTP).
-- **The token**: the contents of `~/.config/agentmesh/api-token`, or the
-  `AGENTMESH_API_TOKEN` you started the node with. It goes in the header
-  `X-Mesh-Authentication: Bearer <token>`.
-- **The socket**: `~/.config/agentmesh/agentmesh.sock`. Anything the agent runs in a
-  shell can use the socket without a token. This is the easier way to reach
-  the node's `/v1` inference endpoint from scripts.
-
-The node must be running before the client starts. MCP clients start and
-manage stdio servers themselves, but `agentmesh-node` is an HTTP server that they
-connect to. You can run `agentmesh-node run --daemonize` as often as you like, so it
-is safe to put it in a shell profile or to let the agent run it.
-
-## What the agent gets
-
-Six tools:
-
-| Tool | Purpose |
-|---|---|
-| `get_mesh_info` | The routers the node holds, its connected peers, the local socket path. A quick health check. |
-| `list_local_services` | The services this node publishes. |
-| `discover_remote_services` | The services other nodes publish, by type (`mcp`, `inference`, `a2a`) and optionally by name. Returns the hosting peer ID for each. |
-| `find_remote_tools` | The tools behind MCP services, across the mesh or limited to a peer, a service, or a tool name. |
-| `describe_remote_tool` | The input schema of one tool on one peer. Call this before `call_remote_tool`, because the provider chooses the argument names. |
-| `call_remote_tool` | Run a tool on a peer. Takes `peer_id`, the namespaced `tool_name` (`mcp://service/tool`) and `arguments`. |
-
-Inference is not an MCP tool. `discover_remote_services` with
-`{"type":"inference"}` lists providers, but to use a model you send an
-ordinary OpenAI request to the node's `/v1` endpoint, with `base_url`
-`http://127.0.0.1:8080/v1` and the token as the API key. `/v1/models` lists
-the available models.
-
-A2A agents are not MCP tools either. `discover_remote_services` with
-`{"type":"a2a"}` lists them with a `local_proxy_url`, and any stock A2A
-client works through that URL, for example the official
-[`a2a` CLI](https://github.com/a2aproject/a2a-cli), whose own skill teaches
-an agent the protocol. The
-[node API reference](../../reference/node-api/#talking-a2a-through-the-proxy)
-shows the call.
-
-Two things an agent should know (the skill below tells it): service names
-are not unique across the mesh, so the peer ID identifies a provider, and
-discovery is best-effort per peer, so on a partly reachable mesh some entries
-come back with an `error` field next to the good ones.
-
-## The skill
-
-Tools tell an agent what it can do. A skill tells it when and how to use
-them. `agentmesh-node` ships one:
-
-```bash
-agentmesh-node skill install            # ~/.claude/skills/agentmesh/ and ~/.gemini/config/skills/agentmesh/
-agentmesh-node skill install --project  # ./.claude/skills/ and ./.agents/skills/ in the current repository
-agentmesh-node skill install --dir DIR  # anywhere else
-agentmesh-node skill list               # where it is installed and whether it is current
-agentmesh-node skill show               # print it, for a harness with its own layout
-```
-
-Reinstall the skill after you upgrade `agentmesh-node`. `list` says `outdated` when
-the installed copy differs from the one in the binary. Restart the client
-afterwards so that it loads both the skill and the tools.
-
-## Claude Code
-
-```bash
-claude mcp add --transport http agentmesh http://127.0.0.1:8080/mcp \
-  --header "X-Mesh-Authentication: Bearer <token>"
-```
-
-The default scope is the current project. `--scope user` makes the server
-available everywhere, and `--scope project` writes a shareable `.mcp.json`.
-The equivalent file entry, where `type` is required:
+The official registry server entry is **`dev.sam-mesh/mesh`**. Its npm package
+is **`@agentmesh-p2p/sdk`**; the registry name and npm package name serve
+different purposes. After the first registry release is available, configure
+your client to run the published package version:
 
 ```json
 {
-  "mcpServers": {
-    "agentmesh": {
-      "type": "http",
-      "url": "http://127.0.0.1:8080/mcp",
-      "headers": { "X-Mesh-Authentication": "Bearer <token>" }
-    }
+  "command": "npx",
+  "args": ["--yes", "@agentmesh-p2p/sdk@<published-version>"],
+  "env": {
+    "AGENTMESH_CONTROL_PLANE_URL": "https://mesh.example.com",
+    "AGENTMESH_BOOTSTRAP_TOKEN_PATH": "/absolute/path/to/join-token",
+    "AGENTMESH_STATE_DIR": "/absolute/path/to/this-client-identity"
   }
 }
 ```
 
-`claude mcp list` should report the server as connected. Tools load at
-session start. `/mcp` inside a session shows them, and `/skills` shows
-`agentmesh-p2p` once the skill is installed.
+Replace `<published-version>` with the version shown for `dev.sam-mesh/mesh`
+in the MCP registry. The first registry release must include the package's
+`agentmesh` command, so use a version published after that release. Node.js
+22.18 or later is required. Use absolute paths: MCP clients do not expand `~`
+in environment-variable values.
 
-## Google Antigravity
+Ask your mesh operator for the HTTPS control-plane URL and a bootstrap-token
+file that only your account can read. The executable reads the credential from
+that file; do not put token contents into client configuration, command-line
+arguments or shell history. Alternatively, use
+`AGENTMESH_JWT_PATH` for a workload/OIDC token file. Set exactly one credential
+path for first enrollment. The client saves its member identity and resumes
+from `AGENTMESH_STATE_DIR` on later launches, so it can omit the credential
+path after enrollment. JWT enrollment rereads the token file when refreshing.
 
-Add to `~/.gemini/config/mcp_config.json`:
+Each client identity and mesh needs its own state directory. Do not launch two
+copies against one directory. If you omit `AGENTMESH_STATE_DIR`, the executable
+uses `~/.config/agentmesh/mcp`.
 
-```json
-{
-  "mcpServers": {
-    "agentmesh": {
-      "serverUrl": "http://127.0.0.1:8080/mcp",
-      "headers": { "X-Mesh-Authentication": "Bearer <token>" }
-    }
-  }
-}
-```
+Plain HTTP is accepted only for a loopback control plane. To permit plaintext
+HTTP to another address, set `AGENTMESH_INSECURE_CONTROL_PLANE=true`; this
+disables TLS protection for the control-plane connection and should only be
+used on a network you trust. Its default is `false`.
 
-Antigravity picks up the change without a restart. `agentmesh-node skill install`
-writes the skill to Antigravity's global skills directory. `--project` writes
-it to `.agents/skills/` in the workspace instead.
+## Configure a client
 
-## VS Code and GitHub Copilot
-
-Create `.vscode/mcp.json` in the workspace. VS Code asks for the token once
-and keeps it in its secret store, so the file is safe to commit:
-
-```json
-{
-  "inputs": [
-    { "type": "promptString", "id": "agentmesh-api-token",
-      "description": "Agent Mesh node API token", "password": true }
-  ],
-  "servers": {
-    "agentmesh": {
-      "type": "http",
-      "url": "http://127.0.0.1:8080/mcp",
-      "headers": { "X-Mesh-Authentication": "Bearer ${input:agentmesh-api-token}" }
-    }
-  }
-}
-```
-
-VS Code does not start a newly declared server on its own. Open the file and
-use the **Start** action shown above the entry, or run **MCP: List Servers**
-from the command palette. A server listed as stopped was read correctly and
-is waiting to be started. If you entered a wrong token, clear it with
-**MCP: Reset Cached Tokens**. New tools may not appear in a chat that is
-already in progress. Start a new chat and check that `agentmesh-p2p` is ticked in
-the tools picker. To use the server in all workspaces, put the same JSON in
-the user-level configuration (**MCP: Open User Configuration**). Copilot
-reads `~/.claude/skills/`, so the default skill install applies.
-
-## Claude Desktop
-
-Claude Desktop launches stdio servers only, so it needs a bridge.
-[`mcp-remote`](https://www.npmjs.com/package/mcp-remote) is a small
-stdio-to-HTTP proxy that Claude Desktop can launch. Add it to
-`claude_desktop_config.json` (`~/Library/Application Support/Claude/` on
-macOS, `%APPDATA%\Claude\` on Windows):
+The registry entry declares a stdio transport and the environment variables
+above. Most MCP clients accept this `mcpServers` shape:
 
 ```json
 {
   "mcpServers": {
     "agentmesh": {
       "command": "npx",
-      "args": [
-        "mcp-remote", "http://127.0.0.1:8080/mcp", "--allow-http",
-        "--header", "X-Mesh-Authentication: Bearer <token>"
-      ]
+      "args": ["--yes", "@agentmesh-p2p/sdk@<published-version>"],
+      "env": {
+        "AGENTMESH_CONTROL_PLANE_URL": "https://mesh.example.com",
+        "AGENTMESH_BOOTSTRAP_TOKEN_PATH": "/absolute/path/to/join-token",
+        "AGENTMESH_STATE_DIR": "/absolute/path/to/this-client-identity"
+      }
     }
   }
 }
 ```
 
-`--allow-http` is needed because the node serves plain HTTP on loopback. Quit
-and reopen Claude Desktop. The tools appear under the connectors icon. On
-Windows the command may need to be `npx.cmd`. Claude's cloud-hosted "custom
-connectors" cannot reach a node on your machine, so use the bridge.
+VS Code uses a `servers` object in `.vscode/mcp.json` instead:
 
-## OpenClaw
+```json
+{
+  "servers": {
+    "agentmesh": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["--yes", "@agentmesh-p2p/sdk@<published-version>"],
+      "env": {
+        "AGENTMESH_CONTROL_PLANE_URL": "https://mesh.example.com",
+        "AGENTMESH_BOOTSTRAP_TOKEN_PATH": "/absolute/path/to/join-token",
+        "AGENTMESH_STATE_DIR": "/absolute/path/to/this-client-identity"
+      }
+    }
+  }
+}
+```
+
+The process writes MCP messages only to stdout and diagnostics to stderr.
+Closing stdin or stopping the client shuts down the mesh session.
+
+## What the server provides
+
+The stdio server exposes five caller tools:
+
+| Tool | Purpose |
+|---|---|
+| `get_mesh_info` | Return this member's peer ID, connected peers and attached routers. |
+| `discover_remote_services` | Find services published by other mesh members. |
+| `find_remote_tools` | Find tools offered by remote MCP services. |
+| `describe_remote_tool` | Read the input schema for a remote tool. |
+| `call_remote_tool` | Call a remote tool using the member's authenticated mesh session. |
+
+The server is a caller, not a service host, so it does not expose
+`list_local_services`. Calls follow the member's mesh identity and policy.
+Discovery is bounded and follows tool pagination. Inference and A2A discovery
+return service metadata, but this stdio executable does not create an HTTP
+proxy, `/v1` endpoint, local socket or `local_proxy_url`. To publish a local
+service, share a node identity, or invoke inference and A2A over HTTP, use
+[the agentmesh-node setup](../deploying-node-mcp/).
+
+## Try the source checkout before registry release
+
+Until the first package version with its executable is published, you can run
+the same server from a checkout:
 
 ```bash
-openclaw mcp set agentmesh '{
-  "url": "http://127.0.0.1:8080/mcp",
-  "headers": { "X-Mesh-Authentication": "Bearer <token>" }
-}'
-openclaw mcp list
+git clone https://github.com/google/agentmesh.git
+cd agentmesh/sdk/js
+npm ci
+npm run build
 ```
 
-Restart the OpenClaw gateway after adding it.
+Use `node` and the absolute path to `dist/cli.js` in place of `npx` in the
+client configuration:
 
-## Your own code
-
-Any MCP SDK works. In Python, with the official `mcp` package (2.x):
-
-```python
-import httpx
-from mcp import ClientSession
-from mcp.client.streamable_http import streamable_http_client
-
-http = httpx.AsyncClient(headers={"X-Mesh-Authentication": "Bearer <token>"})
-async with streamable_http_client("http://127.0.0.1:8080/mcp", http_client=http) as (read, write):
-    async with ClientSession(read, write) as session:
-        await session.initialize()
-        tools = await session.list_tools()
+```json
+{
+  "command": "node",
+  "args": ["/absolute/path/to/agentmesh/sdk/js/dist/cli.js"],
+  "env": {
+    "AGENTMESH_CONTROL_PLANE_URL": "https://mesh.example.com",
+    "AGENTMESH_BOOTSTRAP_TOKEN_PATH": "/absolute/path/to/join-token",
+    "AGENTMESH_STATE_DIR": "/absolute/path/to/this-client-identity"
+  }
+}
 ```
 
-`site/content/docs/snippets/agent_demo.py` in the repository is a complete
-version of this example. For inference, point any OpenAI SDK at
-`http://127.0.0.1:8080/v1` with the token as `api_key`, or at the socket with
-no key.
+The source checkout needs Node.js 22.18 or later and the same mesh settings
+described above. See the
+[JavaScript SDK README](https://github.com/google/agentmesh/tree/main/sdk/js#mcp-client-over-stdio)
+for implementation limits and troubleshooting.
 
-Native SDKs that join the mesh from inside the agent process, without a
-`agentmesh-node` sidecar, are being built under `sdk/` in the repository; see
-`sdk/README.md` for their status.
+## The node HTTP server
 
-## A note on trust
-
-A client configured this way is a client of your node. It holds the node's
-token and gets everything that the node's credential grants. That is the
-right arrangement for an assistant on your own machine. Code that you do not
-trust should not be able to reach the node's API at all. The
-[sandboxed agents preview](../../preview/sandboxed-agents/) covers that case.
-
-## When it does not work
-
-- **401**: the header value does not match the node's token. Over the
-  socket no token is needed. Over TCP it is required.
-- **Connection refused**: the node is not running, or it is bound to another
-  address. If
-  `curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/mcp`
-  answers `401`, the endpoint is up.
-- **Node in WSL or in a container**: the client runs on the host, so bind
-  the node to an address the host can reach (`--bind-addr 0.0.0.0:8080`) or
-  forward the port.
-- **No remote tools**: check `get_mesh_info` first. An empty
-  `attached_routers` means the node has not been admitted by a router yet,
-  and it has nobody to ask.
-- **A tool is listed with an `error`**: the provider's backend is not
-  answering. Another peer that offers the same service name may work.
+The `agentmesh-node` also exposes an MCP server over authenticated HTTP. Use it
+when you want a node to publish services or several clients to share one
+member identity. Its HTTP setup and client-specific configuration live in
+[Connect through an agentmesh-node](../deploying-node-mcp/).
