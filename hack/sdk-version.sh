@@ -43,6 +43,8 @@ if [[ "${target}" == "all" || "${target}" == "js" ]]; then
   # presents to MCP peers follows.
   (cd sdk/js && npm version --no-git-tag-version --allow-same-version "${VERSION}" >/dev/null)
   sed -i -E "s/^(export const MCP_CLIENT_INFO = \{ name: \"agent-mesh-sdk\", version: \")[^\"]+(\" \};)$/\1${VERSION}\2/" sdk/js/src/mcp.ts
+  # The MCP registry entry and its npm package entry.
+  sed -i -E "s/^( +\"version\": \")[^\"]+(\",)$/\1${VERSION}\2/" sdk/js/server.json
 fi
 
 if [[ "${target}" == "all" || "${target}" == "python" ]]; then
@@ -53,7 +55,7 @@ fi
 
 files=()
 if [[ "${target}" == "all" || "${target}" == "js" ]]; then
-  files+=(sdk/js/package.json sdk/js/src/mcp.ts)
+  files+=(sdk/js/package.json sdk/js/src/mcp.ts sdk/js/server.json)
 fi
 if [[ "${target}" == "all" || "${target}" == "python" ]]; then
   files+=(sdk/python/pyproject.toml sdk/python/src/agent_mesh/__init__.py sdk/python/src/agent_mesh/mcp_client.py)
