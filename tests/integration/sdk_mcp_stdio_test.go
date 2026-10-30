@@ -175,8 +175,11 @@ func TestNativeSDKMCPStdio(t *testing.T) {
 			t.Fatalf("restart changed identity: %s -> %s", firstPeer, details.PeerID)
 		}
 		tools, err := session.ListTools(ctx, nil)
-		if err != nil || len(tools.Tools) != 5 {
-			t.Fatalf("tools/list: %v, want five tools", err)
+		if err != nil {
+			t.Fatalf("tools/list: %v", err)
+		}
+		if got, want := len(tools.Tools), 5; got != want {
+			t.Fatalf("tools/list: got %d tools, want %d", got, want)
 		}
 		for _, tool := range tools.Tools {
 			if got, want := contract(tool.InputSchema), contracts[tool.Name]; !reflect.DeepEqual(got, want) {
@@ -187,13 +190,13 @@ func TestNativeSDKMCPStdio(t *testing.T) {
 		invoke("describe_remote_tool", map[string]any{"peer_id": peer, "tool_name": "mcp://calc/add"}, false)
 		result := invoke("call_remote_tool", map[string]any{"peer_id": peer, "tool_name": "mcp://calc/add", "arguments": map[string]any{"a": 1, "b": 2}}, false)
 		if text, ok := result.Content[0].(*mcp.TextContent); !ok || text.Text != "3" {
-			t.Fatalf("unexpected tool result: %v", result.Content)
+			t.Fatalf("unexpected tool result: got %v, want text content %q", result.Content, "3")
 		}
 		before := calls.Load()
 		invoke("call_remote_tool", map[string]any{"peer_id": peer, "tool_name": "mcp://denied/add"}, true)
 		invoke("call_remote_tool", map[string]any{"peer_id": peer, "tool_name": "mcp://calc/add", "required_labels": "region=unattested"}, true)
-		if calls.Load() != before {
-			t.Fatal("a refused call reached the backend")
+		if got, want := calls.Load(), before; got != want {
+			t.Fatalf("a refused call reached the backend: got %d backend calls, want %d", got, want)
 		}
 		found := invoke("find_remote_tools", map[string]any{}, false)
 		var rows []struct {
