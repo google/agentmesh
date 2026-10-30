@@ -19,6 +19,7 @@ import { createServer } from "node:http";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { peerIdFromString } from "@libp2p/peer-id";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -181,7 +182,7 @@ test("CLI configuration failures and help write no non-MCP stdout", async () => 
   for (const args of [[], ["--help"], ["--token", "must-not-appear"]]) {
     const env = { ...process.env };
     for (const key of Object.keys(env)) if (key.startsWith("AGENTMESH_")) delete env[key];
-    const child = spawn(process.execPath, [new URL("./cli.js", import.meta.url).pathname, ...args], { env });
+    const child = spawn(process.execPath, [fileURLToPath(new URL("./cli.js", import.meta.url)), ...args], { env });
     let stdout = "", stderr = "";
     child.stdout.on("data", (data) => { stdout += String(data); });
     child.stderr.on("data", (data) => { stderr += String(data); });
@@ -200,7 +201,7 @@ test("CLI rejects relative credential and identity paths", async () => {
     const env: NodeJS.ProcessEnv = { ...process.env };
     for (const key of Object.keys(env)) if (key.startsWith("AGENTMESH_")) delete env[key];
     Object.assign(env, { AGENTMESH_CONTROL_PLANE_URL: "http://127.0.0.1:9", [name]: "relative/path" });
-    const child = spawn(process.execPath, [new URL("./cli.js", import.meta.url).pathname], { env });
+    const child = spawn(process.execPath, [fileURLToPath(new URL("./cli.js", import.meta.url))], { env });
     let stdout = "", stderr = "";
     child.stdout.on("data", (data) => { stdout += String(data); });
     child.stderr.on("data", (data) => { stderr += String(data); });
@@ -268,7 +269,7 @@ test("EOF and SIGTERM abort enrollment without leaving a process running", { tim
       AGENTMESH_CONTROL_PLANE_URL: `http://127.0.0.1:${address.port}`,
       AGENTMESH_STATE_DIR: join(directory, stop), AGENTMESH_BOOTSTRAP_TOKEN_PATH: token,
     });
-    const child = spawn(process.execPath, [new URL("./cli.js", import.meta.url).pathname], { env });
+    const child = spawn(process.execPath, [fileURLToPath(new URL("./cli.js", import.meta.url))], { env });
     t.after(() => { if (child.exitCode === null) child.kill("SIGKILL"); });
     let stdout = "", stderr = "";
     child.stdout.on("data", (data) => { stdout += String(data); });
