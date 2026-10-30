@@ -836,7 +836,7 @@ func RequirePublish(b *biscuit.Biscuit, key ed25519.PublicKey, svcType, svcName 
 		authorizer.AddPolicy(p)
 	}
 	if err := authorizer.Authorize(); err != nil {
-		return fmt.Errorf("credential does not grant serving %s://%s", svcType, svcName)
+		return fmt.Errorf("credential does not grant serving %s://%s: %w", svcType, svcName, err)
 	}
 	return nil
 }

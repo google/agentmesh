@@ -804,6 +804,15 @@ func TestMintBiscuitToken_PublishFacts(t *testing.T) {
 		}
 	}
 
+	// A refusal keeps the authorizer's reason: no policy matched is not the
+	// same as a Datalog world that ran out of time on a granted service.
+	if err := RequirePublish(b, pub, "mcp", "clock", nil, testTimeout); !errors.Is(err, biscuit.ErrNoMatchingPolicy) {
+		t.Errorf("RequirePublish(mcp://clock) = %v, want an error wrapping %v", err, biscuit.ErrNoMatchingPolicy)
+	}
+	if err := RequirePublish(b, pub, "mcp", "calc", nil, time.Nanosecond); !errors.Is(err, datalog.ErrWorldRunLimitTimeout) {
+		t.Errorf("RequirePublish(mcp://calc) with a 1ns timeout = %v, want an error wrapping %v", err, datalog.ErrWorldRunLimitTimeout)
+	}
+
 	none, err := MintBootstrapBiscuitToken(priv, p, "publisher", time.Now().Add(time.Hour), nil, nil)
 	if err != nil {
 		t.Fatal(err)
