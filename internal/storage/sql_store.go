@@ -581,6 +581,16 @@ var migrations = []migration{
 			`ALTER TABLE nodes ADD COLUMN ephemeral BOOLEAN DEFAULT FALSE NOT NULL`,
 		},
 	},
+	{
+		// Routers may advertise a public HTTP/HTTPS ingress base URL on /info.
+		version: 21,
+		postgres: []string{
+			`ALTER TABLE routers ADD COLUMN IF NOT EXISTS ingress_url TEXT`,
+		},
+		sqlite: []string{
+			`ALTER TABLE routers ADD COLUMN ingress_url TEXT`,
+		},
+	},
 }
 
 var meshPrefixMigration = []string{
@@ -1304,23 +1314,23 @@ func (s *SQLStore) UpsertRouterLease(ctx context.Context, lease *RouterLease) er
 		return err
 	}
 
-	const columns = `peer_id, multiaddresses, last_lease_renewal, expires_at, connected_peers, dht_size, connections, connection_limit`
+	const columns = `peer_id, multiaddresses, last_lease_renewal, expires_at, connected_peers, dht_size, connections, connection_limit, ingress_url`
 	var query string
 	if s.isPostgres() {
 		query = s.rebind(`
 			INSERT INTO routers (` + columns + `)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (peer_id)
-			DO UPDATE SET multiaddresses = EXCLUDED.multiaddresses, last_lease_renewal = EXCLUDED.last_lease_renewal, expires_at = EXCLUDED.expires_at, connected_peers = EXCLUDED.connected_peers, dht_size = EXCLUDED.dht_size, connections = EXCLUDED.connections, connection_limit = EXCLUDED.connection_limit`)
+			DO UPDATE SET multiaddresses = EXCLUDED.multiaddresses, last_lease_renewal = EXCLUDED.last_lease_renewal, expires_at = EXCLUDED.expires_at, connected_peers = EXCLUDED.connected_peers, dht_size = EXCLUDED.dht_size, connections = EXCLUDED.connections, connection_limit = EXCLUDED.connection_limit, ingress_url = EXCLUDED.ingress_url`)
 	} else {
 		query = s.rebind(`
 			INSERT INTO routers (` + columns + `)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (peer_id)
-			DO UPDATE SET multiaddresses = excluded.multiaddresses, last_lease_renewal = excluded.last_lease_renewal, expires_at = excluded.expires_at, connected_peers = excluded.connected_peers, dht_size = excluded.dht_size, connections = excluded.connections, connection_limit = excluded.connection_limit`)
+			DO UPDATE SET multiaddresses = excluded.multiaddresses, last_lease_renewal = excluded.last_lease_renewal, expires_at = excluded.expires_at, connected_peers = excluded.connected_peers, dht_size = excluded.dht_size, connections = excluded.connections, connection_limit = excluded.connection_limit, ingress_url = excluded.ingress_url`)
 	}
 
-	_, err = s.db.ExecContext(ctx, query, lease.PeerID, string(addrsBytes), lease.LastRenewal.UnixMilli(), lease.ExpiresAt.UnixMilli(), string(peersBytes), lease.DHTSize, lease.Connections, lease.ConnectionLimit)
+	_, err = s.db.ExecContext(ctx, query, lease.PeerID, string(addrsBytes), lease.LastRenewal.UnixMilli(), lease.ExpiresAt.UnixMilli(), string(peersBytes), lease.DHTSize, lease.Connections, lease.ConnectionLimit, lease.IngressURL)
 	return err
 }
 
@@ -1328,7 +1338,7 @@ func (s *SQLStore) UpsertRouterLease(ctx context.Context, lease *RouterLease) er
 // reads the same to every replica and caller; the control plane shuffles the
 // list it hands members (routerAddresses) so they spread across the routers.
 func (s *SQLStore) GetActiveRouters(ctx context.Context) ([]RouterLease, error) {
-	query := s.rebind(`SELECT peer_id, multiaddresses, last_lease_renewal, expires_at, connected_peers, dht_size, connections, connection_limit FROM routers WHERE expires_at > ? ORDER BY peer_id`)
+	query := s.rebind(`SELECT peer_id, multiaddresses, last_lease_renewal, expires_at, connected_peers, dht_size, connections, connection_limit, ingress_url FROM routers WHERE expires_at > ? ORDER BY peer_id`)
 	rows, err := s.db.QueryContext(ctx, query, time.Now().UnixMilli())
 	if err != nil {
 		return nil, err
@@ -1339,10 +1349,10 @@ func (s *SQLStore) GetActiveRouters(ctx context.Context) ([]RouterLease, error) 
 	for rows.Next() {
 		var l RouterLease
 		var addrsStr string
-		var peersStr sql.NullString
+		var peersStr, ingressURL sql.NullString
 		var dhtSize, connections, connectionLimit sql.NullInt64
 		var lastRenewalUnix, expiresAtUnix int64
-		if err := rows.Scan(&l.PeerID, &addrsStr, &lastRenewalUnix, &expiresAtUnix, &peersStr, &dhtSize, &connections, &connectionLimit); err != nil {
+		if err := rows.Scan(&l.PeerID, &addrsStr, &lastRenewalUnix, &expiresAtUnix, &peersStr, &dhtSize, &connections, &connectionLimit, &ingressURL); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(addrsStr), &l.Addresses); err != nil {
@@ -1361,6 +1371,9 @@ func (s *SQLStore) GetActiveRouters(ctx context.Context) ([]RouterLease, error) 
 		}
 		if connectionLimit.Valid {
 			l.ConnectionLimit = int(connectionLimit.Int64)
+		}
+		if ingressURL.Valid {
+			l.IngressURL = ingressURL.String
 		}
 		l.LastRenewal = time.UnixMilli(lastRenewalUnix)
 		l.ExpiresAt = time.UnixMilli(expiresAtUnix)
@@ -1458,6 +1471,18 @@ func (s *SQLStore) saveMeshPolicyTx(ctx context.Context, tx *sql.Tx, roles []*ap
 				return err
 			}
 		}
+		for _, g := range r.AllowedIngress {
+			if g == nil {
+				continue
+			}
+			encoded, err := protojson.MarshalOptions{UseProtoNames: true}.Marshal(g)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, s.rebind("INSERT INTO role_permissions (role_name, resource_type, resource_value) VALUES (?, 'ingress', ?)"), r.Name, string(encoded)); err != nil {
+				return err
+			}
+		}
 	}
 
 	for _, b := range bindings {
@@ -1529,6 +1554,12 @@ func (s *SQLStore) GetMeshPolicy(ctx context.Context) ([]*api.PolicyRole, []*api
 					return nil, nil, fmt.Errorf("role %s: stored http grant does not parse: %w", roleName, err)
 				}
 				r.Http = append(r.Http, g)
+			case "ingress":
+				g := &api.IngressGrant{}
+				if err := protojson.Unmarshal([]byte(resValue), g); err != nil {
+					return nil, nil, fmt.Errorf("role %s: stored ingress grant does not parse: %w", roleName, err)
+				}
+				r.AllowedIngress = append(r.AllowedIngress, g)
 			}
 		}
 	}

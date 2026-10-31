@@ -20,6 +20,23 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/v1/models":
             self._json(200, {"object": "list", "data": [{"id": MODEL, "object": "model", "owned_by": "e2e"}]})
             return
+        if self.path == "/a2a/.well-known/agent-card.json":
+            port = self.server.server_address[1]
+            self._json(200, {
+                "name": "coding-agent",
+                "description": "e2e laptop A2A agent",
+                "version": "1.0.0",
+                "supportedInterfaces": [{
+                    "url": f"http://127.0.0.1:{port}/a2a",
+                    "protocolBinding": "JSONRPC",
+                    "protocolVersion": "1.0",
+                }],
+                "capabilities": {"streaming": False},
+                "defaultInputModes": ["text/plain"],
+                "defaultOutputModes": ["text/plain"],
+                "skills": [{"id": "code", "name": "Code", "description": "Coding harness"}],
+            })
+            return
         self._json(404, {"error": {"message": "not found"}})
 
     def do_POST(self):
@@ -81,6 +98,21 @@ class Handler(BaseHTTPRequestHandler):
                     },
                 })
                 return
+        if self.path == "/a2a" or self.path == "/a2a/":
+            ingress_mode = self.headers.get("X-Mesh-Ingress", "")
+            principal = self.headers.get("X-Mesh-Principal", "")
+            self._json(200, {
+                "jsonrpc": "2.0",
+                "id": req.get("id", 1),
+                "result": {
+                    "message": {
+                        "messageId": "msg-e2e-1",
+                        "role": "ROLE_AGENT",
+                        "parts": [{"text": f"a2a ingress={ingress_mode} principal={principal}"}],
+                    }
+                },
+            })
+            return
         self._json(404, {"error": {"message": "unknown model", "code": "model_not_found"}})
 
     def log_message(self, *args):

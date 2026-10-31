@@ -34,6 +34,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/agentmesh/api"
@@ -363,17 +364,40 @@ func (s *Server) Start(ctx context.Context) (retErr error) {
 	}
 	mux.Handle(consoleBasePath+"/", consoleSrv.Handler())
 
+	// Mount external HTTP ingress directly onto the embedded router's ingress
+	// handler so /ingress/* never flows through the control plane.
+	var ingressHandler atomic.Pointer[http.Handler]
+	mux.Handle("/ingress/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := ingressHandler.Load()
+		if h == nil {
+			http.Error(w, "Router ingress is not ready", http.StatusServiceUnavailable)
+			return
+		}
+		(*h).ServeHTTP(w, r)
+	}))
+
 	wsAddr, err := wsListenMultiaddr(s.opts.BindAddress)
 	if err != nil {
 		return err
 	}
+	bindHost, _, err := net.SplitHostPort(s.opts.BindAddress)
+	if err != nil {
+		return err
+	}
+	if bindHost == "" {
+		bindHost = "0.0.0.0"
+	}
 	var externalAddrs []string
+	var ingressURL string
+	allowInsecureIngress := true
 	if s.opts.ExternalURL != "" {
 		ext, err := externalMultiaddr(s.opts.ExternalURL)
 		if err != nil {
 			return err
 		}
 		externalAddrs = []string{ext}
+		ingressURL = strings.TrimRight(s.opts.ExternalURL, "/") + "/ingress"
+		allowInsecureIngress = strings.HasPrefix(s.opts.ExternalURL, "http://")
 	}
 
 	routerKeyPath := filepath.Join(s.opts.DataDir, routerKeyFile)
@@ -399,12 +423,18 @@ func (s *Server) Start(ctx context.Context) (retErr error) {
 		// proxy (Cloud Run, L7 LBs) or NAT where every peer shares a few
 		// source IPs; libp2p's default 8-conns-per-IP cap would throttle
 		// the whole listener.
-		ConnsPerSourceIP:    s.opts.Router.ConnsPerSourceIP,
-		HTTPFallbackHandler: s.wrapPublicHTTPHandler(mux),
+		ConnsPerSourceIP:           s.opts.Router.ConnsPerSourceIP,
+		HTTPFallbackHandler:        s.wrapPublicHTTPHandler(mux),
+		IngressURL:                 ingressURL,
+		AllowInsecureIngressHTTP:   allowInsecureIngress,
+		AdvertiseSinglePortIngress: true,
+		SinglePortBindHost:         bindHost,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create router: %w", err)
 	}
+	ingH := rtr.IngressHandler()
+	ingressHandler.Store(&ingH)
 	if err := rtr.Start(); err != nil {
 		_ = rtr.Close()
 		return fmt.Errorf("failed to start router: %w", err)
@@ -467,6 +497,12 @@ func (s *Server) PublicURL() string {
 		return strings.TrimRight(s.opts.ExternalURL, "/")
 	}
 	return "http://" + s.publicAddr
+}
+
+// IngressURL is the public base URL under which the embedded router serves
+// external HTTP ingress on the single port.
+func (s *Server) IngressURL() string {
+	return s.PublicURL() + "/ingress"
 }
 
 // AdminToken returns the resolved admin API token.
@@ -551,10 +587,17 @@ func (s *Server) seedPolicyOnFirstBoot(ctx context.Context) error {
 // defaultDevPolicyRoles mirrors the Helm bootstrap job's role set with the
 // node role opened up for zero-config development use.
 func defaultDevPolicyRoles() []*api.PolicyRole {
+	devIngress := []*api.IngressGrant{{
+		Services: []string{"*"},
+		AllowedAuthModes: []api.IngressAuthMode{
+			api.IngressAuthMode_INGRESS_AUTH_MODE_EDGE,
+			api.IngressAuthMode_INGRESS_AUTH_MODE_PASSTHROUGH,
+		},
+	}}
 	return []*api.PolicyRole{
-		{Name: "mesh-admin", AllowedServices: []string{"*"}, AllowedTargets: []string{"*"}},
+		{Name: "mesh-admin", AllowedServices: []string{"*"}, AllowedTargets: []string{"*"}, AllowedIngress: devIngress},
 		{Name: api.RoleRouter, AllowedServices: []string{"*"}, AllowedTargets: []string{"*"}},
-		{Name: api.RoleNode, AllowedServices: []string{"*"}, AllowedPublish: []string{"*"}, AllowedTargets: []string{"*"}, AllowedLabels: []string{"*"}},
+		{Name: api.RoleNode, AllowedServices: []string{"*"}, AllowedPublish: []string{"*"}, AllowedTargets: []string{"*"}, AllowedLabels: []string{"*"}, AllowedIngress: devIngress},
 	}
 }
 

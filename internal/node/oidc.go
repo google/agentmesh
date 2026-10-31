@@ -178,12 +178,18 @@ func (n *AgentMeshNode) InteractiveLoginWithMode(ctx context.Context, authURL, t
 				break
 			}
 		}
+		if listener == nil && deviceAuthURL == "" {
+			// When no device flow fallback is available (or AuthModeBrowser
+			// explicitly disabled it), try an RFC 8252 ephemeral loopback port
+			// before degrading to deprecated out-of-band paste.
+			listener, err = net.Listen("tcp", "127.0.0.1:0")
+		}
 		if listener == nil {
 			if deviceAuthURL != "" {
-				logger.Warn("Could not bind local OIDC listener (ports 13000-13002 busy); falling back to device authorization flow.")
+				logger.Warnf("Could not bind local OIDC listener (ports 13000-13002 busy: %v); falling back to device authorization flow.", err)
 				return n.DeviceLogin(ctx, deviceAuthURL, tokenURL, clientID, audience, requestRefresh)
 			}
-			logger.Warn("Could not bind local OIDC listener (ports 13000-13002 busy). Falling back to headless (OOB) authorization.")
+			logger.Warnf("Could not bind local OIDC listener (ports 13000-13002 busy: %v). Falling back to headless (OOB) authorization.", err)
 			isHeadless = true
 			redirectURI = "urn:ietf:wg:oauth:2.0:oob"
 		} else {
@@ -226,6 +232,9 @@ func (n *AgentMeshNode) InteractiveLoginWithMode(ctx context.Context, authURL, t
 	if !isHeadless {
 		if err := openBrowserFunc(targetURL); err != nil {
 			if deviceAuthURL != "" {
+				if listener != nil {
+					_ = listener.Close()
+				}
 				logger.Warnf("Could not open a browser (%v); falling back to device authorization flow.", err)
 				return n.DeviceLogin(ctx, deviceAuthURL, tokenURL, clientID, audience, requestRefresh)
 			}
@@ -289,6 +298,7 @@ func (n *AgentMeshNode) InteractiveLoginWithMode(ctx context.Context, authURL, t
 			}
 
 			w.Header().Set("Content-Type", "text/html")
+			w.Header().Set("Connection", "close")
 			_, _ = w.Write([]byte("<html><body><h1>Authorization successful!</h1><p>You can close this window and return to the CLI.</p></body></html>"))
 
 			select {

@@ -42,6 +42,10 @@ const (
 	// it will no longer hold it; the stream carries one RouterGoAway.
 	GoAwayProtocolID protocol.ID = "/mesh/goaway/1.0.0"
 
+	// IngressProtocolID is the libp2p protocol identifier on which an enrolled
+	// router forwards external HTTP ingress requests to a serving node.
+	IngressProtocolID protocol.ID = "/mesh/ingress/1.0.0"
+
 	// DHTProtocolPrefix namespaces the mesh's Kademlia DHT away from the
 	// public IPFS one; the protocol every member and router registers for
 	// it is DHTProtocolID.
@@ -303,6 +307,23 @@ const (
 	HeaderMeshTask          = "X-Mesh-Task"
 	HeaderMeshTaskID        = "X-Mesh-Task-Id"
 	HeaderMeshTargetService = "X-Mesh-Target-Service"
+
+	// HeaderMeshIngress marks a request delivered over router external ingress
+	// ("edge" or "passthrough"). Inbound values from external callers are
+	// stripped at both the router and the serving node.
+	HeaderMeshIngress = "X-Mesh-Ingress"
+
+	// HeaderMeshIngressCallerBiscuit carries the base64-encoded caller Biscuit
+	// from an enrolled router to the serving node over IngressProtocolID so the
+	// node can re-verify Datalog policy, local attenuation, TAR, and allow-lists
+	// end to end. Stripped before forwarding to the backend service.
+	HeaderMeshIngressCallerBiscuit = "X-Mesh-Ingress-Caller-Biscuit"
+
+	// HeaderMeshIngressClaims carries base64url-encoded JSON OIDC fact claims
+	// verified at the router edge over IngressProtocolID when the external caller
+	// authenticated with a trusted OIDC JWT rather than a Mesh Biscuit. Stripped
+	// before forwarding to the backend service.
+	HeaderMeshIngressClaims = "X-Mesh-Ingress-Claims"
 )
 
 // ============================================================================

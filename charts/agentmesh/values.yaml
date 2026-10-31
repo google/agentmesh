@@ -2,8 +2,8 @@ global:
   imageTag: local
   imagePullPolicy: IfNotPresent
 
-# One Gateway fronting the mesh: the control plane's enrollment surface plus the console
-# under gateway.consolePath.
+# One Gateway fronting the mesh: the control plane's enrollment surface, external HTTP
+# ingress routed directly to routers under /ingress, plus the console under gateway.consolePath.
 gateway:
   enabled: false
   # Required when enabled. No default: the GatewayClass is provider-specific, e.g.
@@ -11,6 +11,9 @@ gateway:
   className: ""
   # Routes the control plane's /admin API. Dev only.
   adminRoute: false
+  # Routes /ingress and /ingress/ directly to the router Service so external HTTP
+  # callers reach opted-in node services without traversing the control plane.
+  ingressRoute: true
   # External prefix the console is served under. Empty leaves the console unrouted.
   consolePath: /console
   listeners:
@@ -153,6 +156,16 @@ router:
   # Plain HTTP port for /metrics, /healthz and /readyz. Unauthenticated, so it
   # is only ever a containerPort, never a hostPort or Service.
   metricsPort: 9090
+  # Plain HTTP port for external HTTP ingress (/ingress/*), exposed on the router
+  # ClusterIP Service and routed by the Gateway when gateway.ingressRoute is true.
+  # Set to 0 to disable external HTTP ingress on routers.
+  ingressPort: 8090
+  # Optional: canonical public base URL advertised by routers in their lease and
+  # surfaced on GET /info (e.g. https://mesh.example.com/ingress).
+  ingressUrl: ""
+  # Optional: public URL of the control plane advertised in RFC 9728 and A2A OAuth
+  # metadata when --control-plane uses the cluster-internal Service address.
+  publicControlPlaneUrl: ""
   # PVC for /data/router.key, so the libp2p peer ID survives rescheduling.
   storageSize: 1Gi
   # PVC StorageClass; cluster default when null.
@@ -226,6 +239,10 @@ bootstrap:
   # labels in its agentmesh-node.yaml. Empty means nodes cannot enroll with any label
   # (fail closed).
   nodeLabels: []
+  # External HTTP ingress ceiling mesh:role:node may expose, as IngressGrant
+  # objects (e.g. [{"services": ["a2a://*"]}]). Empty means nodes cannot expose
+  # any service on /ingress (fail closed).
+  nodeIngress: []
 
 # Scraping of the control-plane and router /metrics endpoints. Both are
 # cluster-internal and unauthenticated; enable the resource for whichever

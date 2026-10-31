@@ -482,8 +482,8 @@ func (s *GatewayServer) evaluateExtProcDecision(ctx context.Context, method, pat
 }
 
 // InspectJSONRPCMCPBody inspects a JSON-RPC 2.0 request body for MCP methods
-// ("initialize", "ping", "tools/list", "tools/call") and extracts the bare tool
-// name when present.
+// and extracts the bare tool name when present, or sets allowStreamInit for
+// session handshake, capability discovery, and protocol notification methods.
 func InspectJSONRPCMCPBody(body []byte) (mcpTool string, allowStreamInit bool) {
 	var rpc struct {
 		Method string `json:"method"`
@@ -495,7 +495,8 @@ func InspectJSONRPCMCPBody(body []byte) (mcpTool string, allowStreamInit bool) {
 		return "", false
 	}
 	switch rpc.Method {
-	case "initialize", "ping", "tools/list":
+	case "initialize", "notifications/initialized", "server/discover", "ping",
+		"tools/list", "resources/list", "prompts/list", "notifications/cancelled":
 		return "", true
 	case "tools/call":
 		rawTool := strings.TrimSpace(rpc.Params.Name)
@@ -514,7 +515,13 @@ func InspectJSONRPCMCPBody(body []byte) (mcpTool string, allowStreamInit bool) {
 // InspectMCPHTTPRequestBody buffers and restores r.Body up to MaxGRPCMessageBytes
 // and extracts the MCP tool name and stream initialization flag.
 func InspectMCPHTTPRequestBody(r *http.Request) (string, bool, error) {
-	if r == nil || r.Body == nil || !strings.EqualFold(r.Method, http.MethodPost) {
+	if r == nil {
+		return "", false, nil
+	}
+	if strings.EqualFold(r.Method, http.MethodGet) || strings.EqualFold(r.Method, http.MethodDelete) {
+		return "", true, nil
+	}
+	if r.Body == nil || !strings.EqualFold(r.Method, http.MethodPost) {
 		return "", false, nil
 	}
 	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, MaxGRPCMessageBytes+1))

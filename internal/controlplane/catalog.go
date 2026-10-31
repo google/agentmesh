@@ -139,6 +139,15 @@ func (s *Server) HandleNodeCatalog(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Too many services in report (max %d)", maxCatalogServices), http.StatusBadRequest)
 		return
 	}
+	for _, svc := range req.Services {
+		if svc == nil || svc.GetIngress() == nil {
+			continue
+		}
+		if err := api.ValidateServiceIngress(svc.GetType(), svc.GetIngress()); err != nil {
+			http.Error(w, "Invalid service ingress: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
 
 	s.catalogMu.Lock()
 	s.catalog[nodeRecord.PeerID] = nodeCatalogEntry{

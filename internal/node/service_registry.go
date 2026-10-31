@@ -33,6 +33,10 @@ type directoryProvider interface {
 	Withdraw(ctx context.Context, key []byte) error
 }
 
+type ingressDirectoryProvider interface {
+	ProvideWithIngress(ctx context.Context, key []byte, service string, ingress *api.ServiceIngress) error
+}
+
 // backendProber is implemented by services that can be asked whether their
 // backend is really serving. Services that cannot be asked are advertised
 // unconditionally.
@@ -78,6 +82,10 @@ type ServiceRegistry struct {
 	// registered after the loop last ran does not wait a whole interval to be
 	// advertised. Optional; nil outside a running node.
 	reprovideNow func()
+
+	// onIngressRegistered is called when an ingress-enabled service is
+	// registered so the node can log its public router ingress URLs.
+	onIngressRegistered func(info *api.ServiceInfo)
 
 	// backendProbeTimeout bounds each backend probe in advertisable. Set once
 	// at construction (see NewServiceRegistry); never mutated afterwards, so
@@ -126,6 +134,9 @@ func (r *ServiceRegistry) Register(ctx context.Context, svc Service) error {
 	if err := api.ValidateServiceFormat(typeStr + "://" + info.Name); err != nil {
 		return fmt.Errorf("invalid service name %q: %w", info.Name, err)
 	}
+	if err := api.ValidateServiceIngress(info.Type, info.GetIngress()); err != nil {
+		return fmt.Errorf("service %q: %w", info.Name, err)
+	}
 
 	// Policy is evaluated on type://name and the registry is keyed on name,
 	// so a second type under the same name would let a grant for one reach
@@ -156,13 +167,13 @@ func (r *ServiceRegistry) Register(ctx context.Context, svc Service) error {
 	} else {
 		nameCtx, nameCancel := context.WithTimeout(ctx, 5*time.Second)
 		defer nameCancel()
-		if err := r.dht.Provide(nameCtx, nameKey, serviceTarget(info)); err != nil {
+		if err := r.provide(nameCtx, nameKey, serviceTarget(info), info.GetIngress()); err != nil {
 			logger.Warnf("[ServiceRegistry] Announcing %s by name: %v", info.Name, err)
 		}
 
 		typeCtx, typeCancel := context.WithTimeout(ctx, 5*time.Second)
 		defer typeCancel()
-		if err := r.dht.Provide(typeCtx, typeKey, serviceTarget(info)); err != nil {
+		if err := r.provide(typeCtx, typeKey, serviceTarget(info), nil); err != nil {
 			logger.Warnf("[ServiceRegistry] Announcing %s by type: %v", info.Name, err)
 		}
 	}
@@ -180,6 +191,9 @@ func (r *ServiceRegistry) Register(ctx context.Context, svc Service) error {
 
 	if probeErr == nil {
 		logger.Infof("[ServiceRegistry] Registered and announced %s/%s", info.Type, info.Name)
+		if info.GetIngress() != nil && r.onIngressRegistered != nil {
+			r.onIngressRegistered(info)
+		}
 	} else if r.reprovideNow != nil {
 		r.reprovideNow()
 	}
@@ -216,6 +230,15 @@ func (r *ServiceRegistry) Unregister(ctx context.Context, name string) error {
 	}
 	logger.Infof("[ServiceRegistry] Unregistered %s", name)
 	return nil
+}
+
+func (r *ServiceRegistry) provide(ctx context.Context, key []byte, service string, ingress *api.ServiceIngress) error {
+	if ingress != nil {
+		if ip, ok := r.dht.(ingressDirectoryProvider); ok {
+			return ip.ProvideWithIngress(ctx, key, service, ingress)
+		}
+	}
+	return r.dht.Provide(ctx, key, service)
 }
 
 // serviceTarget is a service as a record names it, "<type>://<name>".
@@ -367,8 +390,12 @@ Loop:
 				if err != nil {
 					continue
 				}
+				var ing *api.ServiceIngress
+				if name != "" {
+					ing = info.GetIngress()
+				}
 				provideCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				if err := r.dht.Provide(provideCtx, key, serviceTarget(info)); err != nil && ctx.Err() == nil {
+				if err := r.provide(provideCtx, key, serviceTarget(info), ing); err != nil && ctx.Err() == nil {
 					logger.Warnf("[ServiceRegistry] Announcing %s/%s again: %v", info.Type, info.Name, err)
 				}
 				cancel()

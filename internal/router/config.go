@@ -16,7 +16,9 @@ package router
 
 import (
 	"fmt"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/agentmesh/api"
@@ -117,6 +119,37 @@ type Options struct {
 	// plain HTTP listener separate from the libp2p ports. Off by default:
 	// the listener is unauthenticated, so the operator names where it binds.
 	MetricsAddr string
+	// IngressAddr, when set, serves external HTTP ingress under /ingress/ on a
+	// dedicated HTTP/HTTPS listener. Off by default on standalone routers;
+	// non-loopback addresses require TLS cert/key or AllowInsecureIngressHTTP.
+	IngressAddr string
+	// IngressURL is the public base URL advertised in RouterLeaseRequest and
+	// rewritten into A2A AgentCards and RFC 9728 metadata (e.g.
+	// "https://bananas.sam-mesh.dev/ingress").
+	IngressURL string
+	// IngressTLSCertPath and IngressTLSKeyPath enable TLS on IngressAddr.
+	IngressTLSCertPath string
+	IngressTLSKeyPath  string
+	// AllowInsecureIngressHTTP permits a plaintext HTTP IngressAddr on a
+	// non-loopback interface (for example behind a TLS-terminating L7 Gateway)
+	// and permits http:// in IngressURL on non-loopback hosts.
+	AllowInsecureIngressHTTP bool
+	// OIDCIssuer and Audience optionally override the OIDC issuer and audience
+	// learned from the control plane's GET /info when verifying OIDC JWTs on
+	// INGRESS_AUTH_MODE_EDGE requests.
+	OIDCIssuer string
+	Audience   string
+	// PublicControlPlaneURL optionally overrides ControlPlaneURL in external
+	// RFC 9728 and A2A OAuth discovery metadata when ControlPlaneURL is a
+	// cluster-internal or loopback address.
+	PublicControlPlaneURL string
+	// AdvertiseSinglePortIngress reports that HTTPFallbackHandler mounts
+	// IngressHandler() under /ingress/ on the router's WebSocket port
+	// (agentmesh-one single-port mode).
+	AdvertiseSinglePortIngress bool
+	// SinglePortBindHost is the configured bind host paired with the bound WS
+	// port when AdvertiseSinglePortIngress is set and IngressURL is empty.
+	SinglePortBindHost string
 }
 
 // Default sets default values for options.
@@ -175,5 +208,52 @@ func (o *Options) Validate() error {
 			return fmt.Errorf("external address %q: %w", s, err)
 		}
 	}
+	if (o.IngressTLSCertPath == "") != (o.IngressTLSKeyPath == "") {
+		return fmt.Errorf("both IngressTLSCertPath and IngressTLSKeyPath must be specified together")
+	}
+	if o.IngressAddr != "" {
+		host, _, err := net.SplitHostPort(o.IngressAddr)
+		if err != nil {
+			return fmt.Errorf("ingress address %q: %w", o.IngressAddr, err)
+		}
+		if o.IngressTLSCertPath == "" && !o.AllowInsecureIngressHTTP && !isLoopbackBindHost(host) {
+			return fmt.Errorf("non-loopback IngressAddr %q requires TLS (--ingress-tls-cert-path / --ingress-tls-key-path) or --allow-insecure-ingress-http when behind a TLS-terminating proxy", o.IngressAddr)
+		}
+	}
+	normalizedIngressURL, err := api.ValidateIngressURL(o.IngressURL)
+	if err != nil {
+		return err
+	}
+	if normalizedIngressURL != "" {
+		o.IngressURL = normalizedIngressURL
+		if strings.HasPrefix(normalizedIngressURL, "http://") && !o.AllowInsecureIngressHTTP {
+			uHost := strings.TrimPrefix(normalizedIngressURL, "http://")
+			if idx := strings.IndexByte(uHost, '/'); idx >= 0 {
+				uHost = uHost[:idx]
+			}
+			if h, _, splitErr := net.SplitHostPort(uHost); splitErr == nil {
+				uHost = h
+			} else {
+				uHost = strings.Trim(uHost, "[]")
+			}
+			if !isLoopbackBindHost(uHost) {
+				return fmt.Errorf("non-loopback http:// IngressURL %q requires https:// or --allow-insecure-ingress-http", o.IngressURL)
+			}
+		}
+	}
+	if normalizedPublicCP, err := api.ValidateIngressURL(o.PublicControlPlaneURL); err != nil {
+		return fmt.Errorf("public_control_plane_url: %w", err)
+	} else if normalizedPublicCP != "" {
+		o.PublicControlPlaneURL = normalizedPublicCP
+	}
 	return api.ValidateControlPlaneTransport(o.ControlPlaneURL, o.AllowInsecureControlPlane)
+}
+
+func isLoopbackBindHost(host string) bool {
+	h := strings.TrimSpace(host)
+	if strings.EqualFold(h, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }

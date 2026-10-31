@@ -439,6 +439,7 @@ func mintBiscuitWithBindingAndRand(rng io.Reader, signingKey ed25519.PrivateKey,
 	// What the holder may serve. A delegated subject serves nothing: it is a
 	// caller the actor node speaks for, not a member that publishes.
 	var allPublish []string
+	var allIngress []*api.IngressGrant
 	for _, role := range roles {
 		if err := addFact(biscuit.Fact{Predicate: biscuit.Predicate{
 			Name: api.FactRole,
@@ -468,6 +469,7 @@ func mintBiscuitWithBindingAndRand(rng io.Reader, signingKey ed25519.PrivateKey,
 			allTargets = append(allTargets, pr.AllowedTargets...)
 			if !delegated {
 				allPublish = append(allPublish, pr.AllowedPublish...)
+				allIngress = append(allIngress, pr.AllowedIngress...)
 			}
 
 			for _, customEntry := range pr.CustomDatalog {
@@ -513,6 +515,11 @@ func mintBiscuitWithBindingAndRand(rng io.Reader, signingKey ed25519.PrivateKey,
 	for _, fact := range api.BuildPublishDatalogFacts(allPublish) {
 		if err := addFact(fact); err != nil {
 			errs = append(errs, fmt.Errorf("failed to add publish fact: %w", err))
+		}
+	}
+	for _, fact := range api.BuildIngressDatalogFacts(allIngress) {
+		if err := addFact(fact); err != nil {
+			errs = append(errs, fmt.Errorf("failed to add ingress fact: %w", err))
 		}
 	}
 
@@ -791,12 +798,31 @@ func VerifyBiscuitRole(biscuitData []byte, controlPlanePubKey ed25519.PublicKey,
 	return RequireRole(b, controlPlanePubKey, expectedRole, timeout)
 }
 
+// newAuthorizer creates an Authorizer from a fresh copy of b. biscuit-go v2's
+// (*Biscuit).Authorizer appends onto b's internal symbol slice in place when
+// spare capacity exists, so concurrent Authorizer calls on a shared *Biscuit
+// (for example, router.memberCredential) race without re-unmarshaling.
+func newAuthorizer(b *biscuit.Biscuit, key ed25519.PublicKey, timeout time.Duration) (biscuit.Authorizer, error) {
+	if b == nil {
+		return nil, errors.New("nil biscuit")
+	}
+	raw, err := b.Serialize()
+	if err != nil {
+		return nil, err
+	}
+	fresh, err := biscuit.Unmarshal(raw)
+	if err != nil {
+		return nil, err
+	}
+	return fresh.Authorizer(key, AuthorizerOptions(timeout)...)
+}
+
 // RequireRole checks that the token carries role(expectedRole) under the given
 // key. It checks nothing else: a token received from a peer must already have
 // passed VerifyBiscuitAndGetKey, which is where expiry and the peer binding are
 // enforced, and key must be the key that verified it.
 func RequireRole(b *biscuit.Biscuit, key ed25519.PublicKey, expectedRole string, timeout time.Duration) error {
-	authorizer, err := b.Authorizer(key, AuthorizerOptions(timeout)...)
+	authorizer, err := newAuthorizer(b, key, timeout)
 	if err != nil {
 		return fmt.Errorf("failed to create authorizer: %w", err)
 	}
@@ -824,7 +850,7 @@ func RequireRole(b *biscuit.Biscuit, key ed25519.PublicKey, expectedRole string,
 // have passed verification and key must be the key that verified it; what
 // is decided here is the grant alone.
 func RequirePublish(b *biscuit.Biscuit, key ed25519.PublicKey, svcType, svcName string, policyRules []biscuit.Rule, timeout time.Duration) error {
-	authorizer, err := b.Authorizer(key, AuthorizerOptions(timeout)...)
+	authorizer, err := newAuthorizer(b, key, timeout)
 	if err != nil {
 		return fmt.Errorf("failed to create authorizer: %w", err)
 	}
@@ -841,6 +867,30 @@ func RequirePublish(b *biscuit.Biscuit, key ed25519.PublicKey, svcType, svcName 
 	return nil
 }
 
+// RequireIngress reports whether the credential grants exposing the inbound
+// service svcType://svcName on external router HTTP ingress under mode ("edge"
+// or "passthrough"): api.IngressPolicies over the token's granted_ingress_*
+// facts, those the mesh policy rules derive from its role() and label() facts,
+// and an ingress() fact. b must have passed verification and key must be the
+// key that verified it.
+func RequireIngress(b *biscuit.Biscuit, key ed25519.PublicKey, svcType, svcName, mode string, policyRules []biscuit.Rule, timeout time.Duration) error {
+	authorizer, err := newAuthorizer(b, key, timeout)
+	if err != nil {
+		return fmt.Errorf("failed to create authorizer: %w", err)
+	}
+	authorizer.AddFact(api.IngressFact(svcType, svcName, mode))
+	for _, r := range policyRules {
+		authorizer.AddRule(r)
+	}
+	for _, p := range api.IngressPolicies {
+		authorizer.AddPolicy(p)
+	}
+	if err := authorizer.Authorize(); err != nil {
+		return fmt.Errorf("credential does not grant %s ingress for %s://%s", mode, svcType, svcName)
+	}
+	return nil
+}
+
 // VerifiedBiscuitClaims holds the authority facts, effective expiration,
 // revocation IDs, and TaskAuthorizationRule chain extracted from a verified
 // Biscuit token.
@@ -849,6 +899,8 @@ type VerifiedBiscuitClaims struct {
 	VerifyingKey    ed25519.PublicKey
 	User            string
 	Email           string
+	Groups          []string
+	IdpRoles        []string
 	Roles           []string
 	NodePeerID      string
 	ActorNodePeerID string
@@ -856,6 +908,28 @@ type VerifiedBiscuitClaims struct {
 	Expiration      time.Time
 	RevocationIDs   [][]byte
 	TaskRules       []*api.TaskAuthorizationRule
+}
+
+// IdentityClaimsMap returns the attested identity claims keyed by Datalog fact
+// name ("user", "email", "group", "idp_role", "node") for policy/allow matching.
+func (c *VerifiedBiscuitClaims) IdentityClaimsMap() map[string][]string {
+	out := make(map[string][]string)
+	if c.User != "" {
+		out[api.FactUser] = []string{c.User}
+	}
+	if c.Email != "" {
+		out[api.FactEmail] = []string{c.Email}
+	}
+	if len(c.Groups) > 0 {
+		out[api.FactGroup] = append([]string(nil), c.Groups...)
+	}
+	if len(c.IdpRoles) > 0 {
+		out[api.FactIdpRole] = append([]string(nil), c.IdpRoles...)
+	}
+	if c.NodePeerID != "" {
+		out[api.FactNode] = []string{c.NodePeerID}
+	}
+	return out
 }
 
 // Principal returns the primary subject identifier for audit logs and border
@@ -984,6 +1058,8 @@ func InspectVerifiedBiscuit(biscuitData []byte, trustedPublicKeys []ed25519.Publ
 		VerifyingKey:    verifyingKey,
 		User:            firstString(api.FactUser),
 		Email:           firstString(api.FactEmail),
+		Groups:          queryStrings(api.FactGroup),
+		IdpRoles:        queryStrings(api.FactIdpRole),
 		Roles:           queryStrings(api.FactRole),
 		NodePeerID:      nodePeerID,
 		ActorNodePeerID: actorNodePeerID,

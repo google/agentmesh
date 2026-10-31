@@ -279,6 +279,7 @@ func printBanner(srv *standalone.Server, tun tunnel.Tunnel, secrets bannerSecret
 		fmt.Printf("Tunnel:       %s -> http://%s\n", tun.URL(), srv.Addr())
 	}
 	fmt.Printf("Web Console:  %s/console\n", base)
+	fmt.Printf("Ingress URL:  %s\n", srv.IngressURL())
 	fmt.Printf("Router Peer:  %s\n", srv.PeerID())
 	fmt.Printf("Admin Token:  %s\n", adminShown)
 	switch {

@@ -86,12 +86,12 @@ with no default, because the right GatewayClass is provider-specific
 (`cloud-provider-kind` in kind, `gke-l7-global-external-managed` on GKE,
 `istio`, `envoy-gateway`, …).
 
-The route exposes only the control plane's enrollment and runtime surface (`/register`,
+The route exposes the control plane's enrollment and runtime surface (`/register`,
 `/info`, `/keys`, `/routers/lease`, `/policies`, `/egress`, `/revocations`,
 `/token/exchange`, `/sts/token`, `/enroll`, `/enroll/status`, `/refresh`,
-`/nodes/catalog`, `/.well-known/*`, `/jwks`, `/oauth/authorize`, `/oauth/token`) and the console under `gateway.consolePath`; everything else,
+`/nodes/catalog`, `/.well-known/*`, `/jwks`, `/oauth/authorize`, `/oauth/token`), routes external HTTP ingress (`/ingress` and `/ingress/`) directly to the `agentmesh-router` Service (`router.ingressPort`, default `8090`, controlled by `gateway.ingressRoute: true`), and serves the console under `gateway.consolePath`; everything else,
 including `/admin` and `/user`, is unrouted. `gateway.adminRoute: true`
-additionally routes `/admin` — a dev convenience, leave it off in production.
+additionally routes `/admin` — a dev convenience, leave it off in production. Set `router.ingressUrl` (e.g. `https://mesh.example.com/ingress`) and `router.publicControlPlaneUrl` (e.g. `https://mesh.example.com`) so routers advertise the public ingress base URL in their lease (`GET /info`) and in RFC 9728 / A2A OAuth metadata.
 
 For the console, the bare prefix (`/console`) is answered with a 302 to
 `/console/`, and a `URLRewrite` filter strips the prefix before the request

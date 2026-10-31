@@ -69,6 +69,7 @@ type RouterLease struct {
 	// number it accepts. Listed on /info for members to choose routers by.
 	Connections     int
 	ConnectionLimit int
+	IngressURL      string
 }
 
 // User represents a human identity in the mesh.

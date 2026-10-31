@@ -35,12 +35,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/eclipse-biscuit/biscuit-go/v2"
 	"github.com/google/agentmesh/api"
 	cpclient "github.com/google/agentmesh/internal/controlplane/client"
 	"github.com/google/agentmesh/internal/identity"
 	"github.com/google/agentmesh/internal/p2plimits"
 	"github.com/google/agentmesh/internal/ratelimit"
+	lru "github.com/hashicorp/golang-lru/v2"
 	golog "github.com/ipfs/go-log/v2"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
@@ -395,6 +397,17 @@ type Router struct {
 	metricsServer *http.Server
 	metricsAddr   net.Addr
 
+	ingressServer  *http.Server
+	ingressAddr    net.Addr
+	ingressLimiter *ratelimit.PeerRateLimiter
+
+	revokedTokens *lru.Cache[string, time.Time]
+
+	oidcMu           sync.Mutex
+	oidcProviders    map[string]*oidc.Provider
+	syncedOIDCIssuer atomic.Pointer[string]
+	syncedAudience   atomic.Pointer[string]
+
 	// identityLoggedAt is when the "Router Online" line was last written.
 	identityLoggedAt atomic.Pointer[time.Time]
 	// leasedAddrs is the address list of the last accepted lease, joined.
@@ -416,12 +429,25 @@ func NewRouter(ctx context.Context, config Options) (*Router, error) {
 		cancel()
 		return nil, fmt.Errorf("failed to create handshake rate limiter: %w", err)
 	}
+	ingressLimiter, err := ratelimit.NewPeerRateLimiterWithRate(handshakeLimiterSize, ingressRateLimitPerIP, ingressRateBurstPerIP)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create ingress rate limiter: %w", err)
+	}
+	revokedTokens, err := lru.New[string, time.Time](handshakeLimiterSize)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create revocation cache: %w", err)
+	}
 
 	return &Router{
 		config:           config,
 		ctx:              ctx,
 		cancel:           cancel,
 		handshakeLimiter: handshakeLimiter,
+		ingressLimiter:   ingressLimiter,
+		revokedTokens:    revokedTokens,
+		oidcProviders:    make(map[string]*oidc.Provider),
 		syncTrigger:      make(chan struct{}, 1),
 	}, nil
 }
@@ -600,6 +626,14 @@ func (r *Router) Start() (retErr error) {
 		},
 	})
 
+	if r.config.IngressAddr != "" {
+		if err := r.serveIngress(r.config.IngressAddr); err != nil {
+			return fmt.Errorf("failed to start ingress listener: %w", err)
+		}
+	}
+
+	r.isReady.Store(true)
+
 	// 5. Start background routines
 	r.wg.Add(5)
 	go r.runControlPlaneSyncLoop()
@@ -614,7 +648,6 @@ func (r *Router) Start() (retErr error) {
 		p2plimits.ObserveStreamPressure(hostNode.Network().Conns, busiestConnStreams, logger.Warnf).Run(r.ctx, streamPressureInterval)
 	}()
 
-	r.isReady.Store(true)
 	logger.Infof("Router Online. PeerID: %s, ListenAddrs: %v", r.Host.ID(), r.Host.Addrs())
 	return nil
 }
@@ -1048,6 +1081,7 @@ func (r *Router) listenForControlPlaneEvents(ctx context.Context) {
 				if bannedPeer, err := peer.Decode(event.PeerId); err == nil {
 					logger.Infof("[Router Event] Received BANNED event for peer %s, evicting from authenticated peers and adding to blocklist", bannedPeer)
 					r.forgetPeer(bannedPeer)
+					r.records.removePeer(bannedPeer)
 					// The timestamp is what stops an /info answer that was
 					// already in flight from undoing this (see
 					// reconcileBannedPeers).
@@ -1121,15 +1155,71 @@ func (r *Router) runControlPlaneSyncLoop() {
 // signs for is refused until the rotation is learned and the credential
 // refreshed (syncKeys).
 func (r *Router) syncControlPlane() {
-	if err := r.syncKeys(); err != nil {
+	if err := r.syncKeys(); err != nil && r.ctx.Err() == nil {
 		logger.Errorf("Failed keys sync: %v", err)
 	}
 	r.renewLease()
 	r.connectBootstrapRouters()
-	if err := r.syncPolicy(); err != nil {
+	if err := r.syncPolicy(); err != nil && r.ctx.Err() == nil {
 		logger.Errorf("Failed policy sync: %v", err)
 	}
+	if err := r.syncRevocations(); err != nil && r.ctx.Err() == nil {
+		logger.Errorf("Failed revocations sync: %v", err)
+	}
 	r.refreshExpiringCredential()
+}
+
+func (r *Router) syncRevocations() error {
+	r.keysMu.RLock()
+	tok := r.credential.biscuit
+	r.keysMu.RUnlock()
+	if len(tok) == 0 {
+		return nil
+	}
+	fetchedAt := time.Now()
+	resp, err := r.controlPlane(10*time.Second).FetchRevocations(r.ctx, tok)
+	if errors.Is(err, cpclient.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	expiry := fetchedAt.Add(24 * time.Hour)
+	for _, revID := range resp.GetRevocationIds() {
+		r.recordRevokedBiscuitID(revID, expiry)
+	}
+	if len(resp.GetBannedPeerIds()) > 0 {
+		r.reconcileBannedPeers(resp.GetBannedPeerIds(), fetchedAt)
+	}
+	return nil
+}
+
+func (r *Router) recordRevokedBiscuitID(revID string, expiry time.Time) {
+	if revID == "" || r.revokedTokens == nil {
+		return
+	}
+	r.revokedTokens.Add(revID, expiry)
+	if raw, err := hex.DecodeString(revID); err == nil && len(raw) > 0 {
+		r.revokedTokens.Add(base64.RawURLEncoding.EncodeToString(raw), expiry)
+	}
+}
+
+func (r *Router) isBiscuitRevoked(b *biscuit.Biscuit) bool {
+	if r == nil || r.revokedTokens == nil || b == nil {
+		return false
+	}
+	now := time.Now()
+	for _, id := range b.RevocationIds() {
+		for _, key := range []string{hex.EncodeToString(id), base64.RawURLEncoding.EncodeToString(id)} {
+			if exp, ok := r.revokedTokens.Get(key); ok {
+				if now.Before(exp) {
+					return true
+				}
+				r.revokedTokens.Remove(key)
+			}
+		}
+	}
+	return false
 }
 
 // refreshExpiringCredential refreshes the router's own credential once less
@@ -1276,6 +1366,7 @@ func (r *Router) sendLease(ctx context.Context, ttl *time.Duration, attempts int
 				ChallengeSignature: sig,
 				Connections:        inbound,
 				ConnectionLimit:    int32(r.config.HighWaterMark),
+				IngressUrl:         r.leasedIngressURL(),
 			}
 			if ttl != nil {
 				req.Ttl = durationpb.New(*ttl)
@@ -1427,6 +1518,7 @@ func (r *Router) reconcileBannedPeers(peerIDs []string, fetchedAt time.Time) {
 		logger.Infof("[Federation] Peer %s is banned, adding to blocklist", p)
 		r.bannedPeers.Store(p, fetchedAt)
 		r.forgetPeer(p)
+		r.records.removePeer(p)
 		if r.Host != nil {
 			_ = r.Host.Network().ClosePeer(p)
 		}
@@ -1449,6 +1541,13 @@ func (r *Router) connectBootstrapRouters() {
 	if err != nil {
 		logger.Errorf("[Federation] Failed to fetch router info: %v", err)
 		return
+	}
+
+	if iss := strings.TrimSpace(info.GetOidcIssuer()); iss != "" {
+		r.syncedOIDCIssuer.Store(&iss)
+	}
+	if aud := strings.TrimSpace(info.GetAudience()); aud != "" {
+		r.syncedAudience.Store(&aud)
 	}
 
 	// /info carries the whole ban set, so this is also where a router that
@@ -1652,7 +1751,11 @@ var authHandshakeTimeout = 10 * time.Second
 
 // handshakeLimiterSize is how many distinct peers' handshake budgets are
 // tracked at once (LRU beyond that).
-const handshakeLimiterSize = 4096
+const (
+	handshakeLimiterSize  = 4096
+	ingressRateLimitPerIP = 200
+	ingressRateBurstPerIP = 400
+)
 
 // HandleAuthHandshake processes incoming auth connections.
 // It is part of mutual auth:
@@ -1809,6 +1912,14 @@ func (r *Router) Close() error {
 	r.cancel()
 
 	var errs []error
+	if r.ingressServer != nil {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := r.ingressServer.Shutdown(shutdownCtx); err != nil {
+			_ = r.ingressServer.Close()
+			errs = append(errs, err)
+		}
+		shutdownCancel()
+	}
 	if r.metricsServer != nil {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := r.metricsServer.Shutdown(shutdownCtx); err != nil {

@@ -198,10 +198,14 @@ type AgentMeshNode struct {
 	// rateLimiter, so a peer's authenticated traffic cannot starve its own
 	// re-authentication and vice versa.
 	handshakeLimiter *ratelimit.PeerRateLimiter
-	services         *ServiceRegistry
-	BoundHTTPAddr    string
-	BoundSocketPath  string
-	AllowLoopback    bool
+	// externalIngressLimiter bounds /mesh/ingress requests per forwarding router
+	// separately from peer-to-peer rateLimiter, because a single router
+	// multiplexes external HTTP traffic for many external callers.
+	externalIngressLimiter *ratelimit.PeerRateLimiter
+	services               *ServiceRegistry
+	BoundHTTPAddr          string
+	BoundSocketPath        string
+	AllowLoopback          bool
 
 	authSuccess             chan struct{}
 	authOnce                sync.Once
@@ -450,6 +454,10 @@ func NewAgentMeshNode(cfg Options) (*AgentMeshNode, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create handshake rate limiter: %w", err)
 	}
+	node.externalIngressLimiter, err = ratelimit.NewPeerRateLimiterWithRate(RateLimiterSize, 200, 400)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create external ingress rate limiter: %w", err)
+	}
 	node.revokedPeers, err = lru.New[string, int64](RevocationCacheSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create revocation cache: %w", err)
@@ -696,6 +704,7 @@ func (n *AgentMeshNode) Start(ctx context.Context) error {
 
 	n.services = NewServiceRegistry(n.Directory, n.config.BackendProbeTimeout)
 	n.services.reprovideNow = n.triggerReprovide
+	n.services.onIngressRegistered = n.logIngressURLs
 	n.applyPendingEgress(ctx)
 
 	if _, err := n.admitByRouters(ctx); err != nil {
@@ -775,6 +784,9 @@ func (n *AgentMeshNode) Start(ctx context.Context) error {
 	// Start Ingress HTTP Server
 	if err := n.StartIngressServer(ctx); err != nil {
 		return fmt.Errorf("failed to start ingress server: %w", err)
+	}
+	if err := n.StartExternalIngressServer(ctx); err != nil {
+		return fmt.Errorf("failed to start external ingress server: %w", err)
 	}
 
 	// Start connection monitor

@@ -93,6 +93,7 @@ func hubLimits(highWaterMark, conns, circuits int) rcmgr.ConcreteLimitConfig {
 	protocols := map[protocol.ID]rcmgr.ResourceLimits{
 		circuit.ProtoIDv2Hop:  relayStreams,
 		circuit.ProtoIDv2Stop: relayStreams,
+		api.IngressProtocolID: streams(connCap),
 	}
 	// Every connection, not every member: a member attached elsewhere holds
 	// a connection here for its DHT queries, with a DHT stream and gossip
@@ -120,6 +121,7 @@ func hubLimits(highWaterMark, conns, circuits int) rcmgr.ConcreteLimitConfig {
 		ProtocolPeer: map[protocol.ID]rcmgr.ResourceLimits{
 			circuit.ProtoIDv2Hop:  perPeerCircuits,
 			circuit.ProtoIDv2Stop: perPeerCircuits,
+			api.IngressProtocolID: perPeerCircuits,
 		},
 	}
 	return overrides.Build(scaled)

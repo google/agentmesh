@@ -129,4 +129,16 @@ spec:
     - name: {{ $fullName }}-console
       port: {{ .Values.console.service.port }}
   {{- end }}
+  {{- if and .Values.gateway.ingressRoute .Values.router.enabled .Values.router.ingressPort }}
+  - matches:
+    - path:
+        type: Exact
+        value: /ingress
+    - path:
+        type: PathPrefix
+        value: /ingress/
+    backendRefs:
+    - name: {{ $fullName }}-router
+      port: {{ .Values.router.ingressPort }}
+  {{- end }}
 {{- end }}

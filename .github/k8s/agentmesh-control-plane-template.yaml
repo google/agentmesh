@@ -161,6 +161,26 @@ spec:
     kind: Service
     name: agentmesh-control-plane-${ENV_NAME}
 ---
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: agentmesh-router-ingress-healthcheck-${ENV_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  default:
+    checkIntervalSec: 15
+    timeoutSec: 5
+    healthyThreshold: 1
+    unhealthyThreshold: 2
+    config:
+      type: HTTP
+      httpHealthCheck:
+        requestPath: /ingress/healthz
+  targetRef:
+    group: ""
+    kind: Service
+    name: agentmesh-router-ingress-${ENV_NAME}
+---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
@@ -274,3 +294,13 @@ spec:
     backendRefs:
     - name: agentmesh-console-${ENV_NAME}
       port: 8081
+  - matches:
+    - path:
+        type: Exact
+        value: /ingress
+    - path:
+        type: PathPrefix
+        value: /ingress/
+    backendRefs:
+    - name: agentmesh-router-ingress-${ENV_NAME}
+      port: 8080

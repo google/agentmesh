@@ -15,6 +15,7 @@
 package router
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -269,6 +270,28 @@ func (r *Router) requirePublish(provider peer.ID, svcType api.ServiceType, svcNa
 	return nil
 }
 
+// requireIngress checks that the admitted member's credential grants exposing
+// svcType://svcName on router HTTP ingress with the requested auth mode.
+func (r *Router) requireIngress(provider peer.ID, svcType api.ServiceType, svcName string, mode api.IngressAuthMode) error {
+	typeStr, err := api.ServiceTypeToString(svcType)
+	if err != nil {
+		return invalidDirectoryRequest("%w", err)
+	}
+	modeStr, err := api.IngressAuthModeToString(mode)
+	if err != nil {
+		return invalidDirectoryRequest("%w", err)
+	}
+	v, ok := r.credentials.Load(provider)
+	if !ok {
+		return &directoryDeniedError{service: typeStr + "://" + svcName, err: errors.New("no credential held for the member")}
+	}
+	cred := v.(memberCredential)
+	if err := identity.RequireIngress(cred.biscuit, cred.key, typeStr, svcName, modeStr, r.meshPolicyRules(), r.config.BiscuitTimeout); err != nil {
+		return &directoryDeniedError{service: typeStr + "://" + svcName, err: err}
+	}
+	return nil
+}
+
 // recordProvider is whose record a provide or withdraw is about: the
 // sender's own, or the member a peer router names, which only a router may.
 func (r *Router) recordProvider(remote peer.ID, named string) (provider peer.ID, placed bool, err error) {
@@ -312,14 +335,41 @@ func (r *Router) directoryProvide(ctx context.Context, remote peer.ID, q *api.Di
 		if err := r.requirePublish(provider, svcType, svcName); err != nil {
 			return nil, err
 		}
+		if q.GetIngress() != nil {
+			if svcName == "" {
+				return nil, invalidDirectoryRequest("ingress may only be advertised on a named service record")
+			}
+			nameKey, err := api.ServiceKey(svcType, svcName)
+			if err != nil || !bytes.Equal(q.GetKey(), nameKey) {
+				return nil, invalidDirectoryRequest("ingress may only be advertised on a named service key")
+			}
+			if err := api.ValidateServiceIngress(svcType, q.GetIngress()); err != nil {
+				return nil, invalidDirectoryRequest("%w", err)
+			}
+			if err := r.requireIngress(provider, svcType, svcName, api.EffectiveIngressAuthMode(q.GetIngress())); err != nil {
+				return nil, err
+			}
+		}
+	} else if q.GetIngress() != nil {
+		svcType, svcName, err := api.ServiceOfRecord(provider, q.GetKey(), q.GetService())
+		if err != nil || svcName == "" {
+			return nil, invalidDirectoryRequest("placed ingress record must name a valid service")
+		}
+		nameKey, err := api.ServiceKey(svcType, svcName)
+		if err != nil || !bytes.Equal(q.GetKey(), nameKey) {
+			return nil, invalidDirectoryRequest("placed ingress record must use a named service key")
+		}
+		if err := api.ValidateServiceIngress(svcType, q.GetIngress()); err != nil {
+			return nil, invalidDirectoryRequest("%w", err)
+		}
 	}
 	if r.records == nil {
 		return nil, errDirectoryNotUp
 	}
-	r.records.put(q.GetKey(), provider, addrs, time.Now())
+	r.records.putWithIngress(q.GetKey(), provider, addrs, q.GetIngress(), time.Now())
 	if !placed {
 		r.placeRecord(ctx, provider, &api.DirectoryRequest{Request: &api.DirectoryRequest_Provide{Provide: &api.DirectoryProvide{
-			Key: q.GetKey(), Addrs: q.GetAddrs(), Provider: provider.String(), Service: q.GetService(),
+			Key: q.GetKey(), Addrs: q.GetAddrs(), Provider: provider.String(), Service: q.GetService(), Ingress: cloneServiceIngress(q.GetIngress()),
 		}}})
 	}
 	return &api.DirectoryResponse{}, nil
@@ -481,7 +531,7 @@ func (r *Router) lookupProviders(ctx context.Context, remote peer.ID, key []byte
 		return nil, errDirectoryNotUp
 	}
 	if r.isAuthenticatedPeerRouter(remote) {
-		return r.freshRecords(r.records.providers(key, time.Now()), limit), nil
+		return r.freshRecords(r.records.providerEntries(key, time.Now()), limit), nil
 	}
 	r.ensureFederated(ctx)
 	found := r.findProviders(ctx, key, limit)
@@ -496,15 +546,15 @@ func (r *Router) lookupProviders(ctx context.Context, remote peer.ID, key []byte
 
 // findProviders merges this router's records under key with what the
 // routers closest to it hold, each asked within directoryLookupTimeout.
-func (r *Router) findProviders(ctx context.Context, key []byte, limit int) []peer.AddrInfo {
+func (r *Router) findProviders(ctx context.Context, key []byte, limit int) []providerEntry {
 	req := &api.DirectoryRequest{Request: &api.DirectoryRequest_FindProviders{FindProviders: &api.DirectoryFindProviders{Key: key, Limit: uint32(limit)}}}
 	data, err := proto.Marshal(req)
 	if err != nil {
 		logger.Errorf("[Directory] Lookup not encoded: %v", err)
-		return r.records.providers(key, time.Now())
+		return r.records.providerEntries(key, time.Now())
 	}
 	targets := r.closestRouters(key)
-	answers := make(chan []peer.AddrInfo, len(targets))
+	answers := make(chan []providerEntry, len(targets))
 	var wg sync.WaitGroup
 	for _, target := range targets {
 		wg.Add(1)
@@ -519,35 +569,38 @@ func (r *Router) findProviders(ctx context.Context, key []byte, limit int) []pee
 				return
 			}
 			directoryLookupsTotal.WithLabelValues(directoryResultOK).Inc()
-			var infos []peer.AddrInfo
+			var entries []providerEntry
 			for _, rec := range resp.GetProviders() {
-				if info, err := addrInfoOfRecord(rec); err == nil {
-					infos = append(infos, info)
+				if entry, err := providerEntryOfRecord(rec); err == nil {
+					entries = append(entries, entry)
 				}
 			}
-			answers <- infos
+			answers <- entries
 		}(target)
 	}
 	wg.Wait()
 	close(answers)
 
-	merged := r.records.providers(key, time.Now())
+	merged := r.records.providerEntries(key, time.Now())
 	index := map[peer.ID]int{}
-	for i, info := range merged {
-		index[info.ID] = i
+	for i, entry := range merged {
+		index[entry.info.ID] = i
 	}
-	for infos := range answers {
-		for _, info := range infos {
-			i, seen := index[info.ID]
+	for entries := range answers {
+		for _, entry := range entries {
+			i, seen := index[entry.info.ID]
 			if !seen {
-				index[info.ID] = len(merged)
-				merged = append(merged, info)
+				index[entry.info.ID] = len(merged)
+				merged = append(merged, entry)
 				continue
 			}
-			for _, a := range info.Addrs {
-				if !containsAddr(merged[i].Addrs, a) {
-					merged[i].Addrs = append(merged[i].Addrs, a)
+			for _, a := range entry.info.Addrs {
+				if !containsAddr(merged[i].info.Addrs, a) {
+					merged[i].info.Addrs = append(merged[i].info.Addrs, a)
 				}
+			}
+			if merged[i].ingress == nil && entry.ingress != nil {
+				merged[i].ingress = entry.ingress
 			}
 		}
 	}
@@ -557,33 +610,38 @@ func (r *Router) findProviders(ctx context.Context, key []byte, limit int) []pee
 // freshRecords renders up to limit providers, each at the addresses this
 // router sees for it when it holds the provider, which are ahead of the
 // record, and at the record's otherwise.
-func (r *Router) freshRecords(infos []peer.AddrInfo, limit int) []*api.PeerRecord {
-	records := make([]*api.PeerRecord, 0, min(limit, len(infos)))
-	for _, info := range infos {
+func (r *Router) freshRecords(entries []providerEntry, limit int) []*api.PeerRecord {
+	records := make([]*api.PeerRecord, 0, min(limit, len(entries)))
+	for _, entry := range entries {
 		if len(records) >= limit {
 			break
 		}
-		if r.isPeerAuthenticated(info.ID) && r.Host.Network().Connectedness(info.ID) == network.Connected {
-			if addrs := r.Host.Peerstore().Addrs(info.ID); len(addrs) > 0 {
-				info.Addrs = addrs
+		if r.isPeerAuthenticated(entry.info.ID) && r.Host.Network().Connectedness(entry.info.ID) == network.Connected {
+			if addrs := r.Host.Peerstore().Addrs(entry.info.ID); len(addrs) > 0 {
+				entry.info.Addrs = addrs
 			}
 		}
-		records = append(records, peerRecord(info))
+		rec := peerRecord(entry.info)
+		rec.Ingress = cloneServiceIngress(entry.ingress)
+		records = append(records, rec)
 	}
 	return records
 }
 
-// addrInfoOfRecord parses a record another router answered with.
-func addrInfoOfRecord(rec *api.PeerRecord) (peer.AddrInfo, error) {
+// providerEntryOfRecord parses a record another router answered with.
+func providerEntryOfRecord(rec *api.PeerRecord) (providerEntry, error) {
 	p, err := peer.Decode(rec.GetPeerId())
 	if err != nil {
-		return peer.AddrInfo{}, err
+		return providerEntry{}, err
 	}
 	addrs, err := recordAddrs(p, rec.GetAddrs())
 	if err != nil {
-		return peer.AddrInfo{}, err
+		return providerEntry{}, err
 	}
-	return peer.AddrInfo{ID: p, Addrs: addrs}, nil
+	return providerEntry{
+		info:    peer.AddrInfo{ID: p, Addrs: addrs},
+		ingress: cloneServiceIngress(rec.GetIngress()),
+	}, nil
 }
 
 func containsAddr(addrs []multiaddr.Multiaddr, a multiaddr.Multiaddr) bool {

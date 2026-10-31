@@ -76,6 +76,14 @@ var (
 	shutdownLeaseTTL         time.Duration
 	authDeadline             time.Duration
 	labelFlags               []string
+	ingressAddr              string
+	ingressURL               string
+	ingressTLSCertPath       string
+	ingressTLSKeyPath        string
+	allowInsecureIngressHTTP bool
+	oidcIssuer               string
+	audience                 string
+	publicControlPlaneURL    string
 )
 
 var logger = golog.Logger("agentmesh-router-cli")
@@ -110,6 +118,14 @@ func main() {
 				RelayMaxCircuits:          relayMaxCircuits,
 				ShutdownLeaseTTL:          shutdownLeaseTTL,
 				AuthDeadline:              authDeadline,
+				IngressAddr:               ingressAddr,
+				IngressURL:                ingressURL,
+				IngressTLSCertPath:        ingressTLSCertPath,
+				IngressTLSKeyPath:         ingressTLSKeyPath,
+				AllowInsecureIngressHTTP:  allowInsecureIngressHTTP,
+				OIDCIssuer:                oidcIssuer,
+				Audience:                  audience,
+				PublicControlPlaneURL:     publicControlPlaneURL,
 			}
 			labels, err := api.ParseLabelFlags(labelFlags)
 			if err != nil {
@@ -169,6 +185,14 @@ func main() {
 	rootCmd.Flags().DurationVar(&shutdownLeaseTTL, "shutdown-lease-ttl", router.DefaultShutdownLeaseTTL, "Sent in this router's last lease when it stops: how long it expects to be away, which is how long the control plane keeps listing it. 0 sends nothing and the lease expires on the control plane's schedule")
 	rootCmd.Flags().DurationVar(&authDeadline, "auth-deadline", router.DefaultAuthDeadline, "Close an inbound connection whose peer has not passed the mesh handshake within this time; members handshake at once, a DHT query from a member attached elsewhere is done long before. 0 keeps every connection")
 	rootCmd.Flags().StringArrayVar(&labelFlags, "label", nil, "A key=value label declared at enrollment, repeatable; the control plane signs it only if the router's role allows it, and members select or prefer routers by it (e.g. region=eu, zone=us-central1-a)")
+	rootCmd.Flags().StringVar(&ingressAddr, "ingress-addr", "", "Serve external HTTP ingress under /ingress/ on this address (e.g. 0.0.0.0:8080); off by default")
+	rootCmd.Flags().StringVar(&ingressURL, "ingress-url", "", "Public base URL advertised for external HTTP ingress on this router (e.g. https://bananas.sam-mesh.dev/ingress)")
+	rootCmd.Flags().StringVar(&ingressTLSCertPath, "ingress-tls-cert-path", "", "Path to TLS certificate file for --ingress-addr")
+	rootCmd.Flags().StringVar(&ingressTLSKeyPath, "ingress-tls-key-path", "", "Path to TLS private key file for --ingress-addr")
+	rootCmd.Flags().BoolVar(&allowInsecureIngressHTTP, "allow-insecure-ingress-http", false, "Allow --ingress-addr on a non-loopback interface without TLS (only when behind a TLS-terminating L7 load balancer) and allow http:// in --ingress-url")
+	rootCmd.Flags().StringVar(&oidcIssuer, "oidc-issuer", "", "Optional OIDC issuer URL override for verifying OIDC JWTs on edge ingress (defaults to the control plane's /info oidc_issuer)")
+	rootCmd.Flags().StringVar(&audience, "audience", "", "Optional OIDC audience override for verifying OIDC JWTs on edge ingress (defaults to the control plane's /info audience)")
+	rootCmd.Flags().StringVar(&publicControlPlaneURL, "public-control-plane", "", "Optional public URL of the control plane advertised in RFC 9728 and A2A OAuth metadata when --control-plane uses a cluster-internal address")
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

@@ -19,6 +19,14 @@ export const BASELINE_DATALOG = {
     "allow if publish($type, $name), granted_publish_all($type)",
     "allow if publish($type, $name), granted_publish_all_types(true)"
   ],
+  "ingress_policies": [
+    "allow if ingress($type, $name, $mode), granted_ingress_exact($type, $name, $mode)",
+    "allow if ingress($type, $name, $mode), granted_ingress_set($type, $set, $mode), $set.contains($name)",
+    "allow if ingress($type, $name, $mode), granted_ingress_prefix($type, $prefix, $mode), $name.starts_with($prefix)",
+    "allow if ingress($type, $name, $mode), granted_ingress_suffix($type, $suffix, $mode), $name.ends_with($suffix)",
+    "allow if ingress($type, $name, $mode), granted_ingress_all($type, $mode)",
+    "allow if ingress($type, $name, $mode), granted_ingress_all_types($mode)"
+  ],
   "rules": [
     "allow_network_target($fact, $val) <- target_fact($fact, $val), granted_target_exact($fact, $val)",
     "allow_network_target($fact, $val) <- target_fact($fact, $val), granted_target_set($fact, $set), $set.contains($val)",
@@ -61,6 +69,7 @@ export const BASELINE_DATALOG = {
   "fact_role": "role",
   "fact_target_fact": "target_fact",
   "fact_publish": "publish",
+  "fact_ingress": "ingress",
   "catalog_target": "mesh.catalog",
   "fact_tar_block": "tar_block",
   "tar_block_source_pattern": "^tar_block\\(\"([A-Za-z0-9_-]+)\"\\);?\\s*$",

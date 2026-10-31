@@ -23,6 +23,20 @@ spec:
   selector:
     app: agentmesh-router-${ENV_NAME}
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentmesh-router-ingress-${ENV_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: http-ingress
+  selector:
+    app: agentmesh-router-${ENV_NAME}
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -66,6 +80,10 @@ spec:
         - containerPort: 9090
           protocol: TCP
           name: metrics
+        # External HTTP ingress reached via the Gateway HTTPRoute (/ingress/*).
+        - containerPort: 8080
+          protocol: TCP
+          name: http-ingress
         args:
         - "--control-plane=http://agentmesh-control-plane-${ENV_NAME}.${NAMESPACE}.svc.cluster.local:8080"
         - "--insecure-control-plane"
@@ -75,6 +93,9 @@ spec:
         - "--jwt-path=/var/run/secrets/tokens/agentmesh-token"
         - "--keys-path=/data/router.key"
         - "--metrics-addr=0.0.0.0:9090"
+        - "--ingress-addr=0.0.0.0:8080"
+        - "--ingress-url=https://${ENV_NAME}.sam-mesh.dev/ingress"
+        - "--allow-insecure-ingress-http"
         # Profiles on loopback only: `kubectl port-forward <pod> 6060` then
         # `go tool pprof http://127.0.0.1:6060/debug/pprof/heap`.
         - "--pprof-addr=127.0.0.1:6060"

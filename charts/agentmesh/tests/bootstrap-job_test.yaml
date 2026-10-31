@@ -33,14 +33,14 @@ tests:
       - exists:
           path: spec.template.spec.containers[0].resources.limits
 
-  - it: node role grants no labels by default (fail closed)
+  - it: node role grants no labels or ingress by default (fail closed)
     documentSelector:
       path: kind
       value: Job
     asserts:
       - matchRegex:
           path: spec.template.spec.containers[0].args[0]
-          pattern: '"name": "mesh:role:node".*"allowed_labels": \[\]'
+          pattern: '"name": "mesh:role:node".*"allowed_labels": \[\], "allowed_ingress": \[\]'
 
   - it: router bootstrap token is spent after one use per replica
     set:

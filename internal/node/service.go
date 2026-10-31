@@ -132,6 +132,9 @@ func NewServiceFromRequest(req *api.RegisterServiceRequest) (Service, error) {
 	if c, ok := req.Backend.(*api.RegisterServiceRequest_Command); ok && len(c.Command.GetCommand()) == 0 {
 		return nil, fmt.Errorf("service %q: command backend has no command", info.GetName())
 	}
+	if err := api.ValidateServiceIngress(info.GetType(), info.GetIngress()); err != nil {
+		return nil, fmt.Errorf("service %q: %w", info.GetName(), err)
+	}
 	switch info.Type {
 	case api.ServiceType_SERVICE_TYPE_MCP:
 		return &MCPService{baseService: baseService{info: info, backend: req.Backend}}, nil
@@ -153,11 +156,16 @@ func buildRegisterRequest(sCfg api.ServiceConfig) (*api.RegisterServiceRequest, 
 	if err != nil {
 		return nil, fmt.Errorf("invalid service type %q for service %s: %w", sCfg.Type, sCfg.Name, err)
 	}
+	ing, err := api.ServiceIngressFromConfig(sType, sCfg.Ingress)
+	if err != nil {
+		return nil, fmt.Errorf("service %s: %w", sCfg.Name, err)
+	}
 	req := &api.RegisterServiceRequest{
 		Service: &api.ServiceInfo{
 			Type:        sType,
 			Name:        sCfg.Name,
 			Description: sCfg.Description,
+			Ingress:     ing,
 		},
 	}
 	switch {

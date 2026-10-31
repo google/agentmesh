@@ -150,10 +150,37 @@ enum ServiceType {
   SERVICE_TYPE_EGRESS = 4;
 }
 
+enum IngressAuthMode {
+  // Defaults to INGRESS_AUTH_MODE_EDGE.
+  INGRESS_AUTH_MODE_UNSPECIFIED = 0;
+  // Router verifies Mesh Biscuit or trusted OIDC JWT + mesh policy at the edge.
+  INGRESS_AUTH_MODE_EDGE = 1;
+  // Backend authenticates its own requests; requires an explicit PASSTHROUGH
+  // grant on the serving node's PolicyRole.allowed_ingress.
+  INGRESS_AUTH_MODE_PASSTHROUGH = 2;
+}
+
+// ServiceIngress configures external router HTTP ingress for an inbound service
+// (a2a, mcp, or inference). Absent means the service is reachable only inside
+// the mesh.
+message ServiceIngress {
+  // Defaults to INGRESS_AUTH_MODE_EDGE when UNSPECIFIED.
+  IngressAuthMode auth_mode = 1;
+  // Optional caller narrowing in PolicyBinding.members syntax
+  // (e.g. "email:alice@example.com", "email:*@example.com", "group:eng").
+  // Intersected (AND) with mesh Datalog policy: when empty, any caller
+  // authorized by mesh policy for this service may invoke it; when non-empty,
+  // the verified caller must also match at least one entry here. Only allowed
+  // in INGRESS_AUTH_MODE_EDGE.
+  repeated string allow = 2;
+}
+
 message ServiceInfo {
   ServiceType type = 1;
   string name = 2;
   string description = 3;
+  // Optional external ingress exposure for this service.
+  ServiceIngress ingress = 4;
 }
 
 message CommandBackend {
@@ -251,6 +278,10 @@ message DirectoryProvide {
   repeated string addrs = 2;
   string provider = 3;
   string service = 4;
+  // Optional external ingress metadata for a named service record. When set,
+  // the router verifies that the provider's credential grants exposing this
+  // service with the requested auth_mode before storing or replicating it.
+  ServiceIngress ingress = 5;
 }
 
 // DirectoryWithdraw removes the sender's record under key, from the router
@@ -287,6 +318,8 @@ message DirectoryResponse {
 message PeerRecord {
   string peer_id = 1;
   repeated string addrs = 2;
+  // Present on service provider records that opted into external ingress.
+  ServiceIngress ingress = 3;
 }
 
 // RouterInfo is one router as the control plane lists it on /info.
@@ -307,6 +340,10 @@ message RouterInfo {
   // routers with the most room; connection_limit of zero means unknown.
   int32 connections = 4;
   int32 connection_limit = 5;
+  // Base HTTPS/HTTP URL where this router serves external ingress, without a
+  // trailing slash (e.g. "https://bananas.sam-mesh.dev/ingress"). Empty when
+  // external ingress is disabled on this router.
+  string ingress_url = 6;
 }
 
 message RouterLeaseRequest {
@@ -332,6 +369,8 @@ message RouterLeaseRequest {
   // inbound connections and the number it accepts.
   int32 connections = 9;
   int32 connection_limit = 10;
+  // Optional base URL where this router serves external HTTP ingress.
+  string ingress_url = 11;
 }
 
 message RouterLeaseResponse {
@@ -359,6 +398,20 @@ message PolicyRole {
   // An egress destination needs no entry: served_by grants it to the
   // nodes it selects.
   repeated string allowed_publish = 7;
+  // Inbound services a member with this role may expose on router HTTP
+  // ingress, together with the permitted IngressAuthModes. Empty denies all
+  // external ingress exposure for this role.
+  repeated IngressGrant allowed_ingress = 8;
+}
+
+// IngressGrant permits a role to expose matching inbound services on router
+// HTTP ingress under the listed authentication modes.
+message IngressGrant {
+  // Inbound service patterns ("a2a://*", "mcp://calc", "*"). Egress
+  // destinations ("egress://...") cannot be exposed as ingress.
+  repeated string services = 1;
+  // Permitted auth modes. Empty grants ONLY INGRESS_AUTH_MODE_EDGE.
+  repeated IngressAuthMode allowed_auth_modes = 2;
 }
 
 // HTTPGrant narrows one allowed_services entry to HTTP methods and paths.
@@ -767,6 +820,7 @@ message RouterLease {
   google.protobuf.Timestamp expire_time = 4;
   repeated string connected_peers = 5;
   int32 dht_size = 6;
+  string ingress_url = 7;
 }
 
 // NodeServices is the services one node last reported (see

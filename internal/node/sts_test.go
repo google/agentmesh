@@ -830,6 +830,30 @@ func TestInspectMCPHTTPRequestBody(t *testing.T) {
 	if err != nil || tool != "" || !allowInit {
 		t.Fatalf("initialize: got tool=%q allowInit=%v err=%v, want allowInit=true", tool, allowInit, err)
 	}
+
+	notifReq := httptest.NewRequest(http.MethodPost, "/mcp/github", strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}`))
+	tool, allowInit, err = inspectMCPHTTPRequestBody(notifReq)
+	if err != nil || tool != "" || !allowInit {
+		t.Fatalf("notifications/initialized: got tool=%q allowInit=%v err=%v, want allowInit=true", tool, allowInit, err)
+	}
+
+	discoverReq := httptest.NewRequest(http.MethodPost, "/mcp/github", strings.NewReader(`{"jsonrpc":"2.0","id":0,"method":"server/discover"}`))
+	tool, allowInit, err = inspectMCPHTTPRequestBody(discoverReq)
+	if err != nil || tool != "" || !allowInit {
+		t.Fatalf("server/discover: got tool=%q allowInit=%v err=%v, want allowInit=true", tool, allowInit, err)
+	}
+
+	sseReq := httptest.NewRequest(http.MethodGet, "/mcp/github", nil)
+	tool, allowInit, err = inspectMCPHTTPRequestBody(sseReq)
+	if err != nil || tool != "" || !allowInit {
+		t.Fatalf("GET SSE stream: got tool=%q allowInit=%v err=%v, want allowInit=true", tool, allowInit, err)
+	}
+
+	unknownReq := httptest.NewRequest(http.MethodPost, "/mcp/github", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"resources/read"}`))
+	tool, allowInit, err = inspectMCPHTTPRequestBody(unknownReq)
+	if err != nil || tool != "" || allowInit {
+		t.Fatalf("resources/read: got tool=%q allowInit=%v err=%v, want allowInit=false", tool, allowInit, err)
+	}
 }
 
 func TestCrossNodeBiscuitAndBannedPeerRejection(t *testing.T) {

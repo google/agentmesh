@@ -19,8 +19,17 @@ const (
 	SystemAuthenticated = "mesh:system:authenticated"
 )
 
+type IngressConfig struct {
+	// AuthMode is "edge" (default when empty) or "passthrough".
+	AuthMode string `yaml:"auth_mode,omitempty"`
+	// Allow optionally narrows which verified callers may invoke this service
+	// over edge ingress, using PolicyBinding.members syntax (e.g.
+	// "email:alice@example.com", "email:*@example.com", "group:eng").
+	Allow []string `yaml:"allow,omitempty"`
+}
+
 type ServiceConfig struct {
-	Type        string `yaml:"type"` // e.g., "mcp", "inference"
+	Type        string `yaml:"type"` // e.g., "mcp", "inference", "a2a"
 	Name        string `yaml:"name"`
 	Description string `yaml:"description"`
 	TargetURL   string `yaml:"target_url,omitempty"`
@@ -32,6 +41,7 @@ type ServiceConfig struct {
 	TargetAuthPath string            `yaml:"target_auth_path,omitempty"`
 	Command        []string          `yaml:"command,omitempty"`
 	Env            map[string]string `yaml:"env,omitempty"`
+	Ingress        *IngressConfig    `yaml:"ingress,omitempty"`
 }
 
 // NodeConfig defines the optional attenuation rules and static services for a specific Agent Mesh Node.
