@@ -28,7 +28,9 @@ fails a check, such as the target check, or an appended task block.
 
 A node publishes services, each with a type and a name: `mcp://calculator`,
 `inference://vllm-eu`, `a2a://triage`, `egress://bigquery.googleapis.com`, and
-the built-in `system://mesh.catalog` that answers discovery queries.
+the built-in `system://mesh.catalog`. A peer asks a node's catalog for the
+services that node hosts. The routers' directory, not the catalog, tells a
+caller who provides a name.
 
 Standing mesh roles grant access to services by name (`allowed_services`),
 grant the right to serve them (`allowed_publish`) and can narrow HTTP
@@ -68,9 +70,12 @@ from a file (`--policy-file`).
   service.
 - `allowed_publish`: the services holders may serve, in the same syntax.
   A member announces a service to the directory, and is accepted as its
-  provider by callers, only when its own credential grants it here. If
-  absent, holders may publish nothing. Calling and serving are granted
-  separately: a role that may call `mcp://calculator` does not serve it.
+  provider by callers, only when its own credential grants serving it. If
+  absent, holders may publish nothing but an egress destination whose
+  `served_by` selects them. Such a destination needs no entry here, because
+  the control plane grants `egress://<name>` to the nodes that `served_by`
+  selects. Calling and serving are granted separately: a role that may call
+  `mcp://calculator` does not serve it.
 - `allowed_targets`: the nodes holders may call, as facts about the
   destination node's identity: `node:<peer-id>`, `user:<sub>`,
   `email:<addr>`, `group:<name>`, `idp_role:<name>`, or `*`. If absent,
@@ -113,14 +118,20 @@ evaluate.
 ## From policy to facts
 
 At enrollment, refresh, and token exchange (`POST /token/exchange`), the
-control plane resolves the identity's roles from the bindings and writes the
-result into the credential's authority block as Datalog facts: one `role(...)`
-fact per role, plus the grants compiled from the lists of every role. For
-example, `allowed_services: ["mcp://calculator"]` becomes
+control plane writes the credential's authority block as Datalog facts: one
+`role(...)` fact per role, plus the grants compiled from the lists of those
+roles. For example, `allowed_services: ["mcp://calculator"]` becomes
 `granted_service_set("mcp", ["calculator"])`, `mcp://*` becomes
 `granted_service_all("mcp")`, and `mcp://*.internal` becomes
 `granted_service_suffix("mcp", ".internal")`. Wildcards keep their dot, so
 `*.acme.example` matches `svc.acme.example` but not `evil-acme.example`.
+
+The roles in the block depend on how the member enrolled. For an identity
+that the identity provider authenticates, the control plane resolves the
+roles from the bindings. For a member that enrolled with a bootstrap token,
+the authority block carries only the token's role. A role bound to
+`node:<peer-id>` or to `mesh:system:authenticated` reaches that member
+through the policy rules described next, not through its credential.
 
 The control plane also renders the policy as Datalog rules such as
 `role("developer") <- group("eng")` and
@@ -130,9 +141,9 @@ sooner when a policy update event reaches them) and add it to their
 authorizer as it arrives. When a node verifies a credential, these rules run
 against the identity facts in it. A grant added to the policy therefore
 reaches every node within the sync interval, with no need to reissue
-credentials. Removing a grant takes effect through the credential instead:
-the facts already in a token stay valid until the token is refreshed or
-expires.
+credentials. A removed grant stays in the tokens that already carry it,
+until each token is refreshed or expires. A grant that reaches a member only
+through these rules ends when each node next fetches the policy.
 
 ## What the hosting node checks
 
@@ -150,20 +161,23 @@ The node builds a Biscuit authorizer over Block 0 and adds, in this order:
    destination outside the mesh (`egress://`) it adds `host(...)` and
    `port(...)`.
 2. **The baseline checks**: `client_peer_id($id), connection_peer_id($id)`
-   (the token belongs to the peer that presents it), and the expiration
-   check against the current time.
+   (the token belongs to the peer that presents it), the expiration check
+   against the current time, and the target check
+   `allow_network_target($fact, $val) or target_unrestricted(true)`. The
+   node adds the target check after its local rules. The position of a
+   check does not change its result, because Biscuit runs every check after
+   it has applied all rules.
 3. **The node's own identity facts**, taken from its own credential, as
    `target_fact("group", "dev-nodes")` and similar. The caller's
    `allowed_targets` are matched against these facts.
 4. **The node's local rules**, from the `attenuation` block of its
-   configuration file: extra facts, extra checks, and `allow` and `deny`
-   policies.
+   configuration file: the `rules`, the `checks`, and the `allow` and
+   `deny` policies.
 5. **The baseline policies**: `allow if service($t,$n), granted_service_exact($t,$n)`
    and the equivalent policies for sets, prefixes, suffixes, per-type and
-   global wildcards, plus the target check
-   `allow_network_target(...) or target_unrestricted(true)`, and the rules
-   that turn an [HTTP grant](../../reference/policy/#http-grants) into a
-   service grant when the request's method and path match it.
+   global wildcards, and the rules that turn an
+   [HTTP grant](../../reference/policy/#http-grants) into a service grant
+   when the request's method and path match it.
 6. **The synced mesh policy rules** described above.
 
 Biscuit evaluates every `check` and requires all of them to pass. It then
@@ -178,7 +192,7 @@ block has **0 rules, 0 checks, and 1 `tar_block("<base64url-proto>")` fact**.
 After Stage 1 succeeds, the verifier evaluates the decoded
 `TaskAuthorizationRule` chain against the request:
 
-- The current time must be strictly before every block's `expire_time` (when
+- The current time must be at or before every block's `expire_time` (when
   set).
 - In **every** appended `TaskAuthorizationRule` block, at least one `TaskRule`
   must match the request's `service`, HTTP `method` and `path` (when
@@ -266,8 +280,11 @@ Labels are used in four places:
   to its `attenuation.checks`. Every caller's credential must then carry
   that label.
 - **A caller choosing providers** sends `X-Mesh-Required-Labels: region=eu`
-  on the node's `/v1` inference endpoints or on a proxied A2A request, or
-  passes `required_labels` to `call_remote_tool`. Before it sends any request
+  on a request to the node, or passes `required_labels` to
+  `call_remote_tool`. The node honours the header on `/v1/chat/completions`
+  and `/v1/completions`, on every `/mesh/<peer-id>/<type>/<name>/` request,
+  on `/egress/<destination>/` and on `CONNECT`. A node that serves the
+  request itself checks its own labels. Before it sends any request
   data, the calling node fetches the provider's credential through the
   mutual handshake, verifies it, and confirms that every label named is
   attested in it. When the request names the provider, the node refuses the

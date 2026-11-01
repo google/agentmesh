@@ -274,8 +274,8 @@ and evaluates it in host code alongside Block 0's Datalog policy. Within a
 single `TaskAuthorizationRule`, a request matches if it satisfies at least one
 `TaskRule` (an empty `rules` list denies everything). Across blocks `1..k`,
 semantics are strict intersection (logical AND): the request must satisfy
-Block 0 Datalog RBAC, arrive before every block's `expire_time`, and match at
-least one `TaskRule` in every appended block.
+Block 0 Datalog RBAC, arrive at or before every block's `expire_time`, and
+match at least one `TaskRule` in every appended block.
 
 #### Per-service-type PEP matching semantics
 

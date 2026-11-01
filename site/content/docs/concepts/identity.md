@@ -122,10 +122,12 @@ contains:
 | Facts from `custom_datalog` | Each fact written in a role's `custom_datalog`. A rule written there is not minted. The control plane ships it to the nodes with the policy. |
 | `right("relay")`, `target_unrestricted(true)` | The control plane mints them for `mesh:role:router` in place of grants. A router may relay, and no target check applies to it. |
 
-The node does not set any of these facts. Roles come from the bindings in
-the mesh policy, not from the identity provider: an issuer's `roles` claim
-is stored as `idp_role()`, which grants nothing by itself. Labels are the
-ones the node asked for and the policy allowed. Grants come from the policy.
+The node does not set any of these facts. For an OIDC enrollment, roles
+come from the bindings in the mesh policy, never from the identity provider.
+A bootstrap enrollment gets only the role of its bootstrap token. An
+issuer's `roles` claim is stored as `idp_role()`, which grants nothing by
+itself. Labels are the ones the node asked for and the policy allowed.
+Grants come from the policy.
 
 ### 2. Delegated Session Biscuit (`POST /token/exchange`, `/oauth/token`)
 

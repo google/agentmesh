@@ -283,16 +283,9 @@ const (
 	// between a root path "/" and an empty path "".
 	HeaderMeshNoTrailingSlash = "X-Mesh-No-Trailing-Slash"
 
-	// HeaderMeshRequiredLabels constrains an inference request on the sidecar's
-	// OpenAI-compatible endpoints (/v1/*) to providers attested with every
-	// pair of a comma-separated list of "key=value" label requirements (see
-	// api/labels.go and LabelCheck); invalid entries are rejected with HTTP
-	// 400. It can only narrow what mesh policy allows, never widen it. Absent
-	// means any provider permitted by policy.
-	//
-	// Reserved as part of the sidecar contract; enforced by the provider
-	// scorer. Label declarations are routing hints until attested via the
-	// node's Biscuit (see api/labels.go).
+	// HeaderMeshRequiredLabels lists "key=value" pairs the provider must carry.
+	// It only narrows what policy allows. The node honours it on /v1
+	// completions, /mesh/*, /egress/* and CONNECT, and strips it there.
 	HeaderMeshRequiredLabels = "X-Mesh-Required-Labels"
 
 	// HeaderMeshPrincipal, HeaderMeshRoles, HeaderMeshTask, and HeaderMeshTaskID carry
