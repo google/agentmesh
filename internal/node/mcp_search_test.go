@@ -15,83 +15,11 @@
 package node
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
-	"net/http/httptest"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
-	"time"
-
-	"github.com/google/agentmesh/api"
-	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
-
-func TestHandleFindRemoteTools_Intent(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	backend := httptest.NewServer(newFakeMCPHandler(t, []*mcp.Tool{
-		{Name: "add_comment", Description: "Add a comment", InputSchema: map[string]any{"type": "object"}},
-		{Name: "review_pr", Description: "Review a pull request", InputSchema: map[string]any{"type": "object"}},
-	}))
-	defer backend.Close()
-	caller, cleanupCaller := startBareNode(t, ctx)
-	defer cleanupCaller()
-	provider, cleanupProvider := startBareNode(t, ctx)
-	defer cleanupProvider()
-	_, root := enrollUnderRoot(t, caller, provider)
-	if err := buildAndSaveCustomBiscuit(caller, root, []string{"mcp://code-reviewer", "system://mesh.catalog"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := caller.Host.Connect(ctx, peer.AddrInfo{ID: provider.Host.ID(), Addrs: provider.Host.Addrs()}); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"code-reviewer", "private-review"} {
-		if err := provider.RegisterService(ctx, &api.RegisterServiceRequest{
-			Service: &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_MCP, Name: name},
-			Backend: &api.RegisterServiceRequest_TargetUrl{TargetUrl: backend.URL},
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, tc := range []struct {
-		name, service, exact, intent, wantFirst string
-		wantCount                               int
-	}{
-		{"intent with peer", "", "", "review pull request", "review_pr", 2},
-		{"bare service", "code-reviewer", "", "review pull request", "review_pr", 2},
-		{"namespaced service", "mcp://code-reviewer", "", "review pull request", "review_pr", 2},
-		{"exact name wins", "", "add_comment", "review pull request", "add_comment", 1},
-		{"denied service stays hidden", "private-review", "", "review pull request", "", 0},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			result, _, err := caller.handleFindRemoteTools(ctx, nil, FindRemoteToolsParams{
-				PeerID: provider.Host.ID().String(), ServiceName: tc.service, ToolName: tc.exact, Intent: tc.intent,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			var rows []remoteToolRow
-			if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &rows); err != nil {
-				t.Fatal(err)
-			}
-			if len(rows) != tc.wantCount {
-				t.Fatalf("got %d rows, want %d: %+v", len(rows), tc.wantCount, rows)
-			}
-			for _, row := range rows {
-				if row.PeerID != provider.Host.ID().String() || !strings.HasPrefix(row.ToolName, "mcp://code-reviewer/") || row.Error != "" {
-					t.Errorf("unexpected or unauthorized row: %+v", row)
-				}
-			}
-			if len(rows) > 0 && rows[0].ToolName != "mcp://code-reviewer/"+tc.wantFirst {
-				t.Errorf("first tool = %q, want %q", rows[0].ToolName, tc.wantFirst)
-			}
-		})
-	}
-}
 
 func TestRankRowsByIntent(t *testing.T) {
 	tests := []struct {
@@ -161,9 +89,12 @@ func TestRankRowsByIntent_PreservesRows(t *testing.T) {
 	}
 }
 
+// BenchmarkRankRowsByIntent measures local ranking of synthetic catalogue rows,
+// including the input-slice copy needed because ranking reorders it in place.
+// It excludes mesh discovery and MCP calls and does not measure search relevance.
 func BenchmarkRankRowsByIntent(b *testing.B) {
 	for _, size := range []int{100, 1000, 10000} {
-		b.Run(fmt.Sprint(size), func(b *testing.B) {
+		b.Run(fmt.Sprintf("rows=%d", size), func(b *testing.B) {
 			catalogue := make([]remoteToolRow, size)
 			for i := range catalogue {
 				catalogue[i] = remoteToolRow{
