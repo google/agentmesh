@@ -43,7 +43,7 @@ const (
 )
 
 type modelProvider struct {
-	peerID  string
+	peerID  peer.ID
 	service string
 }
 
@@ -93,7 +93,7 @@ func (f *inferenceFacade) handleModels(w http.ResponseWriter, r *http.Request) {
 	for id, providers := range view {
 		ownedBy := "mesh"
 		if len(providers) > 0 && providers[0].peerID != "" {
-			ownedBy = providers[0].peerID
+			ownedBy = providers[0].peerID.String()
 		}
 		data = append(data, openAIModel{ID: id, Object: "model", OwnedBy: ownedBy})
 	}
@@ -155,13 +155,10 @@ func (f *inferenceFacade) handleCompletions(w http.ResponseWriter, r *http.Reque
 	verifiedAny := false
 	for i := range maxAttempts {
 		p := ranked[i]
-		pid, err := peer.Decode(p.peerID)
-		if err != nil {
-			continue
-		}
-		if err := f.s.verifyProvider(r.Context(), pid, requiredLabels, api.ServiceTypeStringInference+"://"+p.service); err != nil {
+		peerStr := p.peerID.String()
+		if err := f.s.verifyProvider(r.Context(), p.peerID, requiredLabels, api.ServiceTypeStringInference+"://"+p.service); err != nil {
 			f.s.log().Warn("inference provider failed verification; trying next",
-				"peer_id", p.peerID,
+				"peer_id", peerStr,
 				"service", p.service,
 				"error", err,
 			)
@@ -169,7 +166,7 @@ func (f *inferenceFacade) handleCompletions(w http.ResponseWriter, r *http.Reque
 		}
 		verifiedAny = true
 
-		targetURL := fmt.Sprintf("http://agentmesh.local/mesh/%s/%s/%s%s", p.peerID, api.ServiceTypeStringInference, p.service, r.URL.Path)
+		targetURL := fmt.Sprintf("http://agentmesh.local/mesh/%s/%s/%s%s", peerStr, api.ServiceTypeStringInference, p.service, r.URL.Path)
 		if r.URL.RawQuery != "" {
 			targetURL += "?" + r.URL.RawQuery
 		}
@@ -185,14 +182,14 @@ func (f *inferenceFacade) handleCompletions(w http.ResponseWriter, r *http.Reque
 		resp, err := f.client.Do(outReq)
 		if err != nil {
 			f.recordBackoff(p)
-			f.s.log().Warn("inference request failed; trying next provider", "peer_id", p.peerID, "service", p.service, "error", err)
+			f.s.log().Warn("inference request failed; trying next provider", "peer_id", peerStr, "service", p.service, "error", err)
 			continue
 		}
 		if retryableStatus(resp.StatusCode) {
 			_ = resp.Body.Close()
 			f.recordBackoff(p)
 			f.s.log().Warn("inference provider returned retryable status; trying next",
-				"peer_id", p.peerID,
+				"peer_id", peerStr,
 				"service", p.service,
 				"status", resp.StatusCode,
 			)
@@ -283,8 +280,13 @@ func (f *inferenceFacade) collectModels(ctx context.Context) map[string][]modelP
 		sem = make(chan struct{}, remoteProbeConcurrency)
 	)
 	for _, p := range providers {
+		pid, err := peer.Decode(p.GetPeerId())
+		if err != nil {
+			f.s.log().Debug("skipping inference provider with invalid peer ID", "peer_id", p.GetPeerId(), "error", err)
+			continue
+		}
 		wg.Add(1)
-		go func(peerID, srvName string) {
+		go func(peerID peer.ID, srvName string) {
 			defer wg.Done()
 			select {
 			case sem <- struct{}{}:
@@ -294,7 +296,7 @@ func (f *inferenceFacade) collectModels(ctx context.Context) map[string][]modelP
 			}
 			ids, err := f.probeRemoteModels(ctx, peerID, srvName)
 			if err != nil {
-				f.s.log().Debug("remote model probe failed", "peer_id", peerID, "service", srvName, "error", err)
+				f.s.log().Debug("remote model probe failed", "peer_id", peerID.String(), "service", srvName, "error", err)
 				return
 			}
 			mu.Lock()
@@ -302,19 +304,15 @@ func (f *inferenceFacade) collectModels(ctx context.Context) map[string][]modelP
 				models[id] = append(models[id], modelProvider{peerID: peerID, service: srvName})
 			}
 			mu.Unlock()
-		}(p.GetPeerId(), p.GetSrvName())
+		}(pid, p.GetSrvName())
 	}
 	wg.Wait()
 	return models
 }
 
-func (f *inferenceFacade) probeRemoteModels(ctx context.Context, peerID, srvName string) ([]string, error) {
+func (f *inferenceFacade) probeRemoteModels(ctx context.Context, pid peer.ID, srvName string) ([]string, error) {
 	if f.s.host == nil {
 		return nil, errors.New("server not running")
-	}
-	pid, err := peer.Decode(peerID)
-	if err != nil {
-		return nil, err
 	}
 	biscuitBytes := f.s.currentBiscuit()
 	if len(biscuitBytes) == 0 {
@@ -342,7 +340,7 @@ func (f *inferenceFacade) probeRemoteModels(ctx context.Context, peerID, srvName
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("provider %s/%s returned status %d for /v1/models", peerID, srvName, resp.StatusCode)
+		return nil, fmt.Errorf("provider %s/%s returned status %d for /v1/models", pid.String(), srvName, resp.StatusCode)
 	}
 	var list struct {
 		Data []struct {
@@ -364,8 +362,7 @@ func (f *inferenceFacade) probeRemoteModels(ctx context.Context, peerID, srvName
 func (f *inferenceFacade) rankProviders(providers []modelProvider) []modelProvider {
 	var remotes []modelProvider
 	for _, p := range providers {
-		pid, err := peer.Decode(p.peerID)
-		if err != nil || f.s.isPeerBanned(pid) || f.inBackoff(p) {
+		if f.s.isPeerBanned(p.peerID) || f.inBackoff(p) {
 			continue
 		}
 		remotes = append(remotes, p)
@@ -381,7 +378,7 @@ func (f *inferenceFacade) rankProviders(providers []modelProvider) []modelProvid
 }
 
 func (f *inferenceFacade) inBackoff(p modelProvider) bool {
-	key := p.peerID + "|" + p.service
+	key := p.peerID.String() + "|" + p.service
 	f.backoffMu.Lock()
 	defer f.backoffMu.Unlock()
 	until, ok := f.backoff[key]
@@ -396,7 +393,7 @@ func (f *inferenceFacade) inBackoff(p modelProvider) bool {
 }
 
 func (f *inferenceFacade) recordBackoff(p modelProvider) {
-	key := p.peerID + "|" + p.service
+	key := p.peerID.String() + "|" + p.service
 	f.backoffMu.Lock()
 	if f.backoff == nil {
 		f.backoff = map[string]time.Time{}

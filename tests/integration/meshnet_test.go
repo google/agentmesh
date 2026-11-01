@@ -512,8 +512,11 @@ func TestMeshnetEndToEndIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("private GET ceiling-blocked: %v", err)
 	}
-	privBlockedBody, _ := io.ReadAll(privBlockedResp.Body)
+	privBlockedBody, err := io.ReadAll(privBlockedResp.Body)
 	_ = privBlockedResp.Body.Close()
+	if err != nil {
+		t.Fatalf("io.ReadAll(ceiling-blocked): %v", err)
+	}
 	if privBlockedResp.StatusCode != http.StatusOK || string(privBlockedBody) != "private-still-works" {
 		t.Fatalf("private ceiling-blocked = %d %q, want 200 private-still-works", privBlockedResp.StatusCode, privBlockedBody)
 	}
@@ -695,8 +698,11 @@ func TestMeshnetEndToEndIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /v1/models: %v", err)
 	}
-	modelsBody, _ := io.ReadAll(modelsResp.Body)
+	modelsBody, err := io.ReadAll(modelsResp.Body)
 	_ = modelsResp.Body.Close()
+	if err != nil {
+		t.Fatalf("io.ReadAll(/v1/models): %v", err)
+	}
 	if modelsResp.StatusCode != http.StatusOK || !strings.Contains(string(modelsBody), "mesh-qwen") {
 		t.Fatalf("GET /v1/models = %d %s, want mesh-qwen", modelsResp.StatusCode, modelsBody)
 	}
@@ -706,8 +712,11 @@ func TestMeshnetEndToEndIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /v1/chat/completions: %v", err)
 	}
-	chatBody, _ := io.ReadAll(chatResp.Body)
+	chatBody, err := io.ReadAll(chatResp.Body)
 	_ = chatResp.Body.Close()
+	if err != nil {
+		t.Fatalf("io.ReadAll(/v1/chat/completions): %v", err)
+	}
 	if chatResp.StatusCode != http.StatusOK || !strings.Contains(string(chatBody), "mesh-reply") {
 		t.Fatalf("POST /v1/chat/completions = %d %s, want mesh-reply", chatResp.StatusCode, chatBody)
 	}
@@ -717,22 +726,31 @@ func TestMeshnetEndToEndIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST streaming /v1/chat/completions: %v", err)
 	}
-	streamChatBody, _ := io.ReadAll(streamChatResp.Body)
+	streamChatBody, err := io.ReadAll(streamChatResp.Body)
 	_ = streamChatResp.Body.Close()
+	if err != nil {
+		t.Fatalf("io.ReadAll(streaming /v1/chat/completions): %v", err)
+	}
 	if streamChatResp.StatusCode != http.StatusOK || !strings.Contains(string(streamChatBody), "[DONE]") {
 		t.Fatalf("POST streaming /v1/chat/completions = %d %s, want SSE [DONE]", streamChatResp.StatusCode, streamChatBody)
 	}
 
-	badInfReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, localInf.URL+"/v1/chat/completions",
+	badInfReq, err := http.NewRequestWithContext(ctx, http.MethodPost, localInf.URL+"/v1/chat/completions",
 		strings.NewReader(`{"model":"mesh-qwen","messages":[{"role":"user","content":"ping"}]}`))
+	if err != nil {
+		t.Fatalf("NewRequestWithContext(badInf): %v", err)
+	}
 	badInfReq.Header.Set("Content-Type", "application/json")
 	badInfReq.Header.Set(api.HeaderMeshRequiredLabels, "tier=missing")
 	badInfResp, err := extHTTP.Do(badInfReq)
 	if err != nil {
 		t.Fatalf("POST /v1/chat/completions with unmet label: %v", err)
 	}
-	badInfBody, _ := io.ReadAll(badInfResp.Body)
+	badInfBody, err := io.ReadAll(badInfResp.Body)
 	_ = badInfResp.Body.Close()
+	if err != nil {
+		t.Fatalf("io.ReadAll(badInfResp): %v", err)
+	}
 	if badInfResp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("unmet required label on inference = %d %s, want 503", badInfResp.StatusCode, badInfBody)
 	}

@@ -226,9 +226,9 @@ version of this example. For inference, point any OpenAI SDK at
 `http://127.0.0.1:8080/v1` with the token as `api_key`, or at the socket with
 no key.
 
-Native SDKs that join the mesh from inside the agent process, without a
-`agentmesh-node` sidecar, are being built under `sdk/` in the repository; see
-`sdk/README.md` for their status.
+To join the mesh directly from inside an agent process without an
+`agentmesh-node` sidecar, see the [Embedded Go SDK (`sdk/meshnet`)](../go-sdk/)
+and the [Native SDKs for JavaScript and Python](../native-sdks/).
 
 ## Without a node: the MCP registry server
 

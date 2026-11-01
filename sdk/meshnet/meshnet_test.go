@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
+	"github.com/eclipse-biscuit/biscuit-go/v2"
 	"github.com/google/agentmesh/api"
 	"github.com/google/agentmesh/internal/identity"
 	"github.com/libp2p/go-libp2p"
@@ -337,8 +338,11 @@ func TestListenA2AWhoIsDiscoverAndHTTPClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET agent-card.json: %v", err)
 	}
-	cardBody, _ := io.ReadAll(cardResp.Body)
+	cardBody, err := io.ReadAll(cardResp.Body)
 	_ = cardResp.Body.Close()
+	if err != nil {
+		t.Fatalf("io.ReadAll(agent-card.json): %v", err)
+	}
 	if cardResp.StatusCode != http.StatusOK {
 		t.Fatalf("agent-card status = %d: %s", cardResp.StatusCode, cardBody)
 	}
@@ -354,7 +358,10 @@ func TestListenA2AWhoIsDiscoverAndHTTPClient(t *testing.T) {
 		t.Fatal("missing ETag header on regenerated AgentCard")
 	}
 
-	req304, _ := http.NewRequestWithContext(ctx, http.MethodGet, ep.PrivateURL.String()+"/.well-known/agent-card.json", nil)
+	req304, err := http.NewRequestWithContext(ctx, http.MethodGet, ep.PrivateURL.String()+"/.well-known/agent-card.json", nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext(304): %v", err)
+	}
 	req304.Header.Set("If-None-Match", etag)
 	resp304, err := hc.Do(req304)
 	if err != nil {
@@ -366,14 +373,20 @@ func TestListenA2AWhoIsDiscoverAndHTTPClient(t *testing.T) {
 	}
 
 	// 3. POST /invoke verifies WhoIs caller identity, defensive copy, and post-close cleanup.
-	invReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, ep.PrivateURL.String()+"/invoke", strings.NewReader(`{}`))
+	invReq, err := http.NewRequestWithContext(ctx, http.MethodPost, ep.PrivateURL.String()+"/invoke", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("NewRequestWithContext(invoke): %v", err)
+	}
 	invReq.Header.Set(api.HeaderMeshRequiredLabels, "env=prod")
 	invResp, err := hc.Do(invReq)
 	if err != nil {
 		t.Fatalf("POST /invoke: %v", err)
 	}
-	_, _ = io.ReadAll(invResp.Body)
+	_, readErr := io.ReadAll(invResp.Body)
 	_ = invResp.Body.Close()
+	if readErr != nil {
+		t.Fatalf("io.ReadAll(invoke): %v", readErr)
+	}
 	if invResp.StatusCode != http.StatusOK {
 		t.Fatalf("POST /invoke status = %d, want 200", invResp.StatusCode)
 	}
@@ -409,7 +422,10 @@ func TestListenA2AWhoIsDiscoverAndHTTPClient(t *testing.T) {
 	}
 
 	// 4. Required-label mismatch fails closed BEFORE sending request bytes.
-	badLabelReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, ep.PrivateURL.String()+"/invoke", strings.NewReader(`{}`))
+	badLabelReq, err := http.NewRequestWithContext(ctx, http.MethodPost, ep.PrivateURL.String()+"/invoke", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("NewRequestWithContext(badLabel): %v", err)
+	}
 	badLabelReq.Header.Set(api.HeaderMeshRequiredLabels, "env=staging")
 	badLabelResp, err := hc.Do(badLabelReq)
 	if err != nil {
@@ -475,6 +491,16 @@ func TestLocalMCPAndInferenceHandlers(t *testing.T) {
 		t.Fatalf("list_local_services failed: err=%v res=%+v", err, localRes)
 	}
 
+	// CIDv1 representation of self PeerID is canonicalized and rejected by find_remote_tools.
+	selfCIDv1 := peer.ToCid(mesh.caller.peerID).String()
+	selfToolRes, selfToolErr := sess.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "find_remote_tools",
+		Arguments: map[string]any{"peer_id": selfCIDv1},
+	})
+	if selfToolErr == nil && (selfToolRes == nil || !selfToolRes.IsError) {
+		t.Fatalf("find_remote_tools accepted CIDv1 self peer_id %q, want error", selfCIDv1)
+	}
+
 	// 2. Local InferenceHandler routes and validation.
 	infHTTP := httptest.NewServer(mesh.caller.InferenceHandler())
 	t.Cleanup(infHTTP.Close)
@@ -483,8 +509,11 @@ func TestLocalMCPAndInferenceHandlers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /v1/models: %v", err)
 	}
-	modelsBody, _ := io.ReadAll(modelsResp.Body)
+	modelsBody, err := io.ReadAll(modelsResp.Body)
 	_ = modelsResp.Body.Close()
+	if err != nil {
+		t.Fatalf("io.ReadAll(/v1/models): %v", err)
+	}
 	if modelsResp.StatusCode != http.StatusOK || !strings.Contains(string(modelsBody), `"object":"list"`) {
 		t.Fatalf("GET /v1/models = %d: %s", modelsResp.StatusCode, modelsBody)
 	}
@@ -523,6 +552,91 @@ func TestLocalMCPAndInferenceHandlers(t *testing.T) {
 	_ = respUnknownModel.Body.Close()
 	if respUnknownModel.StatusCode != http.StatusNotFound {
 		t.Errorf("POST /v1/chat/completions with unknown model = %d, want 404", respUnknownModel.StatusCode)
+	}
+}
+
+func TestExternalIngressCanonicalizesActorNodePeerID(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	env := newStartedTestServer(t, ctx)
+	s := env.server
+
+	ep, err := s.ListenA2A(ctx, A2AOptions{
+		Name:        "coder",
+		Public:      true,
+		IngressAuth: api.IngressAuthMode_INGRESS_AUTH_MODE_EDGE,
+		NoAnnounce:  true,
+	})
+	if err != nil {
+		t.Fatalf("ListenA2A: %v", err)
+	}
+	t.Cleanup(func() { _ = ep.Close() })
+
+	var gotPeerID string
+	var mu sync.Mutex
+	pubSrv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if info, ok := s.WhoIs(r.RemoteAddr); ok && info != nil {
+				mu.Lock()
+				gotPeerID = info.PeerID
+				mu.Unlock()
+			}
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+	go func() { _ = pubSrv.Serve(ep.PublicListener) }()
+	t.Cleanup(func() { _ = pubSrv.Close() })
+
+	actorHost, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = actorHost.Close() })
+	cidv1Actor := peer.ToCid(actorHost.ID()).String()
+	if cidv1Actor == actorHost.ID().String() {
+		t.Fatalf("peer.ToCid(%s) produced identical string", actorHost.ID())
+	}
+
+	routerBiscuit := mintTestBiscuit(t, env.cpPriv, env.routerHost.ID().String(), api.RoleRouter, time.Now().Add(time.Hour))
+
+	b := biscuit.NewBuilder(env.cpPriv)
+	for _, f := range []biscuit.Fact{
+		{Predicate: biscuit.Predicate{Name: api.FactActorNode, IDs: []biscuit.Term{biscuit.String(cidv1Actor)}}},
+		{Predicate: biscuit.Predicate{Name: api.FactRole, IDs: []biscuit.Term{biscuit.String(api.RoleNode)}}},
+		{Predicate: biscuit.Predicate{Name: api.FactEmail, IDs: []biscuit.Term{biscuit.String("carol@example.com")}}},
+		{Predicate: biscuit.Predicate{Name: api.FactExpiration, IDs: []biscuit.Term{biscuit.Date(time.Now().Add(time.Hour))}}},
+		api.MarkerFact(api.FactTargetUnrestricted),
+	} {
+		if err := b.AddAuthorityFact(f); err != nil {
+			t.Fatalf("AddAuthorityFact: %v", err)
+		}
+	}
+	built, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	callerBytes, err := built.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "http://mesh/a2a/coder/invoke", strings.NewReader(`{}`))
+	req.RemoteAddr = env.routerHost.ID().String()
+	req.Header.Set(api.HeaderMeshBiscuit, base64.RawURLEncoding.EncodeToString(routerBiscuit))
+	req.Header.Set(api.HeaderMeshIngress, api.IngressAuthModeStringEdge)
+	req.Header.Set(api.HeaderMeshIngressCallerBiscuit, base64.RawURLEncoding.EncodeToString(callerBytes))
+
+	rec := httptest.NewRecorder()
+	s.externalIngressHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("externalIngressHandler status = %d (%s), want 200", rec.Code, rec.Body.String())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if gotPeerID != actorHost.ID().String() {
+		t.Fatalf("WhoIs PeerID = %q, want canonical %q (from CIDv1 %q)", gotPeerID, actorHost.ID().String(), cidv1Actor)
 	}
 }
 

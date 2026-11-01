@@ -297,7 +297,9 @@ func (s *Server) ListenA2A(ctx context.Context, opts A2AOptions) (*Endpoints, er
 	if !opts.NoAnnounce {
 		s.announceA2AEntry(ctx, entry)
 		peerCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		_ = s.dir.provide(peerCtx, api.PeerKey(s.peerID), "")
+		if err := s.dir.provide(peerCtx, api.PeerKey(s.peerID), ""); err != nil && ctx.Err() == nil && !errors.Is(err, errNoDirectoryRouter) {
+			s.log().Debug("peer directory announcement failed during ListenA2A", "error", err)
+		}
 		cancel()
 	} else if opts.Public {
 		entry.setPublicState(true, s.computePublicURL(name))
@@ -407,11 +409,15 @@ func (s *Server) unregisterA2A(name string, entry *a2aEntry) {
 		wCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if nameKey, err := api.ServiceKey(api.ServiceType_SERVICE_TYPE_A2A, name); err == nil {
-			_ = s.dir.withdraw(wCtx, nameKey)
+			if wErr := s.dir.withdraw(wCtx, nameKey); wErr != nil && !errors.Is(wErr, errNoDirectoryRouter) {
+				s.log().Debug("failed withdrawing A2A service key", "service", name, "error", wErr)
+			}
 		}
 		if !stillHasA2A {
 			if typeKey, err := api.ServiceKey(api.ServiceType_SERVICE_TYPE_A2A, ""); err == nil {
-				_ = s.dir.withdraw(wCtx, typeKey)
+				if wErr := s.dir.withdraw(wCtx, typeKey); wErr != nil && !errors.Is(wErr, errNoDirectoryRouter) {
+					s.log().Debug("failed withdrawing A2A service type key", "error", wErr)
+				}
 			}
 		}
 	}
@@ -855,14 +861,19 @@ func (s *Server) externalIngressHandler() http.Handler {
 			"path", backendPath,
 		)
 
+		actorPeerID := remotePeer.String()
+		if callerRes.ActorNodeID != "" {
+			if id, err := peer.Decode(callerRes.ActorNodeID); err == nil {
+				actorPeerID = id.String()
+			} else {
+				s.log().Debug("ignoring invalid actor_node in external ingress biscuit", "actor_node", callerRes.ActorNodeID, "error", err)
+			}
+		}
 		caller := &CallerInfo{
-			PeerID:    callerRes.ActorNodeID,
+			PeerID:    actorPeerID,
 			Principal: callerRes.Principal,
 			Roles:     slices.Clone(callerRes.Roles),
 			Task:      callerRes.TaskName,
-		}
-		if caller.PeerID == "" {
-			caller.PeerID = remotePeer.String()
 		}
 		rewriteInboundRequestPath(r, parts, upstreamPath)
 		s.deliverHTTP(w, r, entry.publicLn, caller, relativizeAgentCardResponse(entry.name, roots))

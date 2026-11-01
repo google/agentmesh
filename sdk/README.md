@@ -21,16 +21,25 @@ tracing between the agent and the network layer. An earlier attempt at a
 Python package (`sam-mcp-python`) only wrapped the sidecar's HTTP API and was
 removed in favour of this work.
 
-Both SDKs speak the mesh protocol directly. There is no SDK-specific
+All three SDKs speak the mesh protocol directly. There is no SDK-specific
 endpoint anywhere in the mesh; a member built with an SDK is, to every other
-member and to the control plane, a peer like a `agentmesh-node`.
+member and to the control plane, a peer like an `agentmesh-node`.
 
-An SDK member is an agent, not a service provider. It calls what the mesh
-offers: MCP tools, inference and A2A services that `agentmesh-node`s publish and
+The Go SDK (`sdk/meshnet`) embeds a full Go member runtime (`tailscale.com/tsnet`
+style): `Server.ListenA2A` announces `a2a://<name>` (and optional external HTTP
+ingress) to the router directory unless `NoAnnounce: true`, answers
+`system://mesh.catalog`, and exposes `WhoIs`, `HTTPClient()`, `Discover()`,
+`AttenuateToken()`, `MCPHandler()`, and `InferenceHandler()` in-process; see
+[`sdk/meshnet/README.md`](meshnet/README.md).
+
+In JavaScript (`sdk/js`) and Python (`sdk/python`), an SDK member is an agent,
+not a service provider. It calls what the mesh
+offers: MCP tools, inference and A2A services that `agentmesh-node`s (or
+`sdk/meshnet` Go servers) publish and
 the discovery table names. Inbound, it accepts one thing: A2A requests for
 itself, as `a2a://<name>`, reached by peer ID through a router. It publishes
 no service, writes no directory record and reports no catalog; a tool, a
-model or a named agent that others should find by name runs behind a
+model or a named agent in JS/Python that others should find by name runs behind an
 `agentmesh-node`. The reasons are in [Agents, not services](#agents-not-services).
 
 ## What exists today

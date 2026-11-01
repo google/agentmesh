@@ -394,7 +394,7 @@ func newFakeControlPlaneHTTPWithKeys(t *testing.T, pub ed25519.PublicKey, priv e
 		writeProto(w, &api.ControlPlaneInfoResponse{RouterAddresses: addrs})
 	})
 	mux.HandleFunc("/policies", func(w http.ResponseWriter, _ *http.Request) {
-		compiled, _ := api.BuildPolicyRules([]*api.PolicyRole{
+		compiled, warnings := api.BuildPolicyRules([]*api.PolicyRole{
 			{
 				Name:            api.RoleNode,
 				AllowedTargets:  []string{"*"},
@@ -402,6 +402,10 @@ func newFakeControlPlaneHTTPWithKeys(t *testing.T, pub ed25519.PublicKey, priv e
 				AllowedPublish:  []string{"*"},
 			},
 		}, nil)
+		if len(warnings) > 0 {
+			http.Error(w, strings.Join(warnings, "; "), http.StatusInternalServerError)
+			return
+		}
 		texts := make([]string, 0, len(compiled))
 		for _, r := range compiled {
 			texts = append(texts, r.Text)
@@ -428,12 +432,17 @@ func newFakeControlPlaneHTTPWithKeys(t *testing.T, pub ed25519.PublicKey, priv e
 			})
 			return
 		}
+		pid, err := peer.Decode(req.GetPeerId())
+		if err != nil {
+			http.Error(w, "invalid peer_id", http.StatusBadRequest)
+			return
+		}
 		pubKey, privKey := f.currentKeys()
 		f.mu.Lock()
 		addrs := append([]string(nil), f.routerAddrs...)
 		f.mu.Unlock()
 		exp := time.Now().Add(time.Hour)
-		tok := mintTestBiscuit(t, privKey, req.GetPeerId(), api.RoleNode, exp)
+		tok := mintTestBiscuit(t, privKey, pid.String(), api.RoleNode, exp)
 		writeProto(w, &api.BootstrapEnrollResponse{
 			Status:                api.EnrollmentStatus_ENROLLMENT_STATUS_APPROVED,
 			BiscuitToken:          tok,
@@ -443,9 +452,10 @@ func newFakeControlPlaneHTTPWithKeys(t *testing.T, pub ed25519.PublicKey, priv e
 		})
 	})
 	mux.HandleFunc("/enroll/status", func(w http.ResponseWriter, r *http.Request) {
-		peerID := r.URL.Query().Get("peer_id")
-		if peerID == "" {
-			http.Error(w, "missing peer_id", http.StatusBadRequest)
+		rawPeerID := r.URL.Query().Get("peer_id")
+		pid, err := peer.Decode(rawPeerID)
+		if err != nil {
+			http.Error(w, "invalid peer_id", http.StatusBadRequest)
 			return
 		}
 		if f.pendingBootstrapPolls.Add(-1) >= 1 {
@@ -460,7 +470,7 @@ func newFakeControlPlaneHTTPWithKeys(t *testing.T, pub ed25519.PublicKey, priv e
 		addrs := append([]string(nil), f.routerAddrs...)
 		f.mu.Unlock()
 		exp := time.Now().Add(time.Hour)
-		tok := mintTestBiscuit(t, privKey, peerID, api.RoleNode, exp)
+		tok := mintTestBiscuit(t, privKey, pid.String(), api.RoleNode, exp)
 		writeProto(w, &api.BootstrapEnrollResponse{
 			Status:                api.EnrollmentStatus_ENROLLMENT_STATUS_APPROVED,
 			BiscuitToken:          tok,
@@ -474,12 +484,17 @@ func newFakeControlPlaneHTTPWithKeys(t *testing.T, pub ed25519.PublicKey, priv e
 		if !readProto(w, r, &req) {
 			return
 		}
+		pid, err := peer.Decode(req.GetPeerId())
+		if err != nil {
+			http.Error(w, "invalid peer_id", http.StatusBadRequest)
+			return
+		}
 		pubKey, privKey := f.currentKeys()
 		f.mu.Lock()
 		addrs := append([]string(nil), f.routerAddrs...)
 		f.mu.Unlock()
 		exp := time.Now().Add(time.Hour)
-		tok := mintTestBiscuit(t, privKey, req.GetPeerId(), api.RoleNode, exp)
+		tok := mintTestBiscuit(t, privKey, pid.String(), api.RoleNode, exp)
 		writeProto(w, &api.EnrollResponse{
 			BiscuitToken:          tok,
 			ControlPlanePublicKey: pubKey,
@@ -495,6 +510,11 @@ func newFakeControlPlaneHTTPWithKeys(t *testing.T, pub ed25519.PublicKey, priv e
 		f.refreshes.Add(1)
 		var req api.TokenRefreshRequest
 		if !readProto(w, r, &req) {
+			return
+		}
+		pid, err := peer.Decode(req.GetPeerId())
+		if err != nil {
+			http.Error(w, "invalid peer_id", http.StatusBadRequest)
 			return
 		}
 		rawAuth := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -514,7 +534,7 @@ func newFakeControlPlaneHTTPWithKeys(t *testing.T, pub ed25519.PublicKey, priv e
 			return
 		}
 		exp := time.Now().Add(2 * time.Hour)
-		tok := mintTestBiscuit(t, privKey, req.GetPeerId(), api.RoleNode, exp)
+		tok := mintTestBiscuit(t, privKey, pid.String(), api.RoleNode, exp)
 		writeProto(w, &api.TokenRefreshResponse{
 			BiscuitToken: tok,
 			ExpireTime:   timestamppb.New(exp),
