@@ -83,7 +83,10 @@ func ParseIngressAuthMode(s string) (IngressAuthMode, error) {
 }
 
 // ServiceIngressFromConfig converts a YAML IngressConfig into a validated
-// protobuf ServiceIngress message.
+// protobuf ServiceIngress message. This is the boundary where operator text
+// enters the mesh, so a "node:<peer_id>" allow entry is rewritten to the
+// canonical peer ID string here: the record a router stores and replicates
+// never carries the form the operator happened to type.
 func ServiceIngressFromConfig(svcType ServiceType, cfg *IngressConfig) (*ServiceIngress, error) {
 	if cfg == nil {
 		return nil, nil
@@ -98,6 +101,14 @@ func ServiceIngressFromConfig(svcType ServiceType, cfg *IngressConfig) (*Service
 	}
 	if err := ValidateServiceIngress(svcType, ing); err != nil {
 		return nil, err
+	}
+	for i, member := range ing.Allow {
+		if prefix, val, ok := strings.Cut(member, ":"); ok && prefix == FactNode {
+			// Validated above, so Decode cannot fail here.
+			if id, err := peer.Decode(val); err == nil {
+				ing.Allow[i] = FactNode + ":" + id.String()
+			}
+		}
 	}
 	return ing, nil
 }

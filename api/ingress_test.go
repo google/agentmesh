@@ -17,6 +17,7 @@ package api
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"slices"
 	"testing"
 
 	"github.com/eclipse-biscuit/biscuit-go/v2"
@@ -129,6 +130,24 @@ func TestServiceIngressFromConfig(t *testing.T) {
 
 	if _, err := ServiceIngressFromConfig(ServiceType_SERVICE_TYPE_A2A, &IngressConfig{AuthMode: "bogus"}); err == nil {
 		t.Fatal("expected error for invalid auth_mode")
+	}
+
+	// A node: entry is stored in canonical form whatever the operator typed:
+	// the CIDv1 spelling of a peer ID decodes to the same ID as its base58
+	// spelling, and the record carries the latter.
+	id := testPeerID(t)
+	cidForm := peer.ToCid(id).String()
+	if cidForm == id.String() {
+		t.Fatalf("test needs a non-canonical spelling; ToCid gave %q", cidForm)
+	}
+	got, err = ServiceIngressFromConfig(ServiceType_SERVICE_TYPE_A2A, &IngressConfig{
+		Allow: []string{"node:" + cidForm, "email:alice@example.com"},
+	})
+	if err != nil {
+		t.Fatalf("ServiceIngressFromConfig with CID peer ID: %v", err)
+	}
+	if want := []string{"node:" + id.String(), "email:alice@example.com"}; !slices.Equal(got.Allow, want) {
+		t.Fatalf("Allow = %v, want canonical %v", got.Allow, want)
 	}
 }
 
