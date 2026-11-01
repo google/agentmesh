@@ -293,7 +293,7 @@ func (n *AgentMeshNode) banPeer(p peer.ID, bannedAtMs int64) {
 	if n.revokedPeers != nil {
 		n.revokedPeers.Add(p.String(), bannedAtMs)
 	}
-	n.authPeers.Delete(p)
+	n.forgetAdmission(p)
 	if n.Host != nil {
 		_ = n.Host.Network().ClosePeer(p)
 	}

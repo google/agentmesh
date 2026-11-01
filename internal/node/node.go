@@ -131,13 +131,43 @@ func (a *nodeRelayACL) AllowConnect(src peer.ID, srcAddr multiaddr.Multiaddr, de
 // has not lapsed since. The handshake only proves the token was valid at that
 // instant, so without this the relay ACL would honour an admission forever.
 func (n *AgentMeshNode) isAdmitted(p peer.ID) bool {
-	v, ok := n.authPeers.Load(p)
+	return admissionHolds(&n.authPeers, p)
+}
+
+// isAdmittedRouter reports whether a peer completed the auth handshake with a
+// credential carrying role("mesh:role:router") and that admission holds. It
+// requires isAdmitted too, so dropping a peer from authPeers (a ban, an
+// eviction) withdraws its router standing with it.
+func (n *AgentMeshNode) isAdmittedRouter(p peer.ID) bool {
+	return n.isAdmitted(p) && admissionHolds(&n.authRouters, p)
+}
+
+// admitPeer records a completed handshake: every admitted peer in authPeers,
+// and a router additionally in authRouters. A peer re-admitted without the
+// role loses it.
+func (n *AgentMeshNode) admitPeer(p peer.ID, expiry time.Time, router bool) {
+	n.authPeers.Store(p, expiry)
+	if router {
+		n.authRouters.Store(p, expiry)
+	} else {
+		n.authRouters.Delete(p)
+	}
+}
+
+// forgetAdmission drops every record of p's handshake.
+func (n *AgentMeshNode) forgetAdmission(p peer.ID) {
+	n.authPeers.Delete(p)
+	n.authRouters.Delete(p)
+}
+
+func admissionHolds(m *sync.Map, p peer.ID) bool {
+	v, ok := m.Load(p)
 	if !ok {
 		return false
 	}
 	expiry, ok := v.(time.Time)
 	if !ok || !time.Now().Before(expiry) {
-		n.authPeers.Delete(p)
+		m.Delete(p)
 		return false
 	}
 	return true
@@ -183,12 +213,17 @@ type AgentMeshNode struct {
 	delegatedBiscuitCache *lru.Cache[string, *api.TokenExchangeResponse]
 	stsTokenCache         *lru.Cache[string, *api.STSTokenResponse]
 	peerLabelGate         *lru.Cache[string, time.Time]
-	authPeers             sync.Map
-	trustedKeys           []TrustedKey
-	keysMu                sync.RWMutex
-	MeshPolicyRules       []biscuit.Rule
-	meshPolicyTexts       []string
-	MeshPolicyMu          sync.RWMutex
+	// authPeers is every peer that completed the handshake with this node,
+	// keyed by peer.ID, with the instant its admission lapses. authRouters
+	// holds the subset whose credential carried mesh:role:router, with the
+	// same instant, for the protocols only a router may open (routerHost).
+	authPeers       sync.Map
+	authRouters     sync.Map
+	trustedKeys     []TrustedKey
+	keysMu          sync.RWMutex
+	MeshPolicyRules []biscuit.Rule
+	meshPolicyTexts []string
+	MeshPolicyMu    sync.RWMutex
 	// pendingEgress holds assignments that arrived before Start created the
 	// service registry (SyncControlPlane runs first); Start applies them.
 	pendingEgress   []*api.EgressDestination
@@ -2073,15 +2108,24 @@ func (n *AgentMeshNode) HandleAuthHandshake(s network.Stream) {
 	}
 
 	// One verifier call enforces signature, expiry and the authority-block peer
-	// binding, and reports when the admission lapses.
-	expiry, err := identity.VerifyBiscuitAndGetExpiry(exchange.Biscuit, remotePeer, n.getTrustedPublicKeys(), n.BiscuitTimeout)
+	// binding, and reports when the admission lapses, together with the key
+	// that verified so the role can be read under that same key.
+	b, verifyingKey, expiry, err := identity.VerifyBiscuitAdmission(exchange.Biscuit, remotePeer, n.getTrustedPublicKeys(), n.BiscuitTimeout)
 	if err != nil {
 		logger.Warnf("[AuthN] Authorization failed for %s: %v", remotePeer, err)
 		return
 	}
 
-	n.authPeers.Store(remotePeer, expiry)
-	logger.Infof("[AuthN] Successfully authenticated peer %s", remotePeer)
+	// A router that connects to this node (to forward external ingress, for
+	// one) is admitted like any peer, and additionally remembered as a router
+	// so routerHost protocols can serve it and refuse everyone else.
+	isRouter := identity.RequireRole(b, verifyingKey, api.RoleRouter, n.BiscuitTimeout) == nil
+	n.admitPeer(remotePeer, expiry, isRouter)
+	if isRouter {
+		logger.Infof("[AuthN] Successfully authenticated peer %s as router", remotePeer)
+	} else {
+		logger.Infof("[AuthN] Successfully authenticated peer %s", remotePeer)
+	}
 
 	// Mutual response with our identity, mirroring the router handler, so
 	// peers can verify this node's attested facts (e.g. region).

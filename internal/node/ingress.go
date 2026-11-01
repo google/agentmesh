@@ -112,9 +112,12 @@ func (n *AgentMeshNode) logIngressURLs(info *api.ServiceInfo) {
 
 // StartExternalIngressServer starts the HTTP-over-libp2p server on
 // api.IngressProtocolID (/mesh/ingress/1.0.0) that receives external HTTP
-// requests forwarded by enrolled routers.
+// requests forwarded by enrolled routers. The listener is built on routerHost,
+// so a stream from any peer that did not authenticate as a router is reset at
+// the gate before the HTTP server reads it; the handler's X-Mesh-Biscuit check
+// below is the second, independent layer.
 func (n *AgentMeshNode) StartExternalIngressServer(ctx context.Context) error {
-	gated := &meshHost{Host: n.Host, n: n}
+	gated := &routerHost{meshHost{Host: n.Host, n: n}}
 	listener, err := gostream.Listen(gated, api.IngressProtocolID)
 	if err != nil {
 		return err

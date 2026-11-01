@@ -150,7 +150,11 @@ to announcing the service internally so mesh peers can still reach it.
    node. Once admitted, both the router and the serving node (defense in depth
    over `/mesh/ingress/1.0.0`) enforce the full intersection of mesh Datalog
    RBAC, `TaskAuthorizationRule`, `ServiceIngress.allow`, and local
-   `agentmesh-node.yaml` `attenuation`.
+   `agentmesh-node.yaml` `attenuation`. The node serves `/mesh/ingress/1.0.0`
+   only to a peer that authenticated as `mesh:role:router`: a stream from any
+   other peer, authenticated or not, is reset at the libp2p gate before the
+   HTTP server reads it and counted in
+   `agentmesh_node_streams_refused_total{scope="not_router"}`.
 4. The external `Authorization` header is stripped before reaching the local
    backend (replaced only if `target_auth_path` is configured on the node).
 5. For `a2a` services, unauthenticated `GET` requests to the service root or
