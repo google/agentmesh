@@ -359,15 +359,17 @@ func TestLabelGateTellsUnreachableFromDenied(t *testing.T) {
 // authorizerFactLimitRules are mesh policy rules that derive more facts
 // from role(node) than the authorizer admits, so any check that adds them
 // stops at datalog.ErrWorldRunLimitMaxFacts before it reaches a verdict.
-func authorizerFactLimitRules(t *testing.T) []biscuit.Rule {
-	t.Helper()
-	texts := make([]string, 0, 1100)
+// Each is limit_fact_<i>(true) <- role("mesh:role:node"), built directly:
+// the parser builds a new grammar for every rule, which for 1100 rules
+// takes most of a test's deadline under the race detector.
+func authorizerFactLimitRules() []biscuit.Rule {
+	role := biscuit.Predicate{Name: "role", IDs: []biscuit.Term{biscuit.String(api.RoleNode)}}
+	rules := make([]biscuit.Rule, 0, 1100)
 	for i := range 1100 {
-		texts = append(texts, fmt.Sprintf("limit_fact_%d(true) <- role(%q)", i, api.RoleNode))
-	}
-	rules, err := api.ParseDatalogRules(texts)
-	if err != nil {
-		t.Fatalf("ParseDatalogRules: %v", err)
+		rules = append(rules, biscuit.Rule{
+			Head: biscuit.Predicate{Name: fmt.Sprintf("limit_fact_%d", i), IDs: []biscuit.Term{biscuit.Bool(true)}},
+			Body: []biscuit.Predicate{role},
+		})
 	}
 	return rules
 }
@@ -398,7 +400,7 @@ func TestLabelGateTellsAuthorizerLimitFromDenied(t *testing.T) {
 		t.Errorf("timeout: got %d %q, want 504", status, text)
 	}
 
-	full := &AgentMeshNode{trustedKeys: trusted, BiscuitTimeout: 500 * time.Millisecond, MeshPolicyRules: authorizerFactLimitRules(t)}
+	full := &AgentMeshNode{trustedKeys: trusted, BiscuitTimeout: 500 * time.Millisecond, MeshPolicyRules: authorizerFactLimitRules()}
 	err = full.checkProvider(granted, providerPeer, nil, "mcp://calc")
 	if !errors.Is(err, datalog.ErrWorldRunLimitMaxFacts) || errors.Is(err, ErrProviderNotGranted) {
 		t.Fatalf("checkProvider over the facts limit = %v, want an error wrapping %v and not %v", err, datalog.ErrWorldRunLimitMaxFacts, ErrProviderNotGranted)
