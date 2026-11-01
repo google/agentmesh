@@ -658,7 +658,7 @@ func TestCallMCPTool_ProviderNotGrantedIsNotRetried(t *testing.T) {
 	// grant, and it is not retried either: the same credential and policy
 	// reach the limit again.
 	nodeA.MeshPolicyMu.Lock()
-	nodeA.MeshPolicyRules = authorizerFactLimitRules(t)
+	nodeA.MeshPolicyRules = authorizerFactLimitRules()
 	nodeA.MeshPolicyMu.Unlock()
 	_, err = nodeA.CallMCPTool(ctx, nodeB.Host.ID(), "mcp://code-reviewer/review_pr", map[string]any{}, nil)
 	if !errors.Is(err, datalog.ErrWorldRunLimitMaxFacts) || errors.Is(err, ErrProviderNotGranted) {
