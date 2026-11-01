@@ -387,8 +387,6 @@ type fakeControlPlaneHTTP struct {
 	routerAddrs           []string
 	routers               []*api.RouterInfo
 	extraDatalogRules     []string
-	nextCredentialTTL     time.Duration
-	refreshCallTimes      []time.Time
 	srv                   *httptest.Server
 	failKeys              atomic.Bool
 	failRefresh           atomic.Bool
@@ -556,9 +554,6 @@ func newFakeControlPlaneHTTPWithKeys(t *testing.T, pub ed25519.PublicKey, priv e
 		})
 	})
 	mux.HandleFunc("/refresh", func(w http.ResponseWriter, r *http.Request) {
-		f.mu.Lock()
-		f.refreshCallTimes = append(f.refreshCallTimes, time.Now())
-		f.mu.Unlock()
 		if f.failRefresh.Load() {
 			http.Error(w, "refresh disabled", http.StatusUnauthorized)
 			return
@@ -635,25 +630,7 @@ func newFakeControlPlaneHTTPWithKeys(t *testing.T, pub ed25519.PublicKey, priv e
 }
 
 func (f *fakeControlPlaneHTTP) credentialExpiry() time.Time {
-	f.mu.Lock()
-	ttl := f.nextCredentialTTL
-	f.mu.Unlock()
-	if ttl > 0 {
-		return time.Now().Add(ttl)
-	}
 	return time.Now().Add(time.Hour)
-}
-
-func (f *fakeControlPlaneHTTP) setNextCredentialTTL(ttl time.Duration) {
-	f.mu.Lock()
-	f.nextCredentialTTL = ttl
-	f.mu.Unlock()
-}
-
-func (f *fakeControlPlaneHTTP) snapshotRefreshTimes() []time.Time {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]time.Time(nil), f.refreshCallTimes...)
 }
 
 func (f *fakeControlPlaneHTTP) currentKeys() (ed25519.PublicKey, ed25519.PrivateKey) {
