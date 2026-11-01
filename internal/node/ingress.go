@@ -16,14 +16,12 @@ package node
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"slices"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/eclipse-biscuit/biscuit-go/v2"
 	"github.com/google/agentmesh/api"
 	"github.com/google/agentmesh/internal/identity"
 	gostream "github.com/libp2p/go-libp2p-gostream"
@@ -444,42 +442,23 @@ func (n *AgentMeshNode) externalIngressHandler() http.Handler {
 }
 
 func (n *AgentMeshNode) buildExternalIngressEvalParams(serviceType, serviceName, method, path string, allow []string) (identity.IngressEvalParams, error) {
-	var targetFacts []biscuit.Fact
-	enforceTarget := false
-	if ourIdentity := n.GetIdentity(); len(ourIdentity) > 0 {
-		ourB, err := biscuit.Unmarshal(ourIdentity)
-		if err != nil {
-			return identity.IngressEvalParams{}, fmt.Errorf("failed to unmarshal node identity: %w", err)
-		}
-		tf, err := identity.TargetFactsFromBiscuit(ourB, n.trustedPublicKeys(), n.BiscuitTimeout)
-		if err != nil {
-			return identity.IngressEvalParams{}, fmt.Errorf("failed to extract node target facts: %w", err)
-		}
-		targetFacts = tf
-		enforceTarget = true
+	pol, err := n.meshPolicy()
+	if err != nil {
+		return identity.IngressEvalParams{}, err
 	}
-
-	n.MeshPolicyMu.RLock()
-	meshRules := n.MeshPolicyRules
-	n.MeshPolicyMu.RUnlock()
-
-	p := identity.IngressEvalParams{
-		ServiceType:        serviceType,
-		ServiceName:        serviceName,
-		Method:             method,
-		Path:               path,
-		TargetFacts:        targetFacts,
-		EnforceTargetCheck: enforceTarget,
-		MeshPolicyRules:    meshRules,
-		Allow:              allow,
-		Timeout:            n.BiscuitTimeout,
-	}
-	if n.nodeConfig != nil {
-		p.LocalPolicies = n.nodeConfig.Policies
-		p.LocalChecks = n.nodeConfig.Checks
-		p.LocalRules = n.nodeConfig.Rules
-	}
-	return p, nil
+	return identity.IngressEvalParams{
+		ServiceType:     serviceType,
+		ServiceName:     serviceName,
+		Method:          method,
+		Path:            path,
+		TargetFacts:     pol.TargetFacts,
+		MeshPolicyRules: pol.MeshRules,
+		LocalPolicies:   pol.LocalPolicies,
+		LocalChecks:     pol.LocalChecks,
+		LocalRules:      pol.LocalRules,
+		Allow:           allow,
+		Timeout:         n.BiscuitTimeout,
+	}, nil
 }
 
 func rewriteExternalIngressRequestPath(r *http.Request, parts []string, upstreamPath string) {

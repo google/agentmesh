@@ -497,14 +497,13 @@ func (r *Router) handleIngressRequest(w http.ResponseWriter, req *http.Request, 
 		}
 
 		evalParams = identity.IngressEvalParams{
-			ServiceType:        serviceTypeStr,
-			ServiceName:        serviceName,
-			Method:             req.Method,
-			Path:               backendPath,
-			EnforceTargetCheck: true,
-			MeshPolicyRules:    r.meshPolicyRules(),
-			Allow:              ing.GetAllow(),
-			Timeout:            r.config.BiscuitTimeout,
+			ServiceType:     serviceTypeStr,
+			ServiceName:     serviceName,
+			Method:          req.Method,
+			Path:            backendPath,
+			MeshPolicyRules: r.meshPolicyRules(),
+			Allow:           ing.GetAllow(),
+			Timeout:         r.config.BiscuitTimeout,
 		}
 		if svcType == api.ServiceType_SERVICE_TYPE_MCP {
 			mcpTool, allowInit, bodyErr := api.InspectMCPHTTPRequestBody(req, api.DefaultMaxMCPBodyInspectBytes)

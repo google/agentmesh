@@ -74,7 +74,9 @@ func TargetFactsFromBiscuit(b *biscuit.Biscuit, trustedKeys []ed25519.PublicKey,
 }
 
 // IngressEvalParams configures Datalog + TAR + ServiceIngress.allow evaluation
-// for an external HTTP ingress request in INGRESS_AUTH_MODE_EDGE.
+// for an external HTTP ingress request in INGRESS_AUTH_MODE_EDGE. Method and
+// Path are present on every ingress request (it is HTTP); the credential is a
+// bearer over HTTPS, so there is no connection peer to bind it to.
 type IngressEvalParams struct {
 	ServiceType        string
 	ServiceName        string
@@ -83,13 +85,34 @@ type IngressEvalParams struct {
 	MCPTool            string
 	AllowMCPStreamInit bool
 	TargetFacts        []biscuit.Fact
-	EnforceTargetCheck bool
 	MeshPolicyRules    []biscuit.Rule
 	LocalPolicies      []biscuit.Policy
 	LocalChecks        []biscuit.Check
 	LocalRules         []biscuit.Rule
 	Allow              []string
 	Timeout            time.Duration
+}
+
+func (p IngressEvalParams) meshRequest() MeshRequest {
+	return MeshRequest{
+		ServiceType:        p.ServiceType,
+		ServiceName:        p.ServiceName,
+		HasHTTP:            p.Method != "",
+		Method:             p.Method,
+		Path:               p.Path,
+		MCPTool:            p.MCPTool,
+		AllowMCPStreamInit: p.AllowMCPStreamInit,
+	}
+}
+
+func (p IngressEvalParams) meshPolicy() MeshPolicy {
+	return MeshPolicy{
+		TargetFacts:   p.TargetFacts,
+		LocalPolicies: p.LocalPolicies,
+		LocalChecks:   p.LocalChecks,
+		LocalRules:    p.LocalRules,
+		MeshRules:     p.MeshPolicyRules,
+	}
 }
 
 // IngressCallerResult describes an authorized external ingress caller.
@@ -102,49 +125,7 @@ type IngressCallerResult struct {
 }
 
 func runIngressAuthorizer(authorizer biscuit.Authorizer, p IngressEvalParams) ([]string, error) {
-	authorizer.AddFact(biscuit.Fact{Predicate: biscuit.Predicate{
-		Name: api.FactService,
-		IDs:  []biscuit.Term{biscuit.String(p.ServiceType), biscuit.String(p.ServiceName)},
-	}})
-	if p.Method != "" {
-		authorizer.AddFact(biscuit.Fact{Predicate: biscuit.Predicate{
-			Name: api.FactMethod,
-			IDs:  []biscuit.Term{biscuit.String(p.Method)},
-		}})
-		authorizer.AddFact(biscuit.Fact{Predicate: biscuit.Predicate{
-			Name: api.FactPath,
-			IDs:  []biscuit.Term{biscuit.String(p.Path)},
-		}})
-	}
-	EnforceExpiration(authorizer)
-	for _, tf := range p.TargetFacts {
-		authorizer.AddFact(tf)
-	}
-	if p.EnforceTargetCheck {
-		authorizer.AddCheck(api.BaselineTargetCheck)
-	}
-	for _, pol := range p.LocalPolicies {
-		authorizer.AddPolicy(pol)
-	}
-	for _, chk := range p.LocalChecks {
-		authorizer.AddCheck(chk)
-	}
-	for _, r := range p.LocalRules {
-		authorizer.AddRule(r)
-	}
-	for _, pol := range api.BaselinePolicies {
-		authorizer.AddPolicy(pol)
-	}
-	for _, r := range api.BaselineRules {
-		authorizer.AddRule(r)
-	}
-	for _, r := range api.BaselineHTTPRules {
-		authorizer.AddRule(r)
-	}
-	for _, r := range p.MeshPolicyRules {
-		authorizer.AddRule(r)
-	}
-	if err := authorizer.Authorize(); err != nil {
+	if err := AuthorizeMeshRequest(authorizer, p.meshRequest(), p.meshPolicy()); err != nil {
 		return nil, err
 	}
 
@@ -179,16 +160,7 @@ func ValidateIngressCallerPreDial(claims *VerifiedBiscuitClaims, p IngressEvalPa
 		return nil, fmt.Errorf("unattenuated transport member biscuits cannot be used as HTTP edge bearer tokens; exchange at /oauth/token")
 	}
 	if len(claims.TaskRules) > 0 {
-		taskReq := api.TaskRequestContext{
-			ServiceType:        p.ServiceType,
-			ServiceName:        p.ServiceName,
-			HasHTTP:            p.Method != "",
-			Method:             p.Method,
-			Path:               p.Path,
-			MCPTool:            p.MCPTool,
-			AllowMCPStreamInit: p.AllowMCPStreamInit,
-		}
-		if err := api.EvaluateTaskRules(claims.TaskRules, taskReq, time.Now()); err != nil {
+		if err := api.EvaluateTaskRules(claims.TaskRules, p.meshRequest().TaskRequest(), time.Now()); err != nil {
 			return nil, err
 		}
 	}

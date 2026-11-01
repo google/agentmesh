@@ -1206,39 +1206,6 @@ func (s *Server) authorizeBiscuitForEgress(ctx context.Context, rawBiscuit []byt
 	if err != nil {
 		return claims, http.StatusForbidden, err
 	}
-	authorizer.AddFact(biscuit.Fact{
-		Predicate: biscuit.Predicate{
-			Name: api.FactService,
-			IDs:  []biscuit.Term{biscuit.String("egress"), biscuit.String(destination)},
-		},
-	})
-	authorizer.AddFact(biscuit.Fact{
-		Predicate: biscuit.Predicate{
-			Name: api.FactConnectionPeerID,
-			IDs:  []biscuit.Term{biscuit.String(clientPeer.String())},
-		},
-	})
-	authorizer.AddCheck(api.BaselineReplayCheck)
-	authorizer.AddFact(api.MarkerFact(api.FactTargetUnrestricted))
-	authorizer.AddCheck(api.BaselineTargetCheck)
-	identity.EnforceExpiration(authorizer)
-
-	for _, p := range api.BaselinePolicies {
-		authorizer.AddPolicy(p)
-	}
-	for _, r := range api.BaselineRules {
-		authorizer.AddRule(r)
-	}
-	for _, r := range api.BaselineHTTPRules {
-		authorizer.AddRule(r)
-	}
-	// Destination-level STS minting checks whether the role grants egress://<destination>
-	// at all (plain or HTTP-narrowed); per-request method/path restrictions are
-	// enforced by the egress agentmesh-node PEP on the wire HTTP request.
-	for _, r := range stsDestinationRules {
-		authorizer.AddRule(r)
-	}
-
 	roles, bindings, err := s.store.GetMeshPolicy(ctx)
 	if err != nil && err != storage.ErrNotFound {
 		return claims, http.StatusInternalServerError, fmt.Errorf("failed to load mesh policy: %w", err)
@@ -1249,11 +1216,27 @@ func (s *Server) authorizeBiscuitForEgress(ctx context.Context, rawBiscuit []byt
 	}
 	policyRules, _ := api.BuildPolicyRules(roles, bindings)
 	policyRules = append(policyRules, api.BuildEgressServingRules(egressDests)...)
+	meshRules := make([]biscuit.Rule, 0, len(policyRules))
 	for _, pr := range policyRules {
-		authorizer.AddRule(pr.Rule)
+		meshRules = append(meshRules, pr.Rule)
 	}
 
-	if err := authorizer.Authorize(); err != nil {
+	// The same assembly every node PEP runs. The control plane has no
+	// provider credential of its own to match target grants against, so the
+	// request is unrestricted on targets; it is bound to the client peer the
+	// Biscuit names, as a stream to that node would be. Destination-level
+	// minting asks whether the role grants egress://<destination> at all
+	// (plain or HTTP-narrowed, stsDestinationRules); per-request method and
+	// path restrictions are enforced by the egress agentmesh-node on the
+	// wire HTTP request.
+	meshReq := identity.MeshRequest{
+		ServiceType:    api.ServiceTypeStringEgress,
+		ServiceName:    destination,
+		Unrestricted:   true,
+		ConnectionPeer: clientPeer,
+	}
+	pol := identity.MeshPolicy{LocalRules: stsDestinationRules, MeshRules: meshRules}
+	if err := identity.AuthorizeMeshRequest(authorizer, meshReq, pol); err != nil {
 		return claims, http.StatusForbidden, fmt.Errorf("standing policy denied egress://%s: %w", destination, err)
 	}
 

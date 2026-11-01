@@ -286,6 +286,27 @@ least one `TaskRule` in every appended block.
 | **`egress://<name>`** | Enforced on HTTP request & TCP `CONNECT` | Must be empty for an HTTP or TCP rule to match. | Enforced against `Method` and `Path` when non-empty (a TCP `CONNECT` tunnel has `Method: "CONNECT"` and `Path: ""`, so any rule with `allowed_paths` denies a tunnel). | Intersected across blocks `1..k` and translated by `CloudTokenExchanger` at egress. |
 | **`system://<name>`** | Enforced on stream handshake | Enforced when a tool call is made. | Same as `mcp://`. | Ignored by wire PEP. |
 
+#### One authorizer assembly for every PEP
+
+Every enforcement point builds its Datalog authorizer through
+`identity.AuthorizeMeshRequest(authorizer, MeshRequest, MeshPolicy)`: the
+node's in-mesh verifier (`/libp2p-http`, `/mesh/mcp`, the local sidecar), the
+node's external ingress handler (`/mesh/ingress/1.0.0`), the router's edge
+check on `/ingress/*`, and the control plane's `/sts/token`. `MeshRequest`
+says what the request is (`service()`, `method()`/`path()` when it is HTTP,
+`host()`/`port()` when it is egress, the connection peer when there is a
+libp2p stream to bind `client_peer_id` to, `target_unrestricted` for a local
+or control-plane caller); `MeshPolicy` says what the PEP adds (its own
+`target_fact()`s, local attenuation, the synced mesh rules). The assembly
+always adds `BaselineTargetCheck`, the baseline policies and rules, and
+`expiration()`, so a PEP cannot leave one out, and an absent field means "not
+present" (fails closed), never "unrestricted". `MeshRequest.TaskRequest()`
+derives the `TaskAuthorizationRule` context from the same value. A rule
+added to one path therefore reaches every path; the only intended
+differences are the inputs a path does not have (no connection peer on an
+HTTPS bearer) and the checks a path adds on top (`allowed_ingress`,
+`ServiceIngress.allow`, `stsDestinationRules`).
+
 ---
 
 ### 4.3 Subject vs. actor (`actor_node`), stateless exchange, and revocation

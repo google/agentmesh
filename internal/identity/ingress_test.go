@@ -145,14 +145,13 @@ func TestAuthorizeIngressCallers(t *testing.T) {
 		t.Fatalf("InspectVerifiedBiscuit: %v", err)
 	}
 	if _, err := AuthorizeIngressDelegatedBiscuit(memberClaims, IngressEvalParams{
-		ServiceType:        "a2a",
-		ServiceName:        "assistant",
-		Method:             "POST",
-		Path:               "/message:send",
-		TargetFacts:        targetFacts,
-		EnforceTargetCheck: true,
-		MeshPolicyRules:    meshRules,
-		Timeout:            time.Second,
+		ServiceType:     "a2a",
+		ServiceName:     "assistant",
+		Method:          "POST",
+		Path:            "/message:send",
+		TargetFacts:     targetFacts,
+		MeshPolicyRules: meshRules,
+		Timeout:         time.Second,
 	}); err == nil {
 		t.Fatal("expected unattenuated member transport biscuit to be rejected at HTTP edge")
 	}
@@ -173,14 +172,13 @@ func TestAuthorizeIngressCallers(t *testing.T) {
 		t.Fatalf("InspectVerifiedBiscuit attenuated member: %v", err)
 	}
 	attRes, err := AuthorizeIngressDelegatedBiscuit(attMemberClaims, IngressEvalParams{
-		ServiceType:        "a2a",
-		ServiceName:        "assistant",
-		Method:             "POST",
-		Path:               "/message:send",
-		TargetFacts:        targetFacts,
-		EnforceTargetCheck: true,
-		MeshPolicyRules:    meshRules,
-		Timeout:            time.Second,
+		ServiceType:     "a2a",
+		ServiceName:     "assistant",
+		Method:          "POST",
+		Path:            "/message:send",
+		TargetFacts:     targetFacts,
+		MeshPolicyRules: meshRules,
+		Timeout:         time.Second,
 	})
 	if err != nil {
 		t.Fatalf("expected task-attenuated member biscuit to be accepted: %v", err)
@@ -195,7 +193,6 @@ func TestAuthorizeIngressCallers(t *testing.T) {
 		Path:               "/",
 		AllowMCPStreamInit: true,
 		TargetFacts:        targetFacts,
-		EnforceTargetCheck: true,
 		MeshPolicyRules:    meshRules,
 		Timeout:            time.Second,
 	}); err == nil {
@@ -227,15 +224,14 @@ func TestAuthorizeIngressCallers(t *testing.T) {
 	}
 
 	res, err := AuthorizeIngressDelegatedBiscuit(delClaims, IngressEvalParams{
-		ServiceType:        "a2a",
-		ServiceName:        "assistant",
-		Method:             "POST",
-		Path:               "/message:send",
-		TargetFacts:        targetFacts,
-		EnforceTargetCheck: true,
-		MeshPolicyRules:    meshRules,
-		Allow:              []string{"email:yaroslav@google.com"},
-		Timeout:            time.Second,
+		ServiceType:     "a2a",
+		ServiceName:     "assistant",
+		Method:          "POST",
+		Path:            "/message:send",
+		TargetFacts:     targetFacts,
+		MeshPolicyRules: meshRules,
+		Allow:           []string{"email:yaroslav@google.com"},
+		Timeout:         time.Second,
 	})
 	if err != nil {
 		t.Fatalf("AuthorizeIngressDelegatedBiscuit: %v", err)
@@ -246,29 +242,27 @@ func TestAuthorizeIngressCallers(t *testing.T) {
 
 	// TAR blocks mcp://calc even though role grants it.
 	if _, err := AuthorizeIngressDelegatedBiscuit(delClaims, IngressEvalParams{
-		ServiceType:        "mcp",
-		ServiceName:        "calc",
-		Method:             "POST",
-		Path:               "/mcp",
-		TargetFacts:        targetFacts,
-		EnforceTargetCheck: true,
-		MeshPolicyRules:    meshRules,
-		Timeout:            time.Second,
+		ServiceType:     "mcp",
+		ServiceName:     "calc",
+		Method:          "POST",
+		Path:            "/mcp",
+		TargetFacts:     targetFacts,
+		MeshPolicyRules: meshRules,
+		Timeout:         time.Second,
 	}); err == nil {
 		t.Fatal("expected TAR to deny mcp://calc")
 	}
 
 	// Allow list blocks non-matching email.
 	if _, err := AuthorizeIngressDelegatedBiscuit(delClaims, IngressEvalParams{
-		ServiceType:        "a2a",
-		ServiceName:        "assistant",
-		Method:             "POST",
-		Path:               "/message:send",
-		TargetFacts:        targetFacts,
-		EnforceTargetCheck: true,
-		MeshPolicyRules:    meshRules,
-		Allow:              []string{"email:someone-else@google.com"},
-		Timeout:            time.Second,
+		ServiceType:     "a2a",
+		ServiceName:     "assistant",
+		Method:          "POST",
+		Path:            "/message:send",
+		TargetFacts:     targetFacts,
+		MeshPolicyRules: meshRules,
+		Allow:           []string{"email:someone-else@google.com"},
+		Timeout:         time.Second,
 	}); err == nil {
 		t.Fatal("expected allow list mismatch to deny")
 	}

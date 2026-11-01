@@ -26,6 +26,33 @@ For example:
 https://bananas.sam-mesh.dev/ingress/12D3KooW.../a2a/coder
 ```
 
+## Ingress is for callers without a sidecar
+
+An agent that is already on the mesh does not use `/ingress/`. It calls a peer
+through its own `agentmesh-node` sidecar
+(`http://127.0.0.1:<sidecar>/mesh/<peer_id>/a2a/coder`), which dials the
+serving node directly over libp2p and only crosses a router's relay when NAT
+forces it. The sidecar never advertises the ingress URL, and an A2A agent card
+fetched through the sidecar points back at the sidecar, so a client that
+starts inside the mesh stays inside it.
+
+The ingress URL is not a second route for that agent, and it will not accept
+the agent's node credential: a standing member Biscuit is refused at
+`/ingress/`, which takes only a Delegated Session or task Biscuit. Choosing
+the ingress URL from inside the mesh would mean minting a task Biscuit first
+and then hairpinning through a router to reach a peer the sidecar could have
+dialed directly.
+
+Both paths evaluate the same policy on the serving node. The in-mesh verifier
+and the ingress handler build their Datalog authorizer from one shared
+assembly (`identity.AuthorizeMeshRequest`), so a service grant, HTTP
+narrowing, target grant, `TaskAuthorizationRule`, or local attenuation that
+denies a request on one path denies it on the other. Ingress adds two
+constraints on top (the admin's `allowed_ingress` ceiling and the service's
+`allow` list) and drops one that only a libp2p stream can satisfy (the
+`client_peer_id` connection binding; see the security architecture, section
+5.2). A caller can never gain access by picking the path.
+
 ## Two-layer opt-in
 
 Nothing on the mesh is reachable from `/ingress/` unless **both** the mesh
