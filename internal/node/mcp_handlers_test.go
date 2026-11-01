@@ -144,11 +144,29 @@ func TestHandleFindRemoteTools_SelfPeerRejected(t *testing.T) {
 	node, cleanup := startBareNode(t, ctx)
 	defer cleanup()
 
-	_, _, err := node.handleFindRemoteTools(ctx, &mcp.CallToolRequest{}, FindRemoteToolsParams{
-		PeerID: node.Host.ID().String(),
-	})
-	if err == nil {
-		t.Fatal("expected error when peer_id equals self peer ID")
+	cidv1Self := peer.ToCid(node.Host.ID()).String()
+	if cidv1Self == node.Host.ID().String() {
+		t.Fatalf("expected CIDv1 encoding %q to differ from canonical PeerID %q", cidv1Self, node.Host.ID().String())
+	}
+
+	for _, tc := range []struct {
+		name   string
+		peerID string
+	}{
+		{name: "canonical base58 self peer_id", peerID: node.Host.ID().String()},
+		{name: "CIDv1 multibase self peer_id", peerID: cidv1Self},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := node.handleFindRemoteTools(ctx, &mcp.CallToolRequest{}, FindRemoteToolsParams{
+				PeerID: tc.peerID,
+			})
+			if err == nil {
+				t.Fatalf("expected error when peer_id=%q equals self peer ID, got nil", tc.peerID)
+			}
+			if !strings.Contains(err.Error(), "is this node; cross-mesh discovery cannot target self") {
+				t.Errorf("error = %v, want self-peer rejection message", err)
+			}
+		})
 	}
 }
 

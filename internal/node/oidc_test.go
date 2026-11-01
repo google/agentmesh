@@ -902,3 +902,73 @@ func TestRenewWithRefreshToken(t *testing.T) {
 		t.Errorf("Expected updated refresh token 'new_refresh_token_456', got '%s'", newRefresh)
 	}
 }
+
+func TestOIDCMethodsRejectPlaintextNonLoopbackTransport(t *testing.T) {
+	prevGlobal := allowInsecureControlPlane.Load()
+	SetAllowInsecureControlPlane(false)
+	t.Cleanup(func() { SetAllowInsecureControlPlane(prevGlobal) })
+
+	// 192.0.2.10 is RFC 5737 TEST-NET-1: if RoundTrip attempted a TCP dial
+	// instead of failing at api.ValidateControlPlaneTransport, the short context
+	// would time out with context.DeadlineExceeded rather than a transport policy error.
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	strictNode := &AgentMeshNode{BiscuitTimeout: 500 * time.Millisecond}
+	// An in-process node opting into AllowInsecureControlPlane must stay scoped
+	// to that instance and leave strictNode rejecting plaintext non-loopback URLs.
+	_ = &AgentMeshNode{
+		BiscuitTimeout: 500 * time.Millisecond,
+		config:         Options{AllowInsecureControlPlane: true},
+	}
+
+	const nonLoopbackIssuer = "http://192.0.2.10:8080"
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{
+			name: "DiscoverTokenURL",
+			call: func() error {
+				_, err := strictNode.DiscoverTokenURL(ctx, nonLoopbackIssuer)
+				return err
+			},
+		},
+		{
+			name: "DiscoverEndpointsWithDevice",
+			call: func() error {
+				_, err := strictNode.DiscoverEndpointsWithDevice(ctx, nonLoopbackIssuer)
+				return err
+			},
+		},
+		{
+			name: "DeviceLogin",
+			call: func() error {
+				_, err := strictNode.DeviceLogin(ctx, nonLoopbackIssuer+"/device", nonLoopbackIssuer+"/token", "client-id", "aud", false)
+				return err
+			},
+		},
+		{
+			name: "RefreshJWT",
+			call: func() error {
+				_, _, err := strictNode.RefreshJWT(ctx, nonLoopbackIssuer+"/token", "client-id", "", "rt-123")
+				return err
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.call()
+			if err == nil {
+				t.Fatalf("%s accepted plaintext non-loopback URL %s, want error", tc.name, nonLoopbackIssuer)
+			}
+			if ctx.Err() != nil {
+				t.Fatalf("%s dialed the network and hit context deadline (%v) instead of failing closed at transport check: %v", tc.name, ctx.Err(), err)
+			}
+			if !strings.Contains(strings.ToLower(err.Error()), "https") && !strings.Contains(strings.ToLower(err.Error()), "plaintext") && !strings.Contains(strings.ToLower(err.Error()), "insecure") {
+				t.Errorf("%s error = %v, want transport policy rejection mentioning https/plaintext/insecure", tc.name, err)
+			}
+		})
+	}
+}

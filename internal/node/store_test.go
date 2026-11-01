@@ -578,3 +578,42 @@ func TestGetDefaultDataDir(t *testing.T) {
 		t.Fatalf("GetDefaultDataDir = %q, want %q", got, custom)
 	}
 }
+
+func TestStore_SetOnChange(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	calls := 0
+	var hookErr error
+	store.SetOnChange(func() error {
+		calls++
+		return hookErr
+	})
+
+	if err := store.SaveKey([]byte("priv-key")); err != nil {
+		t.Fatalf("SaveKey: %v", err)
+	}
+	if err := store.SaveIdentity([]byte("biscuit")); err != nil {
+		t.Fatalf("SaveIdentity: %v", err)
+	}
+	if err := store.SaveRefreshToken("rt-rotated"); err != nil {
+		t.Fatalf("SaveRefreshToken: %v", err)
+	}
+	if err := store.SetCredential(&api.MemberCredential{OidcSession: &api.OIDCSession{RefreshToken: "rt-2"}}); err != nil {
+		t.Fatalf("SetCredential: %v", err)
+	}
+	if err := store.ResetMeshIdentity(); err != nil {
+		t.Fatalf("ResetMeshIdentity: %v", err)
+	}
+	if calls != 5 {
+		t.Fatalf("onChange calls = %d, want 5", calls)
+	}
+
+	hookErr = errors.New("sync disk full")
+	if err := store.SaveRefreshToken("rt-3"); !errors.Is(err, hookErr) {
+		t.Fatalf("SaveRefreshToken with failing onChange = %v, want %v", err, hookErr)
+	}
+}
