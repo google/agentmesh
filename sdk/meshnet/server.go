@@ -59,8 +59,11 @@ var ErrCredentialLapsed = errors.New("meshnet: member credential expired and ren
 // the mesh in-process.
 type Server struct {
 	// StateDir persists identity.key and credential.json (0700/0600, byte-for-byte
-	// compatible with sdk/js, sdk/python, and `agentmesh-node state export|import`).
-	// When empty, Server runs with an ephemeral in-memory Ed25519 identity.
+	// compatible with sdk/js, sdk/python, and `agentmesh-node state export|import`),
+	// guarded by an exclusive non-blocking directory lock (ErrStateDirLocked) so two
+	// Servers cannot clobber the same state directory concurrently.
+	// When empty, Server runs with an ephemeral in-memory Ed25519 identity that
+	// creates no files on disk.
 	StateDir string
 
 	// ControlPlaneURL is the Agent Mesh hub URL (e.g. "https://bananas.sam-mesh.dev").
@@ -137,13 +140,13 @@ type Server struct {
 	closed      bool
 	runCancel   context.CancelFunc
 
-	privKey     crypto.PrivKey
-	peerID      peer.ID
-	cpURL       string
-	store       *node.Store
-	storeTmpDir string
-	node        *node.AgentMeshNode
-	metrics     *serverMetrics
+	privKey      crypto.PrivKey
+	peerID       peer.ID
+	cpURL        string
+	store        *node.Store
+	stateDirLock *os.File
+	node         *node.AgentMeshNode
+	metrics      atomic.Pointer[serverMetrics]
 
 	refusedMu      sync.Mutex
 	refusedStreams map[string]uint64
@@ -208,10 +211,10 @@ func (s *Server) signalDone() {
 	})
 }
 
-func (s *Server) handleCredentialLapse(err error) {
+func (s *Server) handleCredentialLapse(peerID peer.ID, err error) {
 	s.credentialLapsed.Store(true)
-	if s.metrics != nil {
-		s.metrics.credentialLapses.Inc()
+	if m := s.metrics.Load(); m != nil {
+		m.credentialLapses.Inc()
 	}
 	wrapped := fmt.Errorf("%w: %w", ErrCredentialLapsed, err)
 	s.errMu.Lock()
@@ -219,7 +222,7 @@ func (s *Server) handleCredentialLapse(err error) {
 	s.errMu.Unlock()
 	s.signalDone()
 	s.log().Error("member credential expired and renewal failed; retrying with exponential backoff",
-		"peer_id", s.peerID.String(),
+		"peer_id", peerID.String(),
 		"error", err,
 	)
 	if s.OnCredentialLapse != nil {
@@ -227,9 +230,9 @@ func (s *Server) handleCredentialLapse(err error) {
 	}
 }
 
-func (s *Server) handleCredentialRenewed() {
+func (s *Server) handleCredentialRenewed(peerID peer.ID) {
 	s.credentialLapsed.Store(false)
-	s.log().Info("member credential renewed", "peer_id", s.peerID.String())
+	s.log().Info("member credential renewed", "peer_id", peerID.String())
 }
 
 // Done returns a channel that is closed when either the member's credential
@@ -249,17 +252,35 @@ func (s *Server) Err() error {
 	return s.lapseErr
 }
 
-func (s *Server) isRunning() bool {
+func (s *Server) runningNode() *node.AgentMeshNode {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
-	return s.started && !s.closed && s.node != nil && s.node.Host != nil
+	if !s.started || s.closed || s.node == nil || s.node.Host == nil {
+		return nil
+	}
+	return s.node
 }
 
-func (s *Server) cleanupStoreTmpDir() {
-	if s.storeTmpDir != "" {
-		_ = os.RemoveAll(s.storeTmpDir)
-		s.storeTmpDir = ""
+func (s *Server) stateSnapshot() (*node.AgentMeshNode, *node.Store, peer.ID, string) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.closed {
+		return nil, nil, "", ""
 	}
+	return s.node, s.store, s.peerID, s.cpURL
+}
+
+func (s *Server) closeStoreLocked() error {
+	var err error
+	if s.store != nil {
+		err = s.store.Close()
+		s.store = nil
+	}
+	if s.stateDirLock != nil {
+		unlockStateDir(s.stateDirLock)
+		s.stateDirLock = nil
+	}
+	return err
 }
 
 // Up loads or enrolls the member credential, syncs mesh trust material and
@@ -277,7 +298,7 @@ func (s *Server) Up(ctx context.Context) (*Status, error) {
 		return nil, errors.New("meshnet: Server has been closed")
 	}
 	if s.started {
-		st := s.Status()
+		st := s.statusLocked()
 		return &st, nil
 	}
 
@@ -310,13 +331,11 @@ func (s *Server) Up(ctx context.Context) (*Status, error) {
 	if s.Registerer != nil {
 		m, err := newServerMetrics(s, s.Registerer)
 		if err != nil {
-			_ = s.store.Close()
-			s.cleanupStoreTmpDir()
+			_ = s.closeStoreLocked()
 			s.node = nil
-			s.store = nil
 			return nil, fmt.Errorf("meshnet: register metrics: %w", err)
 		}
-		s.metrics = m
+		s.metrics.Store(m)
 	}
 
 	runCtx, runCancel := context.WithCancel(context.Background())
@@ -325,28 +344,23 @@ func (s *Server) Up(ctx context.Context) (*Status, error) {
 	abortedByCaller := !stopAbort()
 	if startErr != nil {
 		runCancel()
-		if s.metrics != nil {
-			s.metrics.unregister()
-			s.metrics = nil
+		if m := s.metrics.Swap(nil); m != nil {
+			m.unregister()
 		}
 		_ = s.node.Teardown()
-		if s.store != nil {
-			_ = s.store.Close()
-		}
-		s.cleanupStoreTmpDir()
+		_ = s.closeStoreLocked()
 		s.node = nil
-		s.store = nil
 		if abortedByCaller && ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		return nil, startErr
 	}
 
-	s.startRenewalLoop(runCtx)
+	s.startRenewalLoop(runCtx, s.node, s.store, s.peerID, s.cpURL)
 	s.runCancel = runCancel
 	s.started = true
 
-	st := s.Status()
+	st := s.statusLocked()
 	return &st, nil
 }
 
@@ -356,6 +370,12 @@ func (s *Server) Up(ctx context.Context) (*Status, error) {
 // router admission while additional router dials finish in the background,
 // AttachedRouters may list fewer than Server.Routers immediately after Up.
 func (s *Server) Status() Status {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	return s.statusLocked()
+}
+
+func (s *Server) statusLocked() Status {
 	var peerIDStr string
 	if s.peerID != "" {
 		peerIDStr = s.peerID.String()
@@ -363,7 +383,7 @@ func (s *Server) Status() Status {
 
 	var routerStrs []string
 	var ingressURLs []string
-	if s.node != nil {
+	if s.node != nil && !s.closed {
 		if s.node.Host != nil {
 			routers := s.node.AttachedRouterIDs()
 			routerStrs = make([]string, 0, len(routers))
@@ -380,7 +400,7 @@ func (s *Server) Status() Status {
 		ControlPlaneURL:  s.cpURL,
 		AttachedRouters:  routerStrs,
 		IngressURLs:      ingressURLs,
-		ExpireTime:       s.credentialExpireTime(),
+		ExpireTime:       credentialExpireTimeFromStore(s.store),
 		CredentialLapsed: s.credentialLapsed.Load(),
 	}
 }
@@ -398,9 +418,12 @@ func (s *Server) Close() error {
 	s.closed = true
 	s.signalDone()
 
-	if s.metrics != nil {
-		s.metrics.unregister()
-		s.metrics = nil
+	if m := s.metrics.Swap(nil); m != nil {
+		m.unregister()
+	}
+
+	if s.runCancel != nil {
+		s.runCancel()
 	}
 
 	var errs []error
@@ -408,16 +431,11 @@ func (s *Server) Close() error {
 		if err := s.node.Teardown(); err != nil {
 			errs = append(errs, err)
 		}
+		s.node = nil
 	}
-	if s.runCancel != nil {
-		s.runCancel()
+	if err := s.closeStoreLocked(); err != nil {
+		errs = append(errs, err)
 	}
-	if s.store != nil {
-		if err := s.store.Close(); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	s.cleanupStoreTmpDir()
 	return errors.Join(errs...)
 }
 
@@ -426,7 +444,8 @@ func (s *Server) Close() error {
 // type via parallel catalog fan-out). Returned DiscoveredProvider.LocalProxyUrl
 // values can be passed directly to Server.HTTPClient.
 func (s *Server) Discover(ctx context.Context, serviceType api.ServiceType, serviceName string) ([]*api.DiscoveredProvider, error) {
-	if !s.isRunning() {
+	n := s.runningNode()
+	if n == nil {
 		return nil, errors.New("meshnet: Server is not running (call Up first)")
 	}
 	if serviceType == api.ServiceType_SERVICE_TYPE_UNSPECIFIED {
@@ -435,7 +454,7 @@ func (s *Server) Discover(ctx context.Context, serviceType api.ServiceType, serv
 	if _, err := api.ServiceTypeToString(serviceType); err != nil {
 		return nil, err
 	}
-	return s.node.DiscoverRemoteServices(ctx, serviceType, serviceName)
+	return n.DiscoverRemoteServices(ctx, serviceType, serviceName)
 }
 
 // MCPServer returns an in-process *mcp.Server exposing the 6 progressive mesh
@@ -443,17 +462,19 @@ func (s *Server) Discover(ctx context.Context, serviceType api.ServiceType, serv
 // discover_remote_services, find_remote_tools, describe_remote_tool,
 // call_remote_tool). Returns nil if Up has not succeeded.
 func (s *Server) MCPServer() *mcp.Server {
-	if !s.isRunning() {
+	n := s.runningNode()
+	if n == nil {
 		return nil
 	}
-	return node.NewMCPServer(s.node)
+	return node.NewMCPServer(n)
 }
 
 // MCPHandler returns a stateless StreamableHTTP handler serving Server.MCPServer
 // at "/", "/mcp", and "/mcp/".
 func (s *Server) MCPHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.isRunning() {
+		n := s.runningNode()
+		if n == nil {
 			http.Error(w, "meshnet: Server is not running", http.StatusServiceUnavailable)
 			return
 		}
@@ -464,7 +485,7 @@ func (s *Server) MCPHandler() http.Handler {
 			return
 		}
 		s.mcpHandlerOnce.Do(func() {
-			s.mcpHTTPHandler = node.NewMCPHandler(s.node)
+			s.mcpHTTPHandler = node.NewMCPHandler(n)
 		})
 		if r.URL.Path != "/mcp" {
 			r2 := r.Clone(r.Context())
@@ -481,12 +502,13 @@ func (s *Server) MCPHandler() http.Handler {
 // inference://* providers on the mesh.
 func (s *Server) InferenceHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.isRunning() {
+		n := s.runningNode()
+		if n == nil {
 			http.Error(w, "meshnet: Server is not running", http.StatusServiceUnavailable)
 			return
 		}
 		s.infHandlerOnce.Do(func() {
-			s.infHTTPHandler = s.node.InferenceHandler()
+			s.infHTTPHandler = n.InferenceHandler()
 		})
 		s.infHTTPHandler.ServeHTTP(w, r)
 	})
@@ -497,20 +519,21 @@ func (s *Server) InferenceHandler() http.Handler {
 // a control-plane round trip, optionally sealing it so downstream holders
 // cannot append further blocks.
 func (s *Server) AttenuateToken(rule *api.TaskAuthorizationRule, ttl time.Duration, seal bool) (string, time.Time, error) {
-	if s.node == nil {
+	n, store, _, _ := s.stateSnapshot()
+	if n == nil {
 		return "", time.Time{}, errors.New("meshnet: Server is not running (call Up first)")
 	}
 	if rule == nil {
 		return "", time.Time{}, errors.New("TaskAuthorizationRule is required")
 	}
-	raw := s.node.GetIdentity()
+	raw := n.GetIdentity()
 	if len(raw) == 0 {
 		return "", time.Time{}, errors.New("no member credential loaded")
 	}
 
 	cloned := proto.Clone(rule).(*api.TaskAuthorizationRule)
 	now := time.Now()
-	exp := s.credentialExpireTime()
+	exp := credentialExpireTimeFromStore(store)
 	if exp.IsZero() {
 		exp = now.Add(api.BiscuitTokenTTL)
 	}

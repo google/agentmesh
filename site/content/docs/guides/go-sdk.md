@@ -243,7 +243,11 @@ Public A2A:   http://127.0.0.1:33776/ingress/12D3KooW.../a2a/coder
 - **Unspoofable caller identity (`Server.WhoIs`):** Inside your HTTP handler,
   `srv.WhoIs(r.RemoteAddr)` returns the cryptographically verified `*CallerInfo`
   (`PeerID`, `Principal`, `Roles`, `Labels`, `Task`) bound to that in-memory
-  connection—never trusting spoofable HTTP headers.
+  connection—never trusting spoofable HTTP headers. For unauthenticated external
+  requests (`INGRESS_AUTH_MODE_PASSTHROUGH` and anonymous
+  `GET /.well-known/agent-card.json` discovery), `WhoIs` returns `(nil, false)`.
+  For verified external `EDGE` callers without a mesh node identity (such as OIDC
+  users), `CallerInfo.PeerID` is empty (`""`).
 - **`EDGE` vs. `PASSTHROUGH` ingress:** `INGRESS_AUTH_MODE_EDGE` (the default)
   verifies Delegated Session Biscuits at both the router and the `meshnet`
   server (`identity.AuthorizeMeshRequest` + `IngressAllow`), while still serving
@@ -447,7 +451,10 @@ Code, Gemini CLI, or a sandboxed coding tool), mount `srv.MCPHandler()` and
 
 `Server.StateDir` persists `identity.key` and `credential.json` with owner-only
 permissions (`0700` directory, `0600` files) using the exact protobuf/protojson
-layout shared by `agentmesh-node`, `sdk/js`, and `sdk/python`.
+layout shared by `agentmesh-node`, `sdk/js`, and `sdk/python`, guarded by an
+exclusive non-blocking directory lock (`meshnet.ErrStateDirLocked`) so two
+`Server` instances cannot clobber the same directory concurrently. When
+`StateDir` is empty, `Server` runs purely in memory with zero files on disk.
 
 An operator can enroll interactively once with `agentmesh-node` and pass the
 exported state directory directly to a Go binary built on `sdk/meshnet` (with no

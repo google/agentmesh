@@ -430,7 +430,8 @@ func TestMeshnetEndToEndIntegration(t *testing.T) {
 	pairedMux := http.NewServeMux()
 	pairedMux.Handle(a2asrv.WellKnownAgentCardPath, a2asrv.NewStaticAgentCardHandler(pairedCard))
 	pairedMux.Handle("/invoke", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(api.HeaderMeshPrincipal) == "" && r.Header.Get(api.HeaderMeshIngress) == api.IngressAuthModeStringPassthrough {
+		_, hasWhoIs := srvA.WhoIs(r.RemoteAddr)
+		if !hasWhoIs && r.Header.Get(api.HeaderMeshPrincipal) == "" && r.Header.Get(api.HeaderMeshIngress) == api.IngressAuthModeStringPassthrough {
 			passthroughClean.Store(true)
 		}
 		if r.Header.Get("Authorization") != "Bearer pair-secret-123" {
@@ -567,6 +568,9 @@ func TestMeshnetEndToEndIntegration(t *testing.T) {
 	if gotPubWhoIs.Principal != "carol@example.com" {
 		t.Fatalf("public WhoIs Principal = %q, want carol@example.com", gotPubWhoIs.Principal)
 	}
+	if gotPubWhoIs.PeerID != "" {
+		t.Fatalf("public OIDC user WhoIs PeerID = %q, want empty string", gotPubWhoIs.PeerID)
+	}
 
 	// 5b. External OIDC user excluded by IngressAllow gets denied.
 	bobJWT := mintJWT(map[string]any{"sub": "bob-sub", "email": "bob@example.com"})
@@ -608,6 +612,9 @@ func TestMeshnetEndToEndIntegration(t *testing.T) {
 	coderWhoIsMu.Unlock()
 	if gotTARWhoIs.Task != "audit-pr-99" {
 		t.Fatalf("TAR WhoIs Task = %q, want audit-pr-99", gotTARWhoIs.Task)
+	}
+	if gotTARWhoIs.PeerID != stB.PeerID {
+		t.Fatalf("TAR WhoIs PeerID = %q, want %q", gotTARWhoIs.PeerID, stB.PeerID)
 	}
 
 	// 5d. PASSTHROUGH service preserves upstream Bearer pair token and strips spoofed X-Mesh-*.

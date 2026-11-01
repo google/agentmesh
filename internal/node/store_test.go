@@ -617,3 +617,79 @@ func TestStore_SetOnChange(t *testing.T) {
 		t.Fatalf("SaveRefreshToken with failing onChange = %v, want %v", err, hookErr)
 	}
 }
+
+func TestStore_NewMemoryStore(t *testing.T) {
+	emptyTmp := t.TempDir()
+	t.Setenv("TMPDIR", emptyTmp)
+
+	store := NewMemoryStore()
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}()
+
+	var mirroredKey []byte
+	var mirroredCred *api.MemberCredential
+	store.SetOnChange(func() error {
+		k, err := store.LoadKey()
+		if err != nil {
+			return err
+		}
+		c, err := store.Credential()
+		if err != nil {
+			return err
+		}
+		mirroredKey = k
+		mirroredCred = c
+		return nil
+	})
+
+	key := []byte("mem-private-key")
+	if err := store.SaveKey(key); err != nil {
+		t.Fatalf("SaveKey: %v", err)
+	}
+	key[0] = 'X' // verify defensive copy
+	gotKey, err := store.LoadKey()
+	if err != nil || string(gotKey) != "mem-private-key" {
+		t.Fatalf("LoadKey = %q, %v; want mem-private-key", gotKey, err)
+	}
+	if string(mirroredKey) != "mem-private-key" {
+		t.Fatalf("mirroredKey = %q, want mem-private-key", mirroredKey)
+	}
+
+	cpPub := bytes.Repeat([]byte{9}, ed25519.PublicKeySize)
+	if err := store.SaveIdentity([]byte("mem-biscuit")); err != nil {
+		t.Fatalf("SaveIdentity: %v", err)
+	}
+	if err := store.SaveIdentityExpiration(1790000000); err != nil {
+		t.Fatalf("SaveIdentityExpiration: %v", err)
+	}
+	if err := store.SaveMeshConfig(cpPub, []string{"/ip4/127.0.0.1/tcp/4001"}); err != nil {
+		t.Fatalf("SaveMeshConfig: %v", err)
+	}
+	if err := store.SaveRefreshToken("rt-mem"); err != nil {
+		t.Fatalf("SaveRefreshToken: %v", err)
+	}
+	if mirroredCred == nil || mirroredCred.GetOidcSession().GetRefreshToken() != "rt-mem" {
+		t.Fatalf("mirroredCred refresh_token = %q, want rt-mem", mirroredCred.GetOidcSession().GetRefreshToken())
+	}
+
+	if err := store.ResetMeshIdentity(); err != nil {
+		t.Fatalf("ResetMeshIdentity: %v", err)
+	}
+	if _, err := store.LoadIdentity(); err == nil {
+		t.Fatal("LoadIdentity succeeded after ResetMeshIdentity, want error")
+	}
+	if afterResetKey, _ := store.LoadKey(); string(afterResetKey) != "mem-private-key" {
+		t.Fatalf("LoadKey after ResetMeshIdentity = %q, want mem-private-key", afterResetKey)
+	}
+
+	entries, err := os.ReadDir(emptyTmp)
+	if err != nil {
+		t.Fatalf("ReadDir(TMPDIR): %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("NewMemoryStore created %d entries in TMPDIR (%v), want 0", len(entries), entries)
+	}
+}
