@@ -97,7 +97,12 @@ out what each connection carries and what a NAT or firewall sees.
 Routers are the fixed points. A node learns their addresses, labels and
 load from the control plane's `/info` at enrollment and again on a
 schedule, holds two of them with a relay reservation on each, and replaces
-one that drops or that sends it away. A router that holds a member answers
+one that drops or that sends it away. While short of its target, the node
+redials dropped routers. Once replacements fill the target, it stops holding
+the disconnected routers; a late redial or top-up cannot add an extra
+attachment. Existing live attachments are kept. This limits held routers,
+not every router connection: a call can still need a transit router.
+A router that holds a member answers
 a lookup for it from what it sees of the member; any other router answers
 from the record the member announced under its own peer ID, so a lookup
 for the member learns where it is reached through any router. An SDK
