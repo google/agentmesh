@@ -16,6 +16,7 @@ package node
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/google/agentmesh/api"
@@ -199,5 +200,76 @@ func TestWantRoutersCountsSelectorMatches(t *testing.T) {
 	n.config.RouterSelector = map[string]string{"site": "z"}
 	if got := n.wantRouters(); got != 0 {
 		t.Fatalf("wantRouters with a selector no router attests = %d, want 0", got)
+	}
+}
+
+// Concurrent callers (admitByRouters, HandleGoAway, connection monitor) must
+// never reserve more than Options.Routers in-flight + attached routers or pick
+// the same router twice.
+func TestConcurrentTopUpRoutersNeverOvershoots(t *testing.T) {
+	n := &AgentMeshNode{
+		config:               Options{Routers: 2},
+		authenticatedRouters: map[peer.ID]bool{},
+		reprovideTrigger:     make(chan struct{}, 1),
+		routerCatalog: []routerCandidate{
+			candidate(t, "r1", nil, 0, 100),
+			candidate(t, "r2", nil, 0, 100),
+			candidate(t, "r3", nil, 0, 100),
+			candidate(t, "r4", nil, 0, 100),
+			candidate(t, "r5", nil, 0, 100),
+		},
+	}
+
+	const callers = 16
+	start := make(chan struct{})
+	results := make([][]peer.AddrInfo, callers)
+	var wg sync.WaitGroup
+	for i := range callers {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start
+			results[idx] = n.reserveRoutersToAttach()
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	seen := map[peer.ID]bool{}
+	total := 0
+	for _, batch := range results {
+		for _, pi := range batch {
+			total++
+			if seen[pi.ID] {
+				t.Fatalf("router %s reserved twice across concurrent callers", pi.ID)
+			}
+			seen[pi.ID] = true
+		}
+	}
+	if total != 2 {
+		t.Fatalf("concurrent reserveRoutersToAttach reserved %d routers, want 2", total)
+	}
+
+	var first, second peer.ID
+	for pid := range seen {
+		if first == "" {
+			first = pid
+		} else {
+			second = pid
+		}
+	}
+	n.mu.Lock()
+	n.authenticatedRouters[first] = true
+	n.mu.Unlock()
+	n.finishDialAndAttach(first)
+
+	// Releasing the second failed dial leaves exactly 1 slot open.
+	n.clearDialing([]peer.AddrInfo{{ID: second}})
+	repl := n.reserveRoutersToAttach()
+	if len(repl) != 1 {
+		t.Fatalf("replacement reserveRoutersToAttach = %d, want 1", len(repl))
+	}
+	if repl[0].ID == first {
+		t.Fatalf("replacement picked already-attached router %s", first)
 	}
 }

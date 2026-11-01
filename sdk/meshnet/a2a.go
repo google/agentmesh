@@ -15,35 +15,24 @@
 package meshnet
 
 import (
-	"bytes"
 	"cmp"
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/google/agentmesh/api"
-	"github.com/google/agentmesh/internal/identity"
-	gostream "github.com/libp2p/go-libp2p-gostream"
+	"github.com/google/agentmesh/internal/node"
 	"github.com/libp2p/go-libp2p/core/peer"
-)
-
-const (
-	a2aAgentCardPath  = ".well-known/agent-card.json"
-	maxAgentCardBytes = 1 << 20
 )
 
 // A2AOptions configures an in-process A2A service registered on a Server.
@@ -63,7 +52,9 @@ type A2AOptions struct {
 	// INGRESS_AUTH_MODE_EDGE.
 	IngressAllow []string
 	// NoAnnounce skips directory announcements while still serving streams from
-	// peers that dial this PeerID directly.
+	// peers that dial this PeerID directly. Because no router holds a directory
+	// route for an unannounced service, Endpoints.PublicURL is always nil when
+	// NoAnnounce is true (even if Public is also set).
 	NoAnnounce bool
 }
 
@@ -79,56 +70,13 @@ type Endpoints struct {
 	// routers over /mesh/ingress/1.0.0. Non-nil iff A2AOptions.Public is true.
 	PublicListener net.Listener
 	// PublicURL is <router_ingress_url>/<peer_id>/a2a/<name> when Public is
-	// true, the hub's policy ceiling admitted the ingress announcement, and at
-	// least one router in the catalog advertises an ingress_url; nil otherwise.
+	// true, NoAnnounce is false, the hub's policy ceiling admitted the ingress
+	// announcement, and at least one router in the catalog advertises an
+	// ingress_url; nil otherwise.
 	PublicURL *url.URL
 	// Close unregisters the service, withdraws its directory keys, and closes
 	// PrivateListener and PublicListener.
 	Close func() error
-}
-
-type a2aEntry struct {
-	name        string
-	description string
-	noAnnounce  bool
-	ingress     *api.ServiceIngress
-	privateLn   *inprocListener
-	publicLn    *inprocListener
-	privateURL  *url.URL
-
-	mu           sync.RWMutex
-	publicActive bool
-	publicURL    *url.URL
-}
-
-func (e *a2aEntry) setPublicState(active bool, pubURL *url.URL) {
-	e.mu.Lock()
-	e.publicActive = active
-	e.publicURL = pubURL
-	e.mu.Unlock()
-}
-
-func (e *a2aEntry) getPublicState() (bool, *url.URL) {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.publicActive, e.publicURL
-}
-
-func (e *a2aEntry) serviceInfo() *api.ServiceInfo {
-	active, _ := e.getPublicState()
-	var ing *api.ServiceIngress
-	if active && e.ingress != nil {
-		ing = &api.ServiceIngress{
-			AuthMode: e.ingress.GetAuthMode(),
-			Allow:    slices.Clone(e.ingress.GetAllow()),
-		}
-	}
-	return &api.ServiceInfo{
-		Type:        api.ServiceType_SERVICE_TYPE_A2A,
-		Name:        e.name,
-		Description: e.description,
-		Ingress:     ing,
-	}
 }
 
 type meshnetAddr string
@@ -201,6 +149,90 @@ func (c *trackedConn) Close() error {
 	return err
 }
 
+type meshnetA2AService struct {
+	s             *Server
+	name          string
+	description   string
+	noAnnounce    bool
+	ingress       *api.ServiceIngress
+	privateLn     *inprocListener
+	publicLn      *inprocListener
+	privateURL    *url.URL
+	ingressActive atomic.Bool
+}
+
+var (
+	_ node.Service              = (*meshnetA2AService)(nil)
+	_ node.UnannouncedService   = (*meshnetA2AService)(nil)
+	_ node.IngressStateObserver = (*meshnetA2AService)(nil)
+	_ node.ExternalIngressGate  = (*meshnetA2AService)(nil)
+)
+
+func (svc *meshnetA2AService) Info() *api.ServiceInfo {
+	var ing *api.ServiceIngress
+	if svc.ingress != nil {
+		ing = &api.ServiceIngress{
+			AuthMode: svc.ingress.GetAuthMode(),
+			Allow:    slices.Clone(svc.ingress.GetAllow()),
+		}
+	}
+	return &api.ServiceInfo{
+		Type:        api.ServiceType_SERVICE_TYPE_A2A,
+		Name:        svc.name,
+		Description: svc.description,
+		Ingress:     ing,
+	}
+}
+
+func (svc *meshnetA2AService) Init(context.Context) error { return nil }
+
+func (svc *meshnetA2AService) NoAnnounce() bool { return svc.noAnnounce }
+
+func (svc *meshnetA2AService) SetIngressActive(active bool) {
+	svc.ingressActive.Store(active)
+}
+
+func (svc *meshnetA2AService) ExternalIngressAllowed() bool {
+	if svc.publicLn == nil {
+		return false
+	}
+	if svc.noAnnounce {
+		return true
+	}
+	return svc.ingressActive.Load()
+}
+
+func (svc *meshnetA2AService) Teardown() error {
+	_ = svc.privateLn.Close()
+	if svc.publicLn != nil {
+		_ = svc.publicLn.Close()
+	}
+	return nil
+}
+
+func (svc *meshnetA2AService) Handler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		details := svc.s.node.CallerDetailsFromRequest(r)
+		caller := &CallerInfo{
+			PeerID:    details.PeerID,
+			Principal: details.Principal,
+			Roles:     slices.Clone(details.Roles),
+			Labels:    maps.Clone(details.Labels),
+			Task:      details.Task,
+		}
+		targetLn := svc.privateLn
+		if details.ExternalIngress {
+			if !svc.ExternalIngressAllowed() {
+				http.Error(w, "Service not found", http.StatusNotFound)
+				return
+			}
+			targetLn = svc.publicLn
+		}
+		roots := svc.s.candidateCardRoots(svc.name)
+		svc.s.deliverHTTP(w, r, targetLn, caller, node.RelativizeAgentCardMultiRoot(svc.name, roots))
+	})
+}
+
 // WhoIs returns the cryptographically verified mesh identity of the caller
 // behind an active HTTP request served on PrivateListener or PublicListener,
 // keyed by http.Request.RemoteAddr. Because connections are in-memory net.Pipe
@@ -228,7 +260,7 @@ func (s *Server) WhoIs(remoteAddr string) (*CallerInfo, bool) {
 // it to the mesh directory (unless NoAnnounce is true), and returns the
 // in-memory listeners and canonical URLs to pass to http.Server.Serve.
 func (s *Server) ListenA2A(ctx context.Context, opts A2AOptions) (*Endpoints, error) {
-	if s.host == nil || s.dir == nil {
+	if !s.isRunning() || s.node.Services() == nil {
 		return nil, errors.New("meshnet: Server is not running (call Up first)")
 	}
 	name := strings.TrimSpace(opts.Name)
@@ -237,6 +269,9 @@ func (s *Server) ListenA2A(ctx context.Context, opts A2AOptions) (*Endpoints, er
 	}
 	if err := api.ValidateServiceFormat(api.ServiceTypeStringA2A + "://" + name); err != nil {
 		return nil, fmt.Errorf("meshnet: invalid A2A service name %q: %w", name, err)
+	}
+	if s.node.IsServiceRegistered(name) {
+		return nil, fmt.Errorf("meshnet: A2A service %q is already registered", name)
 	}
 
 	var ing *api.ServiceIngress
@@ -264,7 +299,7 @@ func (s *Server) ListenA2A(ctx context.Context, opts A2AOptions) (*Endpoints, er
 		}
 	}
 
-	privURL, err := url.Parse(s.localMeshURL(s.peerID, api.ServiceTypeStringA2A, name))
+	privURL, err := url.Parse(fmt.Sprintf("http://agentmesh.local/mesh/%s/%s/%s", s.peerID.String(), api.ServiceTypeStringA2A, name))
 	if err != nil {
 		return nil, err
 	}
@@ -275,37 +310,42 @@ func (s *Server) ListenA2A(ctx context.Context, opts A2AOptions) (*Endpoints, er
 		pubLn = newInprocListener("meshnet:public:a2a:" + name)
 	}
 
-	entry := &a2aEntry{
-		name:         name,
-		description:  opts.Description,
-		noAnnounce:   opts.NoAnnounce,
-		ingress:      ing,
-		privateLn:    privLn,
-		publicLn:     pubLn,
-		privateURL:   privURL,
-		publicActive: opts.Public,
+	svc := &meshnetA2AService{
+		s:           s,
+		name:        name,
+		description: opts.Description,
+		noAnnounce:  opts.NoAnnounce,
+		ingress:     ing,
+		privateLn:   privLn,
+		publicLn:    pubLn,
+		privateURL:  privURL,
 	}
 
-	s.a2aMu.Lock()
-	if _, exists := s.a2aServices[name]; exists {
-		s.a2aMu.Unlock()
-		return nil, fmt.Errorf("meshnet: A2A service %q is already registered", name)
+	if err := s.node.Services().Register(ctx, svc); err != nil {
+		_ = svc.Teardown()
+		return nil, fmt.Errorf("meshnet: register A2A service %q: %w", name, err)
 	}
-	s.a2aServices[name] = entry
-	s.a2aMu.Unlock()
 
-	if !opts.NoAnnounce {
-		s.announceA2AEntry(ctx, entry)
+	// Announce this member's peer record immediately alongside its service keys
+	// so peers discovering the new service can resolve its addresses without
+	// waiting for the initial reprovide delay.
+	if !opts.NoAnnounce && s.node.Directory != nil {
 		peerCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		if err := s.dir.provide(peerCtx, api.PeerKey(s.peerID), ""); err != nil && ctx.Err() == nil && !errors.Is(err, errNoDirectoryRouter) {
-			s.log().Debug("peer directory announcement failed during ListenA2A", "error", err)
+		if err := s.node.Directory.Provide(peerCtx, api.PeerKey(s.peerID), ""); err != nil && ctx.Err() == nil {
+			s.log().Debug("peer directory announcement skipped or failed during ListenA2A",
+				"peer_id", s.peerID.String(),
+				"service", name,
+				"error", err,
+			)
 		}
 		cancel()
-	} else if opts.Public {
-		entry.setPublicState(true, s.computePublicURL(name))
 	}
 
-	_, pubURL := entry.getPublicState()
+	var pubURL *url.URL
+	if opts.Public && !opts.NoAnnounce && svc.ingressActive.Load() {
+		pubURL = s.computePublicURL(name)
+	}
+
 	var pubNetLn net.Listener
 	if pubLn != nil {
 		pubNetLn = pubLn
@@ -314,7 +354,12 @@ func (s *Server) ListenA2A(ctx context.Context, opts A2AOptions) (*Endpoints, er
 	var closeOnce sync.Once
 	closeFn := func() error {
 		closeOnce.Do(func() {
-			s.unregisterA2A(name, entry)
+			uCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if uErr := s.node.UnregisterService(uCtx, name); uErr != nil {
+				s.log().Warn("failed unregistering A2A service", "service", name, "error", uErr)
+			}
+			_ = svc.Teardown()
 		})
 		return nil
 	}
@@ -329,596 +374,37 @@ func (s *Server) ListenA2A(ctx context.Context, opts A2AOptions) (*Endpoints, er
 }
 
 func (s *Server) computePublicURL(name string) *url.URL {
-	urls := s.routerIngressURLs()
-	if len(urls) == 0 {
+	if s.node == nil {
 		return nil
 	}
-	raw := fmt.Sprintf("%s/%s/%s/%s", urls[0], s.peerID.String(), api.ServiceTypeStringA2A, name)
+	base := s.node.PreferredRouterIngressURL()
+	if base == "" {
+		return nil
+	}
+	raw := fmt.Sprintf("%s/%s/%s/%s", base, s.peerID.String(), api.ServiceTypeStringA2A, name)
 	u, err := url.Parse(raw)
 	if err != nil {
+		s.log().Warn("failed parsing router ingress URL", "service", name, "raw_url", raw, "error", err)
 		return nil
 	}
 	return u
 }
 
-func (s *Server) announceA2AEntry(ctx context.Context, entry *a2aEntry) {
-	target := api.ServiceTypeStringA2A + "://" + entry.name
-	nameKey, err := api.ServiceKey(api.ServiceType_SERVICE_TYPE_A2A, entry.name)
-	if err != nil {
-		return
-	}
-	typeKey, err := api.ServiceKey(api.ServiceType_SERVICE_TYPE_A2A, "")
-	if err != nil {
-		return
-	}
-
-	if entry.ingress != nil {
-		ingCtx, ingCancel := context.WithTimeout(ctx, 5*time.Second)
-		err := s.dir.provideWithIngress(ingCtx, nameKey, target, entry.ingress)
-		ingCancel()
-		if err == nil {
-			pubURL := s.computePublicURL(entry.name)
-			entry.setPublicState(true, pubURL)
-			if pubURL != nil {
-				s.log().Info("announced public A2A ingress endpoint", "service", target, "public_url", pubURL.String())
-			}
-		} else {
-			entry.setPublicState(false, nil)
-			if ctx.Err() == nil {
-				s.log().Warn("external ingress announcement refused; falling back to internal-only announcement",
-					"service", target,
-					"error", err,
-				)
-			}
-			fbCtx, fbCancel := context.WithTimeout(ctx, 5*time.Second)
-			if fbErr := s.dir.provide(fbCtx, nameKey, target); fbErr != nil && ctx.Err() == nil {
-				s.log().Warn("internal fallback announcement failed", "service", target, "error", fbErr)
-			}
-			fbCancel()
-		}
-	} else {
-		nameCtx, nameCancel := context.WithTimeout(ctx, 5*time.Second)
-		if err := s.dir.provide(nameCtx, nameKey, target); err != nil && ctx.Err() == nil {
-			s.log().Warn("A2A service name announcement failed", "service", target, "error", err)
-		}
-		nameCancel()
-	}
-
-	typeCtx, typeCancel := context.WithTimeout(ctx, 5*time.Second)
-	if err := s.dir.provide(typeCtx, typeKey, target); err != nil && ctx.Err() == nil {
-		s.log().Warn("A2A service type announcement failed", "service", target, "error", err)
-	}
-	typeCancel()
-}
-
-func (s *Server) unregisterA2A(name string, entry *a2aEntry) {
-	s.a2aMu.Lock()
-	cur, ok := s.a2aServices[name]
-	if ok && cur == entry {
-		delete(s.a2aServices, name)
-	}
-	stillHasA2A := len(s.a2aServices) > 0
-	s.a2aMu.Unlock()
-
-	_ = entry.privateLn.Close()
-	if entry.publicLn != nil {
-		_ = entry.publicLn.Close()
-	}
-
-	if ok && cur == entry && !entry.noAnnounce && s.dir != nil {
-		wCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if nameKey, err := api.ServiceKey(api.ServiceType_SERVICE_TYPE_A2A, name); err == nil {
-			if wErr := s.dir.withdraw(wCtx, nameKey); wErr != nil && !errors.Is(wErr, errNoDirectoryRouter) {
-				s.log().Debug("failed withdrawing A2A service key", "service", name, "error", wErr)
-			}
-		}
-		if !stillHasA2A {
-			if typeKey, err := api.ServiceKey(api.ServiceType_SERVICE_TYPE_A2A, ""); err == nil {
-				if wErr := s.dir.withdraw(wCtx, typeKey); wErr != nil && !errors.Is(wErr, errNoDirectoryRouter) {
-					s.log().Debug("failed withdrawing A2A service type key", "error", wErr)
-				}
-			}
-		}
-	}
-}
-
-func (s *Server) getA2AEntry(name string) (*a2aEntry, bool) {
-	s.a2aMu.RLock()
-	defer s.a2aMu.RUnlock()
-	e, ok := s.a2aServices[name]
-	return e, ok
-}
-
-func (s *Server) listA2AEntries() []*a2aEntry {
-	s.a2aMu.RLock()
-	defer s.a2aMu.RUnlock()
-	out := make([]*a2aEntry, 0, len(s.a2aServices))
-	for _, e := range s.a2aServices {
-		out = append(out, e)
-	}
-	slices.SortFunc(out, func(a, b *a2aEntry) int { return cmp.Compare(a.name, b.name) })
-	return out
-}
-
-func (s *Server) listLocalServiceInfos(typeFilter api.ServiceType) []*api.ServiceInfo {
-	if typeFilter != api.ServiceType_SERVICE_TYPE_UNSPECIFIED && typeFilter != api.ServiceType_SERVICE_TYPE_A2A {
-		return []*api.ServiceInfo{}
-	}
-	entries := s.listA2AEntries()
-	out := make([]*api.ServiceInfo, 0, len(entries))
-	for _, e := range entries {
-		out = append(out, e.serviceInfo())
-	}
-	return out
-}
-
-func (s *Server) deliverHTTP(w http.ResponseWriter, r *http.Request, ln *inprocListener, caller *CallerInfo, modifyResp func(*http.Response) error) {
-	id := s.nextConnSeq.Add(1)
-	remoteAddr := fmt.Sprintf("meshnet-conn-%d", id)
-	if caller != nil {
-		s.activeConns.Store(remoteAddr, caller)
-	}
-
-	clientSide, serverSide := net.Pipe()
-	serverConn := &trackedConn{
-		Conn:   serverSide,
-		local:  ln.Addr(),
-		remote: meshnetAddr(remoteAddr),
-		onClose: func() {
-			s.activeConns.Delete(remoteAddr)
-		},
-	}
-	clientConn := &trackedConn{
-		Conn:   clientSide,
-		local:  meshnetAddr(remoteAddr),
-		remote: ln.Addr(),
-		onClose: func() {
-			s.activeConns.Delete(remoteAddr)
-		},
-	}
-
-	var dialOnce sync.Once
-	transport := &http.Transport{
-		DisableKeepAlives: true,
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			var conn net.Conn
-			var err error
-			dialOnce.Do(func() {
-				if qErr := ln.enqueue(ctx, serverConn); qErr != nil {
-					_ = clientConn.Close()
-					err = qErr
-					return
-				}
-				conn = clientConn
-			})
-			if err != nil {
-				return nil, err
-			}
-			if conn == nil {
-				return nil, errors.New("in-process connection already consumed")
-			}
-			return conn, nil
-		},
-	}
-	defer transport.CloseIdleConnections()
-
-	proxy := &httputil.ReverseProxy{
-		FlushInterval: -1,
-		Transport:     transport,
-		Rewrite: func(pr *httputil.ProxyRequest) {
-			noTrailingSlash := pr.In.Header.Get(api.HeaderMeshNoTrailingSlash) == "true"
-			pr.Out.URL.Scheme = "http"
-			pr.Out.URL.Host = pr.In.Host
-			if pr.Out.URL.Host == "" {
-				pr.Out.URL.Host = "agentmesh.local"
-			}
-			pr.Out.Host = pr.Out.URL.Host
-			pr.Out.Header.Del(api.HeaderMeshNoTrailingSlash)
-			if noTrailingSlash && pr.Out.URL.Path == "/" {
-				pr.Out.URL.Path = "/"
-			}
-		},
-		ModifyResponse: modifyResp,
-		ErrorHandler: func(rw http.ResponseWriter, _ *http.Request, pErr error) {
-			s.activeConns.Delete(remoteAddr)
-			_ = clientConn.Close()
-			_ = serverConn.Close()
-			s.log().Warn("local A2A handler delivery failed", "error", pErr)
-			http.Error(rw, "Bad Gateway", http.StatusBadGateway)
-		},
-	}
-	proxy.ServeHTTP(w, r)
-}
-
-func (s *Server) startHTTPServers(ctx context.Context) error {
-	privListener, err := gostream.Listen(s.host, "/libp2p-http")
-	if err != nil {
-		return fmt.Errorf("listen /libp2p-http: %w", err)
-	}
-	privServer := &http.Server{
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       120 * time.Second,
-		Handler:           s.privateHTTPHandler(),
-	}
-
-	gatedRouter := &routerHost{meshHost{Host: s.host, s: s}}
-	pubListener, err := gostream.Listen(gatedRouter, api.IngressProtocolID)
-	if err != nil {
-		_ = privListener.Close()
-		return fmt.Errorf("listen %s: %w", api.IngressProtocolID, err)
-	}
-	pubServer := &http.Server{
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       120 * time.Second,
-		Handler:           s.externalIngressHandler(),
-	}
-
-	go func() {
-		if sErr := privServer.Serve(privListener); sErr != nil && !errors.Is(sErr, http.ErrServerClosed) {
-			s.log().Error("private /libp2p-http server error", "error", sErr)
-		}
-	}()
-	go func() {
-		if sErr := pubServer.Serve(pubListener); sErr != nil && !errors.Is(sErr, http.ErrServerClosed) {
-			s.log().Error("external ingress server error", "error", sErr)
-		}
-	}()
-	go func() {
-		<-ctx.Done()
-		_ = privServer.Close()
-		_ = privListener.Close()
-		_ = pubServer.Close()
-		_ = pubListener.Close()
-	}()
-	return nil
-}
-
-func (s *Server) privateHTTPHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-		if api.HasDotSegment(path) {
-			http.Error(w, "Invalid path", http.StatusBadRequest)
-			return
-		}
-		parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
-		if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
-			http.Error(w, "Invalid path", http.StatusBadRequest)
-			return
-		}
-		svcTypeStr := strings.ToLower(parts[0])
-		svcName := parts[1]
-		upstreamPath := ""
-		if len(parts) > 2 {
-			upstreamPath = parts[2]
-		}
-		svcType, err := api.ParseServiceType(svcTypeStr)
-		if err != nil || svcType == api.ServiceType_SERVICE_TYPE_UNSPECIFIED {
-			http.Error(w, "Invalid service type", http.StatusBadRequest)
-			return
-		}
-
-		biscuitB64 := r.Header.Get(api.HeaderMeshBiscuit)
-		if biscuitB64 == "" {
-			http.Error(w, "Missing X-Mesh-Biscuit header", http.StatusUnauthorized)
-			return
-		}
-		biscuitBytes, err := base64.StdEncoding.DecodeString(biscuitB64)
-		if err != nil {
-			biscuitBytes, err = identity.DecodeBase64Biscuit(biscuitB64)
-			if err != nil {
-				http.Error(w, "Invalid X-Mesh-Biscuit encoding", http.StatusBadRequest)
-				return
-			}
-		}
-
-		remotePeer, err := peer.Decode(r.RemoteAddr)
-		if err != nil {
-			http.Error(w, "Invalid remote peer", http.StatusBadRequest)
-			return
-		}
-		if s.rateLimiter != nil && !s.rateLimiter.Allow(remotePeer.String()) {
-			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
-			return
-		}
-
-		target := svcTypeStr + "://" + svcName
-		backendPath := "/" + upstreamPath
-		// Authorize BEFORE checking whether svcName is registered so an
-		// unauthorized peer learns nothing about hosted service names.
-		caller, err := s.authorizeInbound(biscuitBytes, remotePeer, target, "/libp2p-http", &httpRequestFacts{
-			method: r.Method,
-			path:   backendPath,
-		})
-		if err != nil {
-			http.Error(w, "Authorization failed", http.StatusForbidden)
-			return
-		}
-
-		if svcType != api.ServiceType_SERVICE_TYPE_A2A {
-			http.Error(w, "Service not found", http.StatusNotFound)
-			return
-		}
-		entry, ok := s.getA2AEntry(svcName)
-		if !ok {
-			http.Error(w, "Service not found", http.StatusNotFound)
-			return
-		}
-
-		for h := range r.Header {
-			lower := strings.ToLower(h)
-			if lower == "cookie" || strings.HasPrefix(lower, "x-mesh-") {
-				delete(r.Header, h)
-			}
-		}
-		r.Header.Set(api.HeaderPeerID, remotePeer.String())
-		if caller.Principal != "" {
-			r.Header.Set(api.HeaderMeshPrincipal, caller.Principal)
-		}
-		if len(caller.Roles) > 0 {
-			r.Header.Set(api.HeaderMeshRoles, strings.Join(caller.Roles, ","))
-		}
-		if caller.Task != "" {
-			r.Header.Set(api.HeaderMeshTask, caller.Task)
-		}
-
-		rewriteInboundRequestPath(r, parts, upstreamPath)
-		roots := s.candidateCardRoots(entry)
-		s.deliverHTTP(w, r, entry.privateLn, caller, relativizeAgentCardResponse(entry.name, roots))
-	})
-}
-
-func (s *Server) externalIngressHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-		if api.HasDotSegment(path) {
-			http.Error(w, "Invalid path", http.StatusBadRequest)
-			return
-		}
-		parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
-		if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
-			http.Error(w, "Invalid path", http.StatusBadRequest)
-			return
-		}
-		svcTypeStr := strings.ToLower(parts[0])
-		svcName := parts[1]
-		upstreamPath := ""
-		if len(parts) > 2 {
-			upstreamPath = parts[2]
-		}
-		svcType, err := api.ParseServiceType(svcTypeStr)
-		if err != nil {
-			http.Error(w, "Invalid service type", http.StatusBadRequest)
-			return
-		}
-		if !api.IsInboundServiceType(svcType) {
-			http.Error(w, "Service not found", http.StatusNotFound)
-			return
-		}
-
-		remotePeer, err := peer.Decode(r.RemoteAddr)
-		if err != nil {
-			http.Error(w, "Invalid remote peer", http.StatusBadRequest)
-			return
-		}
-		if s.isPeerBanned(remotePeer) {
-			http.Error(w, "Peer is revoked", http.StatusForbidden)
-			return
-		}
-		if s.externalIngressLimiter != nil && !s.externalIngressLimiter.Allow(remotePeer.String()) {
-			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
-			return
-		}
-
-		routerBiscuitHeader := r.Header.Get(api.HeaderMeshBiscuit)
-		if routerBiscuitHeader == "" {
-			http.Error(w, "Missing X-Mesh-Biscuit header", http.StatusUnauthorized)
-			return
-		}
-		routerBiscuitBytes, err := identity.DecodeBase64Biscuit(routerBiscuitHeader)
-		if err != nil {
-			http.Error(w, "Invalid X-Mesh-Biscuit encoding", http.StatusBadRequest)
-			return
-		}
-		routerClaims, err := s.verifyLocalBiscuit(routerBiscuitBytes)
-		if err != nil {
-			s.log().Warn("router biscuit verification failed on external ingress", "router_peer_id", remotePeer.String(), "error", err)
-			http.Error(w, "Router authentication failed", http.StatusForbidden)
-			return
-		}
-		if err := identity.RequireAuthorityBinding(routerClaims.Biscuit, remotePeer); err != nil {
-			s.log().Warn("router biscuit binding mismatch on external ingress", "router_peer_id", remotePeer.String(), "error", err)
-			http.Error(w, "Router authentication failed", http.StatusForbidden)
-			return
-		}
-		if !slices.Contains(routerClaims.Roles, api.RoleRouter) {
-			s.log().Warn("non-router peer attempted external ingress", "peer_id", remotePeer.String())
-			http.Error(w, "Forbidden: only enrolled routers may forward external ingress", http.StatusForbidden)
-			return
-		}
-
-		if svcType != api.ServiceType_SERVICE_TYPE_A2A {
-			http.Error(w, "Service not found", http.StatusNotFound)
-			return
-		}
-		entry, ok := s.getA2AEntry(svcName)
-		if !ok || entry.ingress == nil || entry.publicLn == nil {
-			http.Error(w, "Service not found", http.StatusNotFound)
-			return
-		}
-		if active, _ := entry.getPublicState(); !active {
-			http.Error(w, "Service not found", http.StatusNotFound)
-			return
-		}
-
-		effectiveMode := api.EffectiveIngressAuthMode(entry.ingress)
-		modeStr, err := api.IngressAuthModeToString(effectiveMode)
-		if err != nil {
-			http.Error(w, "Unsupported service ingress auth mode", http.StatusForbidden)
-			return
-		}
-		if wireMode := strings.TrimSpace(r.Header.Get(api.HeaderMeshIngress)); wireMode != "" && wireMode != modeStr {
-			http.Error(w, "Ingress auth mode mismatch", http.StatusForbidden)
-			return
-		}
-
-		target := svcTypeStr + "://" + svcName
-		backendPath := "/" + upstreamPath
-		roots := s.candidateCardRoots(entry)
-
-		if effectiveMode == api.IngressAuthMode_INGRESS_AUTH_MODE_PASSTHROUGH {
-			api.SanitizeExternalIngressHeaders(r.Header, false)
-			r.Header.Set(api.HeaderPeerID, remotePeer.String())
-			r.Header.Set(api.HeaderMeshIngress, api.IngressAuthModeStringPassthrough)
-			s.log().Info("external ingress border crossing",
-				"mode", api.IngressAuthModeStringPassthrough,
-				"router_peer_id", remotePeer.String(),
-				"target", target,
-				"method", r.Method,
-				"path", backendPath,
-			)
-			caller := &CallerInfo{
-				PeerID:    remotePeer.String(),
-				Principal: "passthrough",
-			}
-			rewriteInboundRequestPath(r, parts, upstreamPath)
-			s.deliverHTTP(w, r, entry.publicLn, caller, relativizeAgentCardResponse(entry.name, roots))
-			return
-		}
-
-		callerBiscuitHeader := strings.TrimSpace(r.Header.Get(api.HeaderMeshIngressCallerBiscuit))
-		if r.Method == http.MethodGet && upstreamPath == a2aAgentCardPath && callerBiscuitHeader == "" {
-			api.SanitizeExternalIngressHeaders(r.Header, true)
-			r.Header.Set(api.HeaderPeerID, remotePeer.String())
-			r.Header.Set(api.HeaderMeshIngress, api.IngressAuthModeStringEdge)
-			s.log().Info("external ingress border crossing",
-				"mode", api.IngressAuthModeStringEdge,
-				"router_peer_id", remotePeer.String(),
-				"principal", "anonymous:agent-card",
-				"target", target,
-				"method", r.Method,
-				"path", backendPath,
-			)
-			caller := &CallerInfo{
-				PeerID:    remotePeer.String(),
-				Principal: "anonymous:agent-card",
-			}
-			rewriteInboundRequestPath(r, parts, upstreamPath)
-			s.deliverHTTP(w, r, entry.publicLn, caller, relativizeAgentCardResponse(entry.name, roots))
-			return
-		}
-
-		if callerBiscuitHeader == "" {
-			http.Error(w, "Missing caller credentials on edge ingress request", http.StatusUnauthorized)
-			return
-		}
-		callerBiscuitBytes, err := identity.DecodeBase64Biscuit(callerBiscuitHeader)
-		if err != nil {
-			http.Error(w, "Invalid caller biscuit encoding", http.StatusBadRequest)
-			return
-		}
-		verifiedCaller, err := s.verifyLocalBiscuit(callerBiscuitBytes)
-		if err != nil {
-			s.log().Warn("external ingress caller verification failed", "router_peer_id", remotePeer.String(), "target", target, "error", err)
-			http.Error(w, "Authorization failed", http.StatusForbidden)
-			return
-		}
-
-		evalParams, err := s.buildExternalIngressEvalParams(svcTypeStr, svcName, r.Method, backendPath, entry.ingress.GetAllow())
-		if err != nil {
-			s.log().Warn("failed building external ingress evaluation params", "target", target, "error", err)
-			http.Error(w, "Authorization failed", http.StatusForbidden)
-			return
-		}
-		callerRes, err := identity.AuthorizeIngressDelegatedBiscuit(verifiedCaller, evalParams)
-		if err != nil {
-			s.log().Warn("external ingress authorization denied", "router_peer_id", remotePeer.String(), "target", target, "error", err)
-			http.Error(w, "Authorization failed", http.StatusForbidden)
-			return
-		}
-
-		api.SanitizeExternalIngressHeaders(r.Header, true)
-		r.Header.Set(api.HeaderPeerID, remotePeer.String())
-		r.Header.Set(api.HeaderMeshIngress, api.IngressAuthModeStringEdge)
-		if callerRes.Principal != "" {
-			r.Header.Set(api.HeaderMeshPrincipal, callerRes.Principal)
-		}
-		if len(callerRes.Roles) > 0 {
-			r.Header.Set(api.HeaderMeshRoles, strings.Join(callerRes.Roles, ","))
-		}
-		if callerRes.TaskName != "" {
-			r.Header.Set(api.HeaderMeshTask, callerRes.TaskName)
-		}
-
-		s.log().Info("external ingress border crossing",
-			"mode", api.IngressAuthModeStringEdge,
-			"router_peer_id", remotePeer.String(),
-			"principal", callerRes.Principal,
-			"roles", callerRes.Roles,
-			"task", callerRes.TaskName,
-			"target", target,
-			"method", r.Method,
-			"path", backendPath,
-		)
-
-		actorPeerID := remotePeer.String()
-		if callerRes.ActorNodeID != "" {
-			if id, err := peer.Decode(callerRes.ActorNodeID); err == nil {
-				actorPeerID = id.String()
-			} else {
-				s.log().Debug("ignoring invalid actor_node in external ingress biscuit", "actor_node", callerRes.ActorNodeID, "error", err)
-			}
-		}
-		caller := &CallerInfo{
-			PeerID:    actorPeerID,
-			Principal: callerRes.Principal,
-			Roles:     slices.Clone(callerRes.Roles),
-			Task:      callerRes.TaskName,
-		}
-		rewriteInboundRequestPath(r, parts, upstreamPath)
-		s.deliverHTTP(w, r, entry.publicLn, caller, relativizeAgentCardResponse(entry.name, roots))
-	})
-}
-
-func (s *Server) buildExternalIngressEvalParams(serviceType, serviceName, method, path string, allow []string) (identity.IngressEvalParams, error) {
-	pol, err := s.meshPolicy()
-	if err != nil {
-		return identity.IngressEvalParams{}, err
-	}
-	return identity.IngressEvalParams{
-		ServiceType:     serviceType,
-		ServiceName:     serviceName,
-		Method:          method,
-		Path:            path,
-		TargetFacts:     pol.TargetFacts,
-		MeshPolicyRules: pol.MeshRules,
-		Allow:           allow,
-		Timeout:         s.biscuitTimeout(),
-	}, nil
-}
-
-func rewriteInboundRequestPath(r *http.Request, parts []string, upstreamPath string) {
-	if upstreamPath == "" {
-		r.URL.Path = "/"
-		if len(parts) == 2 {
-			r.Header.Set(api.HeaderMeshNoTrailingSlash, "true")
-		}
-	} else {
-		r.URL.Path = "/" + upstreamPath
-	}
-	r.URL.RawPath = ""
-}
-
-func (s *Server) candidateCardRoots(entry *a2aEntry) []string {
-	roots := []string{"/mesh/" + s.peerID.String() + "/" + api.ServiceTypeStringA2A + "/" + entry.name}
-	if _, pubURL := entry.getPublicState(); pubURL != nil {
+func (s *Server) candidateCardRoots(serviceName string) []string {
+	roots := []string{"/mesh/" + s.peerID.String() + "/" + api.ServiceTypeStringA2A + "/" + serviceName}
+	if pubURL := s.computePublicURL(serviceName); pubURL != nil {
 		if p := strings.TrimSuffix(pubURL.EscapedPath(), "/"); p != "" && !slices.Contains(roots, p) {
 			roots = append(roots, p)
 		}
 	}
-	for _, base := range s.routerIngressURLs() {
-		if u, err := url.Parse(base); err == nil {
-			p := strings.TrimSuffix(u.EscapedPath(), "/") + "/" + s.peerID.String() + "/" + api.ServiceTypeStringA2A + "/" + entry.name
+	if s.node != nil {
+		for _, base := range s.node.RouterIngressURLs() {
+			u, err := url.Parse(base)
+			if err != nil {
+				s.log().Debug("ignoring invalid router ingress base URL when computing card roots", "base_url", base, "error", err)
+				continue
+			}
+			p := strings.TrimSuffix(u.EscapedPath(), "/") + "/" + s.peerID.String() + "/" + api.ServiceTypeStringA2A + "/" + serviceName
 			if !slices.Contains(roots, p) {
 				roots = append(roots, p)
 			}
@@ -929,107 +415,85 @@ func (s *Server) candidateCardRoots(entry *a2aEntry) []string {
 	return roots
 }
 
-func relativizeAgentCardResponse(service string, roots []string) func(*http.Response) error {
-	cardPath := "/" + a2aAgentCardPath
-	return func(resp *http.Response) error {
-		if resp.Request == nil || resp.Request.Method != http.MethodGet || resp.Request.URL.EscapedPath() != cardPath ||
-			resp.StatusCode != http.StatusOK {
-			return nil
-		}
-		if resp.Header.Get("Content-Encoding") != "" {
-			return nil
-		}
-		raw, err := io.ReadAll(io.LimitReader(resp.Body, maxAgentCardBytes+1))
-		if err != nil {
-			return fmt.Errorf("read agent card of %q: %w", service, err)
-		}
-		if len(raw) > maxAgentCardBytes {
-			resp.Body = struct {
-				io.Reader
-				io.Closer
-			}{io.MultiReader(bytes.NewReader(raw), resp.Body), resp.Body}
-			return nil
-		}
-		_ = resp.Body.Close()
-		out, err := relativizeAgentCardMultiRoot(raw, roots)
-		if err != nil {
-			out = raw
-		}
-		resp.Body = io.NopCloser(bytes.NewReader(out))
-		resp.ContentLength = int64(len(out))
-		resp.Header.Set("Content-Length", strconv.Itoa(len(out)))
-		return nil
+func (s *Server) deliverHTTP(
+	w http.ResponseWriter,
+	r *http.Request,
+	ln *inprocListener,
+	caller *CallerInfo,
+	modifyResp func(*http.Response) error,
+) {
+	if ln == nil {
+		http.Error(w, "Service listener unavailable", http.StatusNotFound)
+		return
 	}
-}
 
-func relativizeAgentCardMultiRoot(raw []byte, roots []string) ([]byte, error) {
-	var card map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &card); err != nil {
-		return nil, fmt.Errorf("card is not a JSON object: %w", err)
+	seq := s.nextConnSeq.Add(1)
+	remoteKey := fmt.Sprintf("meshnet:%s#%d", caller.PeerID, seq)
+	s.activeConns.Store(remoteKey, caller)
+
+	clientSide, serverSide := net.Pipe()
+	serverConn := &trackedConn{
+		Conn:   serverSide,
+		local:  ln.Addr(),
+		remote: meshnetAddr(remoteKey),
+		onClose: func() {
+			s.activeConns.Delete(remoteKey)
+		},
 	}
-	ifacesRaw, ok := card["supportedInterfaces"]
-	if !ok {
-		return raw, nil
-	}
-	var ifaces []map[string]json.RawMessage
-	if err := json.Unmarshal(ifacesRaw, &ifaces); err != nil {
-		return nil, fmt.Errorf("supportedInterfaces is not a list of objects: %w", err)
-	}
-	for _, iface := range ifaces {
-		var u, binding string
-		if iface == nil || json.Unmarshal(iface["url"], &u) != nil || json.Unmarshal(iface["protocolBinding"], &binding) != nil ||
-			!a2aBindingOverHTTP(a2a.TransportProtocol(binding)) {
-			continue
-		}
-		for _, root := range roots {
-			if rel, ok := relativeToRoot(u, root); ok {
-				enc, err := json.Marshal(rel)
-				if err != nil {
-					return nil, err
+
+	var dialOnce sync.Once
+	dialUsed := false
+	tr := &http.Transport{
+		DisableKeepAlives:  true,
+		DisableCompression: true,
+		DialContext: func(dCtx context.Context, _, _ string) (net.Conn, error) {
+			var conn net.Conn
+			var err error
+			dialOnce.Do(func() {
+				dialUsed = true
+				if eErr := ln.enqueue(dCtx, serverConn); eErr != nil {
+					_ = clientSide.Close()
+					s.activeConns.Delete(remoteKey)
+					err = eErr
+					return
 				}
-				iface["url"] = enc
-				break
+				conn = clientSide
+			})
+			if err != nil {
+				return nil, err
 			}
+			if conn == nil {
+				return nil, errors.New("in-process connection already consumed")
+			}
+			return conn, nil
+		},
+	}
+	defer func() {
+		tr.CloseIdleConnections()
+		if !dialUsed {
+			_ = clientSide.Close()
+			_ = serverConn.Close()
+			s.activeConns.Delete(remoteKey)
 		}
-	}
-	enc, err := json.Marshal(ifaces)
-	if err != nil {
-		return nil, err
-	}
-	card["supportedInterfaces"] = enc
-	return json.Marshal(card)
-}
+	}()
 
-func relativeToRoot(raw, root string) (string, bool) {
-	u, err := url.Parse(raw)
-	if err != nil || !u.IsAbs() || u.Opaque != "" {
-		return "", false
+	targetURL, _ := url.Parse("http://meshnet.internal")
+	proxy := &httputil.ReverseProxy{
+		Transport:      tr,
+		FlushInterval:  -1,
+		ModifyResponse: modifyResp,
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(targetURL)
+			pr.Out.Host = pr.In.Host
+			pr.Out.Header.Del(api.HeaderMeshNoTrailingSlash)
+		},
+		ErrorHandler: func(rw http.ResponseWriter, _ *http.Request, err error) {
+			if errors.Is(err, net.ErrClosed) {
+				http.Error(rw, "Service listener closed", http.StatusServiceUnavailable)
+				return
+			}
+			http.Error(rw, fmt.Sprintf("Bad Gateway: %v", err), http.StatusBadGateway)
+		},
 	}
-	p := u.EscapedPath()
-	var rest string
-	switch {
-	case root == "" && (p == "" || p == "/"):
-	case root == "" && strings.HasPrefix(p, "/"):
-		rest = strings.TrimPrefix(p, "/")
-	case p == root || p == root+"/":
-	case strings.HasPrefix(p, root+"/"):
-		rest = strings.TrimPrefix(p, root+"/")
-	default:
-		return "", false
-	}
-	if api.HasDotSegment(rest) {
-		return "", false
-	}
-	if u.RawQuery != "" {
-		rest += "?" + u.RawQuery
-	}
-	return rest, true
-}
-
-func a2aBindingOverHTTP(binding a2a.TransportProtocol) bool {
-	switch strings.ToUpper(string(binding)) {
-	case string(a2a.TransportProtocolJSONRPC), string(a2a.TransportProtocolHTTPJSON):
-		return true
-	}
-	return false
+	proxy.ServeHTTP(w, r)
 }

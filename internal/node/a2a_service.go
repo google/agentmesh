@@ -351,6 +351,80 @@ func relativizeAgentCardResponse(service, targetPath string) func(*http.Response
 	}
 }
 
+// RelativizeAgentCardMultiRoot rewrites the agent card served by an in-process
+// A2A handler (such as meshnet.ListenA2A) against multiple candidate base roots
+// (e.g. public router ingress path, private mesh path, and "/") in order.
+func RelativizeAgentCardMultiRoot(service string, roots []string) func(*http.Response) error {
+	cardPath := "/" + a2aAgentCardPath
+	return func(resp *http.Response) error {
+		if resp.Request == nil || resp.Request.Method != http.MethodGet || resp.Request.URL.EscapedPath() != cardPath ||
+			resp.StatusCode != http.StatusOK {
+			return nil
+		}
+		if resp.Header.Get("Content-Encoding") != "" {
+			return nil
+		}
+		raw, err := io.ReadAll(io.LimitReader(resp.Body, maxAgentCardBytes+1))
+		if err != nil {
+			return fmt.Errorf("read agent card of %q: %w", service, err)
+		}
+		if len(raw) > maxAgentCardBytes {
+			resp.Body = struct {
+				io.Reader
+				io.Closer
+			}{io.MultiReader(bytes.NewReader(raw), resp.Body), resp.Body}
+			return nil
+		}
+		_ = resp.Body.Close()
+		out, err := relativizeAgentCardMultiRoot(raw, roots)
+		if err != nil {
+			out = raw
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(out))
+		resp.ContentLength = int64(len(out))
+		resp.Header.Set("Content-Length", strconv.Itoa(len(out)))
+		return nil
+	}
+}
+
+func relativizeAgentCardMultiRoot(raw []byte, roots []string) ([]byte, error) {
+	var card map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &card); err != nil {
+		return nil, fmt.Errorf("card is not a JSON object: %w", err)
+	}
+	ifacesRaw, ok := card["supportedInterfaces"]
+	if !ok {
+		return raw, nil
+	}
+	var ifaces []map[string]json.RawMessage
+	if err := json.Unmarshal(ifacesRaw, &ifaces); err != nil {
+		return nil, fmt.Errorf("supportedInterfaces is not a list of objects: %w", err)
+	}
+	for _, iface := range ifaces {
+		var u, binding string
+		if iface == nil || json.Unmarshal(iface["url"], &u) != nil || json.Unmarshal(iface["protocolBinding"], &binding) != nil ||
+			!a2aBindingOverHTTP(a2a.TransportProtocol(binding)) {
+			continue
+		}
+		for _, root := range roots {
+			if rel, ok := relativeToRoot(u, root); ok {
+				enc, err := json.Marshal(rel)
+				if err != nil {
+					return nil, err
+				}
+				iface["url"] = enc
+				break
+			}
+		}
+	}
+	enc, err := json.Marshal(ifaces)
+	if err != nil {
+		return nil, err
+	}
+	card["supportedInterfaces"] = enc
+	return json.Marshal(card)
+}
+
 // relativizeAgentCard rewrites the url of every HTTP supportedInterfaces
 // entry whose path lies under root to a reference relative to root ("" for root
 // itself), and returns the absolute URLs it left as they were. Every other

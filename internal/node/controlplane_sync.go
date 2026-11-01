@@ -112,6 +112,12 @@ func (n *AgentMeshNode) syncRevocations(ctx context.Context, controlPlaneURL str
 	return nil
 }
 
+// SyncTrustedKeys fetches and verifies the control plane's current /keys set
+// against the node's trusted keys and persists the merged set.
+func (n *AgentMeshNode) SyncTrustedKeys(ctx context.Context, controlPlaneURL string) error {
+	return n.syncTrustedKeys(ctx, controlPlaneURL)
+}
+
 // syncTrustedKeys replaces the trust set with the control plane's current
 // /keys answer and persists it. Enrollment hands out only the newest key, so
 // this is how a node learns the key still in its rotation grace period (which
@@ -126,7 +132,7 @@ func (n *AgentMeshNode) syncTrustedKeys(ctx context.Context, controlPlaneURL str
 	if len(existing) == 0 {
 		return errors.New("no trusted control plane keys to verify /keys against")
 	}
-	keys, err := FetchControlPlaneKeys(ctx, controlPlaneURL, publicKeysOf(existing))
+	keys, err := n.fetchControlPlaneKeys(ctx, controlPlaneURL, publicKeysOf(existing))
 	if err != nil {
 		return err
 	}
@@ -207,7 +213,7 @@ func (n *AgentMeshNode) syncMeshInfo(ctx context.Context, controlPlaneURL string
 	// Taken before the request: a ban recorded after this instant cannot be
 	// in the answer, so its absence must not be read as an unban.
 	fetchedAt := time.Now()
-	info, err := FetchControlPlaneInfo(ctx, controlPlaneURL)
+	info, err := n.fetchControlPlaneInfo(ctx, controlPlaneURL)
 	if err != nil {
 		return err
 	}
@@ -395,7 +401,8 @@ const reenrollCooldown = time.Minute
 // the node leaves recovery to the renewal loop and says so once per failure.
 func (n *AgentMeshNode) recoverEnrollment(ctx context.Context) bool {
 	path := n.config.BootstrapTokenPath
-	if path == "" {
+	inlineToken := strings.TrimSpace(n.config.BootstrapToken)
+	if path == "" && inlineToken == "" {
 		logger.Warn("Control plane no longer recognizes this node's credential and no --bootstrap-token-path is configured; waiting for the renewal loop")
 		reenrollmentsTotal.WithLabelValues("no_token").Inc()
 		return false
@@ -410,9 +417,17 @@ func (n *AgentMeshNode) recoverEnrollment(ctx context.Context) bool {
 	}
 	n.lastReenroll = time.Now()
 	n.reenrollMu.Unlock()
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		logger.Warnw("Control plane no longer recognizes this node's credential; bootstrap token unreadable", "path", path, "error", err)
+	bootstrapToken := inlineToken
+	if path != "" {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			logger.Warnw("Control plane no longer recognizes this node's credential; bootstrap token unreadable", "path", path, "error", err)
+			reenrollmentsTotal.WithLabelValues("no_token").Inc()
+			return false
+		}
+		bootstrapToken = strings.TrimSpace(string(raw))
+	}
+	if bootstrapToken == "" {
 		reenrollmentsTotal.WithLabelValues("no_token").Inc()
 		return false
 	}
@@ -432,7 +447,7 @@ func (n *AgentMeshNode) recoverEnrollment(ctx context.Context) bool {
 			return err
 		}
 	}
-	if err := enroll(ctx, controlPlaneURL, strings.TrimSpace(string(raw))); err != nil {
+	if err := enroll(ctx, controlPlaneURL, bootstrapToken); err != nil {
 		logger.Errorw("Re-enrollment with the bootstrap token failed", "error", err)
 		reenrollmentsTotal.WithLabelValues("failed").Inc()
 		return false

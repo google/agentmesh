@@ -252,11 +252,13 @@ Public A2A:   http://127.0.0.1:33776/ingress/12D3KooW.../a2a/coder
   forwards `Authorization` untouched to your handler when your mesh role
   explicitly grants `PASSTHROUGH` in `PolicyRole.allowed_ingress`; see
   [External ingress](../external-ingress/).
-- **Graceful policy-ceiling fallback:** If `Public: true` is requested on a hub
-  whose `PolicyRole.allowed_ingress` denies public exposure for that service or
-  auth mode, `ListenA2A` logs a warning, falls back to announcing the service
-  privately inside the mesh, and sets `ep.PublicURL` to `nil` rather than
-  failing startup.
+- **Graceful policy-ceiling fallback & `NoAnnounce`:** If `Public: true` is
+  requested on a hub whose `PolicyRole.allowed_ingress` denies public exposure
+  for that service or auth mode, `ListenA2A` logs a warning, falls back to
+  announcing the service privately inside the mesh, and sets `ep.PublicURL` to
+  `nil` rather than failing startup. Likewise, setting `NoAnnounce: true` skips
+  directory announcements so `ep.PublicURL` is `nil` even when `Public: true`
+  (because routers hold no directory route for an unannounced service).
 
 ## 3. Discover and call mesh agents with stock `a2a-go`
 
@@ -460,7 +462,28 @@ AGENTMESH_STATE_DIR=~/.config/my-agent/agentmesh go run ./sdk/meshnet/examples/a
 Conversely, a state directory populated by `meshnet.Server` (or written with
 `meshnet.WriteStateDir` and inspected with `meshnet.ReadStateDir`) can be
 imported into `agentmesh-node` with `agentmesh-node state import <dir>` or
-opened directly by `sdk/js` and `sdk/python`. While `srv` is running, background
-renewal refreshes credentials proactively before expiry, syncs rotated
-control-plane signing keys, and enforces live `/mesh/events/v1` revocations and
-peer bans within a second.
+opened directly by `sdk/js` and `sdk/python`. When `credential.json` carries an
+`oidc_session` (public OIDC clients; no `client_secret` is stored), `meshnet`
+persists any rotated `refresh_token` immediately before calling `POST /register`
+so one-time refresh tokens survive transient hub failures.
+
+## 7. Lifecycle signals and Prometheus metrics
+
+- **Router admission (`Server.Up`, `Server.Status`):** `Up` returns as soon as
+  the first router admits the member while any remaining dials up to
+  `Server.Routers` (default `2`) complete in the background, so
+  `Status.AttachedRouters` may briefly list one router right after `Up`.
+- **Credential-lapse observation (`Done`, `Err`, `OnCredentialLapse`):** Unlike
+  the standalone `agentmesh-node` binary, `meshnet.Server` never terminates the
+  host process when a credential expires while the control plane or IdP is
+  unreachable. Instead, background renewal retries with exponential backoff
+  (`2s` up to `5m`), closes `srv.Done()`, sets `srv.Err()` to an error wrapping
+  `meshnet.ErrCredentialLapsed`, invokes `srv.OnCredentialLapse` if configured,
+  and reports live lapse state via `srv.Status().CredentialLapsed` (which clears
+  back to `false` once a retry succeeds).
+- **Per-Server Prometheus collectors (`Server.Registerer`):** Pass a
+  `prometheus.Registerer` (for example `prometheus.DefaultRegisterer` or a
+  custom `*prometheus.Registry`) to export `peer_id`-labeled state gauges and
+  refusal/ingress counters (`agentmesh_meshnet_*`). Multiple `Server` instances
+  can share one registry without colliding, and `srv.Close()` unregisters all
+  collectors for that instance. Leave `Registerer` `nil` to disable metrics.

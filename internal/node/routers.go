@@ -182,7 +182,7 @@ func (n *AgentMeshNode) refreshRouterCatalog(ctx context.Context) error {
 	if err != nil || controlPlaneURL == "" {
 		return errors.New("no control plane URL in store")
 	}
-	info, err := FetchControlPlaneInfo(ctx, controlPlaneURL)
+	info, err := n.fetchControlPlaneInfo(ctx, controlPlaneURL)
 	if err != nil {
 		return err
 	}
@@ -221,6 +221,10 @@ func (n *AgentMeshNode) attachedRouters() []peer.ID {
 	}
 	return out
 }
+
+// AttachedRouterIDs returns the peer IDs of routers this node currently holds
+// a live authenticated session with.
+func (n *AgentMeshNode) AttachedRouterIDs() []peer.ID { return n.attachedRouters() }
 
 // AttachedRouters is how many routers the node keeps a live session with.
 func (n *AgentMeshNode) AttachedRouters() int { return len(n.attachedRouters()) }
@@ -283,15 +287,27 @@ func (n *AgentMeshNode) refreshRelays() {
 }
 
 // pickRouters chooses k routers to attach to, from the catalog, leaving out
-// those already attached and those that sent the node away. When the
-// catalog has routers and none passes the selector, the warning names both
-// sides, since that is a configuration to fix rather than a router to wait
-// for.
+// those already attached, currently dialing or redialing, and those that sent
+// the node away. When the catalog has routers and none passes the selector,
+// the warning names both sides, since that is a configuration to fix rather
+// than a router to wait for.
 func (n *AgentMeshNode) pickRouters(k int) []peer.AddrInfo {
 	cands := n.routerCandidates()
 	n.mu.Lock()
-	exclude := make(map[peer.ID]bool, len(n.attached)+len(n.shunned))
+	exclude := n.excludedRoutersLocked()
+	n.mu.Unlock()
+	return n.selectAndWarnRouters(cands, k, exclude)
+}
+
+func (n *AgentMeshNode) excludedRoutersLocked() map[peer.ID]bool {
+	exclude := make(map[peer.ID]bool, len(n.attached)+len(n.dialing)+len(n.redialing)+len(n.shunned))
 	for pid := range n.attached {
+		exclude[pid] = true
+	}
+	for pid := range n.dialing {
+		exclude[pid] = true
+	}
+	for pid := range n.redialing {
 		exclude[pid] = true
 	}
 	now := time.Now()
@@ -302,7 +318,10 @@ func (n *AgentMeshNode) pickRouters(k int) []peer.AddrInfo {
 			delete(n.shunned, pid)
 		}
 	}
-	n.mu.Unlock()
+	return exclude
+}
+
+func (n *AgentMeshNode) selectAndWarnRouters(cands []routerCandidate, k int, exclude map[peer.ID]bool) []peer.AddrInfo {
 	picked, matched := selectRouters(cands, k, n.config.RouterSelector, n.config.RouterPrefer, exclude)
 	if matched == 0 && len(cands) > 0 && len(n.config.RouterSelector) > 0 {
 		var seen []string
@@ -311,6 +330,52 @@ func (n *AgentMeshNode) pickRouters(k int) []peer.AddrInfo {
 		}
 		logger.Warnf("[AuthN] No router attests the selector %v; routers listed: %s", n.config.RouterSelector, strings.Join(seen, ", "))
 	}
+	return picked
+}
+
+// reserveRoutersToAttach atomically counts attached and in-flight router dials
+// under n.mu and marks up to (want - inUse) replacement candidates in
+// n.dialing before unlocking, so concurrent callers (HandleGoAway, monitor,
+// admitByRouters) never overshoot Options.Routers or dial the same router twice.
+func (n *AgentMeshNode) reserveRoutersToAttach() []peer.AddrInfo {
+	n.mu.Lock()
+	matched := 0
+	for _, c := range n.routerCatalog {
+		if len(n.config.RouterSelector) == 0 || api.LabelsSatisfy(n.config.RouterSelector, c.Labels) {
+			matched++
+		}
+	}
+	want := min(n.config.Routers, matched)
+	inUse := 0
+	counted := make(map[peer.ID]bool, len(n.attached)+len(n.dialing))
+	for pid := range n.attached {
+		if n.authenticatedRouters[pid] && (n.Host == nil || n.Host.Network().Connectedness(pid) == network.Connected) {
+			counted[pid] = true
+			inUse++
+		}
+	}
+	for pid := range n.dialing {
+		if !counted[pid] {
+			counted[pid] = true
+			inUse++
+		}
+	}
+	if inUse >= want {
+		n.mu.Unlock()
+		return nil
+	}
+	cands := append([]routerCandidate(nil), n.routerCatalog...)
+	exclude := n.excludedRoutersLocked()
+	picked := n.selectAndWarnRouters(cands, want-inUse, exclude)
+	if len(picked) > 0 {
+		if n.dialing == nil {
+			n.dialing = map[peer.ID]bool{}
+		}
+		for _, pi := range picked {
+			n.dialing[pi.ID] = true
+		}
+	}
+	n.mu.Unlock()
 	return picked
 }
 
@@ -325,19 +390,54 @@ func (n *AgentMeshNode) shun(router peer.ID, d time.Duration) {
 	n.mu.Unlock()
 }
 
+func (n *AgentMeshNode) finishDialAndAttach(router peer.ID) {
+	n.mu.Lock()
+	if n.attached == nil {
+		n.attached = map[peer.ID]bool{}
+	}
+	n.attached[router] = true
+	delete(n.dialing, router)
+	n.mu.Unlock()
+	if n.connMgr != nil {
+		n.connMgr.Protect(router, routerTag)
+	}
+	n.refreshRelays()
+	n.triggerReprovide()
+}
+
+func (n *AgentMeshNode) clearDialing(routers []peer.AddrInfo) {
+	n.mu.Lock()
+	for _, r := range routers {
+		delete(n.dialing, r.ID)
+	}
+	n.mu.Unlock()
+}
+
 // dialAndAttach runs authRouter against each router at once and attaches
 // the ones that admit the node, delivering one outcome per router on the
 // returned channel in completion order. A caller may stop reading early:
 // the dials still in flight attach on their own as they land.
 func (n *AgentMeshNode) dialAndAttach(ctx context.Context, routers []peer.AddrInfo, biscuitBytes []byte) <-chan error {
+	n.mu.Lock()
+	if n.dialing == nil && len(routers) > 0 {
+		n.dialing = map[peer.ID]bool{}
+	}
+	for _, r := range routers {
+		n.dialing[r.ID] = true
+	}
+	n.mu.Unlock()
+
 	results := make(chan error, len(routers))
 	for _, router := range routers {
 		go func() {
 			err := n.authRouter(ctx, router, biscuitBytes)
 			if err != nil {
+				n.mu.Lock()
+				delete(n.dialing, router.ID)
+				n.mu.Unlock()
 				logger.Warnf("[AuthN] Failed to bootstrap and auth with router %s: %v", router.ID, err)
 			} else {
-				n.attach(router.ID)
+				n.finishDialAndAttach(router.ID)
 			}
 			results <- err
 		}()
@@ -351,8 +451,7 @@ func (n *AgentMeshNode) dialAndAttach(ctx context.Context, routers []peer.AddrIn
 // is no one to be ready for.
 func (n *AgentMeshNode) topUpRouters(ctx context.Context) int {
 	have := n.AttachedRouters()
-	want := n.wantRouters()
-	if have >= want {
+	if have >= n.wantRouters() {
 		return have
 	}
 	biscuitBytes, err := n.loadIdentityForAuth()
@@ -360,9 +459,9 @@ func (n *AgentMeshNode) topUpRouters(ctx context.Context) int {
 		logger.Errorf("[AuthN] Cannot attach to routers without an identity: %v", err)
 		return have
 	}
-	targets := n.pickRouters(want - have)
+	targets := n.reserveRoutersToAttach()
 	if len(targets) == 0 {
-		return have
+		return n.AttachedRouters()
 	}
 	results := n.dialAndAttach(ctx, targets, biscuitBytes)
 	for range targets {
@@ -410,7 +509,7 @@ func (n *AgentMeshNode) HandleGoAway(ctx context.Context, s network.Stream) {
 	}
 	retryAfter = min(retryAfter, goAwayMaxRetryAfter)
 	logger.Infof("[GoAway] Router %s sent this node away (%s); attaching elsewhere and staying off it for %s", router, goAway.GetReason(), retryAfter)
-	goAwayReceivedTotal.WithLabelValues(goAway.GetReason().String()).Inc()
+	n.recordGoAway(goAway.GetReason().String())
 	n.shun(router, retryAfter)
 	n.detach(router)
 	n.mu.Lock()

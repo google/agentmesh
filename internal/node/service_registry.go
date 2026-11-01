@@ -94,6 +94,25 @@ func advertisable(ctx context.Context, svc Service, probeTimeout time.Duration) 
 	return prober.Probe(probeCtx)
 }
 
+// UnannouncedService is an optional interface implemented by services (such as
+// embedded meshnet listeners with NoAnnounce: true) that serve direct callers
+// without publishing records to the router directory.
+type UnannouncedService interface {
+	NoAnnounce() bool
+}
+
+// IngressStateObserver is an optional interface notified whenever directory
+// announcement updates whether external router ingress is active for the service.
+type IngressStateObserver interface {
+	SetIngressActive(active bool)
+}
+
+// ExternalIngressGate is an optional interface consulted by the external
+// ingress server before forwarding a router-delivered request to the service.
+type ExternalIngressGate interface {
+	ExternalIngressAllowed() bool
+}
+
 // ServiceRegistry is the type-agnostic owner of registered services.
 type ServiceRegistry struct {
 	mu       sync.RWMutex
@@ -108,6 +127,10 @@ type ServiceRegistry struct {
 	// onIngressRegistered is called when an ingress-enabled service is
 	// registered so the node can log its public router ingress URLs.
 	onIngressRegistered func(info *api.ServiceInfo)
+
+	// onProvideFailure, when set, records directory announcement failures in
+	// per-node metrics alongside the process-wide counter.
+	onProvideFailure func(scope string)
 
 	// backendProbeTimeout bounds each backend probe in advertisable. Set once
 	// at construction (see NewServiceRegistry); never mutated afterwards, so
@@ -183,12 +206,19 @@ func (r *ServiceRegistry) Register(ctx context.Context, svc Service) error {
 		return err
 	}
 
-	probeErr := advertisable(ctx, svc, r.backendProbeTimeout)
+	skipAnnounce := isUnannouncedService(svc)
+	var probeErr error
 	ingressAnnounced := false
-	if probeErr != nil {
-		logger.Warnf("[ServiceRegistry] Registered %s/%s but not advertising it: backend did not answer: %v", info.Type, info.Name, probeErr)
-	} else {
-		ingressAnnounced = r.announceServiceKeys(ctx, info, nameKey, typeKey)
+	if !skipAnnounce {
+		probeErr = advertisable(ctx, svc, r.backendProbeTimeout)
+		if probeErr != nil {
+			logger.Warnf("[ServiceRegistry] Registered %s/%s but not advertising it: backend did not answer: %v", info.Type, info.Name, probeErr)
+		} else {
+			ingressAnnounced = r.announceServiceKeys(ctx, info, nameKey, typeKey)
+		}
+	}
+	if obs, ok := svc.(IngressStateObserver); ok {
+		obs.SetIngressActive(ingressAnnounced)
 	}
 
 	r.mu.Lock()
@@ -202,7 +232,9 @@ func (r *ServiceRegistry) Register(ctx context.Context, svc Service) error {
 		}
 	}
 
-	if probeErr == nil {
+	if skipAnnounce {
+		logger.Infof("[ServiceRegistry] Registered %s/%s (directory announcement disabled)", info.Type, info.Name)
+	} else if probeErr == nil {
 		logger.Infof("[ServiceRegistry] Registered and announced %s/%s", info.Type, info.Name)
 		if ingressAnnounced && r.onIngressRegistered != nil {
 			r.onIngressRegistered(info)
@@ -211,6 +243,11 @@ func (r *ServiceRegistry) Register(ctx context.Context, svc Service) error {
 		r.reprovideNow()
 	}
 	return nil
+}
+
+func isUnannouncedService(svc Service) bool {
+	u, ok := svc.(UnannouncedService)
+	return ok && u.NoAnnounce()
 }
 
 // Unregister removes the service from the map, withdraws its records from
@@ -223,7 +260,7 @@ func (r *ServiceRegistry) Unregister(ctx context.Context, name string) error {
 	typeStillServed := false
 	if ok {
 		for _, other := range r.services {
-			if other.Info().Type == svc.Info().Type {
+			if !isUnannouncedService(other) && other.Info().Type == svc.Info().Type {
 				typeStillServed = true
 				break
 			}
@@ -234,9 +271,11 @@ func (r *ServiceRegistry) Unregister(ctx context.Context, name string) error {
 		return nil
 	}
 	info := svc.Info()
-	r.withdraw(ctx, info.Type, info.Name)
-	if !typeStillServed {
-		r.withdraw(ctx, info.Type, "")
+	if !isUnannouncedService(svc) {
+		r.withdraw(ctx, info.Type, info.Name)
+		if !typeStillServed {
+			r.withdraw(ctx, info.Type, "")
+		}
 	}
 	if err := svc.Teardown(); err != nil {
 		logger.Errorf("[ServiceRegistry] Teardown %s: %v", name, err)
@@ -251,6 +290,14 @@ func (r *ServiceRegistry) Unregister(ctx context.Context, name string) error {
 // and immediately falls back to an internal-only announcement without ingress
 // metadata so in-mesh discovery continues working. It returns true iff the
 // service declared ingress and its ingress directory announcement succeeded.
+func (r *ServiceRegistry) recordProvideFailure(scope string) {
+	if r.onProvideFailure != nil {
+		r.onProvideFailure(scope)
+		return
+	}
+	serviceProvideFailuresTotal.WithLabelValues(scope).Inc()
+}
+
 func (r *ServiceRegistry) announceServiceKeys(ctx context.Context, info *api.ServiceInfo, nameKey, typeKey []byte) bool {
 	target := serviceTarget(info)
 	ing := info.GetIngress()
@@ -265,14 +312,14 @@ func (r *ServiceRegistry) announceServiceKeys(ctx context.Context, info *api.Ser
 				ingressAnnounced = true
 			} else {
 				if ctx.Err() == nil {
-					serviceProvideFailuresTotal.WithLabelValues(provideFailureScopeIngress).Inc()
+					r.recordProvideFailure(provideFailureScopeIngress)
 					logger.Errorf("[ServiceRegistry] External ingress announcement for %s/%s failed; falling back to internal-only directory announcement: %v", info.Type, info.Name, err)
 				}
 				nameCtx, nameCancel := context.WithTimeout(ctx, 5*time.Second)
 				fallbackErr := r.dht.Provide(nameCtx, nameKey, target)
 				nameCancel()
 				if fallbackErr != nil && ctx.Err() == nil {
-					serviceProvideFailuresTotal.WithLabelValues(provideFailureScopeName).Inc()
+					r.recordProvideFailure(provideFailureScopeName)
 					logger.Errorf("[ServiceRegistry] Announcing %s/%s by name (internal fallback): %v", info.Type, info.Name, fallbackErr)
 				}
 			}
@@ -283,7 +330,7 @@ func (r *ServiceRegistry) announceServiceKeys(ctx context.Context, info *api.Ser
 			if err == nil {
 				ingressAnnounced = true
 			} else if ctx.Err() == nil {
-				serviceProvideFailuresTotal.WithLabelValues(provideFailureScopeName).Inc()
+				r.recordProvideFailure(provideFailureScopeName)
 				logger.Errorf("[ServiceRegistry] Announcing %s/%s by name: %v", info.Type, info.Name, err)
 			}
 		}
@@ -292,7 +339,7 @@ func (r *ServiceRegistry) announceServiceKeys(ctx context.Context, info *api.Ser
 		err := r.dht.Provide(nameCtx, nameKey, target)
 		nameCancel()
 		if err != nil && ctx.Err() == nil {
-			serviceProvideFailuresTotal.WithLabelValues(provideFailureScopeName).Inc()
+			r.recordProvideFailure(provideFailureScopeName)
 			logger.Errorf("[ServiceRegistry] Announcing %s/%s by name: %v", info.Type, info.Name, err)
 		}
 	}
@@ -301,7 +348,7 @@ func (r *ServiceRegistry) announceServiceKeys(ctx context.Context, info *api.Ser
 	typeErr := r.dht.Provide(typeCtx, typeKey, target)
 	typeCancel()
 	if typeErr != nil && ctx.Err() == nil {
-		serviceProvideFailuresTotal.WithLabelValues(provideFailureScopeType).Inc()
+		r.recordProvideFailure(provideFailureScopeType)
 		logger.Errorf("[ServiceRegistry] Announcing %s/%s by type: %v", info.Type, info.Name, typeErr)
 	}
 
@@ -323,12 +370,17 @@ func serviceTarget(info *api.ServiceInfo) string {
 func (r *ServiceRegistry) withdraw(ctx context.Context, serviceType api.ServiceType, name string) {
 	key, err := api.ServiceKey(serviceType, name)
 	if err != nil {
+		logger.Warnf("[ServiceRegistry] Invalid service key for %s/%s: %v", serviceType, name, err)
 		return
 	}
 	withdrawCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if err := r.dht.Withdraw(withdrawCtx, key); err != nil && !errors.Is(err, errNoDirectoryRouter) {
-		logger.Warnf("[ServiceRegistry] Withdrawing %s/%s from the directory: %v", serviceType, name, err)
+	if err := r.dht.Withdraw(withdrawCtx, key); err != nil {
+		if errors.Is(err, errNoDirectoryRouter) {
+			logger.Debugf("[ServiceRegistry] Skipping withdraw of %s/%s: %v", serviceType, name, err)
+		} else {
+			logger.Warnf("[ServiceRegistry] Withdrawing %s/%s from the directory: %v", serviceType, name, err)
+		}
 	}
 }
 
@@ -338,6 +390,9 @@ func (r *ServiceRegistry) WithdrawAll(ctx context.Context) {
 	r.mu.RLock()
 	infos := make([]*api.ServiceInfo, 0, len(r.services))
 	for _, svc := range r.services {
+		if isUnannouncedService(svc) {
+			continue
+		}
 		infos = append(infos, svc.Info())
 	}
 	r.mu.RUnlock()
@@ -441,6 +496,9 @@ Loop:
 				wg.Done()
 			}()
 
+			if isUnannouncedService(svc) {
+				return
+			}
 			info := svc.Info()
 			if err := advertisable(ctx, svc, r.backendProbeTimeout); err != nil {
 				withheld.Add(1)
@@ -454,13 +512,18 @@ Loop:
 
 			nameKey, err := api.ServiceKey(info.Type, info.Name)
 			if err != nil {
+				logger.Warnf("[ServiceRegistry] Invalid service key for %s/%s: %v", info.Type, info.Name, err)
 				return
 			}
 			typeKey, err := api.ServiceKey(info.Type, "")
 			if err != nil {
+				logger.Warnf("[ServiceRegistry] Invalid service type key for %s: %v", info.Type, err)
 				return
 			}
-			r.announceServiceKeys(ctx, info, nameKey, typeKey)
+			ingressAnnounced := r.announceServiceKeys(ctx, info, nameKey, typeKey)
+			if obs, ok := svc.(IngressStateObserver); ok {
+				obs.SetIngressActive(ingressAnnounced)
+			}
 		}()
 	}
 	wg.Wait()
