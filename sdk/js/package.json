@@ -76,5 +76,5 @@
     "express": "^5.2.1",
     "typescript": "^7.0.2"
   },
-  "mcpName": "dev.sam-mesh/mesh"
+  "mcpName": "io.github.google/agentmesh"
 }
