@@ -50,6 +50,10 @@ const minResumeLifetime = 5 * time.Minute
 // and no join token or TokenSource was supplied to re-enroll.
 var ErrCredentialRetired = errors.New("meshnet: saved credential signing key retired; provide a join token to re-enroll")
 
+// ErrStateDirLocked reports that another running Server already holds an
+// exclusive lock on StateDir.
+var ErrStateDirLocked = errors.New("meshnet: state directory is already locked by another Server")
+
 // WriteStateDir writes a member's libp2p private key and MemberCredential to
 // dir with owner-only permissions (0700 directory, 0600 files).
 func WriteStateDir(dir string, privKey []byte, c *api.MemberCredential) error {
@@ -212,73 +216,73 @@ func (s *Server) newAgentMeshNode(store *node.Store, privKey crypto.PrivKey) (*n
 	return n, nil
 }
 
-func (s *Server) openStore() (*node.Store, error) {
-	tmpDir, err := os.MkdirTemp("", "meshnet-store-*")
-	if err != nil {
-		return nil, fmt.Errorf("create store workspace: %w", err)
-	}
-	store, err := node.NewStore(tmpDir)
-	if err != nil {
-		_ = os.RemoveAll(tmpDir)
-		return nil, err
-	}
-	cleanupOnErr := func(e error) (*node.Store, error) {
-		_ = store.Close()
-		_ = os.RemoveAll(tmpDir)
-		return nil, e
-	}
+func (s *Server) openStore() (*node.Store, *os.File, error) {
+	store := node.NewMemoryStore()
 
 	dir := strings.TrimSpace(s.StateDir)
-	if dir != "" {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return cleanupOnErr(fmt.Errorf("create state directory %s: %w", dir, err))
-		}
-		keyPath := filepath.Join(dir, StateDirIdentityFile)
-		if rawKey, rErr := os.ReadFile(keyPath); rErr == nil {
-			if _, uErr := crypto.UnmarshalPrivateKey(rawKey); uErr != nil {
-				return cleanupOnErr(fmt.Errorf("%s: not a libp2p private key: %w", keyPath, uErr))
-			}
-			if sErr := store.SaveKey(rawKey); sErr != nil {
-				return cleanupOnErr(sErr)
-			}
-		} else if !errors.Is(rErr, os.ErrNotExist) {
-			return cleanupOnErr(rErr)
-		}
-
-		credPath := filepath.Join(dir, StateDirCredentialFile)
-		if rawCred, rErr := os.ReadFile(credPath); rErr == nil {
-			cred := &api.MemberCredential{}
-			if uErr := protojson.Unmarshal(rawCred, cred); uErr != nil {
-				return cleanupOnErr(fmt.Errorf("%s: %w", credPath, uErr))
-			}
-			if sErr := store.SetCredential(cred); sErr != nil {
-				return cleanupOnErr(sErr)
-			}
-		} else if !errors.Is(rErr, os.ErrNotExist) {
-			return cleanupOnErr(rErr)
-		}
-
-		var persistMu sync.Mutex
-		store.SetOnChange(func() error {
-			persistMu.Lock()
-			defer persistMu.Unlock()
-			kb, lErr := store.LoadKey()
-			if lErr != nil {
-				return lErr
-			}
-			if len(kb) == 0 {
-				return nil
-			}
-			c, cErr := store.Credential()
-			if cErr != nil {
-				return cErr
-			}
-			return WriteStateDir(dir, kb, c)
-		})
+	if dir == "" {
+		return store, nil, nil
 	}
 
-	s.storeTmpDir = tmpDir
-	return store, nil
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		_ = store.Close()
+		return nil, nil, fmt.Errorf("create state directory %s: %w", dir, err)
+	}
+	lockFile, err := lockStateDir(dir)
+	if err != nil {
+		_ = store.Close()
+		return nil, nil, err
+	}
+	cleanupOnErr := func(e error) (*node.Store, *os.File, error) {
+		_ = store.Close()
+		unlockStateDir(lockFile)
+		return nil, nil, e
+	}
+
+	keyPath := filepath.Join(dir, StateDirIdentityFile)
+	if rawKey, rErr := os.ReadFile(keyPath); rErr == nil {
+		if _, uErr := crypto.UnmarshalPrivateKey(rawKey); uErr != nil {
+			return cleanupOnErr(fmt.Errorf("%s: not a libp2p private key: %w", keyPath, uErr))
+		}
+		if sErr := store.SaveKey(rawKey); sErr != nil {
+			return cleanupOnErr(sErr)
+		}
+	} else if !errors.Is(rErr, os.ErrNotExist) {
+		return cleanupOnErr(rErr)
+	}
+
+	credPath := filepath.Join(dir, StateDirCredentialFile)
+	if rawCred, rErr := os.ReadFile(credPath); rErr == nil {
+		cred := &api.MemberCredential{}
+		if uErr := protojson.Unmarshal(rawCred, cred); uErr != nil {
+			return cleanupOnErr(fmt.Errorf("%s: %w", credPath, uErr))
+		}
+		if sErr := store.SetCredential(cred); sErr != nil {
+			return cleanupOnErr(sErr)
+		}
+	} else if !errors.Is(rErr, os.ErrNotExist) {
+		return cleanupOnErr(rErr)
+	}
+
+	var persistMu sync.Mutex
+	store.SetOnChange(func() error {
+		persistMu.Lock()
+		defer persistMu.Unlock()
+		kb, lErr := store.LoadKey()
+		if lErr != nil {
+			return lErr
+		}
+		if len(kb) == 0 {
+			return nil
+		}
+		c, cErr := store.Credential()
+		if cErr != nil {
+			return cErr
+		}
+		return WriteStateDir(dir, kb, c)
+	})
+
+	return store, lockFile, nil
 }
 
 func (s *Server) verifyOwnBiscuit(raw []byte) bool {
@@ -323,15 +327,15 @@ func (s *Server) identityPredatesRotation() bool {
 }
 
 func (s *Server) ensureCredential(ctx context.Context) (retErr error) {
-	store, err := s.openStore()
+	store, lockFile, err := s.openStore()
 	if err != nil {
 		return err
 	}
+	s.store = store
+	s.stateDirLock = lockFile
 	defer func() {
 		if retErr != nil {
-			_ = store.Close()
-			s.cleanupStoreTmpDir()
-			s.store = nil
+			_ = s.closeStoreLocked()
 			s.node = nil
 		}
 	}()
@@ -346,7 +350,6 @@ func (s *Server) ensureCredential(ctx context.Context) (retErr error) {
 	}
 	s.privKey = privKey
 	s.peerID = peerID
-	s.store = store
 
 	cred, err := store.Credential()
 	if err != nil {
@@ -420,7 +423,7 @@ func (s *Server) ensureCredential(ctx context.Context) (retErr error) {
 	if cred != nil && len(cred.GetBiscuit()) > 0 {
 		keysErr := n.SyncTrustedKeys(ctx, s.cpURL)
 		roleOK := s.verifyOwnBiscuit(cred.GetBiscuit())
-		remaining := time.Until(s.credentialExpireTime())
+		remaining := time.Until(credentialExpireTimeFromStore(store))
 
 		if keysErr == nil && roleOK && remaining > minResumeLifetime && !s.identityPredatesRotation() {
 			s.log().Info("resumed mesh credential from state directory",
@@ -507,7 +510,25 @@ func isRetiredVerificationError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "/keys response rejected")
 }
 
-func (s *Server) startRenewalLoop(ctx context.Context) {
+func nextRenewalDelay(now, expTime time.Time, failureBackoff, initBackoff time.Duration) time.Duration {
+	if failureBackoff > 0 {
+		return failureBackoff
+	}
+	if expTime.IsZero() {
+		return node.DefaultRenewalFallback
+	}
+	duration := expTime.Sub(now)
+	switch {
+	case duration > node.RenewalThreshold:
+		return duration - node.RenewalBuffer
+	case duration > 0:
+		return max(duration/2, initBackoff)
+	default:
+		return min(time.Second, initBackoff)
+	}
+}
+
+func (s *Server) startRenewalLoop(ctx context.Context, n *node.AgentMeshNode, store *node.Store, peerID peer.ID, cpURL string) {
 	initBackoff := s.renewalInitialBackoff
 	if initBackoff <= 0 {
 		initBackoff = 2 * time.Second
@@ -519,28 +540,7 @@ func (s *Server) startRenewalLoop(ctx context.Context) {
 	go func() {
 		var failureBackoff time.Duration
 		for {
-			renewAfter := node.DefaultRenewalFallback
-			if expTime := s.credentialExpireTime(); !expTime.IsZero() {
-				duration := time.Until(expTime)
-				switch {
-				case duration > node.RenewalThreshold:
-					renewAfter = duration - node.RenewalBuffer
-					if failureBackoff > renewAfter {
-						renewAfter = min(failureBackoff, duration/2)
-					}
-				case duration > 0:
-					renewAfter = max(duration/2, initBackoff)
-					if failureBackoff > renewAfter {
-						renewAfter = min(failureBackoff, max(duration/2, initBackoff))
-					}
-				case failureBackoff > 0:
-					renewAfter = failureBackoff
-				default:
-					renewAfter = min(time.Second, initBackoff)
-				}
-			} else if failureBackoff > 0 {
-				renewAfter = failureBackoff
-			}
+			renewAfter := nextRenewalDelay(time.Now(), credentialExpireTimeFromStore(store), failureBackoff, initBackoff)
 
 			timer := time.NewTimer(renewAfter)
 			select {
@@ -548,17 +548,17 @@ func (s *Server) startRenewalLoop(ctx context.Context) {
 				timer.Stop()
 				return
 			case <-timer.C:
-				refreshErr := s.node.RefreshEnrollment(ctx)
+				refreshErr := n.RefreshEnrollment(ctx)
 				if refreshErr == nil {
 					failureBackoff = 0
-					s.handleCredentialRenewed()
+					s.handleCredentialRenewed(peerID)
 					continue
 				}
 
-				renewErr := s.fallbackReEnroll(ctx)
+				renewErr := s.fallbackReEnroll(ctx, n, store, cpURL)
 				if renewErr == nil {
 					failureBackoff = 0
-					s.handleCredentialRenewed()
+					s.handleCredentialRenewed(peerID)
 					continue
 				}
 
@@ -568,35 +568,35 @@ func (s *Server) startRenewalLoop(ctx context.Context) {
 					failureBackoff = min(failureBackoff*2, maxBackoff)
 				}
 				s.log().Warn("credential renewal failed; scheduled backoff retry",
-					"peer_id", s.peerID.String(),
+					"peer_id", peerID.String(),
 					"next_backoff", failureBackoff,
 					"refresh_error", refreshErr,
 					"reenroll_error", renewErr,
 				)
 
-				if exp := s.credentialExpireTime(); !exp.IsZero() && !time.Now().Before(exp) {
-					s.handleCredentialLapse(errors.Join(refreshErr, renewErr))
+				if exp := credentialExpireTimeFromStore(store); !exp.IsZero() && !time.Now().Before(exp) {
+					s.handleCredentialLapse(peerID, errors.Join(refreshErr, renewErr))
 				}
 			}
 		}
 	}()
 }
 
-func (s *Server) fallbackReEnroll(ctx context.Context) error {
+func (s *Server) fallbackReEnroll(ctx context.Context, n *node.AgentMeshNode, store *node.Store, cpURL string) error {
 	var errs []error
 	if ts := s.tokenSource(); ts != nil {
 		newJWT, fetchErr := ts.FetchToken(ctx)
 		if fetchErr != nil {
 			errs = append(errs, fetchErr)
-		} else if enrollErr := s.node.Enroll(ctx, s.cpURL, newJWT); enrollErr == nil {
+		} else if enrollErr := n.Enroll(ctx, cpURL, newJWT); enrollErr == nil {
 			return nil
 		} else {
 			errs = append(errs, enrollErr)
 		}
 	}
-	if s.store != nil {
-		if rt, _ := s.store.LoadRefreshToken(); rt != "" {
-			if oidcErr := s.node.ReEnrollWithRefreshToken(ctx); oidcErr == nil {
+	if store != nil {
+		if rt, _ := store.LoadRefreshToken(); rt != "" {
+			if oidcErr := n.ReEnrollWithRefreshToken(ctx); oidcErr == nil {
 				return nil
 			} else {
 				errs = append(errs, oidcErr)
@@ -615,7 +615,7 @@ func (s *Server) fallbackReEnroll(ctx context.Context) error {
 		bootToken = strings.TrimSpace(s.BootstrapToken)
 	}
 	if bootToken != "" {
-		if _, bErr := s.node.EnrollBootstrapCredential(ctx, s.cpURL, bootToken, true); bErr == nil {
+		if _, bErr := n.EnrollBootstrapCredential(ctx, cpURL, bootToken, true); bErr == nil {
 			return nil
 		} else {
 			errs = append(errs, bErr)
@@ -632,21 +632,22 @@ func (s *Server) fallbackReEnroll(ctx context.Context) error {
 // configured), verifies the returned credential, persists it to StateDir, and
 // re-authenticates attached router sessions.
 func (s *Server) Refresh(ctx context.Context) error {
-	if s.node == nil {
+	n, _, _, _ := s.stateSnapshot()
+	if n == nil {
 		return errors.New("meshnet: Server is not running (call Up first)")
 	}
-	err := s.node.RefreshEnrollment(ctx)
+	err := n.RefreshEnrollment(ctx)
 	if err == nil {
 		s.credentialLapsed.Store(false)
 	}
 	return err
 }
 
-func (s *Server) credentialExpireTime() time.Time {
-	if s.store == nil {
+func credentialExpireTimeFromStore(store *node.Store) time.Time {
+	if store == nil {
 		return time.Time{}
 	}
-	expUnix, err := s.store.LoadIdentityExpiration()
+	expUnix, err := store.LoadIdentityExpiration()
 	if err != nil || expUnix <= 0 {
 		return time.Time{}
 	}

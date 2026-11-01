@@ -35,6 +35,7 @@ import (
 
 	"github.com/eclipse-biscuit/biscuit-go/v2"
 	"github.com/google/agentmesh/api"
+	"github.com/google/agentmesh/internal/node"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"google.golang.org/protobuf/proto"
@@ -184,9 +185,11 @@ func TestEnrollmentAndRenewal(t *testing.T) {
 			BootstrapToken:  "boot-secret",
 			AllowInsecure:   true,
 		}
-		t.Cleanup(func() { _ = seed.Close() })
 		if err := seed.ensureCredential(ctx); err != nil {
 			t.Fatalf("seed ensureCredential: %v", err)
+		}
+		if err := seed.Close(); err != nil {
+			t.Fatalf("seed.Close: %v", err)
 		}
 		enrollsBefore := cp.bootstrapEnrolls.Load()
 		refreshesBefore := cp.refreshes.Load()
@@ -196,9 +199,11 @@ func TestEnrollmentAndRenewal(t *testing.T) {
 			StateDir:      stateDir,
 			AllowInsecure: true,
 		}
-		t.Cleanup(func() { _ = online.Close() })
 		if err := online.ensureCredential(ctx); err != nil {
 			t.Fatalf("online resume ensureCredential: %v", err)
+		}
+		if err := online.Close(); err != nil {
+			t.Fatalf("online.Close: %v", err)
 		}
 		if cp.bootstrapEnrolls.Load() != enrollsBefore || cp.refreshes.Load() != refreshesBefore {
 			t.Errorf("online resume called enroll/refresh (%d/%d), want (%d/%d)",
@@ -348,9 +353,11 @@ func TestEnrollmentAndRenewal(t *testing.T) {
 			BootstrapToken:  "boot-secret",
 			AllowInsecure:   true,
 		}
-		t.Cleanup(func() { _ = seed.Close() })
 		if err := seed.ensureCredential(ctx); err != nil {
 			t.Fatalf("seed ensureCredential: %v", err)
+		}
+		if err := seed.Close(); err != nil {
+			t.Fatalf("seed.Close: %v", err)
 		}
 
 		// Rotate control-plane key completely (dropping old key from KeysResponse).
@@ -378,6 +385,148 @@ func TestEnrollmentAndRenewal(t *testing.T) {
 			t.Fatalf("ensureCredential err = %v, want api.ErrInsecureControlPlaneURL", err)
 		}
 	})
+}
+
+func TestStateDirLockAndEphemeralMemoryIdentity(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	env := newStartedTestServer(t, ctx)
+
+	t.Run("ephemeral_empty_StateDir_writes_zero_files_to_TMPDIR", func(t *testing.T) {
+		emptyTmp := t.TempDir()
+		t.Setenv("TMPDIR", emptyTmp)
+
+		ephemeral := &Server{
+			ControlPlaneURL: env.cp.srv.URL,
+			BootstrapToken:  "boot-secret",
+			ListenAddrs:     []string{"/ip4/127.0.0.1/tcp/0"},
+			AllowInsecure:   true,
+		}
+		st, err := ephemeral.Up(ctx)
+		if err != nil {
+			t.Fatalf("ephemeral.Up: %v", err)
+		}
+		if st.PeerID == "" {
+			t.Fatal("ephemeral PeerID is empty")
+		}
+
+		duringEntries, err := os.ReadDir(emptyTmp)
+		if err != nil {
+			t.Fatalf("ReadDir(TMPDIR) while running: %v", err)
+		}
+		if len(duringEntries) != 0 {
+			t.Fatalf("ephemeral Server wrote %d entries to TMPDIR while running (%v), want 0", len(duringEntries), duringEntries)
+		}
+
+		if err := ephemeral.Close(); err != nil {
+			t.Fatalf("ephemeral.Close: %v", err)
+		}
+		afterEntries, err := os.ReadDir(emptyTmp)
+		if err != nil {
+			t.Fatalf("ReadDir(TMPDIR) after Close: %v", err)
+		}
+		if len(afterEntries) != 0 {
+			t.Fatalf("ephemeral Server left %d entries in TMPDIR (%v), want 0", len(afterEntries), afterEntries)
+		}
+	})
+
+	t.Run("concurrent_Servers_on_same_StateDir_return_ErrStateDirLocked", func(t *testing.T) {
+		sharedDir := t.TempDir()
+		s1 := &Server{
+			StateDir:        sharedDir,
+			ControlPlaneURL: env.cp.srv.URL,
+			BootstrapToken:  "boot-secret",
+			ListenAddrs:     []string{"/ip4/127.0.0.1/tcp/0"},
+			AllowInsecure:   true,
+		}
+		st1, err := s1.Up(ctx)
+		if err != nil {
+			t.Fatalf("s1.Up: %v", err)
+		}
+		t.Cleanup(func() { _ = s1.Close() })
+
+		s2 := &Server{
+			StateDir:        sharedDir,
+			ControlPlaneURL: env.cp.srv.URL,
+			BootstrapToken:  "boot-secret",
+			ListenAddrs:     []string{"/ip4/127.0.0.1/tcp/0"},
+			AllowInsecure:   true,
+		}
+		if _, err := s2.Up(ctx); !errors.Is(err, ErrStateDirLocked) {
+			_ = s2.Close()
+			t.Fatalf("s2.Up on locked StateDir = %v, want ErrStateDirLocked", err)
+		}
+
+		if err := s1.Close(); err != nil {
+			t.Fatalf("s1.Close: %v", err)
+		}
+
+		st2, err := s2.Up(ctx)
+		if err != nil {
+			t.Fatalf("s2.Up after s1.Close: %v", err)
+		}
+		t.Cleanup(func() { _ = s2.Close() })
+		if st2.PeerID != st1.PeerID {
+			t.Fatalf("s2 PeerID = %q, want %q from shared StateDir", st2.PeerID, st1.PeerID)
+		}
+	})
+}
+
+func TestNextRenewalDelay(t *testing.T) {
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	initBackoff := 2 * time.Second
+
+	for _, tc := range []struct {
+		name           string
+		expTime        time.Time
+		failureBackoff time.Duration
+		want           time.Duration
+	}{
+		{
+			name:    "unknown_expiry_uses_fallback",
+			expTime: time.Time{},
+			want:    node.DefaultRenewalFallback,
+		},
+		{
+			name:    "healthy_long_lived_renews_before_expiry_buffer",
+			expTime: now.Add(24 * time.Hour),
+			want:    24*time.Hour - node.RenewalBuffer,
+		},
+		{
+			name:    "short_lived_renews_at_half_lifetime",
+			expTime: now.Add(4 * time.Minute),
+			want:    2 * time.Minute,
+		},
+		{
+			name:    "very_short_lived_floored_at_initBackoff",
+			expTime: now.Add(500 * time.Millisecond),
+			want:    initBackoff,
+		},
+		{
+			name:    "already_expired_without_prior_failure_retries_within_1s",
+			expTime: now.Add(-time.Minute),
+			want:    time.Second,
+		},
+		{
+			name:           "failure_backoff_honored_before_expiry",
+			expTime:        now.Add(2 * time.Minute),
+			failureBackoff: 8 * time.Second,
+			want:           8 * time.Second,
+		},
+		{
+			name:           "failure_backoff_honored_after_expiry",
+			expTime:        now.Add(-time.Minute),
+			failureBackoff: 16 * time.Second,
+			want:           16 * time.Second,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := nextRenewalDelay(now, tc.expTime, tc.failureBackoff, initBackoff); got != tc.want {
+				t.Fatalf("nextRenewalDelay() = %v, want %v", got, tc.want)
+			}
+		})
+	}
 }
 
 type fakeControlPlaneHTTP struct {

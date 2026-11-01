@@ -127,14 +127,15 @@ func (c *serverStateCollector) Collect(ch chan<- prometheus.Metric) {
 	if s.credentialLapsed.Load() {
 		lapsedVal = 1
 	}
-	if s.node != nil && s.node.Host != nil {
-		peersVal = float64(len(s.node.Host.Network().Peers()))
-		attachedVal = float64(len(s.node.AttachedRouterIDs()))
-		if s.node.IsConnected() && lapsedVal == 0 {
+	n, store, _, _ := s.stateSnapshot()
+	if n != nil && n.Host != nil {
+		peersVal = float64(len(n.Host.Network().Peers()))
+		attachedVal = float64(len(n.AttachedRouterIDs()))
+		if n.IsConnected() && lapsedVal == 0 {
 			readyVal = 1
 		}
-		if s.node.Services() != nil {
-			servicesVal = float64(len(s.node.ListLocalServices(api.ServiceType_SERVICE_TYPE_UNSPECIFIED)))
+		if n.Services() != nil {
+			servicesVal = float64(len(n.ListLocalServices(api.ServiceType_SERVICE_TYPE_UNSPECIFIED)))
 		}
 	}
 
@@ -143,7 +144,7 @@ func (c *serverStateCollector) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(c.routers, prometheus.GaugeValue, attachedVal, "attached")
 	ch <- prometheus.MustNewConstMetric(c.services, prometheus.GaugeValue, servicesVal)
 	ch <- prometheus.MustNewConstMetric(c.credentialLapse, prometheus.GaugeValue, lapsedVal)
-	if exp := s.credentialExpireTime(); !exp.IsZero() {
+	if exp := credentialExpireTimeFromStore(store); !exp.IsZero() {
 		ch <- prometheus.MustNewConstMetric(c.biscuitExpiry, prometheus.GaugeValue, float64(exp.Unix()))
 	}
 }
@@ -156,8 +157,8 @@ func (s *Server) onStreamRefused(scope, proto string) {
 	}
 	s.refusedStreams[key]++
 	s.refusedMu.Unlock()
-	if s.metrics != nil {
-		s.metrics.streamsRefused.WithLabelValues(scope, proto).Inc()
+	if m := s.metrics.Load(); m != nil {
+		m.streamsRefused.WithLabelValues(scope, proto).Inc()
 	}
 }
 

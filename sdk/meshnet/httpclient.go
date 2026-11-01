@@ -49,7 +49,8 @@ type meshRoundTripper struct {
 
 func (rt *meshRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	s := rt.s
-	if !s.isRunning() {
+	n := s.runningNode()
+	if n == nil {
 		return nil, errors.New("meshnet: Server is not running (call Up first)")
 	}
 	if req.URL == nil {
@@ -68,7 +69,8 @@ func (rt *meshRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 	if len(parts) < 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
 		return httpErrorResponse(req, http.StatusBadRequest, "Invalid mesh path: expected /mesh/<peer_id>/<type>/<name>"), nil
 	}
-	if _, err := peer.Decode(parts[0]); err != nil {
+	pid, err := peer.Decode(parts[0])
+	if err != nil {
 		return httpErrorResponse(req, http.StatusBadRequest, "Invalid peer ID"), nil
 	}
 	svcType, err := api.ParseServiceType(strings.ToLower(parts[1]))
@@ -77,6 +79,19 @@ func (rt *meshRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 	}
 
 	outReq := req.Clone(req.Context())
+	rawPeerSeg := parts[0]
+	canonPeerSeg := pid.String()
+	if rawPeerSeg != canonPeerSeg {
+		outReq.URL.Path = "/mesh/" + canonPeerSeg + strings.TrimPrefix(trimmed, "mesh/"+rawPeerSeg)
+		if outReq.URL.RawPath != "" {
+			trimmedRaw := strings.TrimPrefix(outReq.URL.RawPath, "/")
+			if strings.HasPrefix(trimmedRaw, "mesh/"+rawPeerSeg) {
+				outReq.URL.RawPath = "/mesh/" + canonPeerSeg + strings.TrimPrefix(trimmedRaw, "mesh/"+rawPeerSeg)
+			} else {
+				outReq.URL.RawPath = ""
+			}
+		}
+	}
 	outReq.Header = sanitizeCallerMeshHeaders(req.Header)
 	hostHeader := req.Host
 	if hostHeader == "" {
@@ -89,14 +104,31 @@ func (rt *meshRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 
 	pr, pw := io.Pipe()
 	rw := newPipeResponseWriter(req, pw)
-	handler := s.node.EgressHandler()
+	handler := n.EgressHandler()
 
-	go func() {
-		defer rw.finish()
-		handler.ServeHTTP(rw, outReq)
+	go serveEgressSafe(s, req.URL.Redacted(), outReq, rw, handler)
+
+	return rw.waitResponse(pr)
+}
+
+func serveEgressSafe(s *Server, reqURL string, outReq *http.Request, rw *pipeResponseWriter, handler http.Handler) {
+	defer func() {
+		if p := recover(); p != nil {
+			var abortErr error
+			if p == http.ErrAbortHandler {
+				abortErr = fmt.Errorf("meshnet: upstream stream aborted: %w", io.ErrUnexpectedEOF)
+			} else {
+				abortErr = fmt.Errorf("meshnet: egress handler panic: %v", p)
+			}
+			if s != nil {
+				s.log().Warn("egress HTTP round trip aborted", "url", reqURL, "error", abortErr)
+			}
+			rw.abort(abortErr)
+			return
+		}
+		rw.finish()
 	}()
-
-	return rw.waitResponse(pr), nil
+	handler.ServeHTTP(rw, outReq)
 }
 
 func sanitizeCallerMeshHeaders(in http.Header) http.Header {
@@ -128,6 +160,7 @@ type pipeResponseWriter struct {
 	ready      chan struct{}
 	statusCode int
 	respHdr    http.Header
+	abortErr   error
 }
 
 func newPipeResponseWriter(req *http.Request, pw *io.PipeWriter) *pipeResponseWriter {
@@ -166,8 +199,20 @@ func (w *pipeResponseWriter) finish() {
 	_ = w.pw.Close()
 }
 
-func (w *pipeResponseWriter) waitResponse(pr *io.PipeReader) *http.Response {
+func (w *pipeResponseWriter) abort(err error) {
+	w.once.Do(func() {
+		w.abortErr = err
+		close(w.ready)
+	})
+	_ = w.pw.CloseWithError(err)
+}
+
+func (w *pipeResponseWriter) waitResponse(pr *io.PipeReader) (*http.Response, error) {
 	<-w.ready
+	if w.abortErr != nil {
+		_ = pr.Close()
+		return nil, w.abortErr
+	}
 	contentLen := int64(-1)
 	if cl := w.respHdr.Get("Content-Length"); cl != "" {
 		if n, err := strconv.ParseInt(cl, 10, 64); err == nil && n >= 0 {
@@ -184,7 +229,7 @@ func (w *pipeResponseWriter) waitResponse(pr *io.PipeReader) *http.Response {
 		Body:          pr,
 		ContentLength: contentLen,
 		Request:       w.req,
-	}
+	}, nil
 }
 
 func httpErrorResponse(req *http.Request, code int, msg string) *http.Response {

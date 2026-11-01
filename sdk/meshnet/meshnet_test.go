@@ -480,8 +480,11 @@ func TestHTTPClientAuthorizerRunLimitReturns504And500(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST with 1ns BiscuitTimeout: %v", err)
 	}
-	body504, _ := io.ReadAll(resp504.Body)
+	body504, readErr := io.ReadAll(resp504.Body)
 	_ = resp504.Body.Close()
+	if readErr != nil {
+		t.Fatalf("io.ReadAll(resp504): %v", readErr)
+	}
 	if resp504.StatusCode != http.StatusGatewayTimeout {
 		t.Fatalf("authorizer timeout status = %d (%s), want 504 Gateway Timeout", resp504.StatusCode, body504)
 	}
@@ -504,8 +507,11 @@ func TestHTTPClientAuthorizerRunLimitReturns504And500(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST over Datalog fact limit: %v", err)
 	}
-	body500, _ := io.ReadAll(resp500.Body)
+	body500, readErr := io.ReadAll(resp500.Body)
 	_ = resp500.Body.Close()
+	if readErr != nil {
+		t.Fatalf("io.ReadAll(resp500): %v", readErr)
+	}
 	if resp500.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("authorizer max-facts status = %d (%s), want 500 Internal Server Error", resp500.StatusCode, body500)
 	}
@@ -1208,8 +1214,11 @@ func TestExternalIngressCanonicalizesActorNodePeerID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadResponse: %v", err)
 	}
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, readErr := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
+	if readErr != nil {
+		t.Fatalf("io.ReadAll(resp): %v", readErr)
+	}
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("external ingress status = %d (%s), want 200", resp.StatusCode, string(respBody))
 	}
@@ -1219,6 +1228,344 @@ func TestExternalIngressCanonicalizesActorNodePeerID(t *testing.T) {
 	if gotPeerID != actorHost.ID().String() {
 		t.Fatalf("WhoIs PeerID = %q, want canonical %q (from CIDv1 %q)", gotPeerID, actorHost.ID().String(), cidv1Actor)
 	}
+}
+
+func TestWhoIsUnverifiedExternalAndOIDCUserPeerID(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	env := newStartedTestServer(t, ctx)
+	s := env.server
+
+	edgeEP, err := s.ListenA2A(ctx, A2AOptions{
+		Name:        "edge-agent",
+		Public:      true,
+		IngressAuth: api.IngressAuthMode_INGRESS_AUTH_MODE_EDGE,
+		NoAnnounce:  true,
+	})
+	if err != nil {
+		t.Fatalf("ListenA2A(edge-agent): %v", err)
+	}
+	t.Cleanup(func() { _ = edgeEP.Close() })
+
+	passEP, err := s.ListenA2A(ctx, A2AOptions{
+		Name:        "pass-agent",
+		Public:      true,
+		IngressAuth: api.IngressAuthMode_INGRESS_AUTH_MODE_PASSTHROUGH,
+		NoAnnounce:  true,
+	})
+	if err != nil {
+		t.Fatalf("ListenA2A(pass-agent): %v", err)
+	}
+	t.Cleanup(func() { _ = passEP.Close() })
+
+	type whoIsObs struct {
+		ok   bool
+		info *CallerInfo
+	}
+	var obsMu sync.Mutex
+	var lastObs whoIsObs
+
+	recordHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		info, ok := s.WhoIs(r.RemoteAddr)
+		obsMu.Lock()
+		lastObs = whoIsObs{ok: ok, info: info}
+		obsMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"agent"}`))
+	})
+
+	edgePubSrv := &http.Server{Handler: recordHandler}
+	passPubSrv := &http.Server{Handler: recordHandler}
+	go func() { _ = edgePubSrv.Serve(edgeEP.PublicListener) }()
+	go func() { _ = passPubSrv.Serve(passEP.PublicListener) }()
+	t.Cleanup(func() {
+		_ = edgePubSrv.Close()
+		_ = passPubSrv.Close()
+	})
+
+	routerPeer := newAdmittedTestPeer(t, ctx, s, env.cpPriv, api.RoleRouter)
+	routerBiscuit := mintTestBiscuit(t, env.cpPriv, routerPeer.ID().String(), api.RoleRouter, time.Now().Add(time.Hour))
+
+	sendIngressReq := func(t *testing.T, method, rawURL string, hdr http.Header) {
+		t.Helper()
+		req, err := http.NewRequestWithContext(ctx, method, rawURL, strings.NewReader(`{}`))
+		if err != nil {
+			t.Fatalf("NewRequestWithContext: %v", err)
+		}
+		for k, vals := range hdr {
+			for _, v := range vals {
+				req.Header.Add(k, v)
+			}
+		}
+		req.Header.Set(api.HeaderMeshBiscuit, base64.RawURLEncoding.EncodeToString(routerBiscuit))
+
+		st, err := routerPeer.NewStream(ctx, s.node.Host.ID(), api.IngressProtocolID)
+		if err != nil {
+			t.Fatalf("NewStream: %v", err)
+		}
+		defer func() { _ = st.Close() }()
+		if err := req.Write(st); err != nil {
+			t.Fatalf("req.Write: %v", err)
+		}
+		_ = st.SetReadDeadline(time.Now().Add(5 * time.Second))
+		resp, err := http.ReadResponse(bufio.NewReader(st), req)
+		if err != nil {
+			t.Fatalf("ReadResponse: %v", err)
+		}
+		respBody, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			t.Fatalf("io.ReadAll: %v", readErr)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d (%s), want 200", resp.StatusCode, string(respBody))
+		}
+	}
+
+	// 1. Anonymous GET /.well-known/agent-card.json in EDGE mode -> WhoIs returns (nil, false).
+	sendIngressReq(t, http.MethodGet, "http://mesh/a2a/edge-agent/.well-known/agent-card.json", http.Header{
+		api.HeaderMeshIngress: {api.IngressAuthModeStringEdge},
+	})
+	obsMu.Lock()
+	anonObs := lastObs
+	obsMu.Unlock()
+	if anonObs.ok || anonObs.info != nil {
+		t.Fatalf("anonymous agent-card WhoIs = (%+v, %v), want (nil, false)", anonObs.info, anonObs.ok)
+	}
+
+	// 2. PASSTHROUGH request -> WhoIs returns (nil, false), never router's PeerID.
+	sendIngressReq(t, http.MethodPost, "http://mesh/a2a/pass-agent/invoke", http.Header{
+		api.HeaderMeshIngress: {api.IngressAuthModeStringPassthrough},
+		"Authorization":       {"Bearer pair-token"},
+	})
+	obsMu.Lock()
+	passObs := lastObs
+	obsMu.Unlock()
+	if passObs.ok || passObs.info != nil {
+		t.Fatalf("PASSTHROUGH WhoIs = (%+v, %v), want (nil, false)", passObs.info, passObs.ok)
+	}
+
+	// 3. Verified standalone external OIDC user Biscuit from /oauth/token (actor_node bound to
+	// control-plane Biscuit authority signing key, not a mesh node) -> WhoIs returns ok=true with PeerID == "".
+	cpAuthorityPeerID := authorityKeyPeerID(env.cpPub)
+	if cpAuthorityPeerID == "" {
+		t.Fatal("authorityKeyPeerID(env.cpPub) returned empty string")
+	}
+	userBuilder := biscuit.NewBuilder(env.cpPriv)
+	for _, f := range []biscuit.Fact{
+		{Predicate: biscuit.Predicate{Name: api.FactActorNode, IDs: []biscuit.Term{biscuit.String(cpAuthorityPeerID)}}},
+		{Predicate: biscuit.Predicate{Name: api.FactClientPeerID, IDs: []biscuit.Term{biscuit.String(cpAuthorityPeerID)}}},
+		{Predicate: biscuit.Predicate{Name: api.FactRole, IDs: []biscuit.Term{biscuit.String(api.RoleNode)}}},
+		{Predicate: biscuit.Predicate{Name: api.FactEmail, IDs: []biscuit.Term{biscuit.String("carol@example.com")}}},
+		{Predicate: biscuit.Predicate{Name: api.FactExpiration, IDs: []biscuit.Term{biscuit.Date(time.Now().Add(time.Hour))}}},
+		api.MarkerFact(api.FactTargetUnrestricted),
+	} {
+		if err := userBuilder.AddAuthorityFact(f); err != nil {
+			t.Fatalf("AddAuthorityFact: %v", err)
+		}
+	}
+	userTok, err := userBuilder.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	userBytes, err := userTok.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	sendIngressReq(t, http.MethodPost, "http://mesh/a2a/edge-agent/invoke", http.Header{
+		api.HeaderMeshIngress:              {api.IngressAuthModeStringEdge},
+		api.HeaderMeshIngressCallerBiscuit: {base64.RawURLEncoding.EncodeToString(userBytes)},
+	})
+	obsMu.Lock()
+	userObs := lastObs
+	obsMu.Unlock()
+	if !userObs.ok || userObs.info == nil {
+		t.Fatal("verified external OIDC user WhoIs returned (nil, false), want verified CallerInfo")
+	}
+	if userObs.info.Principal != "carol@example.com" {
+		t.Errorf("user WhoIs Principal = %q, want carol@example.com", userObs.info.Principal)
+	}
+	if userObs.info.PeerID != "" {
+		t.Errorf("user WhoIs PeerID = %q, want empty string (must not leak router %q or authority key %q)", userObs.info.PeerID, routerPeer.ID(), cpAuthorityPeerID)
+	}
+
+	// 4. Delegated Biscuit exchanged by an actual mesh actor node -> WhoIs preserves actor node PeerID.
+	actorHost, err := libp2p.New(libp2p.NoListenAddrs)
+	if err != nil {
+		t.Fatalf("libp2p.New(actorHost): %v", err)
+	}
+	t.Cleanup(func() { _ = actorHost.Close() })
+	actorBuilder := biscuit.NewBuilder(env.cpPriv)
+	for _, f := range []biscuit.Fact{
+		{Predicate: biscuit.Predicate{Name: api.FactActorNode, IDs: []biscuit.Term{biscuit.String(actorHost.ID().String())}}},
+		{Predicate: biscuit.Predicate{Name: api.FactClientPeerID, IDs: []biscuit.Term{biscuit.String(actorHost.ID().String())}}},
+		{Predicate: biscuit.Predicate{Name: api.FactRole, IDs: []biscuit.Term{biscuit.String(api.RoleNode)}}},
+		{Predicate: biscuit.Predicate{Name: api.FactEmail, IDs: []biscuit.Term{biscuit.String("carol@example.com")}}},
+		{Predicate: biscuit.Predicate{Name: api.FactExpiration, IDs: []biscuit.Term{biscuit.Date(time.Now().Add(time.Hour))}}},
+		api.MarkerFact(api.FactTargetUnrestricted),
+	} {
+		if err := actorBuilder.AddAuthorityFact(f); err != nil {
+			t.Fatalf("AddAuthorityFact(actor): %v", err)
+		}
+	}
+	actorTok, err := actorBuilder.Build()
+	if err != nil {
+		t.Fatalf("Build(actor): %v", err)
+	}
+	actorBytes, err := actorTok.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize(actor): %v", err)
+	}
+	sendIngressReq(t, http.MethodPost, "http://mesh/a2a/edge-agent/invoke", http.Header{
+		api.HeaderMeshIngress:              {api.IngressAuthModeStringEdge},
+		api.HeaderMeshIngressCallerBiscuit: {base64.RawURLEncoding.EncodeToString(actorBytes)},
+	})
+	obsMu.Lock()
+	actorObs := lastObs
+	obsMu.Unlock()
+	if !actorObs.ok || actorObs.info == nil {
+		t.Fatal("actor-delegated WhoIs returned (nil, false), want verified CallerInfo")
+	}
+	if actorObs.info.PeerID != actorHost.ID().String() {
+		t.Errorf("actor-delegated WhoIs PeerID = %q, want %q", actorObs.info.PeerID, actorHost.ID().String())
+	}
+}
+
+func TestHTTPClientCanonicalizesCIDv1PeerIDAndRecoversAbort(t *testing.T) {
+	t.Run("canonicalizes_cidv1_peer_id_on_egress", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+
+		mesh := newInProcessMeshPair(t, ctx)
+		ep, err := mesh.provider.ListenA2A(ctx, A2AOptions{Name: "coder"})
+		if err != nil {
+			t.Fatalf("ListenA2A: %v", err)
+		}
+		srv := &http.Server{
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte("cidv1-ok"))
+			}),
+		}
+		go func() { _ = srv.Serve(ep.PrivateListener) }()
+		t.Cleanup(func() {
+			_ = srv.Close()
+			_ = ep.Close()
+		})
+
+		cidv1Provider := peer.ToCid(mesh.provider.peerID).String()
+		if cidv1Provider == mesh.provider.peerID.String() {
+			t.Fatalf("peer.ToCid(%s) did not produce distinct CIDv1 string", mesh.provider.peerID)
+		}
+
+		resp, err := mesh.caller.HTTPClient().Get(fmt.Sprintf("http://agentmesh.local/mesh/%s/a2a/coder/ping", cidv1Provider))
+		if err != nil {
+			t.Fatalf("GET with CIDv1 peer ID: %v", err)
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			t.Fatalf("io.ReadAll: %v", readErr)
+		}
+		if resp.StatusCode != http.StatusOK || string(body) != "cidv1-ok" {
+			t.Fatalf("CIDv1 egress = %d %q, want 200 cidv1-ok", resp.StatusCode, string(body))
+		}
+	})
+
+	t.Run("recovers_ErrAbortHandler_before_headers", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "http://agentmesh.local/mesh/test", nil)
+		pr, pw := io.Pipe()
+		rw := newPipeResponseWriter(req, pw)
+
+		go serveEgressSafe(&Server{}, req.URL.String(), req, rw, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			panic(http.ErrAbortHandler)
+		}))
+
+		resp, err := rw.waitResponse(pr)
+		if !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Fatalf("waitResponse err = %v (resp=%v), want io.ErrUnexpectedEOF", err, resp)
+		}
+	})
+
+	t.Run("recovers_ErrAbortHandler_mid_stream", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "http://agentmesh.local/mesh/test", nil)
+		pr, pw := io.Pipe()
+		rw := newPipeResponseWriter(req, pw)
+
+		go serveEgressSafe(&Server{}, req.URL.String(), req, rw, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("partial-chunk"))
+			panic(http.ErrAbortHandler)
+		}))
+
+		resp, err := rw.waitResponse(pr)
+		if err != nil {
+			t.Fatalf("waitResponse after headers: %v", err)
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if string(body) != "partial-chunk" {
+			t.Errorf("partial body = %q, want partial-chunk", string(body))
+		}
+		if !errors.Is(readErr, io.ErrUnexpectedEOF) {
+			t.Fatalf("io.ReadAll after mid-stream abort = %v, want io.ErrUnexpectedEOF", readErr)
+		}
+	})
+
+	t.Run("recovers_unexpected_handler_panic", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "http://agentmesh.local/mesh/test", nil)
+		pr, pw := io.Pipe()
+		rw := newPipeResponseWriter(req, pw)
+
+		go serveEgressSafe(&Server{}, req.URL.String(), req, rw, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			panic("unexpected-boom")
+		}))
+
+		resp, err := rw.waitResponse(pr)
+		if err == nil || !strings.Contains(err.Error(), "unexpected-boom") {
+			t.Fatalf("waitResponse on unexpected panic = (%v, %v), want error containing unexpected-boom", resp, err)
+		}
+	})
+}
+
+func TestServerConcurrentStatusMetricsAndClose(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	env := newStartedTestServer(t, ctx)
+	reg := prometheus.NewRegistry()
+	s := &Server{
+		ControlPlaneURL: env.cp.srv.URL,
+		BootstrapToken:  "boot-secret",
+		ListenAddrs:     []string{"/ip4/127.0.0.1/tcp/0"},
+		AllowInsecure:   true,
+		Registerer:      reg,
+	}
+	if _, err := s.Up(ctx); err != nil {
+		t.Fatalf("s.Up: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				_ = s.Status()
+				_, _ = reg.Gather()
+				_, _, _ = s.AttenuateToken(&api.TaskAuthorizationRule{Name: "race-check"}, time.Minute, false)
+				s.onStreamRefused("unauthenticated", string(api.IngressProtocolID))
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		time.Sleep(5 * time.Millisecond)
+		_ = s.Close()
+	}()
+	wg.Wait()
 }
 
 type inProcessMeshPair struct {
