@@ -506,7 +506,7 @@ func (s *Server) callerInfoFromRequest(r *http.Request) (*CallerInfo, bool) {
 			caller.Principal = claims.Principal()
 			caller.Roles = slices.Clone(claims.Roles)
 			caller.Labels = maps.Clone(claims.Labels)
-			caller.Task = outermostTaskName(claims.TaskRules)
+			caller.Task = claims.InnermostTaskName()
 			if externalIngress {
 				if actor := cmp.Or(claims.ActorNodePeerID, claims.NodePeerID); actor != "" {
 					if id, pErr := peer.Decode(actor); pErr == nil {
@@ -525,15 +525,6 @@ func (s *Server) callerInfoFromRequest(r *http.Request) (*CallerInfo, bool) {
 		caller.Task = r.Header.Get(api.HeaderMeshTask)
 	}
 	return caller, externalIngress
-}
-
-func outermostTaskName(rules []*api.TaskAuthorizationRule) string {
-	for i := len(rules) - 1; i >= 0; i-- {
-		if rules[i] != nil && rules[i].GetName() != "" {
-			return rules[i].GetName()
-		}
-	}
-	return ""
 }
 
 const (

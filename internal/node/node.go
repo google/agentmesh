@@ -2663,7 +2663,7 @@ func (n *AgentMeshNode) StartIngressServer(ctx context.Context) error {
 				if len(claims.Roles) > 0 {
 					r.Header.Set(api.HeaderMeshRoles, strings.Join(claims.Roles, ","))
 				}
-				if t := outermostTaskName(claims.TaskRules); t != "" {
+				if t := claims.InnermostTaskName(); t != "" {
 					r.Header.Set(api.HeaderMeshTask, t)
 				}
 			}
@@ -2936,15 +2936,6 @@ func (n *AgentMeshNode) startCatalogReportLoop(ctx context.Context, initialDelay
 			}
 		}
 	}()
-}
-
-func outermostTaskName(rules []*api.TaskAuthorizationRule) string {
-	for i := len(rules) - 1; i >= 0; i-- {
-		if rules[i] != nil && rules[i].GetName() != "" {
-			return rules[i].GetName()
-		}
-	}
-	return ""
 }
 
 // Services returns the node's local service registry (available after Start).

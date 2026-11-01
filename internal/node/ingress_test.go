@@ -34,8 +34,10 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/agentmesh/api"
 	"github.com/google/agentmesh/internal/identity"
+	libp2phttp "github.com/libp2p/go-libp2p-http"
 	libp2pcrypto "github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func mustTestPeerID(t *testing.T) (peer.ID, libp2pcrypto.PrivKey) {
@@ -702,6 +704,240 @@ func TestExternalIngressHandler(t *testing.T) {
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusForbidden {
 			t.Fatalf("mode mismatch status = %d, want 403: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+func TestStartIngressServer_PropagatesMeshTaskHeader(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	provider, cleanupProvider := startBareNode(t, ctx)
+	defer cleanupProvider()
+	caller, cleanupCaller := startBareNode(t, ctx)
+	defer cleanupCaller()
+
+	enrollUnderRoot(t, provider, caller)
+
+	if err := caller.Host.Connect(ctx, peer.AddrInfo{ID: provider.Host.ID(), Addrs: provider.Host.Addrs()}); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if err := caller.VerifyProvider(ctx, provider.Host.ID(), nil, ""); err != nil {
+		t.Fatalf("VerifyProvider handshake: %v", err)
+	}
+
+	var captured http.Header
+	provider.services.insertService(&fakeService{
+		info: &api.ServiceInfo{
+			Type: api.ServiceType_SERVICE_TYPE_A2A,
+			Name: "assistant",
+		},
+		handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			captured = r.Header.Clone()
+			w.WriteHeader(http.StatusOK)
+		}),
+	})
+
+	baseBiscuit, err := caller.Store.LoadIdentity()
+	if err != nil {
+		t.Fatalf("LoadIdentity: %v", err)
+	}
+
+	client := &http.Client{Transport: libp2phttp.NewTransport(caller.Host)}
+	targetURL := "libp2p://" + provider.Host.ID().String() + "/a2a/assistant/tasks"
+
+	t.Run("untasked Biscuit strips spoofed X-Mesh-Task", func(t *testing.T) {
+		captured = nil
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, strings.NewReader(`{}`))
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		req.Header.Set(api.HeaderMeshBiscuit, base64.StdEncoding.EncodeToString(baseBiscuit))
+		req.Header.Set(api.HeaderMeshTask, "spoofed-task")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("client.Do: %v", err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		if got := captured.Get(api.HeaderMeshTask); got != "" {
+			t.Errorf("X-Mesh-Task = %q, want empty when Biscuit has no task block", got)
+		}
+	})
+
+	t.Run("nested TAR Biscuit propagates innermost X-Mesh-Task", func(t *testing.T) {
+		captured = nil
+		exp := timestamppb.New(time.Now().Add(10 * time.Minute))
+		outerTok, err := identity.AttenuateBiscuit(baseBiscuit, &api.TaskAuthorizationRule{
+			Name:       "triage-42",
+			ExpireTime: exp,
+			Rules: []*api.TaskRule{
+				{AllowedServices: []string{"a2a://assistant"}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("AttenuateBiscuit(outer): %v", err)
+		}
+		innerTok, err := identity.AttenuateBiscuit(outerTok, &api.TaskAuthorizationRule{
+			Name:       "step-2",
+			ExpireTime: exp,
+			Rules: []*api.TaskRule{
+				{AllowedServices: []string{"a2a://assistant"}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("AttenuateBiscuit(inner): %v", err)
+		}
+		sealedTok, err := identity.SealBiscuit(innerTok)
+		if err != nil {
+			t.Fatalf("SealBiscuit: %v", err)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, strings.NewReader(`{}`))
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		req.Header.Set(api.HeaderMeshBiscuit, base64.StdEncoding.EncodeToString(sealedTok))
+		req.Header.Set(api.HeaderMeshTask, "spoofed-task")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("client.Do: %v", err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		if got := captured.Get(api.HeaderMeshTask); got != "step-2" {
+			t.Errorf("X-Mesh-Task = %q, want %q", got, "step-2")
+		}
+	})
+}
+
+func TestPreferredRouterIngressURL_PrefersAttachedRouter(t *testing.T) {
+	routerA, _ := mustTestPeerID(t)
+	routerB, _ := mustTestPeerID(t)
+
+	n := &AgentMeshNode{
+		attached: make(map[peer.ID]bool),
+		routerCatalog: []routerCandidate{
+			{AddrInfo: peer.AddrInfo{ID: routerA}, IngressURL: "https://a.ingress.example/"},
+			{AddrInfo: peer.AddrInfo{ID: routerB}, IngressURL: "https://b.ingress.example/"},
+		},
+	}
+
+	urls := n.RouterIngressURLs()
+	if len(urls) != 2 || urls[0] != "https://a.ingress.example" || urls[1] != "https://b.ingress.example" {
+		t.Fatalf("RouterIngressURLs() = %v, want [https://a.ingress.example https://b.ingress.example]", urls)
+	}
+	if got := n.PreferredRouterIngressURL(); got != "https://a.ingress.example" {
+		t.Errorf("PreferredRouterIngressURL() with none attached = %q, want https://a.ingress.example", got)
+	}
+
+	n.attached[routerB] = true
+	if got := n.PreferredRouterIngressURL(); got != "https://b.ingress.example" {
+		t.Errorf("PreferredRouterIngressURL() with routerB attached = %q, want https://b.ingress.example", got)
+	}
+}
+
+type fakeObservableIngressService struct {
+	fakeService
+	announce      bool
+	ingressActive bool
+}
+
+func (f *fakeObservableIngressService) NoAnnounce() bool             { return !f.announce }
+func (f *fakeObservableIngressService) SetIngressActive(active bool) { f.ingressActive = active }
+func (f *fakeObservableIngressService) ExternalIngressAllowed() bool { return f.ingressActive }
+
+func TestServiceRegistry_UnannouncedAndExternalIngressGate(t *testing.T) {
+	t.Run("unannounced service skips Provide and Withdraw", func(t *testing.T) {
+		dht := &fakeIngressDHT{}
+		reg := newServiceRegistryForTest(dht)
+
+		svc := &fakeObservableIngressService{
+			fakeService: fakeService{
+				info: &api.ServiceInfo{
+					Name:    "hidden-agent",
+					Type:    api.ServiceType_SERVICE_TYPE_A2A,
+					Ingress: &api.ServiceIngress{AuthMode: api.IngressAuthMode_INGRESS_AUTH_MODE_PASSTHROUGH},
+				},
+				handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}),
+			},
+			announce: false,
+		}
+		if err := reg.Register(context.Background(), svc); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+		if len(dht.calls) != 0 || len(dht.ingressCalls) != 0 {
+			t.Errorf("unannounced Register called DHT (plain=%d, ingress=%d), want 0", len(dht.calls), len(dht.ingressCalls))
+		}
+		if svc.ingressActive {
+			t.Error("expected ingressActive=false when service is not announced")
+		}
+		if err := reg.Unregister(context.Background(), "hidden-agent"); err != nil {
+			t.Fatalf("Unregister: %v", err)
+		}
+		if len(dht.withdrawn) != 0 {
+			t.Errorf("unannounced Unregister called Withdraw %d times, want 0", len(dht.withdrawn))
+		}
+	})
+
+	t.Run("refused ingress sets observer inactive and gates externalIngressHandler 404", func(t *testing.T) {
+		cpPub, cpPriv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatalf("GenerateKey: %v", err)
+		}
+		routerPID, _ := mustTestPeerID(t)
+		_, servingPriv := mustTestPeerID(t)
+		routerTok, err := identity.MintBootstrapBiscuitToken(
+			cpPriv, routerPID, api.RoleRouter, time.Now().Add(time.Hour),
+			[]*api.PolicyRole{{Name: api.RoleRouter}}, nil,
+		)
+		if err != nil {
+			t.Fatalf("MintBootstrapBiscuitToken: %v", err)
+		}
+
+		dht := &fakeIngressDHT{failIngressErr: errors.New("router refused ingress role ceiling")}
+		reg := newServiceRegistryForTest(dht)
+		svc := &fakeObservableIngressService{
+			fakeService: fakeService{
+				info: &api.ServiceInfo{
+					Name:    "gated-agent",
+					Type:    api.ServiceType_SERVICE_TYPE_A2A,
+					Ingress: &api.ServiceIngress{AuthMode: api.IngressAuthMode_INGRESS_AUTH_MODE_PASSTHROUGH},
+				},
+				handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusOK)
+				}),
+			},
+			announce:      true,
+			ingressActive: true,
+		}
+		if err := reg.Register(context.Background(), svc); err != nil {
+			t.Fatalf("Register: %v", err)
+		}
+		if svc.ingressActive {
+			t.Fatal("expected SetIngressActive(false) when router refused ProvideWithIngress")
+		}
+
+		n := &AgentMeshNode{
+			config:         Options{PrivKey: servingPriv},
+			services:       reg,
+			trustedKeys:    []TrustedKey{{Key: cpPub, ReceivedAt: time.Now()}},
+			BiscuitTimeout: time.Second,
+		}
+		req := httptest.NewRequest(http.MethodPost, "http://mesh/a2a/gated-agent/events", strings.NewReader(`{}`))
+		req.RemoteAddr = routerPID.String()
+		req.Header.Set(api.HeaderMeshBiscuit, base64.StdEncoding.EncodeToString(routerTok))
+		req.Header.Set(api.HeaderMeshIngress, api.IngressAuthModeStringPassthrough)
+		rec := httptest.NewRecorder()
+		n.externalIngressHandler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("externalIngressHandler status = %d, want 404 when ExternalIngressAllowed() is false: %s", rec.Code, rec.Body.String())
 		}
 	})
 }
