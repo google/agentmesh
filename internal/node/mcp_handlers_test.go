@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/eclipse-biscuit/biscuit-go/v2"
+	"github.com/eclipse-biscuit/biscuit-go/v2/datalog"
 	"github.com/google/agentmesh/api"
 	"github.com/google/agentmesh/internal/identity"
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -651,6 +652,20 @@ func TestCallMCPTool_ProviderNotGrantedIsNotRetried(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "retries") {
 		t.Fatalf("CallMCPTool to an ungranted provider = %v, want one refusal with no retry", err)
+	}
+
+	// A publish check that stops at the facts limit is no verdict on the
+	// grant, and it is not retried either: the same credential and policy
+	// reach the limit again.
+	nodeA.MeshPolicyMu.Lock()
+	nodeA.MeshPolicyRules = authorizerFactLimitRules(t)
+	nodeA.MeshPolicyMu.Unlock()
+	_, err = nodeA.CallMCPTool(ctx, nodeB.Host.ID(), "mcp://code-reviewer/review_pr", map[string]any{}, nil)
+	if !errors.Is(err, datalog.ErrWorldRunLimitMaxFacts) || errors.Is(err, ErrProviderNotGranted) {
+		t.Fatalf("CallMCPTool over the facts limit = %v, want an error wrapping %v and not %v", err, datalog.ErrWorldRunLimitMaxFacts, ErrProviderNotGranted)
+	}
+	if strings.Contains(err.Error(), "retries") {
+		t.Fatalf("CallMCPTool over the facts limit = %v, want one refusal with no retry", err)
 	}
 }
 

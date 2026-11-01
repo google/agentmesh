@@ -225,6 +225,12 @@ func (n *AgentMeshNode) CallMCPTool(ctx context.Context, targetPeer peer.ID, too
 			logger.Warnf("[MCP] Tool call denied, not retrying: %v", err)
 			return nil, err
 		}
+		// An authorizer that stopped at its facts or iterations limit stops
+		// there again on a retry; only its time limit depends on load.
+		if stopped, transient := authorizerLimit(err); stopped && !transient {
+			logger.Warnf("[MCP] Tool call stopped at an authorizer limit, not retrying: %v", err)
+			return nil, err
+		}
 		logger.Warnf("[MCP] Tool call failed, retrying in %v: %v", backoff, err)
 		timer := time.NewTimer(backoff)
 		select {

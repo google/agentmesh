@@ -23,6 +23,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eclipse-biscuit/biscuit-go/v2"
+	"github.com/eclipse-biscuit/biscuit-go/v2/datalog"
 	"github.com/google/agentmesh/api"
 	"github.com/google/agentmesh/internal/identity"
 	lru "github.com/hashicorp/golang-lru/v2"
@@ -351,6 +353,58 @@ func TestLabelGateTellsUnreachableFromDenied(t *testing.T) {
 	}
 	if text, status := labelGateStatus(err, "denied"); status != http.StatusForbidden || text != "denied" {
 		t.Errorf("denied: got %d %q, want 403 denied", status, text)
+	}
+}
+
+// authorizerFactLimitRules are mesh policy rules that derive more facts
+// from role(node) than the authorizer admits, so any check that adds them
+// stops at datalog.ErrWorldRunLimitMaxFacts before it reaches a verdict.
+func authorizerFactLimitRules(t *testing.T) []biscuit.Rule {
+	t.Helper()
+	texts := make([]string, 0, 1100)
+	for i := range 1100 {
+		texts = append(texts, fmt.Sprintf("limit_fact_%d(true) <- role(%q)", i, api.RoleNode))
+	}
+	rules, err := api.ParseDatalogRules(texts)
+	if err != nil {
+		t.Fatalf("ParseDatalogRules: %v", err)
+	}
+	return rules
+}
+
+// An authorizer that stops at a run limit reaches no verdict on the
+// provider's credential, so the caller is not told it was denied. Time
+// depends on load: 504, and the caller may retry. The facts and iterations
+// limits are reached again with the same credential and policy: 500.
+func TestLabelGateTellsAuthorizerLimitFromDenied(t *testing.T) {
+	cpPub, cpPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerPeer := peer.ID("provider-peer-id")
+	role := &api.PolicyRole{Name: api.RoleNode, AllowedPublish: []string{"mcp://calc"}}
+	granted, err := identity.MintBootstrapBiscuitToken(cpPriv, providerPeer, api.RoleNode, time.Now().Add(time.Hour), []*api.PolicyRole{role}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trusted := []TrustedKey{{Key: cpPub, ReceivedAt: time.Now()}}
+
+	slow := &AgentMeshNode{trustedKeys: trusted, BiscuitTimeout: time.Nanosecond}
+	err = slow.checkProvider(granted, providerPeer, nil, "mcp://calc")
+	if !errors.Is(err, datalog.ErrWorldRunLimitTimeout) {
+		t.Fatalf("checkProvider with a 1ns timeout = %v, want an error wrapping %v", err, datalog.ErrWorldRunLimitTimeout)
+	}
+	if text, status := labelGateStatus(err, "denied"); status != http.StatusGatewayTimeout || text == "denied" {
+		t.Errorf("timeout: got %d %q, want 504", status, text)
+	}
+
+	full := &AgentMeshNode{trustedKeys: trusted, BiscuitTimeout: 500 * time.Millisecond, MeshPolicyRules: authorizerFactLimitRules(t)}
+	err = full.checkProvider(granted, providerPeer, nil, "mcp://calc")
+	if !errors.Is(err, datalog.ErrWorldRunLimitMaxFacts) || errors.Is(err, ErrProviderNotGranted) {
+		t.Fatalf("checkProvider over the facts limit = %v, want an error wrapping %v and not %v", err, datalog.ErrWorldRunLimitMaxFacts, ErrProviderNotGranted)
+	}
+	if text, status := labelGateStatus(err, "denied"); status != http.StatusInternalServerError || text == "denied" {
+		t.Errorf("facts limit: got %d %q, want 500", status, text)
 	}
 }
 
