@@ -655,6 +655,13 @@ func TestVerifyBiscuitRole_TimeoutIsHonored(t *testing.T) {
 	if !errors.Is(err, datalog.ErrWorldRunLimitTimeout) {
 		t.Errorf("expected datalog timeout error, got %v", err)
 	}
+
+	// Verification keeps the reason too, so a caller can tell a world that
+	// ran out of time from a credential no trusted key signed.
+	_, _, err = VerifyBiscuitAndGetKey(biscuitData, dummyPeer, []ed25519.PublicKey{pub}, time.Nanosecond)
+	if !errors.Is(err, datalog.ErrWorldRunLimitTimeout) {
+		t.Errorf("VerifyBiscuitAndGetKey with a 1ns timeout = %v, want an error wrapping %v", err, datalog.ErrWorldRunLimitTimeout)
+	}
 }
 
 // TestRequireRole covers the role gate every router-only path shares. The
