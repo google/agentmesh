@@ -165,24 +165,6 @@ const streamPressureInterval = 15 * time.Second
 // counted and logged. A caller that arrives through a router is not
 // charged to the router's address; see p2plimits.Observed.
 func newResourceManager() (network.ResourceManager, error) {
-	return newResourceManagerFor(nil)
-}
-
-func newResourceManagerFor(n *AgentMeshNode) (network.ResourceManager, error) {
-	inbound := inboundRefusedTotal
-	streams := streamsRefusedTotal
-	mem := memoryRefusedTotal
-	if n != nil {
-		if n.perNodeMetrics != nil {
-			inbound = n.perNodeMetrics.inboundRefused
-			streams = n.perNodeMetrics.streamsRefused
-			mem = n.perNodeMetrics.memoryRefused
-		} else if n.config.DisableFatalExit {
-			inbound = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "agentmesh_meshnet_inbound_connections_refused_total"}, []string{"reason"})
-			streams = prometheus.NewCounterVec(prometheus.CounterOpts{Name: "agentmesh_meshnet_streams_refused_total"}, []string{"scope", "protocol"})
-			mem = prometheus.NewCounter(prometheus.CounterOpts{Name: "agentmesh_meshnet_memory_reservations_refused_total"})
-		}
-	}
-	return p2plimits.New(nodeLimits(ConnHighWaterMark), ConnsPerSourceIP, inbound, logger.Warnf,
-		rcmgr.WithMetrics(p2plimits.CountStreamRefusals(streams, mem, logger.Warnf)))
+	return p2plimits.New(nodeLimits(ConnHighWaterMark), ConnsPerSourceIP, inboundRefusedTotal, logger.Warnf,
+		rcmgr.WithMetrics(p2plimits.CountStreamRefusals(streamsRefusedTotal, memoryRefusedTotal, logger.Warnf)))
 }

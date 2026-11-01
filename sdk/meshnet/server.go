@@ -27,21 +27,26 @@ package meshnet
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/google/agentmesh/api"
+	"github.com/google/agentmesh/internal/identity"
 	"github.com/google/agentmesh/internal/node"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/prometheus/client_golang/prometheus"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // ErrCredentialLapsed reports that the member's Biscuit credential has expired
@@ -132,17 +137,23 @@ type Server struct {
 	closed      bool
 	runCancel   context.CancelFunc
 
-	privKey crypto.PrivKey
-	peerID  peer.ID
-	cpURL   string
-	store   *node.Store
-	node    *node.AgentMeshNode
+	privKey     crypto.PrivKey
+	peerID      peer.ID
+	cpURL       string
+	store       *node.Store
+	storeTmpDir string
+	node        *node.AgentMeshNode
+	metrics     *serverMetrics
 
-	doneInitOnce  sync.Once
-	doneCloseOnce sync.Once
-	doneCh        chan struct{}
-	errMu         sync.RWMutex
-	lapseErr      error
+	refusedMu      sync.Mutex
+	refusedStreams map[string]uint64
+
+	doneInitOnce     sync.Once
+	doneCloseOnce    sync.Once
+	doneCh           chan struct{}
+	errMu            sync.RWMutex
+	lapseErr         error
+	credentialLapsed atomic.Bool
 
 	mcpHandlerOnce sync.Once
 	mcpHTTPHandler http.Handler
@@ -198,6 +209,10 @@ func (s *Server) signalDone() {
 }
 
 func (s *Server) handleCredentialLapse(err error) {
+	s.credentialLapsed.Store(true)
+	if s.metrics != nil {
+		s.metrics.credentialLapses.Inc()
+	}
 	wrapped := fmt.Errorf("%w: %w", ErrCredentialLapsed, err)
 	s.errMu.Lock()
 	s.lapseErr = wrapped
@@ -213,6 +228,7 @@ func (s *Server) handleCredentialLapse(err error) {
 }
 
 func (s *Server) handleCredentialRenewed() {
+	s.credentialLapsed.Store(false)
 	s.log().Info("member credential renewed", "peer_id", s.peerID.String())
 }
 
@@ -237,6 +253,13 @@ func (s *Server) isRunning() bool {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 	return s.started && !s.closed && s.node != nil && s.node.Host != nil
+}
+
+func (s *Server) cleanupStoreTmpDir() {
+	if s.storeTmpDir != "" {
+		_ = os.RemoveAll(s.storeTmpDir)
+		s.storeTmpDir = ""
+	}
 }
 
 // Up loads or enrolls the member credential, syncs mesh trust material and
@@ -284,16 +307,33 @@ func (s *Server) Up(ctx context.Context) (*Status, error) {
 		)
 	}
 
+	if s.Registerer != nil {
+		m, err := newServerMetrics(s, s.Registerer)
+		if err != nil {
+			_ = s.store.Close()
+			s.cleanupStoreTmpDir()
+			s.node = nil
+			s.store = nil
+			return nil, fmt.Errorf("meshnet: register metrics: %w", err)
+		}
+		s.metrics = m
+	}
+
 	runCtx, runCancel := context.WithCancel(context.Background())
 	stopAbort := context.AfterFunc(ctx, runCancel)
 	startErr := s.node.Start(runCtx)
 	abortedByCaller := !stopAbort()
 	if startErr != nil {
 		runCancel()
+		if s.metrics != nil {
+			s.metrics.unregister()
+			s.metrics = nil
+		}
 		_ = s.node.Teardown()
 		if s.store != nil {
 			_ = s.store.Close()
 		}
+		s.cleanupStoreTmpDir()
 		s.node = nil
 		s.store = nil
 		if abortedByCaller && ctx.Err() != nil {
@@ -302,7 +342,7 @@ func (s *Server) Up(ctx context.Context) (*Status, error) {
 		return nil, startErr
 	}
 
-	s.node.StartRenewalLoopWithSource(runCtx, s.tokenSource())
+	s.startRenewalLoop(runCtx)
 	s.runCancel = runCancel
 	s.started = true
 
@@ -323,7 +363,6 @@ func (s *Server) Status() Status {
 
 	var routerStrs []string
 	var ingressURLs []string
-	var lapsed bool
 	if s.node != nil {
 		if s.node.Host != nil {
 			routers := s.node.AttachedRouterIDs()
@@ -334,7 +373,6 @@ func (s *Server) Status() Status {
 			sort.Strings(routerStrs)
 		}
 		ingressURLs = s.node.RouterIngressURLs()
-		lapsed = s.node.CredentialLapsed()
 	}
 
 	return Status{
@@ -343,7 +381,7 @@ func (s *Server) Status() Status {
 		AttachedRouters:  routerStrs,
 		IngressURLs:      ingressURLs,
 		ExpireTime:       s.credentialExpireTime(),
-		CredentialLapsed: lapsed,
+		CredentialLapsed: s.credentialLapsed.Load(),
 	}
 }
 
@@ -360,6 +398,11 @@ func (s *Server) Close() error {
 	s.closed = true
 	s.signalDone()
 
+	if s.metrics != nil {
+		s.metrics.unregister()
+		s.metrics = nil
+	}
+
 	var errs []error
 	if s.node != nil {
 		if err := s.node.Teardown(); err != nil {
@@ -374,6 +417,7 @@ func (s *Server) Close() error {
 			errs = append(errs, err)
 		}
 	}
+	s.cleanupStoreTmpDir()
 	return errors.Join(errs...)
 }
 
@@ -456,5 +500,44 @@ func (s *Server) AttenuateToken(rule *api.TaskAuthorizationRule, ttl time.Durati
 	if s.node == nil {
 		return "", time.Time{}, errors.New("meshnet: Server is not running (call Up first)")
 	}
-	return s.node.AttenuateToken(rule, ttl, seal)
+	if rule == nil {
+		return "", time.Time{}, errors.New("TaskAuthorizationRule is required")
+	}
+	raw := s.node.GetIdentity()
+	if len(raw) == 0 {
+		return "", time.Time{}, errors.New("no member credential loaded")
+	}
+
+	cloned := proto.Clone(rule).(*api.TaskAuthorizationRule)
+	now := time.Now()
+	exp := s.credentialExpireTime()
+	if exp.IsZero() {
+		exp = now.Add(api.BiscuitTokenTTL)
+	}
+	if ttl > 0 {
+		if candidate := now.Add(ttl); candidate.Before(exp) {
+			exp = candidate
+		}
+	}
+	if cloned.GetExpireTime() != nil {
+		if ruleExp := cloned.GetExpireTime().AsTime(); ruleExp.Before(exp) {
+			exp = ruleExp
+		}
+	}
+	if !now.Before(exp) {
+		return "", time.Time{}, errors.New("attenuated token expiration is in the past")
+	}
+	cloned.ExpireTime = timestamppb.New(exp)
+
+	out, err := identity.AttenuateBiscuit(raw, cloned)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	if seal {
+		out, err = identity.SealBiscuit(out)
+		if err != nil {
+			return "", time.Time{}, err
+		}
+	}
+	return base64.RawURLEncoding.EncodeToString(out), exp, nil
 }

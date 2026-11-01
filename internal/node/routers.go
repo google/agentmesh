@@ -477,7 +477,7 @@ func (n *AgentMeshNode) HandleGoAway(ctx context.Context, s network.Stream) {
 	}
 	retryAfter = min(retryAfter, goAwayMaxRetryAfter)
 	logger.Infof("[GoAway] Router %s sent this node away (%s); attaching elsewhere and staying off it for %s", router, goAway.GetReason(), retryAfter)
-	n.recordGoAway(goAway.GetReason().String())
+	goAwayReceivedTotal.WithLabelValues(goAway.GetReason().String()).Inc()
 	n.shun(router, retryAfter)
 	n.detach(router)
 	n.mu.Lock()

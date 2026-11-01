@@ -116,37 +116,6 @@ func (n *AgentMeshNode) Enroll(ctx context.Context, controlPlaneURL string, jwt 
 	return n.connectToRouters(ctx, controlPlaneURL, enrollResp.RouterAddresses)
 }
 
-// EnrollJWTCredential obtains and persists a member credential via POST /register
-// without requiring a running libp2p host.
-func (n *AgentMeshNode) EnrollJWTCredential(ctx context.Context, controlPlaneURL, jwt string) (*api.EnrollResponse, error) {
-	priv := n.config.PrivKey
-	if priv == nil && n.Store != nil {
-		var err error
-		priv, err = LoadOrGenerateKey(n.Store)
-		if err != nil {
-			return nil, err
-		}
-		n.config.PrivKey = priv
-	}
-	if priv == nil {
-		return nil, errors.New("node has no private key")
-	}
-	peerID, err := peer.IDFromPrivateKey(priv)
-	if err != nil {
-		return nil, fmt.Errorf("derive peer ID: %w", err)
-	}
-	resp, err := n.enrollHTTP(ctx, controlPlaneURL, jwt, peerID, priv)
-	if err != nil {
-		return nil, err
-	}
-	if n.Store != nil {
-		if err := n.Store.SaveControlPlaneURL(controlPlaneURL); err != nil {
-			return nil, fmt.Errorf("save control plane URL: %w", err)
-		}
-	}
-	return resp, nil
-}
-
 // EnrollBootstrapCredential obtains and persists a member credential via
 // POST /enroll (polling /enroll/status if pending) without attaching to routers.
 func (n *AgentMeshNode) EnrollBootstrapCredential(ctx context.Context, controlPlaneURL, bootstrapToken string, trustedOnly bool) (*api.BootstrapEnrollResponse, error) {
@@ -165,6 +134,9 @@ func (n *AgentMeshNode) EnrollBootstrapCredential(ctx context.Context, controlPl
 		if err := n.Store.SaveControlPlaneURL(controlPlaneURL); err != nil {
 			return nil, fmt.Errorf("save control plane URL: %w", err)
 		}
+	}
+	if n.Host != nil {
+		n.readmitRouters(ctx)
 	}
 	return resp, nil
 }

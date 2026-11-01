@@ -15,6 +15,7 @@
 package meshnet
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/ed25519"
@@ -35,7 +36,6 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/eclipse-biscuit/biscuit-go/v2"
 	"github.com/google/agentmesh/api"
-	"github.com/google/agentmesh/internal/node"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -170,8 +170,8 @@ func TestSanitizeCallerHeadersAndAgentCardRelativize(t *testing.T) {
 		ContentLength: int64(len(rawOrig)),
 		Request:       req,
 	}
-	if err := node.RelativizeAgentCardMultiRoot("coder", roots)(resp); err != nil {
-		t.Fatalf("RelativizeAgentCardMultiRoot: %v", err)
+	if err := (&Server{}).relativizeAgentCardMultiRoot("coder", roots)(resp); err != nil {
+		t.Fatalf("relativizeAgentCardMultiRoot: %v", err)
 	}
 	relBytes, err := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
@@ -706,7 +706,7 @@ func TestServerMetricsRegistererNoCollisionAndCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForCount(t, func() uint64 {
-		return s1.node.RefusedStreamCount("unauthenticated", api.IngressProtocolID)
+		return s1.refusedStreamCount("unauthenticated", api.IngressProtocolID)
 	}, 1, 5*time.Second)
 
 	families, err := reg.Gather()
@@ -1163,7 +1163,8 @@ func TestExternalIngressCanonicalizesActorNodePeerID(t *testing.T) {
 		t.Fatalf("peer.ToCid(%s) produced identical string", actorHost.ID())
 	}
 
-	routerBiscuit := mintTestBiscuit(t, env.cpPriv, env.routerHost.ID().String(), api.RoleRouter, time.Now().Add(time.Hour))
+	routerPeer := newAdmittedTestPeer(t, ctx, s, env.cpPriv, api.RoleRouter)
+	routerBiscuit := mintTestBiscuit(t, env.cpPriv, routerPeer.ID().String(), api.RoleRouter, time.Now().Add(time.Hour))
 
 	b := biscuit.NewBuilder(env.cpPriv)
 	for _, f := range []biscuit.Fact{
@@ -1186,16 +1187,31 @@ func TestExternalIngressCanonicalizesActorNodePeerID(t *testing.T) {
 		t.Fatalf("Serialize: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "http://mesh/a2a/coder/invoke", strings.NewReader(`{}`))
-	req.RemoteAddr = env.routerHost.ID().String()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://mesh/a2a/coder/invoke", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("NewRequestWithContext: %v", err)
+	}
 	req.Header.Set(api.HeaderMeshBiscuit, base64.RawURLEncoding.EncodeToString(routerBiscuit))
 	req.Header.Set(api.HeaderMeshIngress, api.IngressAuthModeStringEdge)
 	req.Header.Set(api.HeaderMeshIngressCallerBiscuit, base64.RawURLEncoding.EncodeToString(callerBytes))
 
-	rec := httptest.NewRecorder()
-	s.node.ExternalIngressHandler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("ExternalIngressHandler status = %d (%s), want 200", rec.Code, rec.Body.String())
+	st, err := routerPeer.NewStream(ctx, s.node.Host.ID(), api.IngressProtocolID)
+	if err != nil {
+		t.Fatalf("NewStream(%s): %v", api.IngressProtocolID, err)
+	}
+	defer func() { _ = st.Close() }()
+	if err := req.Write(st); err != nil {
+		t.Fatalf("req.Write: %v", err)
+	}
+	_ = st.SetReadDeadline(time.Now().Add(5 * time.Second))
+	resp, err := http.ReadResponse(bufio.NewReader(st), req)
+	if err != nil {
+		t.Fatalf("ReadResponse: %v", err)
+	}
+	respBody, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("external ingress status = %d (%s), want 200", resp.StatusCode, string(respBody))
 	}
 
 	mu.Lock()
