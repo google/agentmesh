@@ -15,21 +15,26 @@
 package meshnet
 
 import (
+	"bytes"
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/google/agentmesh/api"
 	"github.com/google/agentmesh/internal/node"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -212,16 +217,9 @@ func (svc *meshnetA2AService) Teardown() error {
 
 func (svc *meshnetA2AService) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		details := svc.s.node.CallerDetailsFromRequest(r)
-		caller := &CallerInfo{
-			PeerID:    details.PeerID,
-			Principal: details.Principal,
-			Roles:     slices.Clone(details.Roles),
-			Labels:    maps.Clone(details.Labels),
-			Task:      details.Task,
-		}
+		caller, externalIngress := svc.s.callerInfoFromRequest(r)
 		targetLn := svc.privateLn
-		if details.ExternalIngress {
+		if externalIngress {
 			if !svc.ExternalIngressAllowed() {
 				http.Error(w, "Service not found", http.StatusNotFound)
 				return
@@ -229,7 +227,7 @@ func (svc *meshnetA2AService) Handler() http.Handler {
 			targetLn = svc.publicLn
 		}
 		roots := svc.s.candidateCardRoots(svc.name)
-		svc.s.deliverHTTP(w, r, targetLn, caller, node.RelativizeAgentCardMultiRoot(svc.name, roots))
+		svc.s.deliverHTTP(w, r, targetLn, caller, svc.s.relativizeAgentCardMultiRoot(svc.name, roots))
 	})
 }
 
@@ -496,4 +494,156 @@ func (s *Server) deliverHTTP(
 		},
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+func (s *Server) callerInfoFromRequest(r *http.Request) (*CallerInfo, bool) {
+	externalIngress := r.Header.Get(api.HeaderMeshIngress) != ""
+	caller := &CallerInfo{
+		PeerID: r.Header.Get(api.HeaderPeerID),
+	}
+	if raw := node.CallerBiscuitFromContext(r.Context()); len(raw) > 0 && s.node != nil {
+		if claims, err := s.node.VerifyLocalBiscuit(raw); err == nil && claims != nil {
+			caller.Principal = claims.Principal()
+			caller.Roles = slices.Clone(claims.Roles)
+			caller.Labels = maps.Clone(claims.Labels)
+			caller.Task = outermostTaskName(claims.TaskRules)
+			if externalIngress {
+				if actor := cmp.Or(claims.ActorNodePeerID, claims.NodePeerID); actor != "" {
+					if id, pErr := peer.Decode(actor); pErr == nil {
+						caller.PeerID = id.String()
+					} else {
+						caller.PeerID = actor
+					}
+				}
+			}
+		}
+	}
+	if caller.Principal == "" {
+		caller.Principal = r.Header.Get(api.HeaderMeshPrincipal)
+	}
+	if caller.Task == "" {
+		caller.Task = r.Header.Get(api.HeaderMeshTask)
+	}
+	return caller, externalIngress
+}
+
+func outermostTaskName(rules []*api.TaskAuthorizationRule) string {
+	for i := len(rules) - 1; i >= 0; i-- {
+		if rules[i] != nil && rules[i].GetName() != "" {
+			return rules[i].GetName()
+		}
+	}
+	return ""
+}
+
+const (
+	a2aAgentCardEscapedPath = "/.well-known/agent-card.json"
+	maxAgentCardBytes       = 1 << 20
+)
+
+func (s *Server) relativizeAgentCardMultiRoot(service string, candidateRoots []string) func(*http.Response) error {
+	return func(resp *http.Response) error {
+		if resp.Request == nil || resp.Request.Method != http.MethodGet ||
+			resp.Request.URL.EscapedPath() != a2aAgentCardEscapedPath ||
+			resp.StatusCode != http.StatusOK {
+			return nil
+		}
+		if enc := resp.Header.Get("Content-Encoding"); enc != "" {
+			s.log().Warn("A2A agent card is compressed; relaying interface URLs unchanged", "service", service, "encoding", enc)
+			return nil
+		}
+		raw, err := io.ReadAll(io.LimitReader(resp.Body, maxAgentCardBytes+1))
+		if err != nil {
+			return fmt.Errorf("read agent card of %q: %w", service, err)
+		}
+		if len(raw) > maxAgentCardBytes {
+			s.log().Warn("A2A agent card exceeds size limit; relaying interface URLs unchanged", "service", service, "max_bytes", maxAgentCardBytes)
+			resp.Body = struct {
+				io.Reader
+				io.Closer
+			}{io.MultiReader(bytes.NewReader(raw), resp.Body), resp.Body}
+			return nil
+		}
+		_ = resp.Body.Close()
+		out, err := relativizeCardJSON(raw, candidateRoots)
+		if err != nil {
+			s.log().Warn("A2A agent card relayed with interface URLs unchanged", "service", service, "error", err)
+			out = raw
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(out))
+		resp.ContentLength = int64(len(out))
+		resp.Header.Set("Content-Length", strconv.Itoa(len(out)))
+		return nil
+	}
+}
+
+func relativizeCardJSON(raw []byte, roots []string) ([]byte, error) {
+	var card map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &card); err != nil {
+		return nil, fmt.Errorf("card is not a JSON object: %w", err)
+	}
+	ifacesRaw, ok := card["supportedInterfaces"]
+	if !ok {
+		return raw, nil
+	}
+	var ifaces []map[string]json.RawMessage
+	if err := json.Unmarshal(ifacesRaw, &ifaces); err != nil {
+		return nil, fmt.Errorf("supportedInterfaces is not a list of objects: %w", err)
+	}
+	for _, iface := range ifaces {
+		var u, binding string
+		if iface == nil || json.Unmarshal(iface["url"], &u) != nil || json.Unmarshal(iface["protocolBinding"], &binding) != nil ||
+			!isHTTPBinding(a2a.TransportProtocol(binding)) {
+			continue
+		}
+		for _, root := range roots {
+			rel, matched := relativeToRoot(u, root)
+			if !matched {
+				continue
+			}
+			enc, err := json.Marshal(rel)
+			if err != nil {
+				return nil, err
+			}
+			iface["url"] = enc
+			break
+		}
+	}
+	enc, err := json.Marshal(ifaces)
+	if err != nil {
+		return nil, err
+	}
+	card["supportedInterfaces"] = enc
+	return json.Marshal(card)
+}
+
+func relativeToRoot(raw, root string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || !u.IsAbs() || u.Opaque != "" {
+		return "", false
+	}
+	p := u.EscapedPath()
+	var rest string
+	switch {
+	case p == root || p == root+"/":
+	case strings.HasPrefix(p, root+"/"):
+		rest = strings.TrimPrefix(p, root+"/")
+	default:
+		return "", false
+	}
+	if api.HasDotSegment(rest) {
+		return "", false
+	}
+	if u.RawQuery != "" {
+		rest += "?" + u.RawQuery
+	}
+	return rest, true
+}
+
+func isHTTPBinding(binding a2a.TransportProtocol) bool {
+	switch strings.ToUpper(string(binding)) {
+	case string(a2a.TransportProtocolJSONRPC), string(a2a.TransportProtocolHTTPJSON):
+		return true
+	}
+	return false
 }

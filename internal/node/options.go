@@ -23,7 +23,6 @@ import (
 	"github.com/google/agentmesh/internal/identity"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/multiformats/go-multiaddr"
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 const (
@@ -175,32 +174,16 @@ type Options struct {
 	// TokenSource is the optional live platform/OIDC token provider presented
 	// as TokenRefreshRequest.jwt during RefreshEnrollment.
 	TokenSource TokenSource
-	// BootstrapToken is an optional in-memory bootstrap token used by embedded
-	// SDK callers when BootstrapTokenPath is empty.
-	BootstrapToken string
 	// AllowInsecureControlPlane permits plaintext http:// control-plane and OIDC
 	// URLs on non-loopback hosts for this node instance without mutating the
 	// process-wide flag.
 	AllowInsecureControlPlane bool
-	// DisableFatalExit suppresses process-terminating logger.Fatalf calls and
-	// stdout banners on router dropout or credential lapse when the node runs
-	// embedded inside a host Go application.
+	// DisableFatalExit suppresses process-terminating logger.Fatalf calls on
+	// router dropout when the node runs embedded inside a host Go application.
 	DisableFatalExit bool
-	// Registerer, when non-nil, registers per-node state gauges and refusal
-	// counters wrapped with peer_id="<id>" so multiple embedded nodes can share
-	// one Prometheus registry without colliding.
-	Registerer prometheus.Registerer
-	// OnCredentialLapse is invoked when the node's credential has expired and a
-	// renewal attempt fails while DisableFatalExit is true.
-	OnCredentialLapse func(err error)
-	// OnCredentialRenewed is invoked whenever RefreshEnrollment or re-enrollment
-	// renews the node's credential in the background loop.
-	OnCredentialRenewed func()
-	// RenewalInitialBackoff and RenewalMaxBackoff bound the exponential backoff
-	// between failed renewal attempts once the credential has lapsed. Zero uses
-	// 2s and 5m.
-	RenewalInitialBackoff time.Duration
-	RenewalMaxBackoff     time.Duration
+	// OnStreamRefused, when non-nil, is invoked whenever the libp2p auth gate
+	// refuses an unauthenticated or non-router stream.
+	OnStreamRefused func(scope, protocol string)
 }
 
 // Default applies default values to Options if they are not specified.

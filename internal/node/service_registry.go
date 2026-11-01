@@ -128,10 +128,6 @@ type ServiceRegistry struct {
 	// registered so the node can log its public router ingress URLs.
 	onIngressRegistered func(info *api.ServiceInfo)
 
-	// onProvideFailure, when set, records directory announcement failures in
-	// per-node metrics alongside the process-wide counter.
-	onProvideFailure func(scope string)
-
 	// backendProbeTimeout bounds each backend probe in advertisable. Set once
 	// at construction (see NewServiceRegistry); never mutated afterwards, so
 	// reading it needs no lock.
@@ -290,14 +286,6 @@ func (r *ServiceRegistry) Unregister(ctx context.Context, name string) error {
 // and immediately falls back to an internal-only announcement without ingress
 // metadata so in-mesh discovery continues working. It returns true iff the
 // service declared ingress and its ingress directory announcement succeeded.
-func (r *ServiceRegistry) recordProvideFailure(scope string) {
-	if r.onProvideFailure != nil {
-		r.onProvideFailure(scope)
-		return
-	}
-	serviceProvideFailuresTotal.WithLabelValues(scope).Inc()
-}
-
 func (r *ServiceRegistry) announceServiceKeys(ctx context.Context, info *api.ServiceInfo, nameKey, typeKey []byte) bool {
 	target := serviceTarget(info)
 	ing := info.GetIngress()
@@ -312,14 +300,14 @@ func (r *ServiceRegistry) announceServiceKeys(ctx context.Context, info *api.Ser
 				ingressAnnounced = true
 			} else {
 				if ctx.Err() == nil {
-					r.recordProvideFailure(provideFailureScopeIngress)
+					serviceProvideFailuresTotal.WithLabelValues(provideFailureScopeIngress).Inc()
 					logger.Errorf("[ServiceRegistry] External ingress announcement for %s/%s failed; falling back to internal-only directory announcement: %v", info.Type, info.Name, err)
 				}
 				nameCtx, nameCancel := context.WithTimeout(ctx, 5*time.Second)
 				fallbackErr := r.dht.Provide(nameCtx, nameKey, target)
 				nameCancel()
 				if fallbackErr != nil && ctx.Err() == nil {
-					r.recordProvideFailure(provideFailureScopeName)
+					serviceProvideFailuresTotal.WithLabelValues(provideFailureScopeName).Inc()
 					logger.Errorf("[ServiceRegistry] Announcing %s/%s by name (internal fallback): %v", info.Type, info.Name, fallbackErr)
 				}
 			}
@@ -330,7 +318,7 @@ func (r *ServiceRegistry) announceServiceKeys(ctx context.Context, info *api.Ser
 			if err == nil {
 				ingressAnnounced = true
 			} else if ctx.Err() == nil {
-				r.recordProvideFailure(provideFailureScopeName)
+				serviceProvideFailuresTotal.WithLabelValues(provideFailureScopeName).Inc()
 				logger.Errorf("[ServiceRegistry] Announcing %s/%s by name: %v", info.Type, info.Name, err)
 			}
 		}
@@ -339,7 +327,7 @@ func (r *ServiceRegistry) announceServiceKeys(ctx context.Context, info *api.Ser
 		err := r.dht.Provide(nameCtx, nameKey, target)
 		nameCancel()
 		if err != nil && ctx.Err() == nil {
-			r.recordProvideFailure(provideFailureScopeName)
+			serviceProvideFailuresTotal.WithLabelValues(provideFailureScopeName).Inc()
 			logger.Errorf("[ServiceRegistry] Announcing %s/%s by name: %v", info.Type, info.Name, err)
 		}
 	}
@@ -348,7 +336,7 @@ func (r *ServiceRegistry) announceServiceKeys(ctx context.Context, info *api.Ser
 	typeErr := r.dht.Provide(typeCtx, typeKey, target)
 	typeCancel()
 	if typeErr != nil && ctx.Err() == nil {
-		r.recordProvideFailure(provideFailureScopeType)
+		serviceProvideFailuresTotal.WithLabelValues(provideFailureScopeType).Inc()
 		logger.Errorf("[ServiceRegistry] Announcing %s/%s by type: %v", info.Type, info.Name, typeErr)
 	}
 

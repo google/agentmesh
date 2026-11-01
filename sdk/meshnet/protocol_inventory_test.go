@@ -105,7 +105,7 @@ func TestServerProtocolInventoryIsClassified(t *testing.T) {
 
 	for _, p := range gated {
 		t.Run(string(p), func(t *testing.T) {
-			before := s.node.RefusedStreamCount("unauthenticated", p)
+			before := s.refusedStreamCount("unauthenticated", p)
 
 			st, err := stranger.NewStream(ctx, h.ID(), p)
 			if err != nil {
@@ -125,7 +125,7 @@ func TestServerProtocolInventoryIsClassified(t *testing.T) {
 				t.Fatal(err)
 			}
 			waitForCount(t, func() uint64 {
-				return s.node.RefusedStreamCount("unauthenticated", p)
+				return s.refusedStreamCount("unauthenticated", p)
 			}, before+1, 5*time.Second)
 
 			if err := stranger.Connect(ctx, peer.AddrInfo{ID: h.ID(), Addrs: h.Addrs()}); err != nil {
@@ -147,10 +147,7 @@ func TestExternalIngressProtocolServesOnlyRouters(t *testing.T) {
 
 	t.Run("member_is_refused_at_the_gate", func(t *testing.T) {
 		member := newAdmittedTestPeer(t, ctx, s, env.cpPriv, api.RoleNode)
-		if !s.node.IsAdmitted(member.ID()) || s.node.IsAdmittedRouter(member.ID()) {
-			t.Fatalf("member admitted=%v router=%v, want true/false", s.node.IsAdmitted(member.ID()), s.node.IsAdmittedRouter(member.ID()))
-		}
-		before := s.node.RefusedStreamCount("not_router", api.IngressProtocolID)
+		before := s.refusedStreamCount("not_router", api.IngressProtocolID)
 
 		st, err := member.NewStream(ctx, h.ID(), api.IngressProtocolID)
 		if err != nil {
@@ -166,15 +163,12 @@ func TestExternalIngressProtocolServesOnlyRouters(t *testing.T) {
 			t.Fatalf("ingress protocol answered a non-router member %q; gate must reset stream", buf[:n])
 		}
 		waitForCount(t, func() uint64 {
-			return s.node.RefusedStreamCount("not_router", api.IngressProtocolID)
+			return s.refusedStreamCount("not_router", api.IngressProtocolID)
 		}, before+1, 5*time.Second)
 	})
 
 	t.Run("router_reaches_the_handler", func(t *testing.T) {
 		router := newAdmittedTestPeer(t, ctx, s, env.cpPriv, api.RoleRouter)
-		if !s.node.IsAdmittedRouter(router.ID()) {
-			t.Fatal("peer admitted with RoleRouter is not recorded as a router")
-		}
 
 		st, err := router.NewStream(ctx, h.ID(), api.IngressProtocolID)
 		if err != nil {
@@ -197,9 +191,23 @@ func TestExternalIngressProtocolServesOnlyRouters(t *testing.T) {
 
 	t.Run("ban_withdraws_router_standing", func(t *testing.T) {
 		router := newAdmittedTestPeer(t, ctx, s, env.cpPriv, api.RoleRouter)
-		s.node.BanPeer(router.ID(), time.Now().UnixMilli())
-		if s.node.IsAdmitted(router.ID()) || s.node.IsAdmittedRouter(router.ID()) {
-			t.Fatal("banned peer still admitted")
+		env.cp.mu.Lock()
+		env.cp.bannedPeerIDs = append(env.cp.bannedPeerIDs, router.ID().String())
+		env.cp.mu.Unlock()
+		if err := s.node.SyncControlPlane(ctx); err != nil {
+			t.Fatalf("SyncControlPlane: %v", err)
+		}
+		if err := router.Connect(ctx, peer.AddrInfo{ID: h.ID(), Addrs: h.Addrs()}); err == nil {
+			st, sErr := router.NewStream(ctx, h.ID(), api.IngressProtocolID)
+			if sErr == nil {
+				defer func() { _ = st.Reset() }()
+				_, _ = st.Write([]byte(request))
+				buf := make([]byte, 64)
+				_ = st.SetReadDeadline(time.Now().Add(time.Second))
+				if n, rErr := st.Read(buf); rErr == nil {
+					t.Fatalf("banned router still served on %s: %q", api.IngressProtocolID, buf[:n])
+				}
+			}
 		}
 	})
 }

@@ -386,6 +386,7 @@ type fakeControlPlaneHTTP struct {
 	cpPriv                ed25519.PrivateKey
 	routerAddrs           []string
 	routers               []*api.RouterInfo
+	bannedPeerIDs         []string
 	extraDatalogRules     []string
 	srv                   *httptest.Server
 	failKeys              atomic.Bool
@@ -427,10 +428,12 @@ func newFakeControlPlaneHTTPWithKeys(t *testing.T, pub ed25519.PublicKey, priv e
 		f.mu.Lock()
 		addrs := append([]string(nil), f.routerAddrs...)
 		routers := append([]*api.RouterInfo(nil), f.routers...)
+		banned := append([]string(nil), f.bannedPeerIDs...)
 		f.mu.Unlock()
 		writeProto(w, &api.ControlPlaneInfoResponse{
 			RouterAddresses: addrs,
 			Routers:         routers,
+			BannedPeerIds:   banned,
 		})
 	})
 	mux.HandleFunc("/policies", func(w http.ResponseWriter, _ *http.Request) {

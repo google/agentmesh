@@ -131,7 +131,10 @@ func (n *AgentMeshNode) requireAuthenticated(next network.StreamHandler) network
 	return func(s network.Stream) {
 		p := s.Conn().RemotePeer()
 		if err := n.awaitPeerAuthenticated(context.Background(), p); err != nil {
-			n.recordStreamRefusal(streamScopeUnauthenticated, string(s.Protocol()))
+			streamsRefusedTotal.WithLabelValues(streamScopeUnauthenticated, string(s.Protocol())).Inc()
+			if n.config.OnStreamRefused != nil {
+				n.config.OnStreamRefused(streamScopeUnauthenticated, string(s.Protocol()))
+			}
 			logger.Debugf("[AuthZ] Refusing %s stream from %s: %v", s.Protocol(), p, err)
 			_ = s.Reset()
 			return
@@ -148,7 +151,10 @@ func (n *AgentMeshNode) requireRouter(next network.StreamHandler) network.Stream
 	return n.requireAuthenticated(func(s network.Stream) {
 		p := s.Conn().RemotePeer()
 		if !n.isAuthenticatedRouter(p) {
-			n.recordStreamRefusal(streamScopeNotRouter, string(s.Protocol()))
+			streamsRefusedTotal.WithLabelValues(streamScopeNotRouter, string(s.Protocol())).Inc()
+			if n.config.OnStreamRefused != nil {
+				n.config.OnStreamRefused(streamScopeNotRouter, string(s.Protocol()))
+			}
 			logger.Warnf("[AuthZ] Refusing %s stream from %s: peer is authenticated but not a router", s.Protocol(), p)
 			_ = s.Reset()
 			return

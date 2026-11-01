@@ -16,7 +16,6 @@ package node
 
 import (
 	"context"
-	"maps"
 	"net/http"
 	"slices"
 	"sort"
@@ -109,12 +108,6 @@ func (n *AgentMeshNode) PreferredRouterIngressURL() string {
 		return urls[0]
 	}
 	return ""
-}
-
-// ExternalIngressHandler returns the HTTP handler mounted on
-// api.IngressProtocolID (/mesh/ingress/1.0.0).
-func (n *AgentMeshNode) ExternalIngressHandler() http.Handler {
-	return n.externalIngressHandler()
 }
 
 // logIngressURLs logs the public HTTP ingress URLs for a registered service
@@ -215,13 +208,13 @@ func (n *AgentMeshNode) externalIngressHandler() http.Handler {
 
 		path := r.URL.Path
 		if api.HasDotSegment(path) {
-			n.recordExternalIngress(modeMetric, externalIngressOutcomeInvalid)
+			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeInvalid).Inc()
 			http.Error(w, "Invalid path", http.StatusBadRequest)
 			return
 		}
 		parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
 		if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
-			n.recordExternalIngress(modeMetric, externalIngressOutcomeInvalid)
+			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeInvalid).Inc()
 			http.Error(w, "Invalid path", http.StatusBadRequest)
 			return
 		}
@@ -234,30 +227,30 @@ func (n *AgentMeshNode) externalIngressHandler() http.Handler {
 
 		serviceType, err := api.ParseServiceType(serviceTypeStr)
 		if err != nil {
-			n.recordExternalIngress(modeMetric, externalIngressOutcomeInvalid)
+			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeInvalid).Inc()
 			http.Error(w, "Invalid service type", http.StatusBadRequest)
 			return
 		}
 		if !api.IsInboundServiceType(serviceType) {
-			n.recordExternalIngress(modeMetric, externalIngressOutcomeNotFound)
+			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeNotFound).Inc()
 			http.Error(w, "Service not found", http.StatusNotFound)
 			return
 		}
 
 		remotePeer, err = peer.Decode(r.RemoteAddr)
 		if err != nil {
-			n.recordExternalIngress(modeMetric, externalIngressOutcomeInvalid)
+			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeInvalid).Inc()
 			http.Error(w, "Invalid remote peer", http.StatusBadRequest)
 			return
 		}
 		if n.revokedPeers != nil && n.revokedPeers.Contains(remotePeer.String()) {
-			n.recordExternalIngress(modeMetric, externalIngressOutcomeDeny)
+			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeDeny).Inc()
 			logger.Warnf("[ExternalIngress] Refusing banned peer %s", remotePeer)
 			refuse(w, http.StatusForbidden, "Peer is revoked", proxyStatusDenied)
 			return
 		}
 		if n.externalIngressLimiter != nil && !n.externalIngressLimiter.Allow(remotePeer.String()) {
-			n.recordExternalIngress(modeMetric, externalIngressOutcomeRateLimited)
+			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeRateLimited).Inc()
 			logger.Warnf("[ExternalIngress] Rate limit exceeded for router %s", remotePeer)
 			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
 			return
@@ -267,57 +260,57 @@ func (n *AgentMeshNode) externalIngressHandler() http.Handler {
 		// role("mesh:role:router") bound to remotePeer in Block 0.
 		routerBiscuitHeader := r.Header.Get(api.HeaderMeshBiscuit)
 		if routerBiscuitHeader == "" {
-			n.recordExternalIngress(modeMetric, externalIngressOutcomeUnauthenticated)
+			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeUnauthenticated).Inc()
 			http.Error(w, "Missing X-Mesh-Biscuit header", http.StatusUnauthorized)
 			return
 		}
 		routerBiscuitBytes, err := identity.DecodeBase64Biscuit(routerBiscuitHeader)
 		if err != nil {
-			n.recordExternalIngress(modeMetric, externalIngressOutcomeInvalid)
+			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeInvalid).Inc()
 			http.Error(w, "Invalid X-Mesh-Biscuit encoding", http.StatusBadRequest)
 			return
 		}
 		routerClaims, err := n.VerifyLocalBiscuit(routerBiscuitBytes)
 		if err != nil {
-			n.recordExternalIngress(modeMetric, externalIngressOutcomeDeny)
+			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeDeny).Inc()
 			logger.Warnf("[ExternalIngress] Router biscuit verification failed for %s: %v", remotePeer, err)
 			refuse(w, http.StatusForbidden, "Router authentication failed", proxyStatusDenied)
 			return
 		}
 		if err := identity.RequireAuthorityBinding(routerClaims.Biscuit, remotePeer); err != nil {
-			n.recordExternalIngress(modeMetric, externalIngressOutcomeDeny)
+			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeDeny).Inc()
 			logger.Warnf("[ExternalIngress] Router biscuit binding mismatch for %s: %v", remotePeer, err)
 			refuse(w, http.StatusForbidden, "Router authentication failed", proxyStatusDenied)
 			return
 		}
 		if !slices.Contains(routerClaims.Roles, api.RoleRouter) {
-			n.recordExternalIngress(modeMetric, externalIngressOutcomeDeny)
+			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeDeny).Inc()
 			logger.Warnf("[ExternalIngress] Peer %s lacks %s role on %s", remotePeer, api.RoleRouter, api.IngressProtocolID)
 			refuse(w, http.StatusForbidden, "Forbidden: only enrolled routers may forward external ingress", proxyStatusDenied)
 			return
 		}
 
 		if n.services == nil {
-			n.recordExternalIngress(modeMetric, externalIngressOutcomeInvalid)
+			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeInvalid).Inc()
 			logger.Error("[ExternalIngress] Service registry not initialized")
 			http.Error(w, "Service registry not initialized", http.StatusServiceUnavailable)
 			return
 		}
 		svc, ok := n.services.GetTyped(serviceType, serviceName)
 		if !ok || svc.Handler() == nil {
-			n.recordExternalIngress(modeMetric, externalIngressOutcomeNotFound)
+			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeNotFound).Inc()
 			http.Error(w, "Service not found", http.StatusNotFound)
 			return
 		}
 		ing := svc.Info().GetIngress()
 		if ing == nil {
-			n.recordExternalIngress(modeMetric, externalIngressOutcomeNotFound)
+			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeNotFound).Inc()
 			logger.Warnf("[ExternalIngress] Refusing external ingress to internal-only service %s://%s from router %s", serviceTypeStr, truncateForLog(serviceName), remotePeer)
 			http.Error(w, "Service not found", http.StatusNotFound)
 			return
 		}
 		if gate, ok := svc.(ExternalIngressGate); ok && !gate.ExternalIngressAllowed() {
-			n.recordExternalIngress(modeMetric, externalIngressOutcomeNotFound)
+			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeNotFound).Inc()
 			http.Error(w, "Service not found", http.StatusNotFound)
 			return
 		}
@@ -325,14 +318,14 @@ func (n *AgentMeshNode) externalIngressHandler() http.Handler {
 		effectiveMode := api.EffectiveIngressAuthMode(ing)
 		modeStr, err := api.IngressAuthModeToString(effectiveMode)
 		if err != nil {
-			n.recordExternalIngress(modeMetric, externalIngressOutcomeDeny)
+			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeDeny).Inc()
 			refuse(w, http.StatusForbidden, "Unsupported service ingress auth mode", proxyStatusConfigurationError)
 			return
 		}
 		modeMetric = modeStr
 
 		if wireMode := strings.TrimSpace(r.Header.Get(api.HeaderMeshIngress)); wireMode != "" && wireMode != modeStr {
-			n.recordExternalIngress(modeMetric, externalIngressOutcomeDeny)
+			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeDeny).Inc()
 			logger.Warnf("[ExternalIngress] Router %s sent mode %q for %s://%s configured as %q", remotePeer, truncateForLog(wireMode), serviceTypeStr, serviceName, modeStr)
 			refuse(w, http.StatusForbidden, "Ingress auth mode mismatch", proxyStatusDenied)
 			return
@@ -346,7 +339,7 @@ func (n *AgentMeshNode) externalIngressHandler() http.Handler {
 			r.Header.Set(api.HeaderPeerID, remotePeer.String())
 			r.Header.Set(api.HeaderMeshIngress, api.IngressAuthModeStringPassthrough)
 
-			n.recordExternalIngress(modeMetric, externalIngressOutcomeAllow)
+			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeAllow).Inc()
 			logger.Infow("Border Crossing",
 				"direction", "inbound",
 				"protocol", string(api.IngressProtocolID),
@@ -373,7 +366,7 @@ func (n *AgentMeshNode) externalIngressHandler() http.Handler {
 			r.Header.Set(api.HeaderPeerID, remotePeer.String())
 			r.Header.Set(api.HeaderMeshIngress, api.IngressAuthModeStringEdge)
 
-			n.recordExternalIngress(modeMetric, externalIngressOutcomeAllow)
+			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeAllow).Inc()
 			logger.Infow("Border Crossing",
 				"direction", "inbound",
 				"protocol", string(api.IngressProtocolID),
@@ -390,7 +383,7 @@ func (n *AgentMeshNode) externalIngressHandler() http.Handler {
 		}
 
 		if callerBiscuitHeader == "" {
-			n.recordExternalIngress(modeMetric, externalIngressOutcomeUnauthenticated)
+			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeUnauthenticated).Inc()
 			logger.Warnf("[ExternalIngress] Missing caller biscuit on edge ingress request from router %s for %s", remotePeer, target)
 			http.Error(w, "Missing caller credentials on edge ingress request", http.StatusUnauthorized)
 			return
@@ -398,14 +391,14 @@ func (n *AgentMeshNode) externalIngressHandler() http.Handler {
 
 		callerBiscuitBytes, err := identity.DecodeBase64Biscuit(callerBiscuitHeader)
 		if err != nil {
-			n.recordExternalIngress(modeMetric, externalIngressOutcomeInvalid)
+			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeInvalid).Inc()
 			logger.Warnf("[ExternalIngress] Invalid caller biscuit encoding via router %s for %s: %v", remotePeer, target, err)
 			http.Error(w, "Invalid caller biscuit encoding", http.StatusBadRequest)
 			return
 		}
 		verifiedCaller, err := n.VerifyLocalBiscuit(callerBiscuitBytes)
 		if err != nil {
-			n.recordExternalIngress(modeMetric, externalIngressOutcomeDeny)
+			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeDeny).Inc()
 			logger.Warnf("[ExternalIngress] Caller biscuit verification failed via router %s for %s: %v", remotePeer, target, err)
 			refuse(w, http.StatusForbidden, "Authorization failed", proxyStatusDenied)
 			return
@@ -413,7 +406,7 @@ func (n *AgentMeshNode) externalIngressHandler() http.Handler {
 
 		evalParams, err := n.buildExternalIngressEvalParams(serviceTypeStr, serviceName, r.Method, backendPath, ing.GetAllow())
 		if err != nil {
-			n.recordExternalIngress(modeMetric, externalIngressOutcomeDeny)
+			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeDeny).Inc()
 			logger.Warnf("[ExternalIngress] Failed to build evaluation context for %s: %v", target, err)
 			refuse(w, http.StatusForbidden, "Authorization failed", proxyStatusConfigurationError)
 			return
@@ -423,14 +416,14 @@ func (n *AgentMeshNode) externalIngressHandler() http.Handler {
 			preParams := evalParams
 			preParams.AllowMCPStreamInit = true
 			if _, authErr := identity.AuthorizeIngressDelegatedBiscuit(verifiedCaller, preParams); authErr != nil {
-				n.recordExternalIngress(modeMetric, externalIngressOutcomeDeny)
+				externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeDeny).Inc()
 				logger.Warnf("[ExternalIngress] Pre-body MCP AuthZ failed via router %s for %s: %v", remotePeer, target, authErr)
 				refuse(w, http.StatusForbidden, "Authorization failed", proxyStatusDenied)
 				return
 			}
 			mcpTool, allowInit, bodyErr := api.InspectMCPHTTPRequestBody(r, api.DefaultMaxMCPBodyInspectBytes)
 			if bodyErr != nil {
-				n.recordExternalIngress(modeMetric, externalIngressOutcomeDeny)
+				externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeDeny).Inc()
 				logger.Warnf("[ExternalIngress] MCP body inspection failed via router %s for %s: %v", remotePeer, target, bodyErr)
 				refuse(w, http.StatusRequestEntityTooLarge, bodyErr.Error(), proxyStatusDenied)
 				return
@@ -441,7 +434,7 @@ func (n *AgentMeshNode) externalIngressHandler() http.Handler {
 
 		callerRes, err := identity.AuthorizeIngressDelegatedBiscuit(verifiedCaller, evalParams)
 		if err != nil {
-			n.recordExternalIngress(modeMetric, externalIngressOutcomeDeny)
+			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeDeny).Inc()
 			logger.Warnf("[ExternalIngress] AuthZ denied via router %s for %s: %v", remotePeer, target, err)
 			refuse(w, http.StatusForbidden, "Authorization failed", proxyStatusDenied)
 			return
@@ -460,7 +453,7 @@ func (n *AgentMeshNode) externalIngressHandler() http.Handler {
 			r.Header.Set(api.HeaderMeshTask, callerRes.TaskName)
 		}
 
-		n.recordExternalIngress(modeMetric, externalIngressOutcomeAllow)
+		externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeAllow).Inc()
 		logger.Infow("Border Crossing",
 			"direction", "inbound",
 			"protocol", string(api.IngressProtocolID),
@@ -513,83 +506,4 @@ func rewriteExternalIngressRequestPath(r *http.Request, parts []string, upstream
 		r.URL.Path = "/" + upstreamPath
 	}
 	r.URL.RawPath = ""
-}
-
-// CallerDetails describes the verified mesh caller behind an inbound HTTP
-// request delivered to a registered Service.Handler() over /libp2p-http or
-// /mesh/ingress/1.0.0.
-type CallerDetails struct {
-	PeerID          string
-	Principal       string
-	Roles           []string
-	Labels          map[string]string
-	Task            string
-	ExternalIngress bool
-}
-
-// CallerDetailsFromRequest extracts the verified caller identity from an HTTP
-// request already authenticated by StartIngressServer or StartExternalIngressServer.
-func (n *AgentMeshNode) CallerDetailsFromRequest(r *http.Request) CallerDetails {
-	ingressMode := strings.TrimSpace(r.Header.Get(api.HeaderMeshIngress))
-	remotePeer := strings.TrimSpace(r.Header.Get(api.HeaderPeerID))
-
-	if ingressMode == api.IngressAuthModeStringPassthrough {
-		return CallerDetails{
-			PeerID:          remotePeer,
-			Principal:       "passthrough",
-			ExternalIngress: true,
-		}
-	}
-
-	callerBiscuit := CallerBiscuitFromContext(r.Context())
-	if ingressMode == api.IngressAuthModeStringEdge && len(callerBiscuit) == 0 {
-		return CallerDetails{
-			PeerID:          remotePeer,
-			Principal:       "anonymous:agent-card",
-			ExternalIngress: true,
-		}
-	}
-
-	out := CallerDetails{
-		PeerID:          remotePeer,
-		Principal:       r.Header.Get(api.HeaderMeshPrincipal),
-		Task:            r.Header.Get(api.HeaderMeshTask),
-		ExternalIngress: ingressMode != "",
-	}
-	if hdrRoles := strings.TrimSpace(r.Header.Get(api.HeaderMeshRoles)); hdrRoles != "" {
-		out.Roles = strings.Split(hdrRoles, ",")
-	}
-	if len(callerBiscuit) > 0 && n != nil {
-		if claims, err := n.VerifyLocalBiscuit(callerBiscuit); err == nil && claims != nil {
-			if out.ExternalIngress && claims.ActorNodePeerID != "" {
-				if id, pErr := peer.Decode(claims.ActorNodePeerID); pErr == nil {
-					out.PeerID = id.String()
-				} else {
-					logger.Debugf("[ExternalIngress] Ignoring invalid actor_node %q in caller biscuit: %v", claims.ActorNodePeerID, pErr)
-				}
-			}
-			if out.Principal == "" {
-				out.Principal = claims.Principal()
-			}
-			if len(out.Roles) == 0 && len(claims.Roles) > 0 {
-				out.Roles = slices.Clone(claims.Roles)
-			}
-			if len(claims.Labels) > 0 {
-				out.Labels = maps.Clone(claims.Labels)
-			}
-			if out.Task == "" {
-				out.Task = outermostTaskName(claims.TaskRules)
-			}
-		}
-	}
-	return out
-}
-
-func outermostTaskName(rules []*api.TaskAuthorizationRule) string {
-	for i := len(rules) - 1; i >= 0; i-- {
-		if name := rules[i].GetName(); name != "" {
-			return name
-		}
-	}
-	return ""
 }

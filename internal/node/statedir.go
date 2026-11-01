@@ -43,9 +43,6 @@ func WriteStateDir(dir string, privKey []byte, c *api.MemberCredential) error {
 	if _, err := crypto.UnmarshalPrivateKey(privKey); err != nil {
 		return fmt.Errorf("private key is not a libp2p key: %w", err)
 	}
-	if c == nil {
-		c = &api.MemberCredential{}
-	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
