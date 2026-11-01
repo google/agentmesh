@@ -155,6 +155,25 @@ auth mode, `agentmesh-node` logs an error, increments
 `agentmesh_node_service_provide_failures_total{scope="ingress"}`, and falls back
 to announcing the service internally so mesh peers can still reach it.
 
+### From Go (`sdk/meshnet`)
+
+A single-binary Go agent using the [Embedded Go SDK](../go-sdk/) opts into the
+same router ingress without `agentmesh-node`:
+
+```go
+ep, err := srv.ListenA2A(ctx, meshnet.A2AOptions{
+	Name:         "coder",
+	Description:  "Repository coding agent",
+	Public:       true,
+	IngressAuth:  api.IngressAuthMode_INGRESS_AUTH_MODE_EDGE,
+	IngressAllow: []string{"email:alice@example.com", "group:teammates"},
+})
+```
+
+`ep.PublicListener` delivers verified external requests in-process (`ep.PublicURL`
+holds `<router_ingress_url>/<peer_id>/a2a/coder`), while `ep.PrivateListener`
+serves internal mesh peers over `/libp2p-http`.
+
 ## How `edge` and `passthrough` behave
 
 ### `auth_mode: edge` (default)

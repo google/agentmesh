@@ -258,10 +258,17 @@ func (s *Server) ensureCredential(ctx context.Context) error {
 		}
 
 		// Try OIDC refresh_token recovery if stored in credential.json.
-		if jwtStr, oidcErr := s.renewFromOIDCSession(ctx); oidcErr == nil && jwtStr != "" {
-			if regErr := s.enrollJWT(ctx, jwtStr); regErr == nil {
-				s.log().Info("re-enrolled via saved OIDC session", "peer_id", s.peerID.String())
-				return nil
+		if s.hasOIDCSession() {
+			jwtStr, oidcErr := s.renewFromOIDCSession(ctx)
+			if oidcErr != nil {
+				s.log().Warn("saved OIDC session refresh failed on startup", "peer_id", s.peerID.String(), "error", oidcErr)
+			} else if jwtStr != "" {
+				if regErr := s.enrollJWT(ctx, jwtStr); regErr == nil {
+					s.log().Info("re-enrolled via saved OIDC session", "peer_id", s.peerID.String())
+					return nil
+				} else {
+					s.log().Warn("re-enrollment via saved OIDC session failed on startup", "peer_id", s.peerID.String(), "error", regErr)
+				}
 			}
 		}
 
@@ -713,7 +720,10 @@ func (s *Server) Refresh(ctx context.Context) error {
 			freshJWT = strings.TrimSpace(tok)
 		}
 	} else if s.JWTPath != "" {
-		if raw, err := os.ReadFile(s.JWTPath); err == nil {
+		raw, err := os.ReadFile(s.JWTPath)
+		if err != nil {
+			s.log().Warn("failed reading JWTPath during refresh; attempting session-backed refresh", "path", s.JWTPath, "error", err)
+		} else {
 			freshJWT = strings.TrimSpace(string(raw))
 		}
 	}
@@ -788,6 +798,12 @@ func (s *Server) Refresh(ctx context.Context) error {
 	return nil
 }
 
+func (s *Server) hasOIDCSession() bool {
+	s.credMu.RLock()
+	defer s.credMu.RUnlock()
+	return s.oidcSession != nil && s.oidcSession.GetIssuer() != "" && s.oidcSession.GetClientId() != "" && s.oidcSession.GetRefreshToken() != ""
+}
+
 func (s *Server) renewFromOIDCSession(ctx context.Context) (string, error) {
 	s.credMu.RLock()
 	sess := s.oidcSession
@@ -852,6 +868,9 @@ func (s *Server) renewFromOIDCSession(ctx context.Context) (string, error) {
 			s.oidcSession.RefreshToken = tokOut.RefreshToken
 		}
 		s.credMu.Unlock()
+		if err := s.persistState(); err != nil {
+			return "", fmt.Errorf("persist state: %w", err)
+		}
 	}
 	if tokOut.IDToken != "" {
 		return tokOut.IDToken, nil
@@ -893,19 +912,28 @@ func (s *Server) startRenewalLoop(ctx context.Context) {
 				s.log().Warn("proactive biscuit refresh failed; attempting token re-enrollment", "error", err)
 			}
 
-			if jwtStr, err := s.renewFromOIDCSession(ctx); err == nil && jwtStr != "" {
-				if regErr := s.enrollJWT(ctx, jwtStr); regErr == nil {
-					s.log().Info("renewed mesh credential via OIDC session", "peer_id", s.peerID.String())
-					continue
+			if s.hasOIDCSession() {
+				jwtStr, err := s.renewFromOIDCSession(ctx)
+				if err != nil {
+					s.log().Warn("OIDC background token refresh failed", "peer_id", s.peerID.String(), "error", err)
+				} else if jwtStr != "" {
+					if regErr := s.enrollJWT(ctx, jwtStr); regErr == nil {
+						s.log().Info("renewed mesh credential via OIDC session", "peer_id", s.peerID.String())
+						continue
+					} else {
+						s.log().Warn("OIDC background renewal failed", "peer_id", s.peerID.String(), "error", regErr)
+					}
 				}
 			}
 			kind, tok, err := s.resolveJoinSecret(ctx)
-			if err == nil && kind == joinSecretJWT {
+			if err != nil {
+				s.log().Warn("failed resolving join secret during renewal", "peer_id", s.peerID.String(), "error", err)
+			} else if kind == joinSecretJWT {
 				if regErr := s.enrollJWT(ctx, tok); regErr == nil {
 					s.log().Info("renewed mesh credential via JWT source", "peer_id", s.peerID.String())
 					continue
 				} else {
-					s.log().Error("JWT re-enrollment failed", "error", regErr)
+					s.log().Error("JWT re-enrollment failed", "peer_id", s.peerID.String(), "error", regErr)
 				}
 			}
 		}

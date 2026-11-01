@@ -78,7 +78,7 @@ func (c routerCandidate) loadRatio() float64 {
 	return float64(c.Connections) / float64(c.ConnectionLimit)
 }
 
-func candidatesFromInfo(ctx context.Context, info *api.ControlPlaneInfoResponse) []routerCandidate {
+func (s *Server) candidatesFromInfo(ctx context.Context, info *api.ControlPlaneInfoResponse) []routerCandidate {
 	if len(info.GetRouters()) == 0 {
 		return candidatesFromAddrs(ctx, parseMultiaddrs(info.GetRouterAddresses()))
 	}
@@ -86,7 +86,11 @@ func candidatesFromInfo(ctx context.Context, info *api.ControlPlaneInfoResponse)
 	seen := map[peer.ID]bool{}
 	for _, r := range info.GetRouters() {
 		id, err := peer.Decode(r.GetPeerId())
-		if err != nil || seen[id] {
+		if err != nil {
+			s.log().Warn("skipping router entry with invalid peer ID", "peer_id", r.GetPeerId(), "error", err)
+			continue
+		}
+		if seen[id] {
 			continue
 		}
 		for _, pi := range routerPeers(ctx, parseMultiaddrs(r.GetAddresses())) {
@@ -411,7 +415,9 @@ func (s *Server) admitByRouters(ctx context.Context) error {
 	delay := routerRedialDelay
 	for attempt := 1; ; attempt++ {
 		if attempt > 1 {
-			_ = s.syncMeshInfo(ctx)
+			if err := s.syncMeshInfo(ctx); err != nil {
+				s.log().Warn("failed refreshing router catalog during admission retry", "attempt", attempt, "error", err)
+			}
 		}
 		targets := s.pickRouters(s.wantRouters())
 		var fatal error
@@ -673,6 +679,7 @@ func (s *Server) redialUntilUp(ctx context.Context, router peer.ID) bool {
 		}
 		addrs := s.host.Peerstore().Addrs(router)
 		if len(addrs) == 0 {
+			s.log().Warn("detaching router during redial: no addresses in peerstore", "router_peer_id", router.String())
 			s.detach(router)
 			return false
 		}
@@ -682,12 +689,21 @@ func (s *Server) redialUntilUp(ctx context.Context, router peer.ID) bool {
 			return true
 		}
 		if errors.Is(err, errFatalAuth) {
+			s.log().Warn("fatal auth failure during router redial; detaching and shunning router",
+				"router_peer_id", router.String(),
+				"shun_duration", defaultShunDuration,
+				"error", err,
+			)
 			s.detach(router)
 			s.shun(router, defaultShunDuration)
 			return false
 		}
 		delay *= 2
 	}
+	s.log().Warn("redial attempts exhausted; detaching and shunning router",
+		"router_peer_id", router.String(),
+		"shun_duration", defaultShunDuration,
+	)
 	s.detach(router)
 	s.shun(router, defaultShunDuration)
 	return false
@@ -909,7 +925,9 @@ func (s *Server) syncTrustedKeys(ctx context.Context) error {
 	s.keysMu.Lock()
 	s.trustedKeys = merged
 	s.keysMu.Unlock()
-	_ = s.persistState()
+	if err := s.persistState(); err != nil {
+		return fmt.Errorf("persist state: %w", err)
+	}
 	return nil
 }
 
@@ -967,9 +985,11 @@ func (s *Server) syncMeshInfo(ctx context.Context) error {
 			s.credMu.Lock()
 			s.storedRouterAddrs = slices.Clone(info.GetRouterAddresses())
 			s.credMu.Unlock()
-			_ = s.persistState()
+			if err := s.persistState(); err != nil {
+				return fmt.Errorf("persist state: %w", err)
+			}
 		}
-		s.setRouterCatalog(candidatesFromInfo(ctx, info))
+		s.setRouterCatalog(s.candidatesFromInfo(ctx, info))
 	}
 	settings := api.DirectorySettingsFrom(info.GetDirectory())
 	s.mu.Lock()
@@ -1070,6 +1090,7 @@ func (s *Server) reconcileBannedPeers(peerIDs []string, fetchedAt time.Time) {
 	for _, id := range peerIDs {
 		p, err := peer.Decode(id)
 		if err != nil {
+			s.log().Warn("ignoring invalid peer ID in banned list", "peer_id", id, "error", err)
 			continue
 		}
 		banned[p.String()] = p
@@ -1205,6 +1226,7 @@ func (s *Server) listenForControlPlaneEvents(ctx context.Context) {
 		case api.MeshEvent_BANNED:
 			p, err := peer.Decode(evt.GetPeerId())
 			if err != nil {
+				s.log().Warn("ignoring BANNED gossip event with invalid peer ID", "peer_id", evt.GetPeerId(), "error", err)
 				continue
 			}
 			canonical := p.String()

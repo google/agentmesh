@@ -290,8 +290,8 @@ least one `TaskRule` in every appended block.
 
 Every enforcement point builds its Datalog authorizer through
 `identity.AuthorizeMeshRequest(authorizer, MeshRequest, MeshPolicy)`: the
-node's in-mesh verifier (`/libp2p-http`, `/mesh/mcp`, the local sidecar), the
-node's external ingress handler (`/mesh/ingress/1.0.0`), the router's edge
+node's and `sdk/meshnet`'s in-mesh verifiers (`/libp2p-http`, `/mesh/mcp`, the local sidecar), the
+node's and `sdk/meshnet`'s external ingress handlers (`/mesh/ingress/1.0.0`), the router's edge
 check on `/ingress/*`, and the control plane's `/sts/token`. `MeshRequest`
 says what the request is (`service()`, `method()`/`path()` when it is HTTP,
 `host()`/`port()` when it is egress, the connection peer when there is a

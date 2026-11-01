@@ -5,7 +5,10 @@ weight: 6
 ---
 
 An agent written in JavaScript or Python can be a member of the mesh itself,
-with no `agentmesh-node` beside it. The SDK enrolls with the control plane, joins
+with no `agentmesh-node` beside it. (For Go programs that want an embedded
+`tsnet`-style member with directory-published `ListenA2A`, external HTTP
+ingress, `WhoIs`, and local `MCPHandler()` / `InferenceHandler()`, see
+[Embedded Go SDK (`meshnet`)](../go-sdk/).) The SDK enrolls with the control plane, joins
 through a router, finds services, calls MCP tools and inference or A2A
 endpoints, and answers A2A requests for the agent itself. Every caller of
 the agent is checked against the mesh policy before anything reaches your

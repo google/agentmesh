@@ -369,10 +369,6 @@ func (s *Server) handleFindRemoteTools(ctx context.Context, _ *mcp.CallToolReque
 	if s.host == nil {
 		return nil, nil, errors.New("meshnet: Server is not running")
 	}
-	selfID := s.peerID.String()
-	if params.PeerID != "" && params.PeerID == selfID {
-		return nil, nil, fmt.Errorf("peer_id %q is this member; find_remote_tools searches remote peers", params.PeerID)
-	}
 	serviceFilter, err := normalizeMCPServiceFilter(params.ServiceName)
 	if err != nil {
 		return nil, nil, err
@@ -384,6 +380,9 @@ func (s *Server) handleFindRemoteTools(ctx context.Context, _ *mcp.CallToolReque
 		if err != nil {
 			return nil, nil, fmt.Errorf("invalid peer_id %q: %w", params.PeerID, err)
 		}
+		if pid == s.peerID {
+			return nil, nil, fmt.Errorf("peer_id %q is this member; find_remote_tools searches remote peers", params.PeerID)
+		}
 		rows, err = s.fetchRemoteToolCatalogue(ctx, pid, serviceFilter)
 		if err != nil {
 			return nil, nil, err
@@ -393,16 +392,19 @@ func (s *Server) handleFindRemoteTools(ctx context.Context, _ *mcp.CallToolReque
 		if err != nil {
 			return nil, nil, fmt.Errorf("discover MCP providers: %w", err)
 		}
-		seen := map[string]bool{}
+		seen := make(map[peer.ID]bool, len(providers))
 		var peerIDs []peer.ID
 		for _, p := range providers {
-			if p.GetPeerId() == selfID || seen[p.GetPeerId()] {
+			pid, err := peer.Decode(p.GetPeerId())
+			if err != nil {
+				s.log().Debug("skipping MCP provider with invalid peer ID", "peer_id", p.GetPeerId(), "error", err)
 				continue
 			}
-			seen[p.GetPeerId()] = true
-			if pid, err := peer.Decode(p.GetPeerId()); err == nil {
-				peerIDs = append(peerIDs, pid)
+			if pid == s.peerID || seen[pid] {
+				continue
 			}
+			seen[pid] = true
+			peerIDs = append(peerIDs, pid)
 		}
 		rows = s.fanOutFetchTools(ctx, peerIDs, serviceFilter)
 	}

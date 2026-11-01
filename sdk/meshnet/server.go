@@ -549,15 +549,21 @@ func (s *Server) Close() error {
 			}
 			hasAnnouncedA2A = true
 			if nameKey, err := api.ServiceKey(api.ServiceType_SERVICE_TYPE_A2A, e.name); err == nil {
-				_ = s.dir.withdraw(wCtx, nameKey)
+				if wErr := s.dir.withdraw(wCtx, nameKey); wErr != nil && !errors.Is(wErr, errNoDirectoryRouter) {
+					s.log().Debug("failed withdrawing A2A service key on close", "service", e.name, "error", wErr)
+				}
 			}
 		}
 		if hasAnnouncedA2A {
 			if typeKey, err := api.ServiceKey(api.ServiceType_SERVICE_TYPE_A2A, ""); err == nil {
-				_ = s.dir.withdraw(wCtx, typeKey)
+				if wErr := s.dir.withdraw(wCtx, typeKey); wErr != nil && !errors.Is(wErr, errNoDirectoryRouter) {
+					s.log().Debug("failed withdrawing A2A service type key on close", "error", wErr)
+				}
 			}
 		}
-		_ = s.dir.withdraw(wCtx, api.PeerKey(s.peerID))
+		if wErr := s.dir.withdraw(wCtx, api.PeerKey(s.peerID)); wErr != nil && !errors.Is(wErr, errNoDirectoryRouter) {
+			s.log().Debug("failed withdrawing peer key on close", "error", wErr)
+		}
 		cancel()
 	}
 

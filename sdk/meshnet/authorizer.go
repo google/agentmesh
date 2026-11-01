@@ -177,8 +177,14 @@ func (s *Server) authorizeInboundWithKey(rawToken []byte, remotePeer peer.ID, ta
 	case user != "":
 		principal = user
 	case nodeFact != "":
+		if id, err := peer.Decode(nodeFact); err == nil {
+			nodeFact = id.String()
+		}
 		principal = "node:" + nodeFact
 	case clientPeer != "":
+		if id, err := peer.Decode(clientPeer); err == nil {
+			clientPeer = id.String()
+		}
 		principal = "peer:" + clientPeer
 	default:
 		principal = "node:" + remotePeer.String()
