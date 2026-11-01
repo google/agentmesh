@@ -1,8 +1,14 @@
 # Native SDKs
 
 This directory holds the SDKs that let an agent join an Agent Mesh from inside
-its own process, without a `agentmesh-node` sidecar. Two languages are in scope:
+its own process, without a `agentmesh-node` sidecar. Three languages are in scope:
 
+- [`meshnet/`](meshnet/) — `github.com/google/agentmesh/sdk/meshnet`, Go
+  package modeled on `tailscale.com/tsnet`, built on
+  [go-libp2p](https://github.com/libp2p/go-libp2p) with in-process A2A
+  listeners (private P2P and public external HTTP ingress), `WhoIs`, outbound
+  mesh `*http.Client`, local progressive-discovery `MCPHandler()`, and
+  zero-secret OpenAI `/v1` `InferenceHandler()`.
 - [`js/`](js/) — `agentmesh-p2p`, TypeScript for Node.js, built on
   [js-libp2p](https://github.com/libp2p/js-libp2p).
 - [`python/`](python/) — `agentmesh-p2p` (import `agent_mesh`), built on
