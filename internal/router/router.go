@@ -35,14 +35,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/eclipse-biscuit/biscuit-go/v2"
 	"github.com/google/agentmesh/api"
 	cpclient "github.com/google/agentmesh/internal/controlplane/client"
 	"github.com/google/agentmesh/internal/identity"
 	"github.com/google/agentmesh/internal/p2plimits"
 	"github.com/google/agentmesh/internal/ratelimit"
-	lru "github.com/hashicorp/golang-lru/v2"
 	golog "github.com/ipfs/go-log/v2"
 	"github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
@@ -401,12 +399,7 @@ type Router struct {
 	ingressAddr    net.Addr
 	ingressLimiter *ratelimit.PeerRateLimiter
 
-	revokedTokens *lru.Cache[string, time.Time]
-
-	oidcMu           sync.Mutex
-	oidcProviders    map[string]*oidc.Provider
-	syncedOIDCIssuer atomic.Pointer[string]
-	syncedAudience   atomic.Pointer[string]
+	revokedTokens revocationSet
 
 	// identityLoggedAt is when the "Router Online" line was last written.
 	identityLoggedAt atomic.Pointer[time.Time]
@@ -434,11 +427,6 @@ func NewRouter(ctx context.Context, config Options) (*Router, error) {
 		cancel()
 		return nil, fmt.Errorf("failed to create ingress rate limiter: %w", err)
 	}
-	revokedTokens, err := lru.New[string, time.Time](handshakeLimiterSize)
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("failed to create revocation cache: %w", err)
-	}
 
 	return &Router{
 		config:           config,
@@ -446,8 +434,6 @@ func NewRouter(ctx context.Context, config Options) (*Router, error) {
 		cancel:           cancel,
 		handshakeLimiter: handshakeLimiter,
 		ingressLimiter:   ingressLimiter,
-		revokedTokens:    revokedTokens,
-		oidcProviders:    make(map[string]*oidc.Provider),
 		syncTrigger:      make(chan struct{}, 1),
 	}, nil
 }
@@ -1188,38 +1174,146 @@ func (r *Router) syncRevocations() error {
 	for _, revID := range resp.GetRevocationIds() {
 		r.recordRevokedBiscuitID(revID, expiry)
 	}
+	r.credentials.Range(func(k, v any) bool {
+		pid, ok := k.(peer.ID)
+		cred, credOK := v.(memberCredential)
+		if ok && credOK && r.isBiscuitRevoked(cred.biscuit) {
+			logger.Infof("[Revocations] Evicting peer %s with revoked biscuit", pid)
+			r.forgetPeer(pid)
+			if r.records != nil {
+				r.records.removePeer(pid)
+			}
+			if r.Host != nil {
+				_ = r.Host.Network().ClosePeer(pid)
+			}
+		}
+		return true
+	})
 	if len(resp.GetBannedPeerIds()) > 0 {
 		r.reconcileBannedPeers(resp.GetBannedPeerIds(), fetchedAt)
 	}
 	return nil
 }
 
-func (r *Router) recordRevokedBiscuitID(revID string, expiry time.Time) {
-	if revID == "" || r.revokedTokens == nil {
+const revokedPruneMin = 64
+
+// revocationSet holds active revoked Biscuit authority revocation IDs synced
+// from the control plane. Entries expire by timestamp and are never evicted by
+// capacity, so high-churn revocation cannot push live revocations out of the
+// deny list. Zero-value safe for test routers constructed as &Router{}.
+type revocationSet struct {
+	mu      sync.Mutex
+	entries map[string]time.Time
+	pruneAt int
+}
+
+func normalizeRevocationKey(revID string) string {
+	revID = strings.TrimSpace(revID)
+	if revID == "" {
+		return ""
+	}
+	if (len(revID) == 64 || len(revID) == 128) && isHexDigits(revID) {
+		if raw, err := hex.DecodeString(revID); err == nil && len(raw) > 0 {
+			return base64.RawURLEncoding.EncodeToString(raw)
+		}
+	}
+	return revID
+}
+
+func isHexByte(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
+func isHexDigits(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if !isHexByte(s[i]) {
+			return false
+		}
+	}
+	return len(s) > 0
+}
+
+func (s *revocationSet) add(revID string, expiry time.Time) {
+	key := normalizeRevocationKey(revID)
+	if key == "" {
 		return
 	}
-	r.revokedTokens.Add(revID, expiry)
-	if raw, err := hex.DecodeString(revID); err == nil && len(raw) > 0 {
-		r.revokedTokens.Add(base64.RawURLEncoding.EncodeToString(raw), expiry)
+	now := time.Now()
+	if !now.Before(expiry) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.entries == nil {
+		s.entries = make(map[string]time.Time)
+	}
+	if len(s.entries) >= max(revokedPruneMin, s.pruneAt) {
+		for k, exp := range s.entries {
+			if !now.Before(exp) {
+				delete(s.entries, k)
+			}
+		}
+		s.pruneAt = max(revokedPruneMin, 2*len(s.entries))
+	}
+	if existing, ok := s.entries[key]; !ok || expiry.After(existing) {
+		s.entries[key] = expiry
 	}
 }
 
-func (r *Router) isBiscuitRevoked(b *biscuit.Biscuit) bool {
-	if r == nil || r.revokedTokens == nil || b == nil {
+func (s *revocationSet) isRevoked(b *biscuit.Biscuit, now time.Time) bool {
+	if s == nil || b == nil {
 		return false
 	}
-	now := time.Now()
-	for _, id := range b.RevocationIds() {
-		for _, key := range []string{hex.EncodeToString(id), base64.RawURLEncoding.EncodeToString(id)} {
-			if exp, ok := r.revokedTokens.Get(key); ok {
-				if now.Before(exp) {
-					return true
-				}
-				r.revokedTokens.Remove(key)
+	ids := b.RevocationIds()
+	if len(ids) == 0 {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.entries) == 0 {
+		return false
+	}
+	for _, id := range ids {
+		key := base64.RawURLEncoding.EncodeToString(id)
+		if exp, ok := s.entries[key]; ok {
+			if now.Before(exp) {
+				return true
 			}
+			delete(s.entries, key)
 		}
 	}
 	return false
+}
+
+func (s *revocationSet) activeCount(now time.Time) int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for k, exp := range s.entries {
+		if now.Before(exp) {
+			n++
+		} else {
+			delete(s.entries, k)
+		}
+	}
+	return n
+}
+
+func (r *Router) recordRevokedBiscuitID(revID string, expiry time.Time) {
+	if r == nil {
+		return
+	}
+	r.revokedTokens.add(revID, expiry)
+}
+
+func (r *Router) isBiscuitRevoked(b *biscuit.Biscuit) bool {
+	if r == nil || b == nil {
+		return false
+	}
+	return r.revokedTokens.isRevoked(b, time.Now())
 }
 
 // refreshExpiringCredential refreshes the router's own credential once less
@@ -1543,13 +1637,6 @@ func (r *Router) connectBootstrapRouters() {
 		return
 	}
 
-	if iss := strings.TrimSpace(info.GetOidcIssuer()); iss != "" {
-		r.syncedOIDCIssuer.Store(&iss)
-	}
-	if aud := strings.TrimSpace(info.GetAudience()); aud != "" {
-		r.syncedAudience.Store(&aud)
-	}
-
 	// /info carries the whole ban set, so this is also where a router that
 	// restarted or missed a MeshEvent_BANNED catches up.
 	r.reconcileBannedPeers(info.GetBannedPeerIds(), fetchedAt)
@@ -1812,6 +1899,14 @@ func (r *Router) HandleAuthHandshake(s network.Stream) {
 		_ = s.Reset()
 		return
 	}
+	if r.isBiscuitRevoked(b) {
+		if r.authFailureLog.allow(remotePeer, time.Now()) {
+			logger.Warnf("[AuthN] Rejecting revoked biscuit for peer %s", remotePeer)
+		}
+		authHandshakesTotal.WithLabelValues(handshakeUnauthorized).Inc()
+		_ = s.Reset()
+		return
+	}
 
 	r.admitPeer(remotePeer, expiry)
 	r.credentials.Store(remotePeer, memberCredential{biscuit: b, key: verifyingKey})
@@ -1884,6 +1979,9 @@ func (r *Router) performMutualAuth(s network.Stream) error {
 	b, verifyingKey, err := identity.VerifyBiscuitAndGetKey(resp.Biscuit, remotePeer, trustedKeys, r.config.BiscuitTimeout)
 	if err != nil {
 		return fmt.Errorf("failed to verify peer router biscuit: %w", err)
+	}
+	if r.isBiscuitRevoked(b) {
+		return fmt.Errorf("peer router %s biscuit is revoked", remotePeer)
 	}
 
 	// Enforce required role inside the biscuit

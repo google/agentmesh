@@ -318,12 +318,6 @@ const (
 	// node can re-verify Datalog policy, local attenuation, TAR, and allow-lists
 	// end to end. Stripped before forwarding to the backend service.
 	HeaderMeshIngressCallerBiscuit = "X-Mesh-Ingress-Caller-Biscuit"
-
-	// HeaderMeshIngressClaims carries base64url-encoded JSON OIDC fact claims
-	// verified at the router edge over IngressProtocolID when the external caller
-	// authenticated with a trusted OIDC JWT rather than a Mesh Biscuit. Stripped
-	// before forwarding to the backend service.
-	HeaderMeshIngressClaims = "X-Mesh-Ingress-Claims"
 )
 
 // ============================================================================

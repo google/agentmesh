@@ -119,6 +119,7 @@ type routerStateCollector struct {
 	watermarkDesc     *prometheus.Desc
 	relayLimitDesc    *prometheus.Desc
 	bannedDesc        *prometheus.Desc
+	revokedDesc       *prometheus.Desc
 	dhtDesc           *prometheus.Desc
 	recordsDesc       *prometheus.Desc
 	biscuitExpiryDesc *prometheus.Desc
@@ -167,6 +168,10 @@ func newRouterStateCollector(r *Router) *routerStateCollector {
 			"agentmesh_router_banned_peers",
 			"Peers on the ban list synced from the control plane",
 			nil, nil),
+		revokedDesc: prometheus.NewDesc(
+			"agentmesh_router_revoked_tokens",
+			"Active revoked Biscuit tokens held in this router's deny list",
+			nil, nil),
 		dhtDesc: prometheus.NewDesc(
 			"agentmesh_router_dht_routing_table_size",
 			"Peers in the Kademlia routing table",
@@ -185,7 +190,7 @@ func newRouterStateCollector(r *Router) *routerStateCollector {
 func (c *routerStateCollector) Describe(ch chan<- *prometheus.Desc) {
 	for _, d := range []*prometheus.Desc{
 		c.infoDesc, c.readyDesc, c.drainingDesc, c.authenticatedDesc, c.peerRoutersDesc, c.connectedDesc, c.connectionsDesc, c.watermarkDesc, c.relayLimitDesc,
-		c.bannedDesc, c.dhtDesc, c.recordsDesc, c.biscuitExpiryDesc, connsPerSourceIPDesc,
+		c.bannedDesc, c.revokedDesc, c.dhtDesc, c.recordsDesc, c.biscuitExpiryDesc, connsPerSourceIPDesc,
 	} {
 		ch <- d
 	}
@@ -228,6 +233,7 @@ func (c *routerStateCollector) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(c.connectionsDesc, prometheus.GaugeValue, float64(inbound), "inbound")
 	ch <- prometheus.MustNewConstMetric(c.connectionsDesc, prometheus.GaugeValue, float64(outbound), "outbound")
 	ch <- prometheus.MustNewConstMetric(c.bannedDesc, prometheus.GaugeValue, float64(syncMapLen(&r.bannedPeers)))
+	ch <- prometheus.MustNewConstMetric(c.revokedDesc, prometheus.GaugeValue, float64(r.revokedTokens.activeCount(time.Now())))
 	ch <- prometheus.MustNewConstMetric(c.dhtDesc, prometheus.GaugeValue, float64(r.DHT.RoutingTable().Size()))
 	ch <- prometheus.MustNewConstMetric(c.recordsDesc, prometheus.GaugeValue, float64(r.records.size()))
 

@@ -23,7 +23,29 @@ import (
 	"time"
 
 	"github.com/google/agentmesh/api"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
+
+const (
+	provideFailureScopeIngress = "ingress"
+	provideFailureScopeName    = "name"
+	provideFailureScopeType    = "type"
+)
+
+var serviceProvideFailuresTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "agentmesh_node_service_provide_failures_total",
+		Help: "Failed directory announcements for local services, by announcement scope",
+	},
+	[]string{"scope"},
+)
+
+func init() {
+	for _, scope := range []string{provideFailureScopeIngress, provideFailureScopeName, provideFailureScopeType} {
+		serviceProvideFailuresTotal.WithLabelValues(scope)
+	}
+}
 
 // directoryProvider is what ServiceRegistry asks of the directory: to
 // announce a key and to withdraw it. Production wires this to the node's
@@ -162,20 +184,11 @@ func (r *ServiceRegistry) Register(ctx context.Context, svc Service) error {
 	}
 
 	probeErr := advertisable(ctx, svc, r.backendProbeTimeout)
+	ingressAnnounced := false
 	if probeErr != nil {
 		logger.Warnf("[ServiceRegistry] Registered %s/%s but not advertising it: backend did not answer: %v", info.Type, info.Name, probeErr)
 	} else {
-		nameCtx, nameCancel := context.WithTimeout(ctx, 5*time.Second)
-		defer nameCancel()
-		if err := r.provide(nameCtx, nameKey, serviceTarget(info), info.GetIngress()); err != nil {
-			logger.Warnf("[ServiceRegistry] Announcing %s by name: %v", info.Name, err)
-		}
-
-		typeCtx, typeCancel := context.WithTimeout(ctx, 5*time.Second)
-		defer typeCancel()
-		if err := r.provide(typeCtx, typeKey, serviceTarget(info), nil); err != nil {
-			logger.Warnf("[ServiceRegistry] Announcing %s by type: %v", info.Name, err)
-		}
+		ingressAnnounced = r.announceServiceKeys(ctx, info, nameKey, typeKey)
 	}
 
 	r.mu.Lock()
@@ -191,7 +204,7 @@ func (r *ServiceRegistry) Register(ctx context.Context, svc Service) error {
 
 	if probeErr == nil {
 		logger.Infof("[ServiceRegistry] Registered and announced %s/%s", info.Type, info.Name)
-		if info.GetIngress() != nil && r.onIngressRegistered != nil {
+		if ingressAnnounced && r.onIngressRegistered != nil {
 			r.onIngressRegistered(info)
 		}
 	} else if r.reprovideNow != nil {
@@ -232,13 +245,67 @@ func (r *ServiceRegistry) Unregister(ctx context.Context, name string) error {
 	return nil
 }
 
-func (r *ServiceRegistry) provide(ctx context.Context, key []byte, service string, ingress *api.ServiceIngress) error {
-	if ingress != nil {
+// announceServiceKeys publishes the service's name and type directory keys.
+// When an external ingress announcement is refused or fails, it logs an error,
+// increments agentmesh_node_service_provide_failures_total{scope="ingress"},
+// and immediately falls back to an internal-only announcement without ingress
+// metadata so in-mesh discovery continues working. It returns true iff the
+// service declared ingress and its ingress directory announcement succeeded.
+func (r *ServiceRegistry) announceServiceKeys(ctx context.Context, info *api.ServiceInfo, nameKey, typeKey []byte) bool {
+	target := serviceTarget(info)
+	ing := info.GetIngress()
+	ingressAnnounced := false
+
+	if ing != nil {
 		if ip, ok := r.dht.(ingressDirectoryProvider); ok {
-			return ip.ProvideWithIngress(ctx, key, service, ingress)
+			ingCtx, ingCancel := context.WithTimeout(ctx, 5*time.Second)
+			err := ip.ProvideWithIngress(ingCtx, nameKey, target, ing)
+			ingCancel()
+			if err == nil {
+				ingressAnnounced = true
+			} else {
+				if ctx.Err() == nil {
+					serviceProvideFailuresTotal.WithLabelValues(provideFailureScopeIngress).Inc()
+					logger.Errorf("[ServiceRegistry] External ingress announcement for %s/%s failed; falling back to internal-only directory announcement: %v", info.Type, info.Name, err)
+				}
+				nameCtx, nameCancel := context.WithTimeout(ctx, 5*time.Second)
+				fallbackErr := r.dht.Provide(nameCtx, nameKey, target)
+				nameCancel()
+				if fallbackErr != nil && ctx.Err() == nil {
+					serviceProvideFailuresTotal.WithLabelValues(provideFailureScopeName).Inc()
+					logger.Errorf("[ServiceRegistry] Announcing %s/%s by name (internal fallback): %v", info.Type, info.Name, fallbackErr)
+				}
+			}
+		} else {
+			nameCtx, nameCancel := context.WithTimeout(ctx, 5*time.Second)
+			err := r.dht.Provide(nameCtx, nameKey, target)
+			nameCancel()
+			if err == nil {
+				ingressAnnounced = true
+			} else if ctx.Err() == nil {
+				serviceProvideFailuresTotal.WithLabelValues(provideFailureScopeName).Inc()
+				logger.Errorf("[ServiceRegistry] Announcing %s/%s by name: %v", info.Type, info.Name, err)
+			}
+		}
+	} else {
+		nameCtx, nameCancel := context.WithTimeout(ctx, 5*time.Second)
+		err := r.dht.Provide(nameCtx, nameKey, target)
+		nameCancel()
+		if err != nil && ctx.Err() == nil {
+			serviceProvideFailuresTotal.WithLabelValues(provideFailureScopeName).Inc()
+			logger.Errorf("[ServiceRegistry] Announcing %s/%s by name: %v", info.Type, info.Name, err)
 		}
 	}
-	return r.dht.Provide(ctx, key, service)
+
+	typeCtx, typeCancel := context.WithTimeout(ctx, 5*time.Second)
+	typeErr := r.dht.Provide(typeCtx, typeKey, target)
+	typeCancel()
+	if typeErr != nil && ctx.Err() == nil {
+		serviceProvideFailuresTotal.WithLabelValues(provideFailureScopeType).Inc()
+		logger.Errorf("[ServiceRegistry] Announcing %s/%s by type: %v", info.Type, info.Name, typeErr)
+	}
+
+	return ingressAnnounced
 }
 
 // serviceTarget is a service as a record names it, "<type>://<name>".
@@ -385,21 +452,15 @@ Loop:
 				return
 			}
 
-			for _, name := range []string{info.Name, ""} {
-				key, err := api.ServiceKey(info.Type, name)
-				if err != nil {
-					continue
-				}
-				var ing *api.ServiceIngress
-				if name != "" {
-					ing = info.GetIngress()
-				}
-				provideCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				if err := r.provide(provideCtx, key, serviceTarget(info), ing); err != nil && ctx.Err() == nil {
-					logger.Warnf("[ServiceRegistry] Announcing %s/%s again: %v", info.Type, info.Name, err)
-				}
-				cancel()
+			nameKey, err := api.ServiceKey(info.Type, info.Name)
+			if err != nil {
+				return
 			}
+			typeKey, err := api.ServiceKey(info.Type, "")
+			if err != nil {
+				return
+			}
+			r.announceServiceKeys(ctx, info, nameKey, typeKey)
 		}()
 	}
 	wg.Wait()

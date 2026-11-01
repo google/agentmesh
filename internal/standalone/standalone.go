@@ -389,6 +389,7 @@ func (s *Server) Start(ctx context.Context) (retErr error) {
 	}
 	var externalAddrs []string
 	var ingressURL string
+	var publicControlPlaneURL string
 	allowInsecureIngress := true
 	if s.opts.ExternalURL != "" {
 		ext, err := externalMultiaddr(s.opts.ExternalURL)
@@ -396,7 +397,8 @@ func (s *Server) Start(ctx context.Context) (retErr error) {
 			return err
 		}
 		externalAddrs = []string{ext}
-		ingressURL = strings.TrimRight(s.opts.ExternalURL, "/") + "/ingress"
+		publicControlPlaneURL = strings.TrimRight(s.opts.ExternalURL, "/")
+		ingressURL = publicControlPlaneURL + "/ingress"
 		allowInsecureIngress = strings.HasPrefix(s.opts.ExternalURL, "http://")
 	}
 
@@ -407,6 +409,7 @@ func (s *Server) Start(ctx context.Context) (retErr error) {
 
 	rtr, err := router.NewRouter(ctx, router.Options{
 		ControlPlaneURL:          "http://" + cp.Addr(),
+		PublicControlPlaneURL:    publicControlPlaneURL,
 		ListenAddrs:              append([]string{wsAddr}, s.opts.P2PListen...),
 		ExternalAddrs:            externalAddrs,
 		AllowLoopback:            !s.opts.Router.DisallowLoopback,
@@ -585,19 +588,21 @@ func (s *Server) seedPolicyOnFirstBoot(ctx context.Context) error {
 }
 
 // defaultDevPolicyRoles mirrors the Helm bootstrap job's role set with the
-// node role opened up for zero-config development use.
+// node role opened up for zero-config development use while keeping external
+// HTTP ingress restricted to zero-trust INGRESS_AUTH_MODE_EDGE unless an
+// operator explicitly grants INGRESS_AUTH_MODE_PASSTHROUGH via --policy-file
+// or POST /policies.
 func defaultDevPolicyRoles() []*api.PolicyRole {
 	devIngress := []*api.IngressGrant{{
 		Services: []string{"*"},
 		AllowedAuthModes: []api.IngressAuthMode{
 			api.IngressAuthMode_INGRESS_AUTH_MODE_EDGE,
-			api.IngressAuthMode_INGRESS_AUTH_MODE_PASSTHROUGH,
 		},
 	}}
 	return []*api.PolicyRole{
 		{Name: "mesh-admin", AllowedServices: []string{"*"}, AllowedTargets: []string{"*"}, AllowedIngress: devIngress},
 		{Name: api.RoleRouter, AllowedServices: []string{"*"}, AllowedTargets: []string{"*"}},
-		{Name: api.RoleNode, AllowedServices: []string{"*"}, AllowedPublish: []string{"*"}, AllowedTargets: []string{"*"}, AllowedLabels: []string{"*"}, AllowedIngress: devIngress},
+		{Name: api.RoleNode, AllowedServices: []string{"*"}, AllowedTargets: []string{"*"}, AllowedPublish: []string{"*"}, AllowedLabels: []string{"*"}, AllowedIngress: devIngress},
 	}
 }
 

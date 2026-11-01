@@ -273,42 +273,28 @@ func TestAuthorizeIngressCallers(t *testing.T) {
 		t.Fatal("expected allow list mismatch to deny")
 	}
 
-	// 3. Verified OIDC JWT claims round-trip through X-Mesh-Ingress-Claims and evaluate identically.
-	oidcFacts := OIDCFactsFromJWTClaims(map[string]any{
-		"sub":    "uid-2",
-		"email":  "alan@google.com",
-		"groups": []any{"a2a"},
-		"roles":  []string{"mesh:role:router"}, // mapped to idp_role, NEVER role!
-	})
-	hdr, err := MarshalIngressClaimsHeader(oidcFacts)
+	// 3. Router Biscuits (even if attenuated with a TAR block) MUST be rejected as HTTP edge bearer tokens.
+	routerRaw, err := MintBootstrapBiscuitToken(priv, actorPeer, api.RoleRouter, time.Now().Add(time.Hour), []*api.PolicyRole{
+		{Name: api.RoleRouter, AllowedServices: []string{"*"}, AllowedTargets: []string{"*"}},
+	}, nil)
 	if err != nil {
-		t.Fatalf("MarshalIngressClaimsHeader: %v", err)
+		t.Fatalf("MintBootstrapBiscuitToken(router): %v", err)
 	}
-	unmarshaled, err := UnmarshalIngressClaimsHeader(hdr)
+	attRouterRaw, err := AttenuateBiscuit(routerRaw, tarRule)
 	if err != nil {
-		t.Fatalf("UnmarshalIngressClaimsHeader: %v", err)
+		t.Fatalf("AttenuateBiscuit(router): %v", err)
 	}
-	oidcRes, err := AuthorizeIngressOIDCFacts(unmarshaled, IngressEvalParams{
-		ServiceType:        "a2a",
-		ServiceName:        "assistant",
-		Method:             "POST",
-		Path:               "/message:send",
-		TargetFacts:        targetFacts,
-		EnforceTargetCheck: true,
-		MeshPolicyRules:    meshRules,
-		Allow:              []string{"email:*@google.com"},
-		Timeout:            time.Second,
-	})
+	routerClaims, err := InspectVerifiedBiscuit(attRouterRaw, []ed25519.PublicKey{pub}, time.Second)
 	if err != nil {
-		t.Fatalf("AuthorizeIngressOIDCFacts: %v", err)
+		t.Fatalf("InspectVerifiedBiscuit(router): %v", err)
 	}
-	if oidcRes.Principal != "alan@google.com" {
-		t.Fatalf("got principal %q, want alan@google.com", oidcRes.Principal)
-	}
-	for _, r := range oidcRes.Roles {
-		if r == api.RoleRouter {
-			t.Fatal("OIDC roles claim must never become mesh role")
-		}
+	if _, err := ValidateIngressCallerPreDial(routerClaims, IngressEvalParams{
+		ServiceType: "a2a",
+		ServiceName: "assistant",
+		Method:      "POST",
+		Path:        "/message:send",
+	}); err == nil {
+		t.Fatal("expected router biscuit to be rejected at HTTP edge")
 	}
 }
 

@@ -13,6 +13,9 @@ gateway:
   adminRoute: false
   # Routes /ingress and /ingress/ directly to the router Service so external HTTP
   # callers reach opted-in node services without traversing the control plane.
+  # Because routers behind an L7 Gateway see the Gateway's internal proxy IP on
+  # TCP RemoteAddr, attach per-client source-IP rate limiting (e.g. Cloud Armor)
+  # at the Gateway for unauthenticated routes (AgentCard discovery and passthrough).
   ingressRoute: true
   # External prefix the console is served under. Empty leaves the console unrouted.
   consolePath: /console

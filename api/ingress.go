@@ -16,6 +16,7 @@ package api
 
 import (
 	"fmt"
+	"net/http"
 	"net/url"
 	"slices"
 	"strings"
@@ -110,6 +111,16 @@ func ValidateServiceIngress(svcType ServiceType, ing *ServiceIngress) error {
 	if !IsInboundServiceType(svcType) {
 		return fmt.Errorf("ingress is only supported for inbound service types (a2a, mcp, inference), got %v", svcType)
 	}
+	return ValidatePeerRecordIngress(ing)
+}
+
+// ValidatePeerRecordIngress validates the mode and allow-list contents of a
+// ServiceIngress message independent of service type (for example when a
+// router validates a PeerRecord received during directory lookup).
+func ValidatePeerRecordIngress(ing *ServiceIngress) error {
+	if ing == nil {
+		return nil
+	}
 	mode := EffectiveIngressAuthMode(ing)
 	if _, err := IngressAuthModeToString(mode); err != nil {
 		return err
@@ -131,6 +142,22 @@ func ValidateServiceIngress(svcType ServiceType, ing *ServiceIngress) error {
 		}
 	}
 	return nil
+}
+
+// SanitizeExternalIngressHeaders removes ambient cookies, spoofable X-Mesh-*
+// and X-Peer-Id attribution headers, and (when stripAuthorization is true) the
+// external caller's Authorization header before forwarding an external ingress
+// request across the router-to-node hop or into a local backend service.
+func SanitizeExternalIngressHeaders(h http.Header, stripAuthorization bool) {
+	for name := range h {
+		lower := strings.ToLower(name)
+		if lower == "cookie" ||
+			(stripAuthorization && lower == "authorization") ||
+			strings.HasPrefix(lower, "x-mesh-") ||
+			strings.EqualFold(name, HeaderPeerID) {
+			delete(h, name)
+		}
+	}
 }
 
 // ValidateIngressGrant checks one PolicyRole.allowed_ingress entry.

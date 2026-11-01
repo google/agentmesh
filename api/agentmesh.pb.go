@@ -153,7 +153,7 @@ type IngressAuthMode int32
 const (
 	// Defaults to INGRESS_AUTH_MODE_EDGE.
 	IngressAuthMode_INGRESS_AUTH_MODE_UNSPECIFIED IngressAuthMode = 0
-	// Router verifies Mesh Biscuit or trusted OIDC JWT + mesh policy at the edge.
+	// Router and provider node verify a delegated Mesh Biscuit + mesh policy.
 	IngressAuthMode_INGRESS_AUTH_MODE_EDGE IngressAuthMode = 1
 	// Backend authenticates its own requests; requires an explicit PASSTHROUGH
 	// grant on the serving node's PolicyRole.allowed_ingress.

@@ -16,36 +16,16 @@ package identity
 
 import (
 	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"slices"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/eclipse-biscuit/biscuit-go/v2"
 	"github.com/google/agentmesh/api"
 )
-
-var (
-	ephemeralOnce sync.Once
-	ephemeralPub  ed25519.PublicKey
-	ephemeralPriv ed25519.PrivateKey
-)
-
-func ephemeralEvalKeys() (ed25519.PublicKey, ed25519.PrivateKey) {
-	ephemeralOnce.Do(func() {
-		var err error
-		ephemeralPub, ephemeralPriv, err = ed25519.GenerateKey(rand.Reader)
-		if err != nil {
-			panic(fmt.Sprintf("failed to generate ephemeral evaluation key: %v", err))
-		}
-	})
-	return ephemeralPub, ephemeralPriv
-}
 
 // DecodeBase64Biscuit decodes a base64 or unpadded base64url encoded Biscuit.
 func DecodeBase64Biscuit(encoded string) ([]byte, error) {
@@ -57,90 +37,6 @@ func DecodeBase64Biscuit(encoded string) ([]byte, error) {
 		return b, nil
 	}
 	return base64.RawURLEncoding.DecodeString(encoded)
-}
-
-// OIDCFactsFromJWTClaims extracts standard Agent Mesh OIDC identity facts
-// ("user", "email", "group", "idp_role") from verified JWT claims. FactRole and
-// FactNode are never derived from OIDC claims.
-func OIDCFactsFromJWTClaims(claims map[string]any) map[string][]string {
-	out := make(map[string][]string)
-	if len(claims) == 0 {
-		return out
-	}
-	claimMap := api.OIDCClaimToFact()
-	for claimKey, factName := range claimMap {
-		raw, ok := claims[claimKey]
-		if !ok || raw == nil {
-			continue
-		}
-		seen := make(map[string]bool)
-		for _, item := range toStringSlice(raw) {
-			if item == "" || seen[item] {
-				continue
-			}
-			seen[item] = true
-			out[factName] = append(out[factName], item)
-		}
-		sort.Strings(out[factName])
-	}
-	return out
-}
-
-func allowedOIDCFactNames() map[string]bool {
-	allowed := make(map[string]bool)
-	for _, factName := range api.OIDCClaimToFact() {
-		allowed[factName] = true
-	}
-	return allowed
-}
-
-// SanitizeOIDCFacts returns a copy containing only permitted OIDC fact names
-// ("user", "email", "group", "idp_role") and non-empty deduplicated values.
-func SanitizeOIDCFacts(facts map[string][]string) map[string][]string {
-	allowed := allowedOIDCFactNames()
-	clean := make(map[string][]string)
-	for k, vals := range facts {
-		if !allowed[k] {
-			continue
-		}
-		seen := make(map[string]bool)
-		for _, v := range vals {
-			if v == "" || seen[v] {
-				continue
-			}
-			seen[v] = true
-			clean[k] = append(clean[k], v)
-		}
-		if len(clean[k]) > 0 {
-			sort.Strings(clean[k])
-		}
-	}
-	return clean
-}
-
-// MarshalIngressClaimsHeader encodes verified OIDC fact claims for transport
-// over IngressProtocolID from an authenticated router to the serving node.
-func MarshalIngressClaimsHeader(facts map[string][]string) (string, error) {
-	clean := SanitizeOIDCFacts(facts)
-	raw, err := json.Marshal(clean)
-	if err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(raw), nil
-}
-
-// UnmarshalIngressClaimsHeader decodes and sanitizes verified OIDC fact claims
-// received over IngressProtocolID from an authenticated router.
-func UnmarshalIngressClaimsHeader(encoded string) (map[string][]string, error) {
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(encoded))
-	if err != nil {
-		return nil, fmt.Errorf("invalid base64url ingress claims header: %w", err)
-	}
-	var parsed map[string][]string
-	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return nil, fmt.Errorf("invalid json ingress claims header: %w", err)
-	}
-	return SanitizeOIDCFacts(parsed), nil
 }
 
 // TargetFactsFromBiscuit queries api.TargetFactRules on a provider's own
@@ -269,12 +165,10 @@ func runIngressAuthorizer(authorizer biscuit.Authorizer, p IngressEvalParams) ([
 	return roles, nil
 }
 
-// AuthorizeIngressDelegatedBiscuit authorizes a verified Delegated Session
-// Biscuit or task-attenuated Task Biscuit (minted via RFC 8693 /oauth/token or
-// SDK task attenuation) against mesh Datalog policy, local node attenuation,
-// TAR blocks, and ServiceIngress.allow. Unattenuated standing member/router
-// transport Biscuits are rejected.
-func AuthorizeIngressDelegatedBiscuit(claims *VerifiedBiscuitClaims, p IngressEvalParams) (*IngressCallerResult, error) {
+// ValidateIngressCallerPreDial checks the caller's verified Biscuit claims,
+// TAR attenuation chain, and ServiceIngress.allow ACL locally before opening a
+// network connection or /mesh/auth handshake to the serving provider.
+func ValidateIngressCallerPreDial(claims *VerifiedBiscuitClaims, p IngressEvalParams) (map[string][]string, error) {
 	if claims == nil || claims.Biscuit == nil {
 		return nil, fmt.Errorf("missing verified biscuit claims")
 	}
@@ -284,16 +178,6 @@ func AuthorizeIngressDelegatedBiscuit(claims *VerifiedBiscuitClaims, p IngressEv
 	if claims.NodePeerID != "" && len(claims.TaskRules) == 0 {
 		return nil, fmt.Errorf("unattenuated transport member biscuits cannot be used as HTTP edge bearer tokens; exchange at /oauth/token")
 	}
-
-	authorizer, err := newAuthorizer(claims.Biscuit, claims.VerifyingKey, p.Timeout)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create biscuit authorizer: %w", err)
-	}
-	roles, err := runIngressAuthorizer(authorizer, p)
-	if err != nil {
-		return nil, err
-	}
-
 	if len(claims.TaskRules) > 0 {
 		taskReq := api.TaskRequestContext{
 			ServiceType:        p.ServiceType,
@@ -308,10 +192,31 @@ func AuthorizeIngressDelegatedBiscuit(claims *VerifiedBiscuitClaims, p IngressEv
 			return nil, err
 		}
 	}
-
 	idMap := claims.IdentityClaimsMap()
 	if !api.MatchIngressAllow(p.Allow, idMap) {
 		return nil, fmt.Errorf("caller does not satisfy service ingress allow list")
+	}
+	return idMap, nil
+}
+
+// AuthorizeIngressDelegatedBiscuit authorizes a verified Delegated Session
+// Biscuit or task-attenuated Task Biscuit (minted via RFC 8693 /oauth/token,
+// POST /token/exchange, or SDK task attenuation) against mesh Datalog policy,
+// local node attenuation, TAR blocks, and ServiceIngress.allow. Unattenuated
+// standing member/router transport Biscuits are rejected.
+func AuthorizeIngressDelegatedBiscuit(claims *VerifiedBiscuitClaims, p IngressEvalParams) (*IngressCallerResult, error) {
+	idMap, err := ValidateIngressCallerPreDial(claims, p)
+	if err != nil {
+		return nil, err
+	}
+
+	authorizer, err := newAuthorizer(claims.Biscuit, claims.VerifyingKey, p.Timeout)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create biscuit authorizer: %w", err)
+	}
+	roles, err := runIngressAuthorizer(authorizer, p)
+	if err != nil {
+		return nil, err
 	}
 
 	actorNodeID := claims.ActorNodePeerID
@@ -325,68 +230,5 @@ func AuthorizeIngressDelegatedBiscuit(claims *VerifiedBiscuitClaims, p IngressEv
 		TaskName:      claims.InnermostTaskName(),
 		ActorNodeID:   actorNodeID,
 		IdentityFacts: idMap,
-	}, nil
-}
-
-// AuthorizeIngressOIDCFacts authorizes verified OIDC JWT fact claims against
-// mesh Datalog policy, local node attenuation, and ServiceIngress.allow using
-// the exact same Biscuit Datalog authorizer as Delegated Session Biscuits.
-func AuthorizeIngressOIDCFacts(oidcFacts map[string][]string, p IngressEvalParams) (*IngressCallerResult, error) {
-	clean := SanitizeOIDCFacts(oidcFacts)
-	if len(clean) == 0 {
-		return nil, fmt.Errorf("verified OIDC token carries no identity claims")
-	}
-
-	pub, priv := ephemeralEvalKeys()
-	builder := biscuit.NewBuilder(priv)
-	if err := builder.AddAuthorityFact(biscuit.Fact{Predicate: biscuit.Predicate{
-		Name: api.FactExpiration,
-		IDs:  []biscuit.Term{biscuit.Date(time.Now().Add(5 * time.Minute))},
-	}}); err != nil {
-		return nil, err
-	}
-	keys := make([]string, 0, len(clean))
-	for k := range clean {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		for _, v := range clean[k] {
-			if err := builder.AddAuthorityFact(biscuit.Fact{Predicate: biscuit.Predicate{
-				Name: k,
-				IDs:  []biscuit.Term{biscuit.String(v)},
-			}}); err != nil {
-				return nil, err
-			}
-		}
-	}
-	tok, err := builder.Build()
-	if err != nil {
-		return nil, err
-	}
-	authorizer, err := tok.Authorizer(pub, AuthorizerOptions(p.Timeout)...)
-	if err != nil {
-		return nil, err
-	}
-	roles, err := runIngressAuthorizer(authorizer, p)
-	if err != nil {
-		return nil, err
-	}
-
-	if !api.MatchIngressAllow(p.Allow, clean) {
-		return nil, fmt.Errorf("caller does not satisfy service ingress allow list")
-	}
-
-	var principal string
-	if emails := clean[api.FactEmail]; len(emails) > 0 {
-		principal = emails[0]
-	} else if users := clean[api.FactUser]; len(users) > 0 {
-		principal = users[0]
-	}
-
-	return &IngressCallerResult{
-		Principal:     principal,
-		Roles:         roles,
-		IdentityFacts: clean,
 	}, nil
 }

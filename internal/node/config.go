@@ -118,8 +118,19 @@ func CompleteNodeConfig(config api.NodeConfig) (*NodeConfigComplete, error) {
 			if typeErr != nil {
 				return nil, fmt.Errorf("service %q: %w", svc.Name, typeErr)
 			}
-			if _, err := api.ServiceIngressFromConfig(sType, svc.Ingress); err != nil {
+			ing, err := api.ServiceIngressFromConfig(sType, svc.Ingress)
+			if err != nil {
 				return nil, fmt.Errorf("service %q: %w", svc.Name, err)
+			}
+			if api.EffectiveIngressAuthMode(ing) == api.IngressAuthMode_INGRESS_AUTH_MODE_PASSTHROUGH {
+				if svc.TargetAuthPath != "" {
+					return nil, fmt.Errorf("service %q: ingress auth_mode %q cannot be combined with target_auth_path (would expose backend credential without caller authentication)", svc.Name, api.IngressAuthModeStringPassthrough)
+				}
+				if svc.TargetURL != "" {
+					if bt, pErr := parseBackendTarget(svc.TargetURL); pErr == nil && bt.auth != "" {
+						return nil, fmt.Errorf("service %q: ingress auth_mode %q cannot be combined with an inline target_url credential (would expose backend credential without caller authentication)", svc.Name, api.IngressAuthModeStringPassthrough)
+					}
+				}
 			}
 		}
 		if svc.TargetAuthPath != "" && svc.TargetURL == "" {

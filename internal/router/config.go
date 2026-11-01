@@ -134,11 +134,6 @@ type Options struct {
 	// non-loopback interface (for example behind a TLS-terminating L7 Gateway)
 	// and permits http:// in IngressURL on non-loopback hosts.
 	AllowInsecureIngressHTTP bool
-	// OIDCIssuer and Audience optionally override the OIDC issuer and audience
-	// learned from the control plane's GET /info when verifying OIDC JWTs on
-	// INGRESS_AUTH_MODE_EDGE requests.
-	OIDCIssuer string
-	Audience   string
 	// PublicControlPlaneURL optionally overrides ControlPlaneURL in external
 	// RFC 9728 and A2A OAuth discovery metadata when ControlPlaneURL is a
 	// cluster-internal or loopback address.

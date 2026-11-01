@@ -81,8 +81,6 @@ var (
 	ingressTLSCertPath       string
 	ingressTLSKeyPath        string
 	allowInsecureIngressHTTP bool
-	oidcIssuer               string
-	audience                 string
 	publicControlPlaneURL    string
 )
 
@@ -123,8 +121,6 @@ func main() {
 				IngressTLSCertPath:        ingressTLSCertPath,
 				IngressTLSKeyPath:         ingressTLSKeyPath,
 				AllowInsecureIngressHTTP:  allowInsecureIngressHTTP,
-				OIDCIssuer:                oidcIssuer,
-				Audience:                  audience,
 				PublicControlPlaneURL:     publicControlPlaneURL,
 			}
 			labels, err := api.ParseLabelFlags(labelFlags)
@@ -190,8 +186,6 @@ func main() {
 	rootCmd.Flags().StringVar(&ingressTLSCertPath, "ingress-tls-cert-path", "", "Path to TLS certificate file for --ingress-addr")
 	rootCmd.Flags().StringVar(&ingressTLSKeyPath, "ingress-tls-key-path", "", "Path to TLS private key file for --ingress-addr")
 	rootCmd.Flags().BoolVar(&allowInsecureIngressHTTP, "allow-insecure-ingress-http", false, "Allow --ingress-addr on a non-loopback interface without TLS (only when behind a TLS-terminating L7 load balancer) and allow http:// in --ingress-url")
-	rootCmd.Flags().StringVar(&oidcIssuer, "oidc-issuer", "", "Optional OIDC issuer URL override for verifying OIDC JWTs on edge ingress (defaults to the control plane's /info oidc_issuer)")
-	rootCmd.Flags().StringVar(&audience, "audience", "", "Optional OIDC audience override for verifying OIDC JWTs on edge ingress (defaults to the control plane's /info audience)")
 	rootCmd.Flags().StringVar(&publicControlPlaneURL, "public-control-plane", "", "Optional public URL of the control plane advertised in RFC 9728 and A2A OAuth metadata when --control-plane uses a cluster-internal address")
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

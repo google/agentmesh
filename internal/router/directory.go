@@ -571,9 +571,12 @@ func (r *Router) findProviders(ctx context.Context, key []byte, limit int) []pro
 			directoryLookupsTotal.WithLabelValues(directoryResultOK).Inc()
 			var entries []providerEntry
 			for _, rec := range resp.GetProviders() {
-				if entry, err := providerEntryOfRecord(rec); err == nil {
-					entries = append(entries, entry)
+				entry, err := providerEntryOfRecord(rec)
+				if err != nil {
+					logger.Warnf("[Directory] Dropping invalid provider record %q from router %s: %v", rec.GetPeerId(), target, err)
+					continue
 				}
+				entries = append(entries, entry)
 			}
 			answers <- entries
 		}(target)
@@ -638,6 +641,9 @@ func providerEntryOfRecord(rec *api.PeerRecord) (providerEntry, error) {
 	if err != nil {
 		return providerEntry{}, err
 	}
+	if err := api.ValidatePeerRecordIngress(rec.GetIngress()); err != nil {
+		return providerEntry{}, err
+	}
 	return providerEntry{
 		info:    peer.AddrInfo{ID: p, Addrs: addrs},
 		ingress: cloneServiceIngress(rec.GetIngress()),
@@ -671,7 +677,7 @@ func (r *Router) directoryFindPeer(ctx context.Context, remote peer.ID, q *api.D
 		return nil, err
 	}
 	for _, rec := range records {
-		if rec.GetPeerId() == p.String() {
+		if recPID, decErr := peer.Decode(rec.GetPeerId()); decErr == nil && recPID == p {
 			return &api.DirectoryResponse{Peer: rec}, nil
 		}
 	}

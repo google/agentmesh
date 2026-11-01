@@ -95,6 +95,7 @@ spec:
         - "--metrics-addr=0.0.0.0:9090"
         - "--ingress-addr=0.0.0.0:8080"
         - "--ingress-url=https://${ENV_NAME}.sam-mesh.dev/ingress"
+        - "--public-control-plane=https://${ENV_NAME}.sam-mesh.dev"
         - "--allow-insecure-ingress-http"
         # Profiles on loopback only: `kubectl port-forward <pod> 6060` then
         # `go tool pprof http://127.0.0.1:6060/debug/pprof/heap`.

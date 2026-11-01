@@ -20,8 +20,11 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -50,7 +53,8 @@ func mustTestPeerID(t *testing.T) (peer.ID, libp2pcrypto.PrivKey) {
 
 type fakeIngressDHT struct {
 	fakeDHT
-	ingressCalls []ingressProvideCall
+	ingressCalls   []ingressProvideCall
+	failIngressErr error
 }
 
 type ingressProvideCall struct {
@@ -65,7 +69,7 @@ func (f *fakeIngressDHT) ProvideWithIngress(_ context.Context, key []byte, servi
 		service: service,
 		ingress: ing,
 	})
-	return nil
+	return f.failIngressErr
 }
 
 func TestServiceRegistry_ProvideWithIngressOnlyOnNamedKey(t *testing.T) {
@@ -133,6 +137,156 @@ func TestCompleteNodeConfig_ValidatesServiceIngress(t *testing.T) {
 	if _, err := CompleteNodeConfig(badCfg); err == nil {
 		t.Fatal("CompleteNodeConfig accepted invalid ingress auth_mode")
 	}
+}
+
+func TestServiceRegistry_RefusedIngressFallsBackToInternalProvide(t *testing.T) {
+	dht := &fakeIngressDHT{
+		failIngressErr: errors.New("router refused ingress role ceiling"),
+	}
+	reg := newServiceRegistryForTest(dht)
+
+	var callbackInfo *api.ServiceInfo
+	reg.onIngressRegistered = func(info *api.ServiceInfo) {
+		callbackInfo = info
+	}
+
+	svc := &fakeService{
+		info: &api.ServiceInfo{
+			Name: "ungranted",
+			Type: api.ServiceType_SERVICE_TYPE_A2A,
+			Ingress: &api.ServiceIngress{
+				AuthMode: api.IngressAuthMode_INGRESS_AUTH_MODE_PASSTHROUGH,
+			},
+		},
+		handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}),
+	}
+
+	beforeIngressFail := counterValue(t, serviceProvideFailuresTotal.WithLabelValues(provideFailureScopeIngress))
+	if err := reg.Register(context.Background(), svc); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	afterIngressFail := counterValue(t, serviceProvideFailuresTotal.WithLabelValues(provideFailureScopeIngress))
+	if afterIngressFail != beforeIngressFail+1 {
+		t.Errorf("ingress failure counter = %v, want %v", afterIngressFail, beforeIngressFail+1)
+	}
+	if callbackInfo != nil {
+		t.Errorf("onIngressRegistered called with %v when ingress announcement failed, want nil", callbackInfo)
+	}
+	if len(dht.ingressCalls) != 1 {
+		t.Fatalf("ProvideWithIngress calls = %d, want 1", len(dht.ingressCalls))
+	}
+	nameKey, _ := api.ServiceKey(api.ServiceType_SERVICE_TYPE_A2A, "ungranted")
+	typeKey, _ := api.ServiceKey(api.ServiceType_SERVICE_TYPE_A2A, "")
+	if len(dht.calls) != 2 || !bytes.Equal(dht.calls[0], nameKey) || !bytes.Equal(dht.calls[1], typeKey) {
+		t.Fatalf("plain Provide calls = %d, want 2 (fallback nameKey + typeKey)", len(dht.calls))
+	}
+
+	// ReprovideAll also falls back while ingress remains refused, then succeeds without fallback once granted.
+	if withheld := reg.ReprovideAll(context.Background()); withheld != 0 {
+		t.Fatalf("ReprovideAll withheld = %d, want 0", withheld)
+	}
+	if len(dht.ingressCalls) != 2 || len(dht.calls) != 4 {
+		t.Fatalf("after refused ReprovideAll: ingressCalls=%d calls=%d, want 2 and 4", len(dht.ingressCalls), len(dht.calls))
+	}
+
+	dht.failIngressErr = nil
+	if withheld := reg.ReprovideAll(context.Background()); withheld != 0 {
+		t.Fatalf("ReprovideAll after policy fix withheld = %d, want 0", withheld)
+	}
+	if len(dht.ingressCalls) != 3 || len(dht.calls) != 5 {
+		t.Fatalf("after policy fix ReprovideAll: ingressCalls=%d calls=%d, want 3 and 5 (typeKey only)", len(dht.ingressCalls), len(dht.calls))
+	}
+}
+
+func TestPassthroughWithBackendCredentialRejected(t *testing.T) {
+	authFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(authFile, []byte("secret-token\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	t.Run("CompleteNodeConfig rejects passthrough with target_auth_path", func(t *testing.T) {
+		cfg := api.NodeConfig{
+			Services: []api.ServiceConfig{
+				{
+					Name:           "webhook",
+					Type:           "a2a",
+					TargetURL:      "http://127.0.0.1:8081",
+					TargetAuthPath: authFile,
+					Ingress:        &api.IngressConfig{AuthMode: "passthrough"},
+				},
+			},
+		}
+		if _, err := CompleteNodeConfig(cfg); err == nil {
+			t.Fatal("expected error for passthrough + target_auth_path, got nil")
+		}
+	})
+
+	t.Run("CompleteNodeConfig rejects passthrough with inline target_url credential", func(t *testing.T) {
+		cfg := api.NodeConfig{
+			Services: []api.ServiceConfig{
+				{
+					Name:      "webhook",
+					Type:      "a2a",
+					TargetURL: "http://bearer:secret-token@127.0.0.1:8081",
+					Ingress:   &api.IngressConfig{AuthMode: "passthrough"},
+				},
+			},
+		}
+		if _, err := CompleteNodeConfig(cfg); err == nil {
+			t.Fatal("expected error for passthrough + inline target_url credential, got nil")
+		}
+	})
+
+	t.Run("CompleteNodeConfig allows edge with target_auth_path", func(t *testing.T) {
+		cfg := api.NodeConfig{
+			Services: []api.ServiceConfig{
+				{
+					Name:           "assistant",
+					Type:           "a2a",
+					TargetURL:      "http://127.0.0.1:8081",
+					TargetAuthPath: authFile,
+					Ingress:        &api.IngressConfig{AuthMode: "edge"},
+				},
+			},
+		}
+		if _, err := CompleteNodeConfig(cfg); err != nil {
+			t.Fatalf("expected edge + target_auth_path to succeed, got: %v", err)
+		}
+	})
+
+	t.Run("buildRegisterRequest and NewServiceFromRequest reject passthrough with credential", func(t *testing.T) {
+		if _, err := buildRegisterRequest(api.ServiceConfig{
+			Name:           "webhook",
+			Type:           "a2a",
+			TargetURL:      "http://127.0.0.1:8081",
+			TargetAuthPath: authFile,
+			Ingress:        &api.IngressConfig{AuthMode: "passthrough"},
+		}); err == nil {
+			t.Fatal("buildRegisterRequest accepted passthrough + target_auth_path")
+		}
+		if _, err := buildRegisterRequest(api.ServiceConfig{
+			Name:      "webhook",
+			Type:      "a2a",
+			TargetURL: "http://bearer:secret-token@127.0.0.1:8081",
+			Ingress:   &api.IngressConfig{AuthMode: "passthrough"},
+		}); err == nil {
+			t.Fatal("buildRegisterRequest accepted passthrough + inline target_url credential")
+		}
+		if _, err := NewServiceFromRequest(&api.RegisterServiceRequest{
+			Service: &api.ServiceInfo{
+				Name: "webhook",
+				Type: api.ServiceType_SERVICE_TYPE_A2A,
+				Ingress: &api.ServiceIngress{
+					AuthMode: api.IngressAuthMode_INGRESS_AUTH_MODE_PASSTHROUGH,
+				},
+			},
+			Backend: &api.RegisterServiceRequest_TargetUrl{
+				TargetUrl: "http://bearer:secret-token@127.0.0.1:8081",
+			},
+		}); err == nil {
+			t.Fatal("NewServiceFromRequest accepted passthrough + inline backend credential")
+		}
+	})
 }
 
 func TestExternalIngressHandler(t *testing.T) {
@@ -454,37 +608,36 @@ func TestExternalIngressHandler(t *testing.T) {
 		}
 	})
 
-	t.Run("edge OIDC claims header evaluated identically against Datalog + local policy", func(t *testing.T) {
-		claimsHdr, err := identity.MarshalIngressClaimsHeader(map[string][]string{
-			api.FactUser:  {"uid-alice"},
-			api.FactEmail: {"alice@example.com"},
-		})
-		if err != nil {
-			t.Fatalf("MarshalIngressClaimsHeader: %v", err)
-		}
-
-		okReq := httptest.NewRequest(http.MethodPost, "http://mesh/a2a/assistant/", strings.NewReader(`{}`))
-		okReq.RemoteAddr = routerPID.String()
-		okReq.Header.Set(api.HeaderMeshBiscuit, routerB64)
-		okReq.Header.Set(api.HeaderMeshIngressClaims, claimsHdr)
-		okRec := httptest.NewRecorder()
-		h.ServeHTTP(okRec, okReq)
-		if okRec.Code != http.StatusOK {
-			t.Fatalf("OIDC claims status = %d, want 200: %s", okRec.Code, okRec.Body.String())
-		}
-		if got := capturedHeaders.Get(api.HeaderMeshPrincipal); got != "alice@example.com" {
-			t.Errorf("X-Mesh-Principal = %q, want alice@example.com", got)
-		}
-
-		// Local nodeConfig policy denies /admin
+	t.Run("local nodeConfig policy denies /admin on edge delegated biscuit", func(t *testing.T) {
 		adminReq := httptest.NewRequest(http.MethodPost, "http://mesh/a2a/assistant/admin", strings.NewReader(`{}`))
 		adminReq.RemoteAddr = routerPID.String()
 		adminReq.Header.Set(api.HeaderMeshBiscuit, routerB64)
-		adminReq.Header.Set(api.HeaderMeshIngressClaims, claimsHdr)
+		adminReq.Header.Set(api.HeaderMeshIngressCallerBiscuit, delegatedAliceB64)
 		adminRec := httptest.NewRecorder()
 		h.ServeHTTP(adminRec, adminReq)
 		if adminRec.Code != http.StatusForbidden {
 			t.Fatalf("local /admin deny status = %d, want 403: %s", adminRec.Code, adminRec.Body.String())
+		}
+	})
+
+	t.Run("uninitialized service registry returns 503 and increments invalid counter", func(t *testing.T) {
+		uninitNode := &AgentMeshNode{
+			config:         Options{PrivKey: servingPriv},
+			trustedKeys:    []TrustedKey{{Key: cpPub, ReceivedAt: time.Now()}},
+			BiscuitTimeout: time.Second,
+		}
+		before := counterValue(t, externalIngressRequestsTotal.WithLabelValues("unknown", externalIngressOutcomeInvalid))
+		req := httptest.NewRequest(http.MethodPost, "http://mesh/a2a/assistant/", strings.NewReader(`{}`))
+		req.RemoteAddr = routerPID.String()
+		req.Header.Set(api.HeaderMeshBiscuit, routerB64)
+		rec := httptest.NewRecorder()
+		uninitNode.externalIngressHandler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503: %s", rec.Code, rec.Body.String())
+		}
+		after := counterValue(t, externalIngressRequestsTotal.WithLabelValues("unknown", externalIngressOutcomeInvalid))
+		if after != before+1 {
+			t.Errorf("invalid counter = %v, want %v", after, before+1)
 		}
 	})
 

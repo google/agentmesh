@@ -18,12 +18,11 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/rsa"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"io"
-	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -37,10 +36,12 @@ import (
 	"github.com/google/agentmesh/api"
 	"github.com/google/agentmesh/internal/identity"
 	"github.com/google/agentmesh/internal/ratelimit"
-	lru "github.com/hashicorp/golang-lru/v2"
 	gostream "github.com/libp2p/go-libp2p-gostream"
 	kb "github.com/libp2p/go-libp2p-kbucket"
+	libp2pcrypto "github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/multiformats/go-multiaddr"
 )
 
 func TestIngressOptionsValidate(t *testing.T) {
@@ -228,6 +229,20 @@ func TestDirectoryIngressEnforcementAndPropagation(t *testing.T) {
 		}
 	})
 
+	t.Run("providerEntryOfRecord rejects invalid ingress metadata from peer router", func(t *testing.T) {
+		badRec := &api.PeerRecord{
+			PeerId: edgeMember.ID().String(),
+			Addrs:  []string{memberAddr},
+			Ingress: &api.ServiceIngress{
+				AuthMode: api.IngressAuthMode_INGRESS_AUTH_MODE_PASSTHROUGH,
+				Allow:    []string{"email:alice@example.com"},
+			},
+		}
+		if _, err := providerEntryOfRecord(badRec); err == nil {
+			t.Fatal("providerEntryOfRecord accepted PASSTHROUGH with allow list, want error")
+		}
+	})
+
 	t.Run("EDGE announcement accepted and propagated across federated routers", func(t *testing.T) {
 		ing := &api.ServiceIngress{
 			AuthMode: api.IngressAuthMode_INGRESS_AUTH_MODE_EDGE,
@@ -263,74 +278,20 @@ func TestDirectoryIngressEnforcementAndPropagation(t *testing.T) {
 	})
 }
 
-func newTestOIDCServer(t *testing.T) (string, *rsa.PrivateKey) {
-	t.Helper()
-	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("rsa.GenerateKey: %v", err)
-	}
-	mux := http.NewServeMux()
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"issuer":   srv.URL,
-			"jwks_uri": srv.URL + "/keys",
-		})
-	})
-	mux.HandleFunc("/keys", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"keys": []map[string]any{
-				{
-					"kty": "RSA",
-					"alg": "RS256",
-					"use": "sig",
-					"kid": "test-kid",
-					"n":   base64.RawURLEncoding.EncodeToString(privKey.N.Bytes()),
-					"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(privKey.E)).Bytes()),
-				},
-			},
-		})
-	})
-	return srv.URL, privKey
-}
-
-func signTestOIDCJWT(t *testing.T, key *rsa.PrivateKey, claims jwt.MapClaims) string {
-	t.Helper()
-	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	tok.Header["kid"] = "test-kid"
-	signed, err := tok.SignedString(key)
-	if err != nil {
-		t.Fatalf("SignedString: %v", err)
-	}
-	return signed
-}
-
 func TestRouterIngressHandlerEndToEnd(t *testing.T) {
 	cpPub, cpPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	oidcIssuer, oidcKey := newTestOIDCServer(t)
 
 	r := newDirectoryRouter(t)
 	r.config.ControlPlaneURL = "https://hub.example.com"
-	r.config.OIDCIssuer = oidcIssuer
-	r.config.Audience = api.DefaultAudience
 	r.config.BiscuitTimeout = 2 * time.Second
 	limiter, err := ratelimit.NewPeerRateLimiterWithRate(128, ingressRateLimitPerIP, ingressRateBurstPerIP)
 	if err != nil {
 		t.Fatalf("NewPeerRateLimiterWithRate: %v", err)
 	}
 	r.ingressLimiter = limiter
-	revoked, err := lru.New[string, time.Time](128)
-	if err != nil {
-		t.Fatalf("lru.New: %v", err)
-	}
-	r.revokedTokens = revoked
 
 	routerBiscuitRaw, err := identity.MintBootstrapBiscuitToken(cpPriv, r.Host.ID(), api.RoleRouter, time.Now().Add(time.Hour), []*api.PolicyRole{
 		{Name: api.RoleRouter, AllowedServices: []string{"*"}, AllowedTargets: []string{"*"}},
@@ -385,7 +346,6 @@ func TestRouterIngressHandlerEndToEnd(t *testing.T) {
 		MeshIngress   string `json:"mesh_ingress"`
 		MeshBiscuit   bool   `json:"mesh_biscuit"`
 		CallerBiscuit bool   `json:"caller_biscuit"`
-		CallerClaims  string `json:"caller_claims"`
 		SpoofedHeader string `json:"spoofed_header"`
 	}
 	ingListener, err := gostream.Listen(provider, api.IngressProtocolID)
@@ -431,7 +391,6 @@ func TestRouterIngressHandlerEndToEnd(t *testing.T) {
 			MeshIngress:   req.Header.Get(api.HeaderMeshIngress),
 			MeshBiscuit:   req.Header.Get(api.HeaderMeshBiscuit) != "",
 			CallerBiscuit: req.Header.Get(api.HeaderMeshIngressCallerBiscuit) != "",
-			CallerClaims:  req.Header.Get(api.HeaderMeshIngressClaims),
 			SpoofedHeader: req.Header.Get("X-Mesh-Spoofed"),
 		})
 	})
@@ -509,8 +468,8 @@ func TestRouterIngressHandlerEndToEnd(t *testing.T) {
 		if doc.Resource != baseURL {
 			t.Fatalf("Resource = %q, want %q", doc.Resource, baseURL)
 		}
-		if len(doc.AuthorizationServers) < 2 || doc.AuthorizationServers[0] != "https://hub.example.com" || doc.AuthorizationServers[1] != oidcIssuer {
-			t.Fatalf("AuthorizationServers = %v, want [https://hub.example.com %s]", doc.AuthorizationServers, oidcIssuer)
+		if len(doc.AuthorizationServers) != 1 || doc.AuthorizationServers[0] != "https://hub.example.com" {
+			t.Fatalf("AuthorizationServers = %v, want [https://hub.example.com]", doc.AuthorizationServers)
 		}
 	})
 
@@ -541,7 +500,25 @@ func TestRouterIngressHandlerEndToEnd(t *testing.T) {
 		}
 	})
 
-	t.Run("EDGE AgentCard discovery rewrites URL, injects SecuritySchemes, and honors ETag", func(t *testing.T) {
+	t.Run("EDGE rejects raw compact JWT with 401 pointing callers to /oauth/token exchange", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodPost, baseURL+"/"+provider.ID().String()+"/a2a/echo", strings.NewReader(`{}`))
+		req.Header.Set("Authorization", "Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJhbGljZSJ9.sig")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("POST with compact JWT: %v", err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("compact JWT status = %d, want 401", resp.StatusCode)
+		}
+		www := resp.Header.Get("WWW-Authenticate")
+		wantSub := baseURL + "/.well-known/oauth-protected-resource"
+		if !strings.Contains(www, wantSub) {
+			t.Fatalf("WWW-Authenticate = %q, want substring %q", www, wantSub)
+		}
+	})
+
+	t.Run("EDGE AgentCard discovery rewrites URL, injects Biscuit + OAuth2 SecuritySchemes, and honors ETag", func(t *testing.T) {
 		cardEndpoint := baseURL + "/" + provider.ID().String() + "/a2a/echo"
 		resp, err := client.Get(cardEndpoint)
 		if err != nil {
@@ -566,10 +543,13 @@ func TestRouterIngressHandlerEndToEnd(t *testing.T) {
 		if len(card.Signatures) != 0 {
 			t.Fatalf("Signatures = %v, want cleared after URL rewrite", card.Signatures)
 		}
-		for _, schemeName := range []a2a.SecuritySchemeName{"bearer", "agentmesh_oauth2", "oidc"} {
+		for _, schemeName := range []a2a.SecuritySchemeName{"bearer", "agentmesh_oauth2"} {
 			if _, ok := card.SecuritySchemes[schemeName]; !ok {
 				t.Fatalf("SecuritySchemes missing %q: %+v", schemeName, card.SecuritySchemes)
 			}
+		}
+		if _, hasOIDC := card.SecuritySchemes["oidc"]; hasOIDC {
+			t.Fatalf("SecuritySchemes unexpectedly advertised raw oidc scheme: %+v", card.SecuritySchemes)
 		}
 
 		// Conditional GET with If-None-Match returns 304 Not Modified.
@@ -666,7 +646,7 @@ func TestRouterIngressHandlerEndToEnd(t *testing.T) {
 			t.Fatalf("MCP drop_db status = %d, want 403", dropResp.StatusCode)
 		}
 
-		// Revoked Biscuit -> 401.
+		// Revoked Biscuit -> 401 (both hex and base64url revocation IDs work).
 		aliceB, _ := biscuit.Unmarshal(aliceRaw)
 		for _, revID := range aliceB.RevocationIds() {
 			r.recordRevokedBiscuitID(hex.EncodeToString(revID), time.Now().Add(time.Hour))
@@ -680,42 +660,6 @@ func TestRouterIngressHandlerEndToEnd(t *testing.T) {
 		_ = revResp.Body.Close()
 		if revResp.StatusCode != http.StatusUnauthorized {
 			t.Fatalf("revoked biscuit status = %d, want 401", revResp.StatusCode)
-		}
-	})
-
-	t.Run("EDGE OIDC JWT verification forwards attested claims", func(t *testing.T) {
-		jwtStr := signTestOIDCJWT(t, oidcKey, jwt.MapClaims{
-			"iss":            oidcIssuer,
-			"sub":            "oidc-alice",
-			"aud":            api.DefaultAudience,
-			"email":          "alice@example.com",
-			"email_verified": true,
-			"exp":            time.Now().Add(time.Hour).Unix(),
-			"iat":            time.Now().Add(-time.Minute).Unix(),
-		})
-		req, _ := http.NewRequest(http.MethodPost, baseURL+"/"+provider.ID().String()+"/a2a/echo", strings.NewReader(`{}`))
-		req.Header.Set("Authorization", "Bearer "+jwtStr)
-		resp, err := client.Do(req)
-		if err != nil {
-			t.Fatalf("POST with OIDC JWT: %v", err)
-		}
-		var got capturedReq
-		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-			t.Fatalf("decode OIDC upstream: %v", err)
-		}
-		_ = resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("OIDC JWT status = %d, want 200", resp.StatusCode)
-		}
-		if got.CallerClaims == "" || got.Auth != "" {
-			t.Fatalf("expected CallerClaims set and Authorization stripped, got %+v", got)
-		}
-		claimsMap, err := identity.UnmarshalIngressClaimsHeader(got.CallerClaims)
-		if err != nil {
-			t.Fatalf("UnmarshalIngressClaimsHeader: %v", err)
-		}
-		if len(claimsMap[api.FactEmail]) != 1 || claimsMap[api.FactEmail][0] != "alice@example.com" {
-			t.Fatalf("forwarded email claims = %v, want [alice@example.com]", claimsMap[api.FactEmail])
 		}
 	})
 
@@ -769,4 +713,309 @@ func TestRouterIngressHandlerEndToEnd(t *testing.T) {
 			t.Fatalf("banned provider status = %d, want 404", resp.StatusCode)
 		}
 	})
+}
+
+func TestLeasedIngressURLAndHostHeaderHardening(t *testing.T) {
+	r := &Router{
+		config: Options{
+			ControlPlaneURL:       "https://internal-cp.cluster.local:8443",
+			PublicControlPlaneURL: "https://bananas.sam-mesh.dev",
+		},
+	}
+
+	for _, addr := range []*net.TCPAddr{
+		{IP: net.IPv4zero, Port: 8090},
+		{IP: net.IPv6zero, Port: 8090},
+	} {
+		r.ingressAddr = addr
+		if got := r.leasedIngressURL(); got != "" {
+			t.Fatalf("leasedIngressURL() for unspecified %s = %q, want empty string", addr, got)
+		}
+		if got := r.effectiveIngressBaseURL(); got != "https://bananas.sam-mesh.dev/ingress" {
+			t.Fatalf("effectiveIngressBaseURL() for unspecified %s = %q, want https://bananas.sam-mesh.dev/ingress", addr, got)
+		}
+	}
+
+	// Unbound IngressHandler must never reflect a spoofed Host header into
+	// RFC 9728 metadata or WWW-Authenticate headers.
+	r.ingressAddr = nil
+	h := r.IngressHandler()
+	req := httptest.NewRequest(http.MethodGet, "http://evil.attacker.example/ingress/.well-known/oauth-protected-resource", nil)
+	req.Host = "evil.attacker.example"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("metadata status = %d, want 200", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "evil.attacker.example") {
+		t.Fatalf("metadata leaked spoofed Host header: %s", rec.Body.String())
+	}
+	var doc api.OAuthProtectedResourceMetadata
+	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("Unmarshal metadata: %v", err)
+	}
+	if doc.Resource != "https://bananas.sam-mesh.dev/ingress" {
+		t.Fatalf("Resource = %q, want https://bananas.sam-mesh.dev/ingress", doc.Resource)
+	}
+}
+
+func TestEdgeIngressPreDialRejectsBeforeDialingProvider(t *testing.T) {
+	cpPub, cpPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	r := newDirectoryRouter(t)
+	r.config.ControlPlaneURL = "https://hub.example.com"
+	r.config.BiscuitTimeout = 2 * time.Second
+	r.isReady.Store(true)
+
+	routerBiscuitRaw, err := identity.MintBootstrapBiscuitToken(cpPriv, r.Host.ID(), api.RoleRouter, time.Now().Add(time.Hour), []*api.PolicyRole{
+		{Name: api.RoleRouter, AllowedServices: []string{"*"}, AllowedTargets: []string{"*"}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("MintBootstrapBiscuitToken: %v", err)
+	}
+	r.keysMu.Lock()
+	r.trustedPublicKeys = []ed25519.PublicKey{cpPub}
+	r.credential = credential{biscuit: routerBiscuitRaw, expiration: time.Now().Add(time.Hour)}
+	r.keysMu.Unlock()
+
+	// Create a synthetic unreachable provider PeerID with a closed loopback port.
+	// If handleIngressRequest dialed the provider before checking the caller's
+	// Biscuit, it would fail with 502 Bad Gateway instead of 401/403.
+	priv, _, err := libp2pcrypto.GenerateEd25519Key(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateEd25519Key: %v", err)
+	}
+	unreachablePeer, err := peer.IDFromPrivateKey(priv)
+	if err != nil {
+		t.Fatalf("IDFromPrivateKey: %v", err)
+	}
+	key, err := api.ServiceKey(api.ServiceType_SERVICE_TYPE_A2A, "echo")
+	if err != nil {
+		t.Fatalf("ServiceKey: %v", err)
+	}
+	r.records.putWithIngress(
+		key,
+		unreachablePeer,
+		[]multiaddr.Multiaddr{multiaddr.StringCast("/ip4/127.0.0.1/tcp/1")},
+		&api.ServiceIngress{
+			AuthMode: api.IngressAuthMode_INGRESS_AUTH_MODE_EDGE,
+			Allow:    []string{"email:alice@example.com"},
+		},
+		time.Now(),
+	)
+
+	callerRole := &api.PolicyRole{
+		Name:            "caller",
+		AllowedServices: []string{"a2a://echo"},
+		AllowedTargets:  []string{"*"},
+	}
+	bobRaw, err := identity.MintDelegatedBiscuitToken(cpPriv, jwt.MapClaims{
+		"sub":   "bob",
+		"email": "bob@example.com",
+	}, unreachablePeer, time.Now().Add(time.Hour), []string{"caller"}, []*api.PolicyRole{callerRole}, nil, false)
+	if err != nil {
+		t.Fatalf("MintDelegatedBiscuitToken(bob): %v", err)
+	}
+	standingNodeRaw, _, err := identity.MintBiscuitToken(cpPriv, jwt.MapClaims{
+		"sub":   "alice",
+		"email": "alice@example.com",
+	}, nil, unreachablePeer, time.Now().Add(time.Hour), []string{"caller"}, []*api.PolicyRole{callerRole}, nil)
+	if err != nil {
+		t.Fatalf("MintBiscuitToken(standing): %v", err)
+	}
+
+	h := r.IngressHandler()
+	targetPath := "/ingress/" + unreachablePeer.String() + "/a2a/echo/message:send"
+
+	cases := []struct {
+		name       string
+		authHeader string
+		wantStatus int
+	}{
+		{
+			name:       "unauthenticated rejected 401 before dial",
+			authHeader: "",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "compact JWT rejected 401 before dial",
+			authHeader: "Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJhbGljZSJ9.sig",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "ServiceIngress.allow mismatch rejected 403 before dial",
+			authHeader: "Bearer " + base64.StdEncoding.EncodeToString(bobRaw),
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "unattenuated standing node Biscuit rejected 403 before dial",
+			authHeader: "Bearer " + base64.StdEncoding.EncodeToString(standingNodeRaw),
+			wantStatus: http.StatusForbidden,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, targetPath, strings.NewReader(`{}`))
+			if tc.authHeader != "" {
+				req.Header.Set("Authorization", tc.authHeader)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d (%s), want %d (must not dial unreachable provider)", rec.Code, strings.TrimSpace(rec.Body.String()), tc.wantStatus)
+			}
+		})
+	}
+}
+
+func TestRevocationSetDoesNotEvictLiveEntries(t *testing.T) {
+	_, cpPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	priv, _, err := libp2pcrypto.GenerateEd25519Key(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateEd25519Key: %v", err)
+	}
+	pid, err := peer.IDFromPrivateKey(priv)
+	if err != nil {
+		t.Fatalf("IDFromPrivateKey: %v", err)
+	}
+	firstRaw, err := identity.MintDelegatedBiscuitToken(cpPriv, jwt.MapClaims{"sub": "first"}, pid, time.Now().Add(time.Hour), nil, nil, nil, false)
+	if err != nil {
+		t.Fatalf("MintDelegatedBiscuitToken: %v", err)
+	}
+	firstB, err := biscuit.Unmarshal(firstRaw)
+	if err != nil {
+		t.Fatalf("biscuit.Unmarshal: %v", err)
+	}
+
+	var set revocationSet
+	now := time.Now()
+	// Record the first Biscuit's root revocation ID in hex format.
+	set.add(hex.EncodeToString(firstB.RevocationIds()[0]), now.Add(time.Hour))
+
+	// Add 5,000 more live revocations (> old 4096 LRU capacity) plus expired entries.
+	for i := 0; i < 5000; i++ {
+		var id [32]byte
+		id[0] = byte(i >> 8)
+		id[1] = byte(i)
+		id[2] = 1
+		set.add(base64.RawURLEncoding.EncodeToString(id[:]), now.Add(time.Hour))
+	}
+	set.mu.Lock()
+	set.entries["already-expired"] = now.Add(-time.Minute)
+	set.mu.Unlock()
+
+	if !set.isRevoked(firstB, now) {
+		t.Fatal("first revoked Biscuit was evicted after 5000 inserts; deny list must never evict live entries")
+	}
+	if got := set.activeCount(now); got != 5001 {
+		t.Fatalf("activeCount = %d, want 5001", got)
+	}
+}
+
+func TestGatewaySafeIngressRateLimiting(t *testing.T) {
+	cpPub, cpPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	r := newDirectoryRouter(t)
+	r.config.ControlPlaneURL = "https://hub.example.com"
+	r.config.BiscuitTimeout = 2 * time.Second
+	limiter, err := ratelimit.NewPeerRateLimiterWithRate(128, 1, 2)
+	if err != nil {
+		t.Fatalf("NewPeerRateLimiterWithRate: %v", err)
+	}
+	r.ingressLimiter = limiter
+	r.isReady.Store(true)
+
+	routerBiscuitRaw, err := identity.MintBootstrapBiscuitToken(cpPriv, r.Host.ID(), api.RoleRouter, time.Now().Add(time.Hour), []*api.PolicyRole{
+		{Name: api.RoleRouter, AllowedServices: []string{"*"}, AllowedTargets: []string{"*"}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("MintBootstrapBiscuitToken: %v", err)
+	}
+	r.keysMu.Lock()
+	r.trustedPublicKeys = []ed25519.PublicKey{cpPub}
+	r.credential = credential{biscuit: routerBiscuitRaw, expiration: time.Now().Add(time.Hour)}
+	r.keysMu.Unlock()
+
+	providerRole := &api.PolicyRole{
+		Name:           "agent-host",
+		AllowedPublish: []string{"a2a://*"},
+		AllowedIngress: []*api.IngressGrant{{Services: []string{"a2a://echo"}}},
+	}
+	callerRole := &api.PolicyRole{
+		Name:            "caller",
+		AllowedServices: []string{"a2a://echo"},
+		AllowedTargets:  []string{"*"},
+	}
+	roles := []*api.PolicyRole{providerRole, callerRole}
+	provider := attachWithRole(t, r, cpPub, cpPriv, providerRole)
+	providerAddr := provider.Addrs()[0].String() + "/p2p/" + provider.ID().String()
+
+	ingListener, err := gostream.Listen(provider, api.IngressProtocolID)
+	if err != nil {
+		t.Fatalf("gostream.Listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ingListener.Close() })
+	upstreamSrv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() { _ = upstreamSrv.Serve(ingListener) }()
+	t.Cleanup(func() { _ = upstreamSrv.Close() })
+
+	key, _ := api.ServiceKey(api.ServiceType_SERVICE_TYPE_A2A, "echo")
+	resp := ask(t, provider, r.Host.ID(), provideWithIngress(key, "a2a://echo", &api.ServiceIngress{
+		AuthMode: api.IngressAuthMode_INGRESS_AUTH_MODE_EDGE,
+	}, providerAddr))
+	if resp.GetError() != "" {
+		t.Fatalf("provide failed: %s", resp.GetError())
+	}
+
+	mintCaller := func(sub string) string {
+		raw, err := identity.MintDelegatedBiscuitToken(cpPriv, jwt.MapClaims{"sub": sub}, provider.ID(), time.Now().Add(time.Hour), []string{"caller"}, roles, nil, false)
+		if err != nil {
+			t.Fatalf("MintDelegatedBiscuitToken(%s): %v", sub, err)
+		}
+		return base64.StdEncoding.EncodeToString(raw)
+	}
+	tokA := mintCaller("alice")
+	tokB := mintCaller("bob")
+
+	h := r.IngressHandler()
+	sharedGatewayRemoteAddr := "10.128.0.5:44321"
+	targetPath := "/ingress/" + provider.ID().String() + "/a2a/echo"
+
+	send := func(tok string) int {
+		req := httptest.NewRequest(http.MethodPost, targetPath, strings.NewReader(`{}`))
+		req.RemoteAddr = sharedGatewayRemoteAddr
+		req.Header.Set("Authorization", "Bearer "+tok)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	// Exhaust Caller A's burst of 2 through the shared Gateway IP.
+	if code := send(tokA); code != http.StatusOK {
+		t.Fatalf("Caller A req 1 = %d, want 200", code)
+	}
+	if code := send(tokA); code != http.StatusOK {
+		t.Fatalf("Caller A req 2 = %d, want 200", code)
+	}
+	if code := send(tokA); code != http.StatusTooManyRequests {
+		t.Fatalf("Caller A req 3 = %d, want 429", code)
+	}
+
+	// Caller B sharing the exact same Gateway RemoteAddr must NOT be starved.
+	if code := send(tokB); code != http.StatusOK {
+		t.Fatalf("Caller B behind same Gateway IP = %d, want 200", code)
+	}
 }

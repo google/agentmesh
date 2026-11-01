@@ -153,7 +153,7 @@ enum ServiceType {
 enum IngressAuthMode {
   // Defaults to INGRESS_AUTH_MODE_EDGE.
   INGRESS_AUTH_MODE_UNSPECIFIED = 0;
-  // Router verifies Mesh Biscuit or trusted OIDC JWT + mesh policy at the edge.
+  // Router and provider node verify a delegated Mesh Biscuit + mesh policy.
   INGRESS_AUTH_MODE_EDGE = 1;
   // Backend authenticates its own requests; requires an explicit PASSTHROUGH
   // grant on the serving node's PolicyRole.allowed_ingress.

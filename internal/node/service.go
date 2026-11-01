@@ -135,6 +135,17 @@ func NewServiceFromRequest(req *api.RegisterServiceRequest) (Service, error) {
 	if err := api.ValidateServiceIngress(info.GetType(), info.GetIngress()); err != nil {
 		return nil, fmt.Errorf("service %q: %w", info.GetName(), err)
 	}
+	if info.GetIngress() != nil && api.EffectiveIngressAuthMode(info.GetIngress()) == api.IngressAuthMode_INGRESS_AUTH_MODE_PASSTHROUGH {
+		if t, ok := req.Backend.(*api.RegisterServiceRequest_TargetUrl); ok {
+			bt, err := parseBackendTarget(t.TargetUrl)
+			if err != nil {
+				return nil, fmt.Errorf("service %q: %w", info.GetName(), err)
+			}
+			if bt.auth != "" {
+				return nil, fmt.Errorf("service %q: ingress auth_mode %q cannot be combined with a backend credential (would expose backend credential without caller authentication)", info.GetName(), api.IngressAuthModeStringPassthrough)
+			}
+		}
+	}
 	switch info.Type {
 	case api.ServiceType_SERVICE_TYPE_MCP:
 		return &MCPService{baseService: baseService{info: info, backend: req.Backend}}, nil
@@ -159,6 +170,16 @@ func buildRegisterRequest(sCfg api.ServiceConfig) (*api.RegisterServiceRequest, 
 	ing, err := api.ServiceIngressFromConfig(sType, sCfg.Ingress)
 	if err != nil {
 		return nil, fmt.Errorf("service %s: %w", sCfg.Name, err)
+	}
+	if ing != nil && api.EffectiveIngressAuthMode(ing) == api.IngressAuthMode_INGRESS_AUTH_MODE_PASSTHROUGH {
+		if sCfg.TargetAuthPath != "" {
+			return nil, fmt.Errorf("service %s: ingress auth_mode %q cannot be combined with target_auth_path (would expose backend credential without caller authentication)", sCfg.Name, api.IngressAuthModeStringPassthrough)
+		}
+		if sCfg.TargetURL != "" {
+			if bt, pErr := parseBackendTarget(sCfg.TargetURL); pErr == nil && bt.auth != "" {
+				return nil, fmt.Errorf("service %s: ingress auth_mode %q cannot be combined with an inline target_url credential (would expose backend credential without caller authentication)", sCfg.Name, api.IngressAuthModeStringPassthrough)
+			}
+		}
 	}
 	req := &api.RegisterServiceRequest{
 		Service: &api.ServiceInfo{

@@ -22,6 +22,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -206,8 +207,44 @@ func TestWrapPublicHTTPHandlerCountsProxiedRequestsWithoutExternalURL(t *testing
 	}
 }
 
+func roleGrantsIngressMode(r *api.PolicyRole, mode api.IngressAuthMode) bool {
+	for _, g := range r.GetAllowedIngress() {
+		modes := g.GetAllowedAuthModes()
+		if len(modes) == 0 {
+			if mode == api.IngressAuthMode_INGRESS_AUTH_MODE_EDGE {
+				return true
+			}
+			continue
+		}
+		if slices.Contains(modes, mode) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestDefaultDevPolicyRolesSafeIngressCeiling(t *testing.T) {
+	roles := defaultDevPolicyRoles()
+	var nodeRole *api.PolicyRole
+	for _, r := range roles {
+		if r.GetName() == api.RoleNode {
+			nodeRole = r
+			break
+		}
+	}
+	if nodeRole == nil {
+		t.Fatalf("defaultDevPolicyRoles missing %s", api.RoleNode)
+	}
+	if !roleGrantsIngressMode(nodeRole, api.IngressAuthMode_INGRESS_AUTH_MODE_EDGE) {
+		t.Errorf("default %s role denied INGRESS_AUTH_MODE_EDGE, want allowed", api.RoleNode)
+	}
+	if roleGrantsIngressMode(nodeRole, api.IngressAuthMode_INGRESS_AUTH_MODE_PASSTHROUGH) {
+		t.Errorf("default %s role allowed INGRESS_AUTH_MODE_PASSTHROUGH, want denied by safe default", api.RoleNode)
+	}
+}
+
 func TestStandaloneSinglePortIngressAndSeededPolicy(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	srv, err := New(Options{
@@ -295,14 +332,20 @@ func TestStandaloneSinglePortIngressAndSeededPolicy(t *testing.T) {
 	if err := protojson.Unmarshal(polBody, &pol); err != nil {
 		t.Fatalf("unmarshal PolicyConfig: %v", err)
 	}
-	foundNodeIngress := false
+	var nodeRole *api.PolicyRole
 	for _, role := range pol.GetRoles() {
-		if role.GetName() == api.RoleNode && len(role.GetAllowedIngress()) > 0 {
-			foundNodeIngress = true
+		if role.GetName() == api.RoleNode {
+			nodeRole = role
 			break
 		}
 	}
-	if !foundNodeIngress {
+	if nodeRole == nil || len(nodeRole.GetAllowedIngress()) == 0 {
 		t.Fatalf("seeded PolicyConfig for %s lacks allowed_ingress: %+v", api.RoleNode, pol.GetRoles())
+	}
+	if !roleGrantsIngressMode(nodeRole, api.IngressAuthMode_INGRESS_AUTH_MODE_EDGE) {
+		t.Errorf("seeded %s role denied INGRESS_AUTH_MODE_EDGE, want allowed", api.RoleNode)
+	}
+	if roleGrantsIngressMode(nodeRole, api.IngressAuthMode_INGRESS_AUTH_MODE_PASSTHROUGH) {
+		t.Errorf("seeded %s role allowed INGRESS_AUTH_MODE_PASSTHROUGH, want denied without explicit --policy-file", api.RoleNode)
 	}
 }

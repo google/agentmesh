@@ -82,6 +82,37 @@ func postOperatorPolicy(t *testing.T, ctx context.Context, baseURL, adminToken s
 	}
 }
 
+func exchangeJWTForBiscuit(t *testing.T, cpURL, jwtStr, optionsJSON string, seal bool) string {
+	t.Helper()
+	form := url.Values{
+		"grant_type":         {api.GrantTypeTokenExchange},
+		"subject_token":      {jwtStr},
+		"subject_token_type": {"urn:ietf:params:oauth:token-type:id_token"},
+	}
+	if optionsJSON != "" {
+		form.Set("options", optionsJSON)
+	}
+	if seal {
+		form.Set("seal", "true")
+	}
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).PostForm(cpURL+"/oauth/token", form)
+	if err != nil {
+		t.Fatalf("POST /oauth/token: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /oauth/token = %s: %s", resp.Status, body)
+	}
+	var out struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil || out.AccessToken == "" {
+		t.Fatalf("decode /oauth/token response: %v (%s)", err, body)
+	}
+	return out.AccessToken
+}
+
 func enrollAndStartRuntimeNode(
 	t *testing.T,
 	ctx context.Context,
@@ -186,13 +217,13 @@ func enrollAndStartRuntimeNode(
 //   - RFC 9728 OAuth Protected Resource metadata at /ingress/.well-known/oauth-protected-resource
 //   - Internal-only services remain 404 on /ingress/...
 //   - Default EDGE mode: unauthenticated A2A AgentCard discovery with public URL & SecuritySchemes rewrite,
-//     OIDC JWT + ServiceIngress.allow ACL enforcement, stock A2A SendMessage & SSE SendStreamingMessage,
-//     signed X-AgentMesh-Identity-Evidence delivery to the backend, and RFC 8693 /oauth/token Delegated
-//     Session Biscuit with TAR MCP tool attenuation
-//   - Opt-in PASSTHROUGH mode: upstream Bearer pair token preserved end-to-end while spoofed X-AgentMesh-*
+//     raw JWT rejection (401 + RFC 9728 WWW-Authenticate), RFC 8693 /oauth/token Delegated Session Biscuit
+//   - ServiceIngress.allow ACL enforcement, stock A2A SendMessage & SSE SendStreamingMessage,
+//     X-Mesh-Principal delivery to the backend, and TAR MCP tool attenuation
+//   - Opt-in PASSTHROUGH mode: upstream Bearer pair token preserved end-to-end while spoofed X-Mesh-*
 //     headers are stripped.
 func TestStandaloneExternalIngressCUJ(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	oidcURL, mintJWT := startCustomMockOIDC(t)
@@ -389,8 +420,8 @@ func TestStandaloneExternalIngressCUJ(t *testing.T) {
 	if prm.Resource != srv.IngressURL() {
 		t.Errorf("PRM resource = %q, want %q", prm.Resource, srv.IngressURL())
 	}
-	if len(prm.AuthorizationServers) < 2 || prm.AuthorizationServers[0] != srv.PublicURL() || prm.AuthorizationServers[1] != oidcURL {
-		t.Errorf("PRM authorization_servers = %v, want [%s %s]", prm.AuthorizationServers, srv.PublicURL(), oidcURL)
+	if len(prm.AuthorizationServers) != 1 || prm.AuthorizationServers[0] != srv.PublicURL() {
+		t.Errorf("PRM authorization_servers = %v, want [%s]", prm.AuthorizationServers, srv.PublicURL())
 	}
 
 	// Internal-only service (ingress == nil) is never exposed on /ingress/...
@@ -443,9 +474,25 @@ func TestStandaloneExternalIngressCUJ(t *testing.T) {
 		t.Fatalf("unauthenticated POST = %d WWW-Authenticate=%q, want 401 with resource_metadata", unauthResp.StatusCode, unauthResp.Header.Get("WWW-Authenticate"))
 	}
 
-	// OIDC caller permitted by mesh role ("external-caller") but excluded by ServiceIngress.allow gets 403.
+	// Raw OIDC JWT presented directly to /ingress/ is rejected with 401 + RFC 9728 WWW-Authenticate
+	// (external callers exchange JWTs at POST /oauth/token into Delegated Session Biscuits).
+	yaroslavJWT := mintJWT(map[string]any{"sub": "yaroslav-sub", "email": "yaroslav@example.com"})
+	rawJWTReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, wantInvokeURL, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"message/send"}`))
+	rawJWTReq.Header.Set("Content-Type", "application/json")
+	rawJWTReq.Header.Set("Authorization", "Bearer "+yaroslavJWT)
+	rawJWTResp, err := httpClient.Do(rawJWTReq)
+	if err != nil {
+		t.Fatalf("raw JWT POST: %v", err)
+	}
+	_ = rawJWTResp.Body.Close()
+	if rawJWTResp.StatusCode != http.StatusUnauthorized || !strings.Contains(rawJWTResp.Header.Get("WWW-Authenticate"), "/.well-known/oauth-protected-resource") {
+		t.Fatalf("raw JWT POST = %d WWW-Authenticate=%q, want 401 with resource_metadata", rawJWTResp.StatusCode, rawJWTResp.Header.Get("WWW-Authenticate"))
+	}
+
+	// Delegated Session Biscuit permitted by mesh role ("external-caller") but excluded by ServiceIngress.allow gets 403.
 	otherJWT := mintJWT(map[string]any{"sub": "other-sub", "email": "other@example.com"})
-	deniedClient, err := a2aclient.NewFromCard(ctx, publicCoderCard, a2aclient.WithJSONRPCTransport(bearerClient(otherJWT, nil)))
+	otherBiscuit := exchangeJWTForBiscuit(t, srv.PublicURL(), otherJWT, "", false)
+	deniedClient, err := a2aclient.NewFromCard(ctx, publicCoderCard, a2aclient.WithJSONRPCTransport(bearerClient(otherBiscuit, nil)))
 	if err != nil {
 		t.Fatalf("NewFromCard(other): %v", err)
 	}
@@ -453,9 +500,9 @@ func TestStandaloneExternalIngressCUJ(t *testing.T) {
 		t.Fatal("SendMessage with caller excluded by ServiceIngress.allow succeeded, want error")
 	}
 
-	// Authorized OIDC caller succeeds on both SendMessage and SSE SendStreamingMessage.
-	yaroslavJWT := mintJWT(map[string]any{"sub": "yaroslav-sub", "email": "yaroslav@example.com"})
-	allowedClient, err := a2aclient.NewFromCard(ctx, publicCoderCard, a2aclient.WithJSONRPCTransport(bearerClient(yaroslavJWT, nil)))
+	// Authorized Delegated Session Biscuit succeeds on both SendMessage and SSE SendStreamingMessage.
+	yaroslavBiscuit := exchangeJWTForBiscuit(t, srv.PublicURL(), yaroslavJWT, "", false)
+	allowedClient, err := a2aclient.NewFromCard(ctx, publicCoderCard, a2aclient.WithJSONRPCTransport(bearerClient(yaroslavBiscuit, nil)))
 	if err != nil {
 		t.Fatalf("NewFromCard(yaroslav): %v", err)
 	}
@@ -489,28 +536,7 @@ func TestStandaloneExternalIngressCUJ(t *testing.T) {
 	// Exchange OIDC JWT at POST /oauth/token into a TAR-attenuated, sealed Session Biscuit
 	// scoped exclusively to mcp://tools tool "read_file".
 	tarJSON := `{"name":"read-only","rules":[{"allowed_services":["mcp://tools"],"operation":{"allowed_tools":["read_file"]}}]}`
-	form := url.Values{
-		"grant_type":         {api.GrantTypeTokenExchange},
-		"subject_token":      {yaroslavJWT},
-		"subject_token_type": {"urn:ietf:params:oauth:token-type:id_token"},
-		"options":            {tarJSON},
-		"seal":               {"true"},
-	}
-	tokResp, err := httpClient.PostForm(srv.PublicURL()+"/oauth/token", form)
-	if err != nil {
-		t.Fatalf("POST /oauth/token: %v", err)
-	}
-	tokBody, _ := io.ReadAll(tokResp.Body)
-	_ = tokResp.Body.Close()
-	if tokResp.StatusCode != http.StatusOK {
-		t.Fatalf("POST /oauth/token = %s: %s", tokResp.Status, tokBody)
-	}
-	var oauthOut struct {
-		AccessToken string `json:"access_token"`
-	}
-	if err := json.Unmarshal(tokBody, &oauthOut); err != nil || oauthOut.AccessToken == "" {
-		t.Fatalf("decode /oauth/token response: %v (%s)", err, tokBody)
-	}
+	tarBiscuit := exchangeJWTForBiscuit(t, srv.PublicURL(), yaroslavJWT, tarJSON, true)
 
 	mcpURL := fmt.Sprintf("%s/%s/mcp/tools", srv.IngressURL(), peerID)
 	mcpCli := mcp.NewClient(&mcp.Implementation{Name: "external-mcp-caller", Version: "1.0.0"}, nil)
@@ -519,7 +545,7 @@ func TestStandaloneExternalIngressCUJ(t *testing.T) {
 	for {
 		mcpSess, err = mcpCli.Connect(ctx, &mcp.StreamableClientTransport{
 			Endpoint:   mcpURL,
-			HTTPClient: bearerClient(oauthOut.AccessToken, nil),
+			HTTPClient: bearerClient(tarBiscuit, nil),
 		}, nil)
 		if err == nil {
 			break
@@ -589,10 +615,12 @@ func TestStandaloneExternalIngressCUJ(t *testing.T) {
 //     Router A (tier=relay), is reachable through Router B's standalone --ingress-addr HTTP gateway
 //     over Router A's circuit relay (/p2p/<routerA>/p2p-circuit/p2p/<node>).
 //   - PolicyRole.allowed_ingress ceiling: when mesh:role:node grants EDGE only on a2a://coder,
-//     attempting to expose a2a://ungranted (PASSTHROUGH) is refused by the router directory.
+//     attempting to expose a2a://ungranted (PASSTHROUGH) is refused on external ingress (404 on Router B)
+//     while automatically falling back to plain internal directory announcement so mesh peers can still
+//     discover a2a://ungranted internally.
 //   - Banning the provider node via POST /admin/revoke immediately causes Router B to return 404.
 func TestFederatedMultiRouterIngressRoleCeilingAndBan(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	oidcURL, mintJWT := startCustomMockOIDC(t)
@@ -782,7 +810,8 @@ func TestFederatedMultiRouterIngressRoleCeilingAndBan(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	// Ungranted PASSTHROUGH service was rejected by Router A's directory ceiling check -> 404 on Router B.
+	// Ungranted PASSTHROUGH service was rejected on external ingress -> 404 on Router B,
+	// while announceServiceKeys fell back to plain Provide so internal mesh discovery still finds it.
 	ungrantedResp, err := httpClient.Get(fmt.Sprintf("%s/%s/a2a/ungranted/.well-known/agent-card.json", ingressBaseB, peerID))
 	if err != nil {
 		t.Fatalf("GET ungranted passthrough service: %v", err)
@@ -791,10 +820,29 @@ func TestFederatedMultiRouterIngressRoleCeilingAndBan(t *testing.T) {
 	if ungrantedResp.StatusCode != http.StatusNotFound {
 		t.Fatalf("ungranted passthrough service status = %d, want 404", ungrantedResp.StatusCode)
 	}
+	ungrantedKey, err := api.ServiceKey(api.ServiceType_SERVICE_TYPE_A2A, "ungranted")
+	if err != nil {
+		t.Fatalf("ServiceKey(a2a, ungranted): %v", err)
+	}
+	internalProviders, err := provider.Directory.FindProviders(ctx, ungrantedKey, 10)
+	if err != nil {
+		t.Fatalf("FindProviders(a2a://ungranted): %v", err)
+	}
+	foundInternal := false
+	for _, pi := range internalProviders {
+		if pi.ID == peerID {
+			foundInternal = true
+			break
+		}
+	}
+	if !foundInternal {
+		t.Fatalf("a2a://ungranted missing from internal directory after ingress ceiling refusal; got providers %v", internalProviders)
+	}
 
-	// External caller invokes a2a://coder through Router B -> Router A circuit relay -> private node.
+	// External caller exchanges OIDC JWT at POST /oauth/token and invokes a2a://coder through Router B -> Router A circuit relay -> private node.
 	alanJWT := mintJWT(map[string]any{"sub": "alan-sub", "email": "alan@example.com"})
-	a2aCli, err := a2aclient.NewFromCard(ctx, resolvedCard, a2aclient.WithJSONRPCTransport(bearerClient(alanJWT, nil)))
+	alanBiscuit := exchangeJWTForBiscuit(t, cpURL, alanJWT, "", false)
+	a2aCli, err := a2aclient.NewFromCard(ctx, resolvedCard, a2aclient.WithJSONRPCTransport(bearerClient(alanBiscuit, nil)))
 	if err != nil {
 		t.Fatalf("NewFromCard(alan): %v", err)
 	}

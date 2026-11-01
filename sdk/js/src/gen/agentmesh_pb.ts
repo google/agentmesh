@@ -3312,7 +3312,7 @@ export enum IngressAuthMode {
   UNSPECIFIED = 0,
 
   /**
-   * Router verifies Mesh Biscuit or trusted OIDC JWT + mesh policy at the edge.
+   * Router and provider node verify a delegated Mesh Biscuit + mesh policy.
    *
    * @generated from enum value: INGRESS_AUTH_MODE_EDGE = 1;
    */

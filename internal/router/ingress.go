@@ -15,7 +15,6 @@
 package router
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -33,7 +32,7 @@ import (
 	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
-	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/eclipse-biscuit/biscuit-go/v2"
 	"github.com/google/agentmesh/api"
 	"github.com/google/agentmesh/internal/identity"
 	gostream "github.com/libp2p/go-libp2p-gostream"
@@ -57,9 +56,9 @@ const (
 	ingressOutcomeRateLimited     = "rate_limited"
 	ingressOutcomeBadGateway      = "bad_gateway"
 	ingressOutcomeInvalid         = "invalid"
+	ingressOutcomeUnavailable     = "unavailable"
 
 	maxIngressBodyBytes     = 32 << 20
-	maxIngressMCPBodyBytes  = 4 << 20
 	maxIngressCardBodyBytes = 1 << 20
 	a2aAgentCardSubpath     = ".well-known/agent-card.json"
 	ingressDialTimeout      = 10 * time.Second
@@ -83,6 +82,7 @@ func init() {
 			ingressOutcomeRateLimited,
 			ingressOutcomeBadGateway,
 			ingressOutcomeInvalid,
+			ingressOutcomeUnavailable,
 		} {
 			routerIngressRequestsTotal.WithLabelValues(mode, outcome)
 		}
@@ -150,7 +150,7 @@ func (r *Router) IngressHandler() http.Handler {
 		},
 		MaxIdleConnsPerHost:   16,
 		IdleConnTimeout:       60 * time.Second,
-		ResponseHeaderTimeout: 60 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Minute,
 	}
 
 	mux := http.NewServeMux()
@@ -167,124 +167,90 @@ func (r *Router) IngressHandler() http.Handler {
 	return mux
 }
 
+func isUnspecifiedBindHost(host string) bool {
+	h := strings.Trim(strings.TrimSpace(host), "[]")
+	if h == "" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsUnspecified()
+}
+
+func (r *Router) singlePortWSPort() string {
+	if r.Host == nil || r.Host.Network() == nil {
+		return ""
+	}
+	for _, a := range r.Host.Network().ListenAddresses() {
+		if _, err := a.ValueForProtocol(multiaddr.P_WS); err != nil {
+			continue
+		}
+		if port, err := a.ValueForProtocol(multiaddr.P_TCP); err == nil {
+			return port
+		}
+	}
+	return ""
+}
+
 func (r *Router) leasedIngressURL() string {
 	if configured := strings.TrimSuffix(strings.TrimSpace(r.config.IngressURL), "/"); configured != "" {
 		return configured
 	}
 	if r.ingressAddr != nil {
-		scheme := "http"
-		if r.config.IngressTLSCertPath != "" {
-			scheme = "https"
+		addrStr := r.ingressAddr.String()
+		host, _, err := net.SplitHostPort(addrStr)
+		if err == nil && !isUnspecifiedBindHost(host) {
+			scheme := "http"
+			if r.config.IngressTLSCertPath != "" {
+				scheme = "https"
+			}
+			return scheme + "://" + addrStr + "/ingress"
 		}
-		return scheme + "://" + r.ingressAddr.String() + "/ingress"
+		return ""
 	}
-	if r.config.AdvertiseSinglePortIngress && r.Host != nil && r.Host.Network() != nil {
+	if r.config.AdvertiseSinglePortIngress {
 		host := strings.TrimSpace(r.config.SinglePortBindHost)
-		if host == "" {
-			host = "0.0.0.0"
-		}
-		for _, a := range r.Host.Network().ListenAddresses() {
-			if _, err := a.ValueForProtocol(multiaddr.P_WS); err != nil {
-				continue
+		if !isUnspecifiedBindHost(host) {
+			if port := r.singlePortWSPort(); port != "" {
+				return "http://" + net.JoinHostPort(host, port) + "/ingress"
 			}
-			port, err := a.ValueForProtocol(multiaddr.P_TCP)
-			if err != nil {
-				continue
-			}
-			return "http://" + net.JoinHostPort(host, port) + "/ingress"
 		}
 	}
 	return ""
 }
 
-func (r *Router) effectiveIngressBaseURL(req *http.Request) string {
+// effectiveIngressBaseURL resolves the canonical external /ingress base URL
+// from operator configuration or a non-unspecified bound listener, never from
+// the untrusted HTTP Host header.
+func (r *Router) effectiveIngressBaseURL() string {
 	if leased := r.leasedIngressURL(); leased != "" {
 		return leased
 	}
-	scheme := "http"
-	if r.config.IngressTLSCertPath != "" || (req != nil && req.TLS != nil) {
-		scheme = "https"
+	if pub := strings.TrimSuffix(strings.TrimSpace(r.config.PublicControlPlaneURL), "/"); pub != "" {
+		return pub + "/ingress"
 	}
-	if req != nil && req.Host != "" {
-		return scheme + "://" + req.Host + "/ingress"
+	if r.config.AdvertiseSinglePortIngress {
+		if port := r.singlePortWSPort(); port != "" {
+			return "http://" + net.JoinHostPort("127.0.0.1", port) + "/ingress"
+		}
 	}
-	return strings.TrimSuffix(r.config.ControlPlaneURL, "/") + "/ingress"
+	return strings.TrimSuffix(strings.TrimSpace(r.config.ControlPlaneURL), "/") + "/ingress"
 }
 
-func (r *Router) effectivePublicControlPlaneURL(req *http.Request) string {
+func (r *Router) effectivePublicControlPlaneURL() string {
 	if pub := strings.TrimSuffix(strings.TrimSpace(r.config.PublicControlPlaneURL), "/"); pub != "" {
 		return pub
 	}
 	if r.config.AdvertiseSinglePortIngress || (r.config.IngressURL != "" && r.config.AllowInsecureControlPlane) {
-		return strings.TrimSuffix(r.effectiveIngressBaseURL(req), "/ingress")
+		return strings.TrimSuffix(r.effectiveIngressBaseURL(), "/ingress")
 	}
 	return strings.TrimSuffix(strings.TrimSpace(r.config.ControlPlaneURL), "/")
 }
 
-func (r *Router) effectiveOIDCIssuer() string {
-	if configured := strings.TrimSpace(r.config.OIDCIssuer); configured != "" {
-		return strings.TrimSuffix(configured, "/")
-	}
-	if synced := r.syncedOIDCIssuer.Load(); synced != nil && *synced != "" {
-		return strings.TrimSuffix(*synced, "/")
-	}
-	return ""
-}
-
-func (r *Router) allowedAudiences() []string {
-	var out []string
-	add := func(s string) {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			return
-		}
-		for _, existing := range out {
-			if existing == s {
-				return
-			}
-		}
-		out = append(out, s)
-	}
-	add(r.config.Audience)
-	if synced := r.syncedAudience.Load(); synced != nil {
-		add(*synced)
-	}
-	add(api.DefaultAudience)
-	return out
-}
-
-func (r *Router) resolveOIDCProviders(ctx context.Context) map[string]*oidc.Provider {
-	iss := r.effectiveOIDCIssuer()
-	if iss == "" {
-		return nil
-	}
-	r.oidcMu.Lock()
-	defer r.oidcMu.Unlock()
-	if r.oidcProviders == nil {
-		r.oidcProviders = make(map[string]*oidc.Provider)
-	}
-	if p, ok := r.oidcProviders[iss]; ok {
-		return map[string]*oidc.Provider{iss: p}
-	}
-	discCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	p, err := oidc.NewProvider(discCtx, iss)
-	if err != nil {
-		logger.Warnf("[Ingress] OIDC discovery for %s failed: %v", iss, err)
-		return nil
-	}
-	r.oidcProviders[iss] = p
-	return map[string]*oidc.Provider{iss: p}
-}
-
-func (r *Router) handleIngressProtectedResourceMetadata(w http.ResponseWriter, req *http.Request) {
-	base := r.effectiveIngressBaseURL(req)
+func (r *Router) handleIngressProtectedResourceMetadata(w http.ResponseWriter, _ *http.Request) {
+	base := r.effectiveIngressBaseURL()
 	var servers []string
-	if cp := r.effectivePublicControlPlaneURL(req); cp != "" {
+	if cp := r.effectivePublicControlPlaneURL(); cp != "" {
 		servers = append(servers, cp)
-	}
-	if iss := r.effectiveOIDCIssuer(); iss != "" && (len(servers) == 0 || servers[0] != iss) {
-		servers = append(servers, iss)
 	}
 	doc := api.OAuthProtectedResourceMetadata{
 		Resource:               base,
@@ -294,6 +260,8 @@ func (r *Router) handleIngressProtectedResourceMetadata(w http.ResponseWriter, r
 	}
 	out, err := json.Marshal(doc)
 	if err != nil {
+		routerIngressRequestsTotal.WithLabelValues(ingressModeMetadata, ingressOutcomeBadGateway).Inc()
+		logger.Errorf("[Ingress] Failed to marshal protected resource metadata: %v", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
@@ -303,31 +271,37 @@ func (r *Router) handleIngressProtectedResourceMetadata(w http.ResponseWriter, r
 	_, _ = w.Write(out)
 }
 
-func (r *Router) writeIngressUnauthorized(w http.ResponseWriter, req *http.Request, modeMetric, message string) {
+func (r *Router) writeIngressUnauthorized(w http.ResponseWriter, modeMetric, message string) {
 	routerIngressRequestsTotal.WithLabelValues(modeMetric, ingressOutcomeUnauthenticated).Inc()
-	metaURL := r.effectiveIngressBaseURL(req) + "/.well-known/oauth-protected-resource"
+	metaURL := r.effectiveIngressBaseURL() + "/.well-known/oauth-protected-resource"
 	w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata=%q`, metaURL))
 	http.Error(w, message, http.StatusUnauthorized)
 }
 
+func biscuitRateLimitKey(b *biscuit.Biscuit, raw []byte) string {
+	if b != nil {
+		if ids := b.RevocationIds(); len(ids) > 0 && len(ids[0]) > 0 {
+			return "biscuit:" + base64.RawURLEncoding.EncodeToString(ids[0])
+		}
+	}
+	sum := sha256.Sum256(raw)
+	return "biscuit:" + hex.EncodeToString(sum[:16])
+}
+
 func (r *Router) handleIngressRequest(w http.ResponseWriter, req *http.Request, transport http.RoundTripper) {
 	if !r.isReady.Load() || r.shutdown.Load() {
+		routerIngressRequestsTotal.WithLabelValues(ingressModeUnknown, ingressOutcomeUnavailable).Inc()
+		logger.Warn("[Ingress] Router is not ready or is shutting down")
 		http.Error(w, "Router is not ready", http.StatusServiceUnavailable)
 		return
 	}
 
 	clientIP := clientIPFromRemoteAddr(req.RemoteAddr)
-	if r.ingressLimiter != nil && !r.ingressLimiter.Allow(clientIP) {
-		routerIngressRequestsTotal.WithLabelValues(ingressModeUnknown, ingressOutcomeRateLimited).Inc()
-		logger.Warnf("[Ingress] Rate limit exceeded for client %s", clientIP)
-		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
-		return
-	}
-
 	req.Body = http.MaxBytesReader(w, req.Body, maxIngressBodyBytes)
 
 	if hasDotSegment(req.URL.Path) {
 		routerIngressRequestsTotal.WithLabelValues(ingressModeUnknown, ingressOutcomeInvalid).Inc()
+		logger.Debugf("[Ingress] Rejecting dot-segment path from %s", clientIP)
 		http.Error(w, "Invalid path", http.StatusBadRequest)
 		return
 	}
@@ -336,6 +310,7 @@ func (r *Router) handleIngressRequest(w http.ResponseWriter, req *http.Request, 
 	parts := strings.SplitN(trimmed, "/", 4)
 	if len(parts) < 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
 		routerIngressRequestsTotal.WithLabelValues(ingressModeUnknown, ingressOutcomeInvalid).Inc()
+		logger.Debugf("[Ingress] Rejecting malformed ingress path from %s", clientIP)
 		http.Error(w, "Invalid ingress path: expected /ingress/<peer_id>/<service_type>/<service_name>", http.StatusBadRequest)
 		return
 	}
@@ -351,22 +326,26 @@ func (r *Router) handleIngressRequest(w http.ResponseWriter, req *http.Request, 
 	targetPeer, err := peer.Decode(peerIDStr)
 	if err != nil {
 		routerIngressRequestsTotal.WithLabelValues(ingressModeUnknown, ingressOutcomeInvalid).Inc()
+		logger.Debugf("[Ingress] Rejecting invalid peer ID from %s: %v", clientIP, err)
 		http.Error(w, "Invalid peer ID", http.StatusBadRequest)
 		return
 	}
 	svcType, err := api.ParseServiceType(serviceTypeStr)
 	if err != nil {
 		routerIngressRequestsTotal.WithLabelValues(ingressModeUnknown, ingressOutcomeInvalid).Inc()
+		logger.Debugf("[Ingress] Rejecting invalid service type %q from %s", serviceTypeStr, clientIP)
 		http.Error(w, "Invalid service type", http.StatusBadRequest)
 		return
 	}
 	if !api.IsInboundServiceType(svcType) {
 		routerIngressRequestsTotal.WithLabelValues(ingressModeUnknown, ingressOutcomeNotFound).Inc()
+		logger.Debugf("[Ingress] Rejecting non-inbound service type %q from %s", serviceTypeStr, clientIP)
 		http.Error(w, "Service not found", http.StatusNotFound)
 		return
 	}
 	if err := api.ValidateServiceFormat(serviceTypeStr + "://" + serviceName); err != nil {
 		routerIngressRequestsTotal.WithLabelValues(ingressModeUnknown, ingressOutcomeInvalid).Inc()
+		logger.Debugf("[Ingress] Rejecting invalid service name from %s: %v", clientIP, err)
 		http.Error(w, "Invalid service name", http.StatusBadRequest)
 		return
 	}
@@ -380,6 +359,7 @@ func (r *Router) handleIngressRequest(w http.ResponseWriter, req *http.Request, 
 	key, err := api.ServiceKey(svcType, serviceName)
 	if err != nil {
 		routerIngressRequestsTotal.WithLabelValues(ingressModeUnknown, ingressOutcomeInvalid).Inc()
+		logger.Debugf("[Ingress] Invalid service key for %s://%s: %v", serviceTypeStr, serviceName, err)
 		http.Error(w, "Invalid service key", http.StatusBadRequest)
 		return
 	}
@@ -392,13 +372,19 @@ func (r *Router) handleIngressRequest(w http.ResponseWriter, req *http.Request, 
 	}
 	var providerRec *api.PeerRecord
 	for _, rec := range providers {
-		if rec.GetPeerId() == targetPeer.String() {
+		recPID, decErr := peer.Decode(rec.GetPeerId())
+		if decErr != nil {
+			logger.Warnf("[Ingress] Ignoring provider record with invalid peer ID %q: %v", rec.GetPeerId(), decErr)
+			continue
+		}
+		if recPID == targetPeer {
 			providerRec = rec
 			break
 		}
 	}
 	if providerRec == nil || providerRec.GetIngress() == nil {
 		routerIngressRequestsTotal.WithLabelValues(ingressModeUnknown, ingressOutcomeNotFound).Inc()
+		logger.Debugf("[Ingress] No ingress record found for %s (%s://%s)", targetPeer, serviceTypeStr, serviceName)
 		http.Error(w, "Service not found", http.StatusNotFound)
 		return
 	}
@@ -408,8 +394,145 @@ func (r *Router) handleIngressRequest(w http.ResponseWriter, req *http.Request, 
 	modeStr, err := api.IngressAuthModeToString(effectiveMode)
 	if err != nil {
 		routerIngressRequestsTotal.WithLabelValues(ingressModeUnknown, ingressOutcomeDeny).Inc()
+		logger.Warnf("[Ingress] Unsupported ingress auth mode %v for %s", effectiveMode, targetPeer)
 		http.Error(w, "Unsupported ingress auth mode", http.StatusForbidden)
 		return
+	}
+
+	r.keysMu.RLock()
+	routerBiscuit := r.credential.biscuit
+	r.keysMu.RUnlock()
+	if len(routerBiscuit) == 0 {
+		routerIngressRequestsTotal.WithLabelValues(modeStr, ingressOutcomeUnavailable).Inc()
+		logger.Warn("[Ingress] Router credential unavailable")
+		http.Error(w, "Router credential unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	routerBiscuitHeader := base64.StdEncoding.EncodeToString(routerBiscuit)
+
+	targetURI := serviceTypeStr + "://" + serviceName
+	backendPath := "/" + subpath
+	isAgentCardGet := svcType == api.ServiceType_SERVICE_TYPE_A2A &&
+		req.Method == http.MethodGet &&
+		(subpath == "" || subpath == a2aAgentCardSubpath)
+
+	var (
+		verifiedCaller   *identity.VerifiedBiscuitClaims
+		callerBiscuitHdr string
+		evalParams       identity.IngressEvalParams
+	)
+
+	// On EDGE ingress (except unauthenticated A2A AgentCard GET), verify the
+	// caller's Biscuit, revocation state, actor bans, rate limit, TAR rules, and
+	// ServiceIngress.allow locally BEFORE dialing or authenticating the provider.
+	if effectiveMode == api.IngressAuthMode_INGRESS_AUTH_MODE_EDGE && !isAgentCardGet {
+		bearerToken, ok := extractBearerToken(req.Header.Get("Authorization"))
+		if !ok {
+			if r.ingressLimiter != nil && !r.ingressLimiter.Allow("unauth:"+clientIP) {
+				routerIngressRequestsTotal.WithLabelValues(modeStr, ingressOutcomeRateLimited).Inc()
+				logger.Warnf("[Ingress] Rate limit exceeded for unauthenticated client %s", clientIP)
+				http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+				return
+			}
+			r.writeIngressUnauthorized(w, modeStr, "Missing or invalid Authorization: Bearer header")
+			return
+		}
+		if isCompactJWT(bearerToken) {
+			if r.ingressLimiter != nil && !r.ingressLimiter.Allow("unauth:"+clientIP) {
+				routerIngressRequestsTotal.WithLabelValues(modeStr, ingressOutcomeRateLimited).Inc()
+				logger.Warnf("[Ingress] Rate limit exceeded for JWT client %s", clientIP)
+				http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+				return
+			}
+			logger.Debugf("[Ingress] Rejecting raw JWT on edge ingress from %s for %s; exchange at /oauth/token required", clientIP, targetURI)
+			r.writeIngressUnauthorized(w, modeStr, "Mesh Biscuit required; exchange platform JWT at /oauth/token")
+			return
+		}
+		rawCaller, err := identity.DecodeBase64Biscuit(bearerToken)
+		if err != nil {
+			if r.ingressLimiter != nil && !r.ingressLimiter.Allow("unauth:"+clientIP) {
+				routerIngressRequestsTotal.WithLabelValues(modeStr, ingressOutcomeRateLimited).Inc()
+				logger.Warnf("[Ingress] Rate limit exceeded for invalid token encoding from %s", clientIP)
+				http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+				return
+			}
+			r.writeIngressUnauthorized(w, modeStr, "Invalid Bearer token encoding")
+			return
+		}
+		verified, err := identity.InspectVerifiedBiscuit(rawCaller, r.getTrustedPublicKeys(), r.config.BiscuitTimeout)
+		if err != nil {
+			if r.ingressLimiter != nil && !r.ingressLimiter.Allow("unauth:"+clientIP) {
+				routerIngressRequestsTotal.WithLabelValues(modeStr, ingressOutcomeRateLimited).Inc()
+				logger.Warnf("[Ingress] Rate limit exceeded for failed biscuit verification from %s", clientIP)
+				http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+				return
+			}
+			logger.Warnf("[Ingress] Biscuit verification failed from %s for %s: %v", clientIP, targetURI, err)
+			r.writeIngressUnauthorized(w, modeStr, "Invalid Bearer token")
+			return
+		}
+		if r.ingressLimiter != nil && !r.ingressLimiter.Allow(biscuitRateLimitKey(verified.Biscuit, rawCaller)) {
+			routerIngressRequestsTotal.WithLabelValues(modeStr, ingressOutcomeRateLimited).Inc()
+			logger.Warnf("[Ingress] Rate limit exceeded for caller %s from %s", verified.Principal(), clientIP)
+			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+			return
+		}
+		if r.isBiscuitRevoked(verified.Biscuit) {
+			logger.Warnf("[Ingress] Refusing revoked Biscuit from %s for %s", clientIP, targetURI)
+			r.writeIngressUnauthorized(w, modeStr, "Token has been revoked")
+			return
+		}
+		for _, pidStr := range []string{verified.NodePeerID, verified.ActorNodePeerID, verified.ClientPeerID} {
+			if pidStr == "" {
+				continue
+			}
+			if actorPID, decErr := peer.Decode(pidStr); decErr == nil {
+				if _, banned := r.bannedPeers.Load(actorPID); banned {
+					routerIngressRequestsTotal.WithLabelValues(modeStr, ingressOutcomeDeny).Inc()
+					logger.Warnf("[Ingress] Refusing Biscuit from banned peer %s", actorPID)
+					http.Error(w, "Forbidden", http.StatusForbidden)
+					return
+				}
+			}
+		}
+
+		evalParams = identity.IngressEvalParams{
+			ServiceType:        serviceTypeStr,
+			ServiceName:        serviceName,
+			Method:             req.Method,
+			Path:               backendPath,
+			EnforceTargetCheck: true,
+			MeshPolicyRules:    r.meshPolicyRules(),
+			Allow:              ing.GetAllow(),
+			Timeout:            r.config.BiscuitTimeout,
+		}
+		if svcType == api.ServiceType_SERVICE_TYPE_MCP {
+			mcpTool, allowInit, bodyErr := api.InspectMCPHTTPRequestBody(req, api.DefaultMaxMCPBodyInspectBytes)
+			if bodyErr != nil {
+				routerIngressRequestsTotal.WithLabelValues(modeStr, ingressOutcomeInvalid).Inc()
+				logger.Warnf("[Ingress] Oversized or unreadable MCP body from %s for %s: %v", clientIP, targetURI, bodyErr)
+				http.Error(w, bodyErr.Error(), http.StatusRequestEntityTooLarge)
+				return
+			}
+			evalParams.MCPTool = mcpTool
+			evalParams.AllowMCPStreamInit = allowInit
+		}
+		if _, err := identity.ValidateIngressCallerPreDial(verified, evalParams); err != nil {
+			routerIngressRequestsTotal.WithLabelValues(modeStr, ingressOutcomeDeny).Inc()
+			logger.Warnf("[Ingress] Pre-dial AuthZ denied caller (%s) from %s for %s: %v", verified.Principal(), clientIP, targetURI, err)
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		verifiedCaller = verified
+		callerBiscuitHdr = base64.StdEncoding.EncodeToString(rawCaller)
+	} else if r.ingressLimiter != nil {
+		anonKey := "anon:" + clientIP + ":" + targetPeer.String()
+		if !r.ingressLimiter.Allow(anonKey) {
+			routerIngressRequestsTotal.WithLabelValues(modeStr, ingressOutcomeRateLimited).Inc()
+			logger.Warnf("[Ingress] Rate limit exceeded for client %s to target %s", clientIP, targetPeer)
+			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+			return
+		}
 	}
 
 	cred, err := r.ensureProviderAuthenticated(req.Context(), targetPeer, providerRec.GetAddrs())
@@ -429,24 +552,9 @@ func (r *Router) handleIngressRequest(w http.ResponseWriter, req *http.Request, 
 		return
 	}
 
-	r.keysMu.RLock()
-	routerBiscuit := r.credential.biscuit
-	r.keysMu.RUnlock()
-	if len(routerBiscuit) == 0 {
-		routerIngressRequestsTotal.WithLabelValues(modeStr, ingressOutcomeBadGateway).Inc()
-		http.Error(w, "Router credential unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	routerBiscuitHeader := base64.StdEncoding.EncodeToString(routerBiscuit)
-
-	targetURI := serviceTypeStr + "://" + serviceName
-	backendPath := "/" + subpath
-
 	// Unauthenticated GET discovery of A2A AgentCard (both well-known path and
 	// bare service root GET for resolvers such as a2a-go).
-	if svcType == api.ServiceType_SERVICE_TYPE_A2A &&
-		req.Method == http.MethodGet &&
-		(subpath == "" || subpath == a2aAgentCardSubpath) {
+	if isAgentCardGet {
 		r.serveIngressAgentCard(w, req, transport, targetPeer, serviceName, effectiveMode, modeStr, routerBiscuitHeader)
 		return
 	}
@@ -463,14 +571,7 @@ func (r *Router) handleIngressRequest(w http.ResponseWriter, req *http.Request, 
 			"method", req.Method,
 			"path", backendPath,
 		)
-		r.forwardIngressHTTP(w, req, transport, targetPeer, serviceTypeStr, serviceName, subpath, hasTrailingOrSubpath, routerBiscuitHeader, api.IngressAuthModeStringPassthrough, "", "")
-		return
-	}
-
-	// INGRESS_AUTH_MODE_EDGE: authenticate Bearer token and evaluate policy.
-	bearerToken, ok := extractBearerToken(req.Header.Get("Authorization"))
-	if !ok {
-		r.writeIngressUnauthorized(w, req, modeStr, "Missing or invalid Authorization: Bearer header")
+		r.forwardIngressHTTP(w, req, transport, targetPeer, serviceTypeStr, serviceName, subpath, hasTrailingOrSubpath, routerBiscuitHeader, api.IngressAuthModeStringPassthrough, "")
 		return
 	}
 
@@ -481,97 +582,14 @@ func (r *Router) handleIngressRequest(w http.ResponseWriter, req *http.Request, 
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
+	evalParams.TargetFacts = targetFacts
 
-	evalParams := identity.IngressEvalParams{
-		ServiceType:        serviceTypeStr,
-		ServiceName:        serviceName,
-		Method:             req.Method,
-		Path:               backendPath,
-		TargetFacts:        targetFacts,
-		EnforceTargetCheck: true,
-		MeshPolicyRules:    r.meshPolicyRules(),
-		Allow:              ing.GetAllow(),
-		Timeout:            r.config.BiscuitTimeout,
-	}
-
-	if svcType == api.ServiceType_SERVICE_TYPE_MCP {
-		mcpTool, allowInit, bodyErr := inspectRouterMCPBody(req)
-		if bodyErr != nil {
-			routerIngressRequestsTotal.WithLabelValues(modeStr, ingressOutcomeInvalid).Inc()
-			http.Error(w, bodyErr.Error(), http.StatusRequestEntityTooLarge)
-			return
-		}
-		evalParams.MCPTool = mcpTool
-		evalParams.AllowMCPStreamInit = allowInit
-	}
-
-	var callerRes *identity.IngressCallerResult
-	var callerBiscuitHdr, callerClaimsHdr string
-
-	if isCompactJWT(bearerToken) {
-		providersMap := r.resolveOIDCProviders(req.Context())
-		if len(providersMap) == 0 {
-			r.writeIngressUnauthorized(w, req, modeStr, "No OIDC provider configured for JWT verification")
-			return
-		}
-		jwtClaims, _, err := identity.VerifyJWT(req.Context(), bearerToken, r.allowedAudiences(), providersMap)
-		if err != nil {
-			logger.Warnf("[Ingress] OIDC JWT verification failed from %s for %s: %v", clientIP, targetURI, err)
-			r.writeIngressUnauthorized(w, req, modeStr, "Invalid Bearer token")
-			return
-		}
-		oidcFacts := identity.OIDCFactsFromJWTClaims(map[string]any(jwtClaims))
-		callerRes, err = identity.AuthorizeIngressOIDCFacts(oidcFacts, evalParams)
-		if err != nil {
-			routerIngressRequestsTotal.WithLabelValues(modeStr, ingressOutcomeDeny).Inc()
-			logger.Warnf("[Ingress] Edge AuthZ denied OIDC caller from %s for %s: %v", clientIP, targetURI, err)
-			http.Error(w, "Forbidden", http.StatusForbidden)
-			return
-		}
-		callerClaimsHdr, err = identity.MarshalIngressClaimsHeader(oidcFacts)
-		if err != nil {
-			routerIngressRequestsTotal.WithLabelValues(modeStr, ingressOutcomeBadGateway).Inc()
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-			return
-		}
-	} else {
-		rawCaller, err := identity.DecodeBase64Biscuit(bearerToken)
-		if err != nil {
-			r.writeIngressUnauthorized(w, req, modeStr, "Invalid Bearer token encoding")
-			return
-		}
-		verified, err := identity.InspectVerifiedBiscuit(rawCaller, r.getTrustedPublicKeys(), r.config.BiscuitTimeout)
-		if err != nil {
-			logger.Warnf("[Ingress] Biscuit verification failed from %s for %s: %v", clientIP, targetURI, err)
-			r.writeIngressUnauthorized(w, req, modeStr, "Invalid Bearer token")
-			return
-		}
-		if r.isBiscuitRevoked(verified.Biscuit) {
-			logger.Warnf("[Ingress] Refusing revoked Biscuit from %s for %s", clientIP, targetURI)
-			r.writeIngressUnauthorized(w, req, modeStr, "Token has been revoked")
-			return
-		}
-		for _, pidStr := range []string{verified.NodePeerID, verified.ActorNodePeerID, verified.ClientPeerID} {
-			if pidStr == "" {
-				continue
-			}
-			if actorPID, decErr := peer.Decode(pidStr); decErr == nil {
-				if _, banned := r.bannedPeers.Load(actorPID); banned {
-					routerIngressRequestsTotal.WithLabelValues(modeStr, ingressOutcomeDeny).Inc()
-					logger.Warnf("[Ingress] Refusing Biscuit from banned peer %s", actorPID)
-					http.Error(w, "Forbidden", http.StatusForbidden)
-					return
-				}
-			}
-		}
-		callerRes, err = identity.AuthorizeIngressDelegatedBiscuit(verified, evalParams)
-		if err != nil {
-			routerIngressRequestsTotal.WithLabelValues(modeStr, ingressOutcomeDeny).Inc()
-			logger.Warnf("[Ingress] Edge AuthZ denied Biscuit caller (%s) from %s for %s: %v", verified.Principal(), clientIP, targetURI, err)
-			http.Error(w, "Forbidden", http.StatusForbidden)
-			return
-		}
-		callerBiscuitHdr = base64.StdEncoding.EncodeToString(rawCaller)
+	callerRes, err := identity.AuthorizeIngressDelegatedBiscuit(verifiedCaller, evalParams)
+	if err != nil {
+		routerIngressRequestsTotal.WithLabelValues(modeStr, ingressOutcomeDeny).Inc()
+		logger.Warnf("[Ingress] Edge AuthZ denied Biscuit caller (%s) from %s for %s: %v", verifiedCaller.Principal(), clientIP, targetURI, err)
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
 	}
 
 	routerIngressRequestsTotal.WithLabelValues(modeStr, ingressOutcomeAllow).Inc()
@@ -589,7 +607,7 @@ func (r *Router) handleIngressRequest(w http.ResponseWriter, req *http.Request, 
 		"path", backendPath,
 	)
 
-	r.forwardIngressHTTP(w, req, transport, targetPeer, serviceTypeStr, serviceName, subpath, hasTrailingOrSubpath, routerBiscuitHeader, api.IngressAuthModeStringEdge, callerBiscuitHdr, callerClaimsHdr)
+	r.forwardIngressHTTP(w, req, transport, targetPeer, serviceTypeStr, serviceName, subpath, hasTrailingOrSubpath, routerBiscuitHeader, api.IngressAuthModeStringEdge, callerBiscuitHdr)
 }
 
 func (r *Router) forwardIngressHTTP(
@@ -599,7 +617,7 @@ func (r *Router) forwardIngressHTTP(
 	targetPeer peer.ID,
 	serviceTypeStr, serviceName, subpath string,
 	hasTrailingOrSubpath bool,
-	routerBiscuitHeader, modeStr, callerBiscuitHdr, callerClaimsHdr string,
+	routerBiscuitHeader, modeStr, callerBiscuitHdr string,
 ) {
 	upstreamPath := "/" + serviceTypeStr + "/" + serviceName
 	if hasTrailingOrSubpath {
@@ -618,20 +636,18 @@ func (r *Router) forwardIngressHTTP(
 			pr.Out.URL.RawQuery = pr.In.URL.RawQuery
 			pr.Out.Host = targetPeer.String()
 
-			sanitizeRouterOutboundHeaders(pr.Out.Header, stripAuth)
+			api.SanitizeExternalIngressHeaders(pr.Out.Header, stripAuth)
 			pr.Out.Header.Set(api.HeaderMeshBiscuit, routerBiscuitHeader)
 			pr.Out.Header.Set(api.HeaderMeshIngress, modeStr)
 			if callerBiscuitHdr != "" {
 				pr.Out.Header.Set(api.HeaderMeshIngressCallerBiscuit, callerBiscuitHdr)
-			}
-			if callerClaimsHdr != "" {
-				pr.Out.Header.Set(api.HeaderMeshIngressClaims, callerClaimsHdr)
 			}
 		},
 		ErrorHandler: func(rw http.ResponseWriter, _ *http.Request, err error) {
 			var maxBytesErr *http.MaxBytesError
 			if errors.As(err, &maxBytesErr) {
 				routerIngressRequestsTotal.WithLabelValues(modeStr, ingressOutcomeInvalid).Inc()
+				logger.Warnf("[Ingress] Request body to %s (%s://%s) exceeded size limit", targetPeer, serviceTypeStr, serviceName)
 				http.Error(rw, "Request Entity Too Large", http.StatusRequestEntityTooLarge)
 				return
 			}
@@ -657,6 +673,7 @@ func (r *Router) serveIngressAgentCard(
 	outReq, err := http.NewRequestWithContext(req.Context(), http.MethodGet, cardURL, nil)
 	if err != nil {
 		routerIngressRequestsTotal.WithLabelValues(modeStr, ingressOutcomeBadGateway).Inc()
+		logger.Errorf("[Ingress] Failed to build A2A agent card request for %s/%s: %v", targetPeer, serviceName, err)
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
@@ -679,6 +696,8 @@ func (r *Router) serveIngressAgentCard(
 
 	body := io.LimitReader(resp.Body, maxIngressCardBodyBytes)
 	if resp.StatusCode != http.StatusOK {
+		routerIngressRequestsTotal.WithLabelValues(modeStr, ingressOutcomeBadGateway).Inc()
+		logger.Warnf("[Ingress] Backend returned status %d for A2A agent card %s/%s", resp.StatusCode, targetPeer, serviceName)
 		if ct := resp.Header.Get("Content-Type"); ct != "" {
 			w.Header().Set("Content-Type", ct)
 		}
@@ -695,8 +714,8 @@ func (r *Router) serveIngressAgentCard(
 		return
 	}
 
-	serviceBase := fmt.Sprintf("%s/%s/%s/%s", r.effectiveIngressBaseURL(req), targetPeer.String(), api.ServiceTypeStringA2A, serviceName)
-	if err := r.rewriteAgentCardForIngress(&card, serviceBase, r.effectivePublicControlPlaneURL(req), effectiveMode); err != nil {
+	serviceBase := fmt.Sprintf("%s/%s/%s/%s", r.effectiveIngressBaseURL(), targetPeer.String(), api.ServiceTypeStringA2A, serviceName)
+	if err := r.rewriteAgentCardForIngress(&card, serviceBase, r.effectivePublicControlPlaneURL(), effectiveMode); err != nil {
 		routerIngressRequestsTotal.WithLabelValues(modeStr, ingressOutcomeBadGateway).Inc()
 		logger.Warnf("[Ingress] A2A agent card from %s/%s unusable on ingress: %v", targetPeer, serviceName, err)
 		http.Error(w, fmt.Sprintf("Bad Gateway: %v", err), http.StatusBadGateway)
@@ -705,6 +724,8 @@ func (r *Router) serveIngressAgentCard(
 
 	out, err := json.Marshal(&card)
 	if err != nil {
+		routerIngressRequestsTotal.WithLabelValues(modeStr, ingressOutcomeBadGateway).Inc()
+		logger.Errorf("[Ingress] Failed to marshal AgentCard for %s/%s: %v", targetPeer, serviceName, err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
@@ -757,8 +778,8 @@ func (r *Router) rewriteAgentCardForIngress(card *a2a.AgentCard, serviceBase, pu
 		schemes := a2a.NamedSecuritySchemes{
 			"bearer": a2a.HTTPAuthSecurityScheme{
 				Scheme:       "bearer",
-				BearerFormat: "Biscuit or OIDC JWT",
-				Description:  "Agent Mesh delegated session Biscuit or trusted OIDC JWT",
+				BearerFormat: "Biscuit",
+				Description:  "Agent Mesh delegated session or task Biscuit",
 			},
 		}
 		reqs := a2a.SecurityRequirementsOptions{
@@ -780,13 +801,6 @@ func (r *Router) rewriteAgentCardForIngress(card *a2a.AgentCard, serviceBase, pu
 				},
 			}
 			reqs = append(reqs, a2a.SecurityRequirements{"agentmesh_oauth2": {}})
-		}
-		if iss := r.effectiveOIDCIssuer(); iss != "" {
-			schemes["oidc"] = a2a.OpenIDConnectSecurityScheme{
-				Description:      "Mesh OIDC Identity Provider",
-				OpenIDConnectURL: iss + "/.well-known/openid-configuration",
-			}
-			reqs = append(reqs, a2a.SecurityRequirements{"oidc": {}})
 		}
 		card.SecuritySchemes = schemes
 		card.SecurityRequirements = reqs
@@ -875,6 +889,9 @@ func (r *Router) authenticateIngressMember(ctx context.Context, targetPeer peer.
 	if err != nil {
 		return memberCredential{}, fmt.Errorf("verify provider biscuit: %w", err)
 	}
+	if r.isBiscuitRevoked(b) {
+		return memberCredential{}, fmt.Errorf("provider %s biscuit is revoked", targetPeer)
+	}
 	cred := memberCredential{biscuit: b, key: verifyingKey}
 	r.admitPeer(targetPeer, expiry)
 	r.credentials.Store(targetPeer, cred)
@@ -887,10 +904,12 @@ func splitProviderAddrs(targetPeer peer.ID, rawAddrs []string) ([]multiaddr.Mult
 	for _, s := range rawAddrs {
 		ma, err := multiaddr.NewMultiaddr(s)
 		if err != nil {
+			logger.Debugf("[Ingress] Ignoring invalid provider multiaddr %q for %s: %v", s, targetPeer, err)
 			continue
 		}
 		tAddr, pid := peer.SplitAddr(ma)
 		if pid != "" && pid != targetPeer {
+			logger.Debugf("[Ingress] Ignoring provider multiaddr %q naming %s instead of %s", s, pid, targetPeer)
 			continue
 		}
 		if tAddr == nil {
@@ -906,18 +925,6 @@ func splitProviderAddrs(targetPeer peer.ID, rawAddrs []string) ([]multiaddr.Mult
 		}
 	}
 	return transport, relays
-}
-
-func sanitizeRouterOutboundHeaders(h http.Header, stripAuthorization bool) {
-	for name := range h {
-		lower := strings.ToLower(name)
-		if lower == "cookie" ||
-			(stripAuthorization && lower == "authorization") ||
-			strings.HasPrefix(lower, "x-mesh-") ||
-			strings.EqualFold(name, api.HeaderPeerID) {
-			delete(h, name)
-		}
-	}
 }
 
 func extractBearerToken(header string) (string, bool) {
@@ -984,57 +991,4 @@ func ingressETagMatches(header, etag string) bool {
 		}
 	}
 	return false
-}
-
-func inspectRouterMCPBody(r *http.Request) (mcpTool string, allowStreamInit bool, err error) {
-	if r == nil {
-		return "", false, nil
-	}
-	if strings.EqualFold(r.Method, http.MethodGet) || strings.EqualFold(r.Method, http.MethodDelete) {
-		return "", true, nil
-	}
-	if r.Body == nil || !strings.EqualFold(r.Method, http.MethodPost) {
-		return "", false, nil
-	}
-	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, maxIngressMCPBodyBytes+1))
-	if err != nil {
-		return "", false, fmt.Errorf("failed to read MCP request body: %w", err)
-	}
-	r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-	if len(bodyBytes) > maxIngressMCPBodyBytes {
-		return "", false, fmt.Errorf("MCP request body exceeds %d byte inspection limit", maxIngressMCPBodyBytes)
-	}
-	if len(bytes.TrimSpace(bodyBytes)) == 0 {
-		return "", false, nil
-	}
-
-	var envelope struct {
-		Method string          `json:"method"`
-		Params json.RawMessage `json:"params"`
-	}
-	if err := json.Unmarshal(bodyBytes, &envelope); err != nil {
-		return "", false, nil
-	}
-	switch envelope.Method {
-	case "tools/call":
-		var params struct {
-			Name string `json:"name"`
-		}
-		if err := json.Unmarshal(envelope.Params, &params); err == nil {
-			rawTool := strings.TrimSpace(params.Name)
-			if rawTool == "" {
-				return "", false, nil
-			}
-			if _, stripped, splitErr := api.SplitToolName(rawTool); splitErr == nil {
-				return stripped, false, nil
-			}
-			return rawTool, false, nil
-		}
-		return "", false, nil
-	case "initialize", "notifications/initialized", "server/discover", "ping",
-		"tools/list", "resources/list", "prompts/list", "notifications/cancelled":
-		return "", true, nil
-	default:
-		return "", false, nil
-	}
 }
