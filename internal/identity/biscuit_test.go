@@ -115,7 +115,7 @@ func TestMintBiscuitToken_ClaimsTranslation(t *testing.T) {
 
 	claims := jwt.MapClaims{
 		"sub":    "user-12345",
-		"email":  "agent@google.com",
+		"email":  "agent@example.com",
 		"groups": []any{"beta-testers", "engineering"},
 	}
 
@@ -144,11 +144,11 @@ func TestMintBiscuitToken_ClaimsTranslation(t *testing.T) {
 	}}
 	authorizer.AddCheck(checkUser)
 
-	// Verify email("agent@google.com") fact is present
+	// Verify email("agent@example.com") fact is present
 	checkEmail := biscuit.Check{Queries: []biscuit.Rule{
 		{
 			Body: []biscuit.Predicate{
-				{Name: "email", IDs: []biscuit.Term{biscuit.String("agent@google.com")}},
+				{Name: "email", IDs: []biscuit.Term{biscuit.String("agent@example.com")}},
 			},
 		},
 	}}

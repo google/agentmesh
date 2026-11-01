@@ -273,7 +273,7 @@ func TestStandaloneExternalIngressCUJ(t *testing.T) {
 		Bindings: []*api.PolicyBinding{
 			{
 				Role:    "external-caller",
-				Members: []string{"email:yaroslav@example.com", "email:other@example.com"},
+				Members: []string{"email:carol@example.com", "email:other@example.com"},
 			},
 		},
 	})
@@ -379,7 +379,7 @@ func TestStandaloneExternalIngressCUJ(t *testing.T) {
 				Type:      "a2a",
 				Name:      "coder",
 				TargetURL: coderBackend.URL,
-				Ingress:   &api.IngressConfig{AuthMode: "edge", Allow: []string{"email:yaroslav@example.com"}},
+				Ingress:   &api.IngressConfig{AuthMode: "edge", Allow: []string{"email:carol@example.com"}},
 			},
 			{
 				Type:      "a2a",
@@ -476,10 +476,10 @@ func TestStandaloneExternalIngressCUJ(t *testing.T) {
 
 	// Raw OIDC JWT presented directly to /ingress/ is rejected with 401 + RFC 9728 WWW-Authenticate
 	// (external callers exchange JWTs at POST /oauth/token into Delegated Session Biscuits).
-	yaroslavJWT := mintJWT(map[string]any{"sub": "yaroslav-sub", "email": "yaroslav@example.com"})
+	carolJWT := mintJWT(map[string]any{"sub": "carol-sub", "email": "carol@example.com"})
 	rawJWTReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, wantInvokeURL, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"message/send"}`))
 	rawJWTReq.Header.Set("Content-Type", "application/json")
-	rawJWTReq.Header.Set("Authorization", "Bearer "+yaroslavJWT)
+	rawJWTReq.Header.Set("Authorization", "Bearer "+carolJWT)
 	rawJWTResp, err := httpClient.Do(rawJWTReq)
 	if err != nil {
 		t.Fatalf("raw JWT POST: %v", err)
@@ -501,22 +501,22 @@ func TestStandaloneExternalIngressCUJ(t *testing.T) {
 	}
 
 	// Authorized Delegated Session Biscuit succeeds on both SendMessage and SSE SendStreamingMessage.
-	yaroslavBiscuit := exchangeJWTForBiscuit(t, srv.PublicURL(), yaroslavJWT, "", false)
-	allowedClient, err := a2aclient.NewFromCard(ctx, publicCoderCard, a2aclient.WithJSONRPCTransport(bearerClient(yaroslavBiscuit, nil)))
+	carolBiscuit := exchangeJWTForBiscuit(t, srv.PublicURL(), carolJWT, "", false)
+	allowedClient, err := a2aclient.NewFromCard(ctx, publicCoderCard, a2aclient.WithJSONRPCTransport(bearerClient(carolBiscuit, nil)))
 	if err != nil {
-		t.Fatalf("NewFromCard(yaroslav): %v", err)
+		t.Fatalf("NewFromCard(carol): %v", err)
 	}
 	sendRes, err := allowedClient.SendMessage(ctx, &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi"))})
 	if err != nil {
-		t.Fatalf("SendMessage(yaroslav): %v", err)
+		t.Fatalf("SendMessage(carol): %v", err)
 	}
 	replyMsg, ok := sendRes.(*a2a.Message)
 	if !ok || len(replyMsg.Parts) == 0 || replyMsg.Parts[0].Text() != "hello from laptop" {
 		t.Fatalf("SendMessage reply = %#v, want 'hello from laptop'", sendRes)
 	}
 	evPrincipal, _ := lastPrincipal.Load().(string)
-	if !strings.Contains(evPrincipal, "yaroslav") {
-		t.Fatalf("backend X-Mesh-Principal = %q, want yaroslav identity", evPrincipal)
+	if !strings.Contains(evPrincipal, "carol") {
+		t.Fatalf("backend X-Mesh-Principal = %q, want carol identity", evPrincipal)
 	}
 
 	var streamed []a2a.Event
@@ -536,7 +536,7 @@ func TestStandaloneExternalIngressCUJ(t *testing.T) {
 	// Exchange OIDC JWT at POST /oauth/token into a TAR-attenuated, sealed Session Biscuit
 	// scoped exclusively to mcp://tools tool "read_file".
 	tarJSON := `{"name":"read-only","rules":[{"allowed_services":["mcp://tools"],"operation":{"allowed_tools":["read_file"]}}]}`
-	tarBiscuit := exchangeJWTForBiscuit(t, srv.PublicURL(), yaroslavJWT, tarJSON, true)
+	tarBiscuit := exchangeJWTForBiscuit(t, srv.PublicURL(), carolJWT, tarJSON, true)
 
 	mcpURL := fmt.Sprintf("%s/%s/mcp/tools", srv.IngressURL(), peerID)
 	mcpCli := mcp.NewClient(&mcp.Implementation{Name: "external-mcp-caller", Version: "1.0.0"}, nil)
@@ -677,7 +677,7 @@ func TestFederatedMultiRouterIngressRoleCeilingAndBan(t *testing.T) {
 		Bindings: []*api.PolicyBinding{
 			{Role: api.RoleRouter, Members: []string{"group:routers"}},
 			{Role: api.RoleNode, Members: []string{"email:node-owner@example.com"}},
-			{Role: "external-caller", Members: []string{"email:alan@example.com"}},
+			{Role: "external-caller", Members: []string{"email:dave@example.com"}},
 		},
 	})
 
@@ -840,11 +840,11 @@ func TestFederatedMultiRouterIngressRoleCeilingAndBan(t *testing.T) {
 	}
 
 	// External caller exchanges OIDC JWT at POST /oauth/token and invokes a2a://coder through Router B -> Router A circuit relay -> private node.
-	alanJWT := mintJWT(map[string]any{"sub": "alan-sub", "email": "alan@example.com"})
-	alanBiscuit := exchangeJWTForBiscuit(t, cpURL, alanJWT, "", false)
-	a2aCli, err := a2aclient.NewFromCard(ctx, resolvedCard, a2aclient.WithJSONRPCTransport(bearerClient(alanBiscuit, nil)))
+	daveJWT := mintJWT(map[string]any{"sub": "dave-sub", "email": "dave@example.com"})
+	daveBiscuit := exchangeJWTForBiscuit(t, cpURL, daveJWT, "", false)
+	a2aCli, err := a2aclient.NewFromCard(ctx, resolvedCard, a2aclient.WithJSONRPCTransport(bearerClient(daveBiscuit, nil)))
 	if err != nil {
-		t.Fatalf("NewFromCard(alan): %v", err)
+		t.Fatalf("NewFromCard(dave): %v", err)
 	}
 	res, err := a2aCli.SendMessage(ctx, &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("ping"))})
 	if err != nil {

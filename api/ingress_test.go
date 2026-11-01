@@ -61,7 +61,7 @@ func TestValidateServiceIngress(t *testing.T) {
 			svcType: ServiceType_SERVICE_TYPE_MCP,
 			ing: &ServiceIngress{
 				AuthMode: IngressAuthMode_INGRESS_AUTH_MODE_EDGE,
-				Allow:    []string{"email:alice@example.com", "email:*@google.com", "node:" + pid.String()},
+				Allow:    []string{"email:alice@example.com", "email:*@example.com", "node:" + pid.String()},
 			},
 		},
 		{
@@ -119,7 +119,7 @@ func TestServiceIngressFromConfig(t *testing.T) {
 	}
 
 	got, err = ServiceIngressFromConfig(ServiceType_SERVICE_TYPE_A2A, &IngressConfig{
-		Allow: []string{"email:yaroslav@google.com"},
+		Allow: []string{"email:carol@example.com"},
 	})
 	if err != nil {
 		t.Fatalf("ServiceIngressFromConfig default mode: %v", err)
@@ -237,7 +237,7 @@ func TestValidateIngressURL(t *testing.T) {
 func TestMatchIngressAllow(t *testing.T) {
 	pid := testPeerID(t)
 	claims := map[string][]string{
-		FactEmail: {"yaroslav@google.com"},
+		FactEmail: {"carol@example.com"},
 		FactGroup: {"a2a-team"},
 		FactNode:  {pid.String()},
 	}
@@ -251,8 +251,8 @@ func TestMatchIngressAllow(t *testing.T) {
 	if !MatchIngressAllow([]string{SystemAuthenticated}, claims) {
 		t.Fatal("SystemAuthenticated must match non-empty identity claims")
 	}
-	if !MatchIngressAllow([]string{"email:*@google.com"}, claims) {
-		t.Fatal("wildcard domain should match yaroslav@google.com")
+	if !MatchIngressAllow([]string{"email:*@example.com"}, claims) {
+		t.Fatal("wildcard domain should match carol@example.com")
 	}
 	if !MatchIngressAllow([]string{"node:" + pid.String()}, claims) {
 		t.Fatal("exact node peer ID should match")

@@ -111,7 +111,7 @@ func TestAuthorizeIngressCallers(t *testing.T) {
 		},
 	}
 	bindings := []*api.PolicyBinding{
-		{Role: "caller-role", Members: []string{"email:*@google.com"}},
+		{Role: "caller-role", Members: []string{"email:*@example.com"}},
 	}
 	compiled, warnings := api.BuildPolicyRules(roles, bindings)
 	if len(warnings) != 0 {
@@ -208,7 +208,7 @@ func TestAuthorizeIngressCallers(t *testing.T) {
 	}
 	delRaw, err := MintDelegatedBiscuitToken(priv, jwt.MapClaims{
 		"sub":   "uid-1",
-		"email": "yaroslav@google.com",
+		"email": "carol@example.com",
 	}, actorPeer, time.Now().Add(time.Hour), []string{"caller-role"}, roles, tarRule, true)
 	if err != nil {
 		t.Fatalf("MintDelegatedBiscuitToken: %v", err)
@@ -230,14 +230,14 @@ func TestAuthorizeIngressCallers(t *testing.T) {
 		Path:            "/message:send",
 		TargetFacts:     targetFacts,
 		MeshPolicyRules: meshRules,
-		Allow:           []string{"email:yaroslav@google.com"},
+		Allow:           []string{"email:carol@example.com"},
 		Timeout:         time.Second,
 	})
 	if err != nil {
 		t.Fatalf("AuthorizeIngressDelegatedBiscuit: %v", err)
 	}
-	if res.Principal != "yaroslav@google.com" || res.TaskName != "assist-only" {
-		t.Fatalf("got principal=%q task=%q, want yaroslav@google.com / assist-only", res.Principal, res.TaskName)
+	if res.Principal != "carol@example.com" || res.TaskName != "assist-only" {
+		t.Fatalf("got principal=%q task=%q, want carol@example.com / assist-only", res.Principal, res.TaskName)
 	}
 
 	// TAR blocks mcp://calc even though role grants it.
@@ -261,7 +261,7 @@ func TestAuthorizeIngressCallers(t *testing.T) {
 		Path:            "/message:send",
 		TargetFacts:     targetFacts,
 		MeshPolicyRules: meshRules,
-		Allow:           []string{"email:someone-else@google.com"},
+		Allow:           []string{"email:someone-else@example.com"},
 		Timeout:         time.Second,
 	}); err == nil {
 		t.Fatal("expected allow list mismatch to deny")
