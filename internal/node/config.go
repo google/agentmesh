@@ -110,8 +110,28 @@ func CompleteNodeConfig(config api.NodeConfig) (*NodeConfigComplete, error) {
 		}
 		// Nodes serve what the control plane assigns them; a destination
 		// declared here would give one node a policy of its own.
-		if t, err := api.ParseServiceType(svc.Type); err == nil && t == api.ServiceType_SERVICE_TYPE_EGRESS {
+		sType, typeErr := api.ParseServiceType(svc.Type)
+		if typeErr == nil && sType == api.ServiceType_SERVICE_TYPE_EGRESS {
 			return nil, fmt.Errorf("service %q: egress destinations are assigned by the control plane (PolicyConfig.egress), not declared in the node config", svc.Name)
+		}
+		if svc.Ingress != nil {
+			if typeErr != nil {
+				return nil, fmt.Errorf("service %q: %w", svc.Name, typeErr)
+			}
+			ing, err := api.ServiceIngressFromConfig(sType, svc.Ingress)
+			if err != nil {
+				return nil, fmt.Errorf("service %q: %w", svc.Name, err)
+			}
+			if api.EffectiveIngressAuthMode(ing) == api.IngressAuthMode_INGRESS_AUTH_MODE_PASSTHROUGH {
+				if svc.TargetAuthPath != "" {
+					return nil, fmt.Errorf("service %q: ingress auth_mode %q cannot be combined with target_auth_path (would expose backend credential without caller authentication)", svc.Name, api.IngressAuthModeStringPassthrough)
+				}
+				if svc.TargetURL != "" {
+					if bt, pErr := parseBackendTarget(svc.TargetURL); pErr == nil && bt.auth != "" {
+						return nil, fmt.Errorf("service %q: ingress auth_mode %q cannot be combined with an inline target_url credential (would expose backend credential without caller authentication)", svc.Name, api.IngressAuthModeStringPassthrough)
+					}
+				}
+			}
 		}
 		if svc.TargetAuthPath != "" && svc.TargetURL == "" {
 			return nil, fmt.Errorf("service %q: target_auth_path needs a target_url", svc.Name)

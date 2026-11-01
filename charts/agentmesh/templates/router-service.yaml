@@ -16,6 +16,12 @@ spec:
     port: {{ .Values.router.service.port }}
     targetPort: 4501
     protocol: UDP
+  {{- if .Values.router.ingressPort }}
+  - name: ingress-http
+    port: {{ .Values.router.ingressPort }}
+    targetPort: {{ .Values.router.ingressPort }}
+    protocol: TCP
+  {{- end }}
   selector:
     app: {{ include "agentmesh.fullname" . }}-router
 {{- end }}

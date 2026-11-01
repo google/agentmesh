@@ -199,3 +199,31 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].ports[2].containerPort
           value: 9999
+
+  - it: binds external HTTP ingress on ingressPort and forwards ingressUrl when configured
+    set:
+      router.ingressPort: 8095
+      router.ingressUrl: https://mesh.example.com/ingress
+      router.publicControlPlaneUrl: https://mesh.example.com
+    documentSelector:
+      path: kind
+      value: StatefulSet
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --ingress-addr=0.0.0.0:8095
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --allow-insecure-ingress-http
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --ingress-url=https://mesh.example.com/ingress
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --public-control-plane=https://mesh.example.com
+      - equal:
+          path: spec.template.spec.containers[0].ports[3].name
+          value: ingress-http
+      - equal:
+          path: spec.template.spec.containers[0].ports[3].containerPort
+          value: 8095

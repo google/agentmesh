@@ -440,10 +440,10 @@ jobs:
             -H "Authorization: Bearer ${ADMIN_TOKEN}" \
             -d '{
               "roles": [
-                {"name": "agentmesh-canary", "allowed_services": ["*"], "allowed_publish": ["*"], "allowed_targets": ["*"]},
+                {"name": "agentmesh-canary", "allowed_services": ["*"], "allowed_publish": ["*"], "allowed_targets": ["*"], "allowed_ingress": [{"services": ["*"]}]},
                 {"name": "mesh:role:router", "allowed_services": ["*"], "allowed_targets": ["*"]},
                 {"name": "mesh:role:node"},
-                {"name": "public-mesh", "allowed_services": ["*"], "allowed_publish": ["*"], "allowed_targets": ["*"]}
+                {"name": "public-mesh", "allowed_services": ["*"], "allowed_publish": ["*"], "allowed_targets": ["*"], "allowed_ingress": [{"services": ["*"]}]}
               ],
               "bindings": [
                 {"role": "agentmesh-canary", "members": ["user:system:serviceaccount:agentmesh-canary-'"${ENV_NAME}"':agentmesh-node-sa"]},

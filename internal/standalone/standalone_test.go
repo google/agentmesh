@@ -15,15 +15,23 @@
 package standalone
 
 import (
+	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
+	"time"
 
+	"github.com/google/agentmesh/api"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	dto "github.com/prometheus/client_model/go"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestWsListenMultiaddr(t *testing.T) {
@@ -196,5 +204,148 @@ func TestWrapPublicHTTPHandlerCountsProxiedRequestsWithoutExternalURL(t *testing
 	}
 	if served != 4 {
 		t.Errorf("next handler served %d requests, want 4", served)
+	}
+}
+
+func roleGrantsIngressMode(r *api.PolicyRole, mode api.IngressAuthMode) bool {
+	for _, g := range r.GetAllowedIngress() {
+		modes := g.GetAllowedAuthModes()
+		if len(modes) == 0 {
+			if mode == api.IngressAuthMode_INGRESS_AUTH_MODE_EDGE {
+				return true
+			}
+			continue
+		}
+		if slices.Contains(modes, mode) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestDefaultDevPolicyRolesSafeIngressCeiling(t *testing.T) {
+	roles := defaultDevPolicyRoles()
+	var nodeRole *api.PolicyRole
+	for _, r := range roles {
+		if r.GetName() == api.RoleNode {
+			nodeRole = r
+			break
+		}
+	}
+	if nodeRole == nil {
+		t.Fatalf("defaultDevPolicyRoles missing %s", api.RoleNode)
+	}
+	if !roleGrantsIngressMode(nodeRole, api.IngressAuthMode_INGRESS_AUTH_MODE_EDGE) {
+		t.Errorf("default %s role denied INGRESS_AUTH_MODE_EDGE, want allowed", api.RoleNode)
+	}
+	if roleGrantsIngressMode(nodeRole, api.IngressAuthMode_INGRESS_AUTH_MODE_PASSTHROUGH) {
+		t.Errorf("default %s role allowed INGRESS_AUTH_MODE_PASSTHROUGH, want denied by safe default", api.RoleNode)
+	}
+}
+
+func TestStandaloneSinglePortIngressAndSeededPolicy(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	srv, err := New(Options{
+		BindAddress: "127.0.0.1:0",
+		DataDir:     t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := srv.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+
+	wantIngressURL := srv.PublicURL() + "/ingress"
+	if got := srv.IngressURL(); got != wantIngressURL {
+		t.Fatalf("srv.IngressURL() = %q, want %q", got, wantIngressURL)
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	// Wait briefly for the embedded router's initial lease to be visible on /info.
+	var leasedIngressURL string
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		infoReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.PublicURL()+"/info", nil)
+		infoReq.Header.Set("Accept", "application/x-protobuf")
+		resp, err := client.Do(infoReq)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			var info api.ControlPlaneInfoResponse
+			if proto.Unmarshal(body, &info) == nil && len(info.GetRouters()) == 1 {
+				leasedIngressURL = info.GetRouters()[0].GetIngressUrl()
+				if leasedIngressURL != "" {
+					break
+				}
+			}
+		} else if resp != nil {
+			_ = resp.Body.Close()
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("router lease on /info never advertised ingress_url (got %q)", leasedIngressURL)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if leasedIngressURL != wantIngressURL {
+		t.Fatalf("/info router ingress_url = %q, want %q", leasedIngressURL, wantIngressURL)
+	}
+
+	// RFC 9728 metadata on /ingress/.well-known/oauth-protected-resource must
+	// advertise the public single-port URL, not the internal loopback CP port.
+	metaResp, err := client.Get(srv.IngressURL() + "/.well-known/oauth-protected-resource")
+	if err != nil {
+		t.Fatalf("GET oauth-protected-resource: %v", err)
+	}
+	defer func() { _ = metaResp.Body.Close() }()
+	if metaResp.StatusCode != http.StatusOK {
+		t.Fatalf("oauth-protected-resource status = %d, want 200", metaResp.StatusCode)
+	}
+	var meta api.OAuthProtectedResourceMetadata
+	if err := json.NewDecoder(metaResp.Body).Decode(&meta); err != nil {
+		t.Fatalf("decode metadata: %v", err)
+	}
+	if meta.Resource != wantIngressURL {
+		t.Fatalf("meta.Resource = %q, want %q", meta.Resource, wantIngressURL)
+	}
+	if len(meta.AuthorizationServers) != 1 || meta.AuthorizationServers[0] != srv.PublicURL() {
+		t.Fatalf("meta.AuthorizationServers = %v, want [%s]", meta.AuthorizationServers, srv.PublicURL())
+	}
+
+	// Seeded dev policy includes allowed_ingress on mesh:role:node.
+	polReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.PublicURL()+"/admin/policy", nil)
+	polReq.Header.Set("Authorization", "Bearer "+srv.AdminToken())
+	polResp, err := client.Do(polReq)
+	if err != nil {
+		t.Fatalf("GET /admin/policy: %v", err)
+	}
+	polBody, _ := io.ReadAll(polResp.Body)
+	_ = polResp.Body.Close()
+	if polResp.StatusCode != http.StatusOK {
+		t.Fatalf("/admin/policy status = %d: %s", polResp.StatusCode, string(polBody))
+	}
+	var pol api.PolicyConfig
+	if err := protojson.Unmarshal(polBody, &pol); err != nil {
+		t.Fatalf("unmarshal PolicyConfig: %v", err)
+	}
+	var nodeRole *api.PolicyRole
+	for _, role := range pol.GetRoles() {
+		if role.GetName() == api.RoleNode {
+			nodeRole = role
+			break
+		}
+	}
+	if nodeRole == nil || len(nodeRole.GetAllowedIngress()) == 0 {
+		t.Fatalf("seeded PolicyConfig for %s lacks allowed_ingress: %+v", api.RoleNode, pol.GetRoles())
+	}
+	if !roleGrantsIngressMode(nodeRole, api.IngressAuthMode_INGRESS_AUTH_MODE_EDGE) {
+		t.Errorf("seeded %s role denied INGRESS_AUTH_MODE_EDGE, want allowed", api.RoleNode)
+	}
+	if roleGrantsIngressMode(nodeRole, api.IngressAuthMode_INGRESS_AUTH_MODE_PASSTHROUGH) {
+		t.Errorf("seeded %s role allowed INGRESS_AUTH_MODE_PASSTHROUGH, want denied without explicit --policy-file", api.RoleNode)
 	}
 }

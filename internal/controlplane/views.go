@@ -133,6 +133,7 @@ func routerLeaseView(l *storage.RouterLease) *api.RouterLease {
 		ExpireTime:      timestampOrNil(l.ExpiresAt),
 		ConnectedPeers:  l.ConnectedPeers,
 		DhtSize:         int32(l.DHTSize),
+		IngressUrl:      l.IngressURL,
 	}
 }
 

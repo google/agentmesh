@@ -89,6 +89,7 @@ func TestRouterMetricsListener(t *testing.T) {
 	r.authenticatedPeers.Store(peer.ID("peer-a"), true)
 	r.authenticatedPeers.Store(peer.ID("peer-b"), true)
 	r.bannedPeers.Store(peer.ID("peer-x"), true)
+	r.recordRevokedBiscuitID("revoked-token-1", time.Now().Add(time.Hour))
 	// Two peer routers listed, of which one is authenticated.
 	r.peerRouters.Store(peer.ID("peer-a"), true)
 	r.peerRouters.Store(peer.ID("peer-r"), true)
@@ -119,6 +120,7 @@ func TestRouterMetricsListener(t *testing.T) {
 		`agentmesh_router_peer_routers{state="listed"} 2`,
 		`agentmesh_router_peer_routers{state="authenticated"} 1`,
 		"agentmesh_router_banned_peers 1",
+		"agentmesh_router_revoked_tokens 1",
 		"agentmesh_router_connected_peers 0",
 		"agentmesh_router_dht_routing_table_size 0",
 		"agentmesh_router_directory_records 1",

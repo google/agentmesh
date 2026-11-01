@@ -16,7 +16,7 @@ tests:
       - failedTemplate:
           errorPattern: gateway.className is required when gateway.enabled is true
 
-  - it: routes enrollment plus the console redirect and rewrite by default
+  - it: routes enrollment, console redirect/rewrite, and router /ingress by default
     set:
       gateway.enabled: true
       gateway.className: x
@@ -24,10 +24,10 @@ tests:
       path: kind
       value: HTTPRoute
     asserts:
-      # enrollment surface + consolePath 302 + consolePath URLRewrite
+      # enrollment surface + consolePath 302 + consolePath URLRewrite + /ingress -> router
       - lengthEqual:
           path: spec.rules
-          count: 3
+          count: 4
       # Every path a node calls on its own must be on the allow-list, or the
       # node's periodic push silently 404s at the gateway.
       - contains:
@@ -66,6 +66,18 @@ tests:
             path:
               type: Exact
               value: /sts/token
+      - contains:
+          path: spec.rules[3].matches
+          content:
+            path:
+              type: PathPrefix
+              value: /ingress/
+      - equal:
+          path: spec.rules[3].backendRefs[0].name
+          value: agentmesh-router
+      - equal:
+          path: spec.rules[3].backendRefs[0].port
+          value: 8090
 
   - it: empty consolePath leaves the console unrouted
     set:
@@ -78,7 +90,20 @@ tests:
     asserts:
       - lengthEqual:
           path: spec.rules
-          count: 1
+          count: 2
+
+  - it: ingressRoute false omits the /ingress router rule
+    set:
+      gateway.enabled: true
+      gateway.className: x
+      gateway.ingressRoute: false
+    documentSelector:
+      path: kind
+      value: HTTPRoute
+    asserts:
+      - lengthEqual:
+          path: spec.rules
+          count: 3
 
   - it: adminRoute adds the /admin rule
     set:
@@ -91,7 +116,7 @@ tests:
     asserts:
       - lengthEqual:
           path: spec.rules
-          count: 4
+          count: 5
       - contains:
           path: spec.rules[1].matches
           content:

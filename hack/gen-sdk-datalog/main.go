@@ -59,6 +59,7 @@ type artifact struct {
 	FactRole                string   `json:"fact_role"`
 	FactTargetFact          string   `json:"fact_target_fact"`
 	FactPublish             string   `json:"fact_publish"`
+	FactIngress             string   `json:"fact_ingress"`
 	CatalogTarget           string   `json:"catalog_target"`
 	FactTARBlock            string   `json:"fact_tar_block"`
 	TARBlockSourcePattern   string   `json:"tar_block_source_pattern"`
@@ -717,6 +718,7 @@ func main() {
 		FactRole:                api.FactRole,
 		FactTargetFact:          api.FactTargetFact,
 		FactPublish:             api.FactPublish,
+		FactIngress:             api.FactIngress,
 		CatalogTarget:           api.CatalogTarget,
 		FactTARBlock:            api.FactTARBlock,
 		TARBlockSourcePattern:   api.TARBlockSourcePattern,

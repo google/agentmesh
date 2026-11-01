@@ -41,6 +41,7 @@ type routerCandidate struct {
 	Labels          map[string]string
 	Connections     int
 	ConnectionLimit int
+	IngressURL      string
 }
 
 // loadRatio is how full the router is, 0 to 1; 0.5 when its last lease
@@ -88,6 +89,7 @@ func candidatesFromInfo(ctx context.Context, info *api.ControlPlaneInfoResponse)
 				Labels:          r.GetLabels(),
 				Connections:     int(r.GetConnections()),
 				ConnectionLimit: int(r.GetConnectionLimit()),
+				IngressURL:      r.GetIngressUrl(),
 			})
 		}
 	}

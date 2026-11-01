@@ -133,6 +133,7 @@ type meshInfoResponse struct {
 	ConnectedPeers  []string `json:"connected_peers"`
 	AttachedRouters []string `json:"attached_routers"`
 	RouterPeerID    string   `json:"router_peer_id"`
+	IngressURLs     []string `json:"ingress_urls,omitempty"`
 	LocalAPISocket  string   `json:"local_api_socket,omitempty"`
 }
 
@@ -206,6 +207,7 @@ func (n *AgentMeshNode) meshInfo() (*meshInfoResponse, error) {
 		ConnectedPeers:  connectedPeers,
 		AttachedRouters: attachedRouters,
 		RouterPeerID:    n.RouterPeerID.String(),
+		IngressURLs:     n.routerIngressURLs(),
 		LocalAPISocket:  n.BoundSocketPath,
 	}, nil
 }

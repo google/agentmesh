@@ -148,6 +148,12 @@ services:
     name: not-an-mcp-server
     description: "a plain HTTP server mislabelled as mcp"
     target_url: "http://127.0.0.1:${backend_port}"
+  - type: a2a
+    name: coding-agent
+    description: "e2e a2a agent exposed on external ingress"
+    target_url: "http://127.0.0.1:${backend_port}/a2a"
+    ingress:
+      auth_mode: edge
 EOF
 
   start_node a --config "$TEST_TMPDIR/node-a-services.yaml"
@@ -216,6 +222,58 @@ EOF
     -H 'Content-Type: application/json' \
     -d '{"model":"e2e-model","messages":[{"role":"user","content":"should fail"}]}')"
   [[ "$http_code" -ne 200 ]]
+
+  # External HTTP ingress CUJ on the single agentmesh-one port:
+  # 1. Non-exposed internal service (inference://laptop-llm) stays 404 on /ingress/.
+  internal_ing_code="$(curl -s -o /dev/null -w '%{http_code}' \
+    "$AGENTMESH_ONE_URL/ingress/${peer_a}/inference/laptop-llm/v1/models")"
+  [[ "$internal_ing_code" -eq 404 ]]
+
+  # 2. RFC 9728 Protected Resource Metadata and rewritten public A2A AgentCard
+  #    are served on /ingress/ without caller credentials.
+  run curl -sf "$AGENTMESH_ONE_URL/ingress/.well-known/oauth-protected-resource"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == *"\"resource\":\"$AGENTMESH_ONE_URL/ingress\""* ]]
+
+  card_json=""
+  for _ in $(seq 1 30); do
+    card_json="$(curl -sf "$AGENTMESH_ONE_URL/ingress/${peer_a}/a2a/coding-agent/.well-known/agent-card.json" || true)"
+    [[ "$card_json" == *"$AGENTMESH_ONE_URL/ingress/${peer_a}/a2a/coding-agent"* ]] && break
+    sleep 0.5
+  done
+  [[ "$card_json" == *"$AGENTMESH_ONE_URL/ingress/${peer_a}/a2a/coding-agent"* ]]
+  [[ "$card_json" == *"agentmesh_oauth2"* ]]
+
+  # 3. Unauthenticated POST to edge-protected A2A service returns 401 with RFC 9728 WWW-Authenticate.
+  run curl -sS -i -X POST "$AGENTMESH_ONE_URL/ingress/${peer_a}/a2a/coding-agent" \
+    -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{}}'
+  [[ "$output" == *"401 Unauthorized"* ]]
+  [[ "$output" == *"resource_metadata=\"$AGENTMESH_ONE_URL/ingress/.well-known/oauth-protected-resource\""* ]]
+
+  # 4. Authenticated external caller with a task-scoped Session Biscuit reaches
+  #    Node A's A2A backend with verified X-Mesh-Ingress=edge attribution.
+  a2a_biscuit="$(curl -sf --unix-socket "$sock_b" "http://localhost/oauth/token" \
+    -d 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' \
+    -d 'resource=a2a://coding-agent' |
+    python3 -c 'import json, sys; print(json.load(sys.stdin)["access_token"])')"
+  [[ -n "$a2a_biscuit" ]]
+
+  run curl -sf -X POST "$AGENTMESH_ONE_URL/ingress/${peer_a}/a2a/coding-agent" \
+    -H "Authorization: Bearer $a2a_biscuit" \
+    -H "X-Mesh-Principal: spoofed-admin" \
+    -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{}}'
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == *"a2a ingress=edge"* ]]
+  [[ "$output" != *"spoofed-admin"* ]]
+
+  wrong_ing_code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    "$AGENTMESH_ONE_URL/ingress/${peer_a}/a2a/coding-agent" \
+    -H "Authorization: Bearer $wrong_biscuit" \
+    -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{}}')"
+  [[ "$wrong_ing_code" -eq 403 ]]
 
   # Real Envoy proxy CUJ: when Docker is available, place Envoy in front of node B
   # with both ext_authz and ext_proc configured over gRPC h2c, and drive real

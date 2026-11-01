@@ -18,11 +18,8 @@
 package envoy
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -482,49 +479,14 @@ func (s *GatewayServer) evaluateExtProcDecision(ctx context.Context, method, pat
 }
 
 // InspectJSONRPCMCPBody inspects a JSON-RPC 2.0 request body for MCP methods
-// ("initialize", "ping", "tools/list", "tools/call") and extracts the bare tool
-// name when present.
+// and extracts the bare tool name when present, or sets allowStreamInit for
+// session handshake, capability discovery, and protocol notification methods.
 func InspectJSONRPCMCPBody(body []byte) (mcpTool string, allowStreamInit bool) {
-	var rpc struct {
-		Method string `json:"method"`
-		Params struct {
-			Name string `json:"name"`
-		} `json:"params"`
-	}
-	if err := json.Unmarshal(body, &rpc); err != nil {
-		return "", false
-	}
-	switch rpc.Method {
-	case "initialize", "ping", "tools/list":
-		return "", true
-	case "tools/call":
-		rawTool := strings.TrimSpace(rpc.Params.Name)
-		if rawTool == "" {
-			return "", false
-		}
-		if _, stripped, err := api.SplitToolName(rawTool); err == nil {
-			return stripped, false
-		}
-		return rawTool, false
-	default:
-		return "", false
-	}
+	return api.InspectJSONRPCMCPBody(body)
 }
 
 // InspectMCPHTTPRequestBody buffers and restores r.Body up to MaxGRPCMessageBytes
 // and extracts the MCP tool name and stream initialization flag.
 func InspectMCPHTTPRequestBody(r *http.Request) (string, bool, error) {
-	if r == nil || r.Body == nil || !strings.EqualFold(r.Method, http.MethodPost) {
-		return "", false, nil
-	}
-	bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, MaxGRPCMessageBytes+1))
-	if err != nil {
-		return "", false, err
-	}
-	if int64(len(bodyBytes)) > MaxGRPCMessageBytes {
-		return "", false, fmt.Errorf("MCP request body exceeds maximum inspection size (%d bytes)", MaxGRPCMessageBytes)
-	}
-	r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-	tool, allowInit := InspectJSONRPCMCPBody(bodyBytes)
-	return tool, allowInit, nil
+	return api.InspectMCPHTTPRequestBody(r, MaxGRPCMessageBytes)
 }

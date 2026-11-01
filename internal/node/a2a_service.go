@@ -289,7 +289,7 @@ func regenerateAgentCardForMesh(card *a2a.AgentCard, base string) error {
 func meshInterfaceURL(base, raw string) string {
 	ref, err := url.Parse(raw)
 	if err != nil || ref.Scheme != "" || ref.Host != "" || ref.User != nil || ref.Opaque != "" ||
-		strings.HasPrefix(ref.Path, "/") || hasDotSegment(ref.Path) {
+		strings.HasPrefix(ref.Path, "/") || api.HasDotSegment(ref.Path) {
 		return base
 	}
 	out := base
@@ -411,7 +411,7 @@ func relativeToRoot(raw, root string) (string, bool) {
 	default:
 		return "", false
 	}
-	if hasDotSegment(rest) {
+	if api.HasDotSegment(rest) {
 		return "", false
 	}
 	if u.RawQuery != "" {

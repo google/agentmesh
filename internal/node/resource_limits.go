@@ -113,6 +113,7 @@ func nodeLimits(conns int) rcmgr.ConcreteLimitConfig {
 		overrides.Protocol[p] = p2plimits.Streams(conns)
 	}
 	overrides.Protocol[api.MCPProtocolID] = p2plimits.Streams(streamsPerConn * conns)
+	overrides.Protocol[api.IngressProtocolID] = p2plimits.Streams(streamsPerConn * conns)
 
 	// A caller that arrives through a router is one relay stop stream, and
 	// every caller through the same router is a stream from that one peer.
@@ -122,7 +123,10 @@ func nodeLimits(conns int) rcmgr.ConcreteLimitConfig {
 	stop := p2plimits.Streams(conns)
 	stop.Memory = rcmgr.LimitVal64(int64(conns) * 64 << 10)
 	overrides.Protocol[circuit.ProtoIDv2Stop] = stop
-	overrides.ProtocolPeer = map[protocol.ID]rcmgr.ResourceLimits{circuit.ProtoIDv2Stop: stop}
+	overrides.ProtocolPeer = map[protocol.ID]rcmgr.ResourceLimits{
+		circuit.ProtoIDv2Stop: stop,
+		api.IngressProtocolID: p2plimits.Streams(conns),
+	}
 	return overrides.Build(scaled)
 }
 

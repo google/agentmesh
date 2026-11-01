@@ -17,6 +17,12 @@ The node is an MCP server, so you can point any MCP client at it. This guide
 gives the configuration for the common clients and explains what the agent
 gets.
 
+If a client only needs to find and call remote MCP tools, it can join without a
+node through the MCP registry server instead; see
+[Without a node](#without-a-node-the-mcp-registry-server). The two are
+complementary: the node is the full member, the registry server is a light
+caller.
+
 ## What every client needs
 
 Three values, all printed by `agentmesh-node run --daemonize`:
@@ -223,6 +229,50 @@ no key.
 Native SDKs that join the mesh from inside the agent process, without a
 `agentmesh-node` sidecar, are being built under `sdk/` in the repository; see
 `sdk/README.md` for their status.
+
+## Without a node: the MCP registry server
+
+The official MCP registry lists **`io.github.google/agentmesh`**, a stdio MCP
+server from the npm package `@agentmesh-p2p/sdk`. The client launches it like
+any other stdio server. It enrolls with the control plane as its own member,
+so no `agentmesh-node` runs beside it:
+
+```json
+{
+  "mcpServers": {
+    "agentmesh": {
+      "command": "npx",
+      "args": ["--yes", "@agentmesh-p2p/sdk@<version>"],
+      "env": {
+        "AGENTMESH_CONTROL_PLANE_URL": "https://mesh.example.com",
+        "AGENTMESH_BOOTSTRAP_TOKEN_PATH": "/absolute/path/to/join-token",
+        "AGENTMESH_STATE_DIR": "/absolute/path/to/this-client-identity"
+      }
+    }
+  }
+}
+```
+
+VS Code takes the same entry under `servers` in `.vscode/mcp.json`, with
+`"type": "stdio"`. Node.js 22.18 or later is required, and paths must be
+absolute because MCP clients do not expand `~`.
+
+- **Credential**: your mesh operator gives you the control plane URL and a
+  bootstrap token file. Use `AGENTMESH_JWT_PATH` instead for a workload or
+  OIDC token file. Set one of them for the first run; the server saves its
+  identity in `AGENTMESH_STATE_DIR` (default `~/.config/agentmesh/mcp`) and
+  resumes from it afterwards. Use one state directory per client and mesh.
+- **Plain HTTP** is accepted only for a loopback control plane, unless you set
+  `AGENTMESH_INSECURE_CONTROL_PLANE=true` on a network you trust.
+
+It offers the node's caller tools: `get_mesh_info`,
+`discover_remote_services`, `find_remote_tools`, `describe_remote_tool` and
+`call_remote_tool`. It publishes nothing, so there is no
+`list_local_services`, and it has no `/v1` endpoint or socket. Use the node
+to publish services, call inference over HTTP, or share one identity among
+several clients. The
+[JavaScript SDK README](https://github.com/google/agentmesh/tree/main/sdk/js#mcp-client-over-stdio)
+covers running it from a source checkout and its limits.
 
 ## A note on trust
 

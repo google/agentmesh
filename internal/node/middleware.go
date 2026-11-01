@@ -278,103 +278,38 @@ func (n *AgentMeshNode) authorizeWithRules(rawToken []byte, req RequestContext, 
 		return nil, err
 	}
 
-	// Inject the current action context (Standard Vocabulary)
-	var opType, opName string
-	if req.Target == "" {
-		// When no explicit target is requested, the operation is scoped to the connection protocol itself,
-		// which resides in the "system" namespace.
-		opType = api.SystemNamespace
-		opName = req.Protocol
-	} else {
-		opType, opName = api.ParseServiceTarget(req.Target)
+	// The request as every enforcement point describes it: the service it
+	// names, or the connection protocol in the system namespace when it
+	// names none; the HTTP line and egress destination when present; and
+	// the connection peer, which binds client_peer_id to this stream.
+	meshReq := identity.MeshRequest{
+		ConnectionPeer:     req.PeerID,
+		Unrestricted:       req.Local,
+		MCPTool:            req.MCPTool,
+		AllowMCPStreamInit: req.AllowMCPStreamInit || (req.HTTP == nil && req.MCPTool == "" && req.Protocol == string(api.MCPProtocolID)),
 	}
-	authorizer.AddFact(biscuit.Fact{
-		Predicate: biscuit.Predicate{
-			Name: api.FactService,
-			IDs:  []biscuit.Term{biscuit.String(opType), biscuit.String(opName)},
-		},
-	})
-
-	// Inject connection_peer_id fact for replay defense
-	authorizer.AddFact(biscuit.Fact{
-		Predicate: biscuit.Predicate{
-			Name: api.FactConnectionPeerID,
-			IDs:  []biscuit.Term{biscuit.String(req.PeerID.String())},
-		},
-	})
-
-	// Enforce client_peer_id matches connection_peer_id
-	authorizer.AddCheck(api.BaselineReplayCheck)
-
-	// The request as the wire carried it. Present only when there is an HTTP
-	// request, so a grant narrowed to methods and paths (PolicyRole.http) has
-	// nothing to match on a bare stream and fails closed.
+	if req.Target == "" {
+		meshReq.ServiceType = api.SystemNamespace
+		meshReq.ServiceName = req.Protocol
+	} else {
+		meshReq.ServiceType, meshReq.ServiceName = api.ParseServiceTarget(req.Target)
+	}
 	if req.HTTP != nil {
-		authorizer.AddFact(biscuit.Fact{Predicate: biscuit.Predicate{
-			Name: api.FactMethod,
-			IDs:  []biscuit.Term{biscuit.String(req.HTTP.Method)},
-		}})
-		authorizer.AddFact(biscuit.Fact{Predicate: biscuit.Predicate{
-			Name: api.FactPath,
-			IDs:  []biscuit.Term{biscuit.String(req.HTTP.Path)},
-		}})
+		meshReq.HasHTTP = true
+		meshReq.Method = req.HTTP.Method
+		meshReq.Path = req.HTTP.Path
 	}
 	if req.Egress != nil {
-		authorizer.AddFact(biscuit.Fact{Predicate: biscuit.Predicate{
-			Name: api.FactHost,
-			IDs:  []biscuit.Term{biscuit.String(req.Egress.Host)},
-		}})
-		authorizer.AddFact(biscuit.Fact{Predicate: biscuit.Predicate{
-			Name: api.FactPort,
-			IDs:  []biscuit.Term{biscuit.Integer(req.Egress.Port)},
-		}})
-	}
-	if req.Local {
-		authorizer.AddFact(api.MarkerFact(api.FactTargetUnrestricted))
+		meshReq.HasEgress = true
+		meshReq.EgressHost = req.Egress.Host
+		meshReq.EgressPort = int64(req.Egress.Port)
 	}
 
-	identity.EnforceExpiration(authorizer)
-
-	// Inject facts from our own identity token to support target matching
-	if err := n.injectIdentityFacts(authorizer, pubKey); err != nil {
-		return nil, fmt.Errorf("failed to inject target facts: %w", err)
-	}
-
-	if n.nodeConfig != nil {
-		for _, p := range n.nodeConfig.Policies {
-			authorizer.AddPolicy(p)
-		}
-		for _, c := range n.nodeConfig.Checks {
-			authorizer.AddCheck(c)
-		}
-		for _, r := range n.nodeConfig.Rules {
-			authorizer.AddRule(r)
-		}
-	}
-
-	// Apply Baseline Policies and Rules
-	authorizer.AddCheck(api.BaselineTargetCheck)
-	for _, p := range api.BaselinePolicies {
-		authorizer.AddPolicy(p)
-	}
-	for _, r := range api.BaselineRules {
-		authorizer.AddRule(r)
-	}
-	for _, r := range api.BaselineHTTPRules {
-		authorizer.AddRule(r)
-	}
-
-	// Apply Dynamic Mesh Policy Rules
-	n.MeshPolicyMu.RLock()
-	meshRules := n.MeshPolicyRules
-	n.MeshPolicyMu.RUnlock()
-
-	for _, r := range meshRules {
-		authorizer.AddRule(r)
-	}
-
-	err = authorizer.Authorize()
+	pol, err := n.meshPolicy()
 	if err != nil {
+		return nil, err
+	}
+	if err := identity.AuthorizeMeshRequest(authorizer, meshReq, pol); err != nil {
 		logger.Infow("Audit Traceability", append(req.auditFields(), "decision", "deny", "reason", err.Error())...)
 		logger.Debugf("Authorizer failure: %v, token: %s", err, b.String())
 		logger.Debugf("Authorizer state: %s", authorizer.PrintWorld())
@@ -382,18 +317,7 @@ func (n *AgentMeshNode) authorizeWithRules(rawToken []byte, req RequestContext, 
 	}
 
 	if len(taskRules) > 0 {
-		taskReq := api.TaskRequestContext{
-			ServiceType:        opType,
-			ServiceName:        opName,
-			MCPTool:            req.MCPTool,
-			AllowMCPStreamInit: req.AllowMCPStreamInit || (req.HTTP == nil && req.MCPTool == "" && req.Protocol == string(api.MCPProtocolID)),
-		}
-		if req.HTTP != nil {
-			taskReq.HasHTTP = true
-			taskReq.Method = req.HTTP.Method
-			taskReq.Path = req.HTTP.Path
-		}
-		if err := api.EvaluateTaskRules(taskRules, taskReq, time.Now()); err != nil {
+		if err := api.EvaluateTaskRules(taskRules, meshReq.TaskRequest(), time.Now()); err != nil {
 			logger.Infow("Audit Traceability", append(req.auditFields(), "decision", "deny", "reason", err.Error())...)
 			return nil, err
 		}
@@ -483,52 +407,47 @@ func (req RequestContext) auditFields() []any {
 	return fields
 }
 
-func (n *AgentMeshNode) injectIdentityFacts(authorizer biscuit.Authorizer, pubKey ed25519.PublicKey) error {
-	ourIdentity := n.GetIdentity()
-	if ourIdentity == nil {
-		logger.Debugf("[Auth] Node identity is missing, skipping target fact injection")
-		return nil
+// meshPolicy is what this node adds to every authorization it performs,
+// on whichever path the request arrived: the target facts of its own
+// credential, its local attenuation from agentmesh-node.yaml, and the mesh
+// policy rules it last synced. Both the in-mesh verifier
+// (verifyBiscuitTokenWithRules) and the external ingress handler build their
+// authorizer from this one value, so neither can drift from the other.
+func (n *AgentMeshNode) meshPolicy() (identity.MeshPolicy, error) {
+	targetFacts, err := n.ownTargetFacts()
+	if err != nil {
+		return identity.MeshPolicy{}, err
 	}
+	n.MeshPolicyMu.RLock()
+	meshRules := n.MeshPolicyRules
+	n.MeshPolicyMu.RUnlock()
 
+	pol := identity.MeshPolicy{TargetFacts: targetFacts, MeshRules: meshRules}
+	if n.nodeConfig != nil {
+		pol.LocalPolicies = n.nodeConfig.Policies
+		pol.LocalChecks = n.nodeConfig.Checks
+		pol.LocalRules = n.nodeConfig.Rules
+	}
+	return pol, nil
+}
+
+// ownTargetFacts queries this node's own credential for the target_fact()
+// facts a caller's target grants are matched against. A node without an
+// identity yet contributes none: BaselineTargetCheck then admits only a
+// caller whose grant is unrestricted.
+func (n *AgentMeshNode) ownTargetFacts() ([]biscuit.Fact, error) {
+	ourIdentity := n.GetIdentity()
+	if len(ourIdentity) == 0 {
+		logger.Debugf("[Auth] Node identity is missing, no target facts to match against")
+		return nil, nil
+	}
 	ourB, err := biscuit.Unmarshal(ourIdentity)
 	if err != nil {
-		return fmt.Errorf("failed to unmarshal node identity: %w", err)
+		return nil, fmt.Errorf("failed to unmarshal node identity: %w", err)
 	}
-
-	n.keysMu.RLock()
-	keys := make([]TrustedKey, len(n.trustedKeys))
-	copy(keys, n.trustedKeys)
-	n.keysMu.RUnlock()
-
-	authOpts := identity.AuthorizerOptions(n.BiscuitTimeout)
-
-	var auth biscuit.Authorizer
-	var authErr error
-	for _, tk := range keys {
-		if a, err := ourB.Authorizer(tk.Key, authOpts...); err == nil {
-			auth = a
-			break
-		} else {
-			authErr = err
-		}
+	facts, err := identity.TargetFactsFromBiscuit(ourB, n.trustedPublicKeys(), n.BiscuitTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("failed to inject target facts: %w", err)
 	}
-
-	if auth == nil {
-		return fmt.Errorf("failed to create authorizer for node identity (signature verification mismatch): %w", authErr)
-	}
-
-	// We must Authorize() to evaluate the token's facts into the world
-	auth.AddPolicy(api.AllowIfTruePolicy)
-	if err := auth.Authorize(); err != nil {
-		return fmt.Errorf("failed to validate node identity token (e.g. expired): %w", err)
-	}
-
-	for _, rule := range api.TargetFactRules {
-		if factSet, err := auth.Query(rule); err == nil {
-			for _, fact := range factSet {
-				authorizer.AddFact(fact)
-			}
-		}
-	}
-	return nil
+	return facts, nil
 }

@@ -115,7 +115,7 @@ func TestMintBiscuitToken_ClaimsTranslation(t *testing.T) {
 
 	claims := jwt.MapClaims{
 		"sub":    "user-12345",
-		"email":  "agent@google.com",
+		"email":  "agent@example.com",
 		"groups": []any{"beta-testers", "engineering"},
 	}
 
@@ -144,11 +144,11 @@ func TestMintBiscuitToken_ClaimsTranslation(t *testing.T) {
 	}}
 	authorizer.AddCheck(checkUser)
 
-	// Verify email("agent@google.com") fact is present
+	// Verify email("agent@example.com") fact is present
 	checkEmail := biscuit.Check{Queries: []biscuit.Rule{
 		{
 			Body: []biscuit.Predicate{
-				{Name: "email", IDs: []biscuit.Term{biscuit.String("agent@google.com")}},
+				{Name: "email", IDs: []biscuit.Term{biscuit.String("agent@example.com")}},
 			},
 		},
 	}}
@@ -655,6 +655,13 @@ func TestVerifyBiscuitRole_TimeoutIsHonored(t *testing.T) {
 	if !errors.Is(err, datalog.ErrWorldRunLimitTimeout) {
 		t.Errorf("expected datalog timeout error, got %v", err)
 	}
+
+	// Verification keeps the reason too, so a caller can tell a world that
+	// ran out of time from a credential no trusted key signed.
+	_, _, err = VerifyBiscuitAndGetKey(biscuitData, dummyPeer, []ed25519.PublicKey{pub}, time.Nanosecond)
+	if !errors.Is(err, datalog.ErrWorldRunLimitTimeout) {
+		t.Errorf("VerifyBiscuitAndGetKey with a 1ns timeout = %v, want an error wrapping %v", err, datalog.ErrWorldRunLimitTimeout)
+	}
 }
 
 // TestRequireRole covers the role gate every router-only path shares. The
@@ -802,6 +809,15 @@ func TestMintBiscuitToken_PublishFacts(t *testing.T) {
 		if (err == nil) != tc.granted {
 			t.Errorf("RequirePublish(%s://%s) = %v, want granted %v", tc.svcType, tc.svcName, err, tc.granted)
 		}
+	}
+
+	// A refusal keeps the authorizer's reason: no policy matched is not the
+	// same as a Datalog world that ran out of time on a granted service.
+	if err := RequirePublish(b, pub, "mcp", "clock", nil, testTimeout); !errors.Is(err, biscuit.ErrNoMatchingPolicy) {
+		t.Errorf("RequirePublish(mcp://clock) = %v, want an error wrapping %v", err, biscuit.ErrNoMatchingPolicy)
+	}
+	if err := RequirePublish(b, pub, "mcp", "calc", nil, time.Nanosecond); !errors.Is(err, datalog.ErrWorldRunLimitTimeout) {
+		t.Errorf("RequirePublish(mcp://calc) with a 1ns timeout = %v, want an error wrapping %v", err, datalog.ErrWorldRunLimitTimeout)
 	}
 
 	none, err := MintBootstrapBiscuitToken(priv, p, "publisher", time.Now().Add(time.Hour), nil, nil)

@@ -13,6 +13,9 @@ ENROLLMENT_STATUS_APPROVED: EnrollmentStatus
 ENROLLMENT_STATUS_PENDING: EnrollmentStatus
 ENROLLMENT_STATUS_REJECTED: EnrollmentStatus
 ENROLLMENT_STATUS_UNSPECIFIED: EnrollmentStatus
+INGRESS_AUTH_MODE_EDGE: IngressAuthMode
+INGRESS_AUTH_MODE_PASSTHROUGH: IngressAuthMode
+INGRESS_AUTH_MODE_UNSPECIFIED: IngressAuthMode
 RESPONSE_INSPECTION_BUFFERED: ResponseInspection
 RESPONSE_INSPECTION_REQUEST_ONLY: ResponseInspection
 SERVICE_TYPE_A2A: ServiceType
@@ -249,16 +252,18 @@ class DirectoryParameters(_message.Message):
     def __init__(self, replication: _Optional[int] = ..., reprovide_interval: _Optional[_Union[_duration_pb2.Duration, _Mapping]] = ..., record_ttl: _Optional[_Union[_duration_pb2.Duration, _Mapping]] = ...) -> None: ...
 
 class DirectoryProvide(_message.Message):
-    __slots__ = ["addrs", "key", "provider", "service"]
+    __slots__ = ["addrs", "ingress", "key", "provider", "service"]
     ADDRS_FIELD_NUMBER: _ClassVar[int]
+    INGRESS_FIELD_NUMBER: _ClassVar[int]
     KEY_FIELD_NUMBER: _ClassVar[int]
     PROVIDER_FIELD_NUMBER: _ClassVar[int]
     SERVICE_FIELD_NUMBER: _ClassVar[int]
     addrs: _containers.RepeatedScalarFieldContainer[str]
+    ingress: ServiceIngress
     key: bytes
     provider: str
     service: str
-    def __init__(self, key: _Optional[bytes] = ..., addrs: _Optional[_Iterable[str]] = ..., provider: _Optional[str] = ..., service: _Optional[str] = ...) -> None: ...
+    def __init__(self, key: _Optional[bytes] = ..., addrs: _Optional[_Iterable[str]] = ..., provider: _Optional[str] = ..., service: _Optional[str] = ..., ingress: _Optional[_Union[ServiceIngress, _Mapping]] = ...) -> None: ...
 
 class DirectoryRequest(_message.Message):
     __slots__ = ["find_peer", "find_providers", "provide", "withdraw"]
@@ -515,6 +520,14 @@ class IdentityEvidenceResponse(_message.Message):
     trusted_control_plane_keys: _containers.RepeatedScalarFieldContainer[bytes]
     def __init__(self, peer_id: _Optional[str] = ..., biscuit: _Optional[bytes] = ..., biscuit_expire_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., control_plane_url: _Optional[str] = ..., trusted_control_plane_keys: _Optional[_Iterable[bytes]] = ..., check_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
 
+class IngressGrant(_message.Message):
+    __slots__ = ["allowed_auth_modes", "services"]
+    ALLOWED_AUTH_MODES_FIELD_NUMBER: _ClassVar[int]
+    SERVICES_FIELD_NUMBER: _ClassVar[int]
+    allowed_auth_modes: _containers.RepeatedScalarFieldContainer[IngressAuthMode]
+    services: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, services: _Optional[_Iterable[str]] = ..., allowed_auth_modes: _Optional[_Iterable[_Union[IngressAuthMode, str]]] = ...) -> None: ...
+
 class Inspection(_message.Message):
     __slots__ = ["inspectors"]
     INSPECTORS_FIELD_NUMBER: _ClassVar[int]
@@ -662,12 +675,14 @@ class PeerEvidenceResponse(_message.Message):
     def __init__(self, peer_id: _Optional[str] = ..., biscuit: _Optional[bytes] = ..., verifying_key: _Optional[bytes] = ..., roles: _Optional[_Iterable[str]] = ..., labels: _Optional[_Mapping[str, str]] = ..., expire_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., revocation_ids: _Optional[_Iterable[str]] = ..., check_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
 
 class PeerRecord(_message.Message):
-    __slots__ = ["addrs", "peer_id"]
+    __slots__ = ["addrs", "ingress", "peer_id"]
     ADDRS_FIELD_NUMBER: _ClassVar[int]
+    INGRESS_FIELD_NUMBER: _ClassVar[int]
     PEER_ID_FIELD_NUMBER: _ClassVar[int]
     addrs: _containers.RepeatedScalarFieldContainer[str]
+    ingress: ServiceIngress
     peer_id: str
-    def __init__(self, peer_id: _Optional[str] = ..., addrs: _Optional[_Iterable[str]] = ...) -> None: ...
+    def __init__(self, peer_id: _Optional[str] = ..., addrs: _Optional[_Iterable[str]] = ..., ingress: _Optional[_Union[ServiceIngress, _Mapping]] = ...) -> None: ...
 
 class PlatformIdentity(_message.Message):
     __slots__ = ["scopes"]
@@ -712,7 +727,8 @@ class PolicyConfigUpdateResponse(_message.Message):
     def __init__(self, success: bool = ..., error: _Optional[str] = ...) -> None: ...
 
 class PolicyRole(_message.Message):
-    __slots__ = ["allowed_labels", "allowed_publish", "allowed_services", "allowed_targets", "custom_datalog", "http", "name"]
+    __slots__ = ["allowed_ingress", "allowed_labels", "allowed_publish", "allowed_services", "allowed_targets", "custom_datalog", "http", "name"]
+    ALLOWED_INGRESS_FIELD_NUMBER: _ClassVar[int]
     ALLOWED_LABELS_FIELD_NUMBER: _ClassVar[int]
     ALLOWED_PUBLISH_FIELD_NUMBER: _ClassVar[int]
     ALLOWED_SERVICES_FIELD_NUMBER: _ClassVar[int]
@@ -720,6 +736,7 @@ class PolicyRole(_message.Message):
     CUSTOM_DATALOG_FIELD_NUMBER: _ClassVar[int]
     HTTP_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
+    allowed_ingress: _containers.RepeatedCompositeFieldContainer[IngressGrant]
     allowed_labels: _containers.RepeatedScalarFieldContainer[str]
     allowed_publish: _containers.RepeatedScalarFieldContainer[str]
     allowed_services: _containers.RepeatedScalarFieldContainer[str]
@@ -727,7 +744,7 @@ class PolicyRole(_message.Message):
     custom_datalog: _containers.RepeatedScalarFieldContainer[str]
     http: _containers.RepeatedCompositeFieldContainer[HTTPGrant]
     name: str
-    def __init__(self, name: _Optional[str] = ..., allowed_targets: _Optional[_Iterable[str]] = ..., allowed_services: _Optional[_Iterable[str]] = ..., custom_datalog: _Optional[_Iterable[str]] = ..., allowed_labels: _Optional[_Iterable[str]] = ..., http: _Optional[_Iterable[_Union[HTTPGrant, _Mapping]]] = ..., allowed_publish: _Optional[_Iterable[str]] = ...) -> None: ...
+    def __init__(self, name: _Optional[str] = ..., allowed_targets: _Optional[_Iterable[str]] = ..., allowed_services: _Optional[_Iterable[str]] = ..., custom_datalog: _Optional[_Iterable[str]] = ..., allowed_labels: _Optional[_Iterable[str]] = ..., http: _Optional[_Iterable[_Union[HTTPGrant, _Mapping]]] = ..., allowed_publish: _Optional[_Iterable[str]] = ..., allowed_ingress: _Optional[_Iterable[_Union[IngressGrant, _Mapping]]] = ...) -> None: ...
 
 class RegisterServiceRequest(_message.Message):
     __slots__ = ["command", "service", "target_url"]
@@ -761,7 +778,7 @@ class RouterGoAway(_message.Message):
     def __init__(self, reason: _Optional[_Union[RouterGoAway.Reason, str]] = ..., retry_after: _Optional[_Union[_duration_pb2.Duration, _Mapping]] = ...) -> None: ...
 
 class RouterInfo(_message.Message):
-    __slots__ = ["addresses", "connection_limit", "connections", "labels", "peer_id"]
+    __slots__ = ["addresses", "connection_limit", "connections", "ingress_url", "labels", "peer_id"]
     class LabelsEntry(_message.Message):
         __slots__ = ["key", "value"]
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -772,33 +789,37 @@ class RouterInfo(_message.Message):
     ADDRESSES_FIELD_NUMBER: _ClassVar[int]
     CONNECTIONS_FIELD_NUMBER: _ClassVar[int]
     CONNECTION_LIMIT_FIELD_NUMBER: _ClassVar[int]
+    INGRESS_URL_FIELD_NUMBER: _ClassVar[int]
     LABELS_FIELD_NUMBER: _ClassVar[int]
     PEER_ID_FIELD_NUMBER: _ClassVar[int]
     addresses: _containers.RepeatedScalarFieldContainer[str]
     connection_limit: int
     connections: int
+    ingress_url: str
     labels: _containers.ScalarMap[str, str]
     peer_id: str
-    def __init__(self, peer_id: _Optional[str] = ..., addresses: _Optional[_Iterable[str]] = ..., labels: _Optional[_Mapping[str, str]] = ..., connections: _Optional[int] = ..., connection_limit: _Optional[int] = ...) -> None: ...
+    def __init__(self, peer_id: _Optional[str] = ..., addresses: _Optional[_Iterable[str]] = ..., labels: _Optional[_Mapping[str, str]] = ..., connections: _Optional[int] = ..., connection_limit: _Optional[int] = ..., ingress_url: _Optional[str] = ...) -> None: ...
 
 class RouterLease(_message.Message):
-    __slots__ = ["addresses", "connected_peers", "dht_size", "expire_time", "last_renewal_time", "peer_id"]
+    __slots__ = ["addresses", "connected_peers", "dht_size", "expire_time", "ingress_url", "last_renewal_time", "peer_id"]
     ADDRESSES_FIELD_NUMBER: _ClassVar[int]
     CONNECTED_PEERS_FIELD_NUMBER: _ClassVar[int]
     DHT_SIZE_FIELD_NUMBER: _ClassVar[int]
     EXPIRE_TIME_FIELD_NUMBER: _ClassVar[int]
+    INGRESS_URL_FIELD_NUMBER: _ClassVar[int]
     LAST_RENEWAL_TIME_FIELD_NUMBER: _ClassVar[int]
     PEER_ID_FIELD_NUMBER: _ClassVar[int]
     addresses: _containers.RepeatedScalarFieldContainer[str]
     connected_peers: _containers.RepeatedScalarFieldContainer[str]
     dht_size: int
     expire_time: _timestamp_pb2.Timestamp
+    ingress_url: str
     last_renewal_time: _timestamp_pb2.Timestamp
     peer_id: str
-    def __init__(self, peer_id: _Optional[str] = ..., addresses: _Optional[_Iterable[str]] = ..., last_renewal_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., expire_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., connected_peers: _Optional[_Iterable[str]] = ..., dht_size: _Optional[int] = ...) -> None: ...
+    def __init__(self, peer_id: _Optional[str] = ..., addresses: _Optional[_Iterable[str]] = ..., last_renewal_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., expire_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., connected_peers: _Optional[_Iterable[str]] = ..., dht_size: _Optional[int] = ..., ingress_url: _Optional[str] = ...) -> None: ...
 
 class RouterLeaseRequest(_message.Message):
-    __slots__ = ["addresses", "biscuit", "challenge_signature", "challenge_unix_ms", "connected_peers", "connection_limit", "connections", "dht_size", "peer_id", "ttl"]
+    __slots__ = ["addresses", "biscuit", "challenge_signature", "challenge_unix_ms", "connected_peers", "connection_limit", "connections", "dht_size", "ingress_url", "peer_id", "ttl"]
     ADDRESSES_FIELD_NUMBER: _ClassVar[int]
     BISCUIT_FIELD_NUMBER: _ClassVar[int]
     CHALLENGE_SIGNATURE_FIELD_NUMBER: _ClassVar[int]
@@ -807,6 +828,7 @@ class RouterLeaseRequest(_message.Message):
     CONNECTIONS_FIELD_NUMBER: _ClassVar[int]
     CONNECTION_LIMIT_FIELD_NUMBER: _ClassVar[int]
     DHT_SIZE_FIELD_NUMBER: _ClassVar[int]
+    INGRESS_URL_FIELD_NUMBER: _ClassVar[int]
     PEER_ID_FIELD_NUMBER: _ClassVar[int]
     TTL_FIELD_NUMBER: _ClassVar[int]
     addresses: _containers.RepeatedScalarFieldContainer[str]
@@ -817,9 +839,10 @@ class RouterLeaseRequest(_message.Message):
     connection_limit: int
     connections: int
     dht_size: int
+    ingress_url: str
     peer_id: str
     ttl: _duration_pb2.Duration
-    def __init__(self, peer_id: _Optional[str] = ..., addresses: _Optional[_Iterable[str]] = ..., biscuit: _Optional[bytes] = ..., connected_peers: _Optional[_Iterable[str]] = ..., dht_size: _Optional[int] = ..., challenge_unix_ms: _Optional[int] = ..., challenge_signature: _Optional[bytes] = ..., ttl: _Optional[_Union[_duration_pb2.Duration, _Mapping]] = ..., connections: _Optional[int] = ..., connection_limit: _Optional[int] = ...) -> None: ...
+    def __init__(self, peer_id: _Optional[str] = ..., addresses: _Optional[_Iterable[str]] = ..., biscuit: _Optional[bytes] = ..., connected_peers: _Optional[_Iterable[str]] = ..., dht_size: _Optional[int] = ..., challenge_unix_ms: _Optional[int] = ..., challenge_signature: _Optional[bytes] = ..., ttl: _Optional[_Union[_duration_pb2.Duration, _Mapping]] = ..., connections: _Optional[int] = ..., connection_limit: _Optional[int] = ..., ingress_url: _Optional[str] = ...) -> None: ...
 
 class RouterLeaseResponse(_message.Message):
     __slots__ = ["error", "expire_time", "success"]
@@ -860,14 +883,24 @@ class STSTokenResponse(_message.Message):
     def __init__(self, jwt: _Optional[str] = ..., expire_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., subject: _Optional[str] = ..., roles: _Optional[_Iterable[str]] = ..., task_name: _Optional[str] = ...) -> None: ...
 
 class ServiceInfo(_message.Message):
-    __slots__ = ["description", "name", "type"]
+    __slots__ = ["description", "ingress", "name", "type"]
     DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
+    INGRESS_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
     TYPE_FIELD_NUMBER: _ClassVar[int]
     description: str
+    ingress: ServiceIngress
     name: str
     type: ServiceType
-    def __init__(self, type: _Optional[_Union[ServiceType, str]] = ..., name: _Optional[str] = ..., description: _Optional[str] = ...) -> None: ...
+    def __init__(self, type: _Optional[_Union[ServiceType, str]] = ..., name: _Optional[str] = ..., description: _Optional[str] = ..., ingress: _Optional[_Union[ServiceIngress, _Mapping]] = ...) -> None: ...
+
+class ServiceIngress(_message.Message):
+    __slots__ = ["allow", "auth_mode"]
+    ALLOW_FIELD_NUMBER: _ClassVar[int]
+    AUTH_MODE_FIELD_NUMBER: _ClassVar[int]
+    allow: _containers.RepeatedScalarFieldContainer[str]
+    auth_mode: IngressAuthMode
+    def __init__(self, auth_mode: _Optional[_Union[IngressAuthMode, str]] = ..., allow: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class TaskAuthorizationRule(_message.Message):
     __slots__ = ["display_name", "expire_time", "name", "rules"]
@@ -1007,6 +1040,9 @@ class EnrollmentStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = []
 
 class ServiceType(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = []
+
+class IngressAuthMode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = []
 
 class EgressMode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):

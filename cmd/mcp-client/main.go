@@ -16,6 +16,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -29,6 +30,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mattn/go-isatty"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/google/agentmesh/api"
@@ -41,6 +43,7 @@ func main() {
 	toolArgs := flag.String("args", "{}", "JSON arguments for the tool or discovery parameters")
 	timeoutArgs := flag.Int("timeout", 10, "Timeout in seconds")
 	listTools := flag.Bool("list", false, "List available tools and exit")
+	prettyOpt := flag.Bool("pretty", stdoutIsTerminal(), "Pretty-print JSON output (default: when stdout is a terminal)")
 	streamOpt := flag.Bool("stream", false, "Enable streaming mode for service discovery HTTP API")
 	tokenOpt := flag.String("token", "", "Authorization Bearer token for protected sidecar endpoints (deprecated: prefer -token-path or AGENTMESH_API_TOKEN)")
 	tokenPathOpt := flag.String("token-path", "", "Path to file containing the Authorization Bearer token (or env AGENTMESH_API_TOKEN)")
@@ -150,7 +153,7 @@ func main() {
 
 			if strings.HasPrefix(line, "data:") {
 				dataContent := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-				fmt.Println(dataContent)
+				fmt.Println(formatOutput(dataContent, *prettyOpt))
 			} else if strings.HasPrefix(line, "event:") {
 				fmt.Printf("[%s]\n", strings.TrimSpace(strings.TrimPrefix(line, "event:")))
 			}
@@ -229,9 +232,41 @@ func main() {
 
 	for _, content := range result.Content {
 		if textContent, ok := content.(*mcp.TextContent); ok {
-			fmt.Println(textContent.Text)
+			fmt.Println(formatOutput(textContent.Text, *prettyOpt))
 		}
 	}
+}
+
+// stdoutIsTerminal reports whether stdout is an interactive terminal, so human
+// invocations get indented JSON by default while pipes, jq and test harnesses
+// keep single-line JSON.
+func stdoutIsTerminal() bool {
+	return isTerminal(os.Stdout)
+}
+
+func isTerminal(f *os.File) bool {
+	if f == nil {
+		return false
+	}
+	fd := f.Fd()
+	return isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
+}
+
+// formatOutput indents JSON objects and arrays when pretty is true, leaving
+// plain-text tool outputs, usage hints and malformed fragments untouched.
+func formatOutput(text string, pretty bool) string {
+	if !pretty {
+		return text
+	}
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" || (trimmed[0] != '{' && trimmed[0] != '[') {
+		return text
+	}
+	var buf bytes.Buffer
+	if err := json.Indent(&buf, []byte(trimmed), "", "  "); err != nil {
+		return text
+	}
+	return buf.String()
 }
 
 type authTransport struct {

@@ -228,6 +228,9 @@ func BuildPolicyRules(roles []*PolicyRole, bindings []*PolicyBinding) (rules []P
 		for _, fact := range BuildPublishDatalogFacts(role.AllowedPublish) {
 			add(fact.Predicate, fromRole)
 		}
+		for _, fact := range BuildIngressDatalogFacts(role.AllowedIngress) {
+			add(fact.Predicate, fromRole)
+		}
 
 		hasUnrestricted := false
 		var nonWildcardTargets []string

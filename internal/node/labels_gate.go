@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eclipse-biscuit/biscuit-go/v2/datalog"
 	"github.com/google/agentmesh/api"
 	"github.com/google/agentmesh/internal/identity"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -149,12 +150,34 @@ func reachFailure(err error) string {
 // labelGateStatus is the HTTP answer for a label-gate failure, in the
 // order http.Error takes it: 502 when the provider was never heard from, so
 // a caller does not read a dead or busy destination as a denial of its
-// request, 403 with the given text for a verdict.
+// request, 504 or 500 when the authorizer stopped at a run limit before it
+// reached a verdict on the provider's credential, 403 with the given text
+// for a verdict.
 func labelGateStatus(err error, denied string) (string, int) {
 	if errors.Is(err, ErrProviderUnreachable) {
 		return "Bad Gateway: destination did not answer", http.StatusBadGateway
 	}
+	if stopped, transient := authorizerLimit(err); stopped {
+		if transient {
+			return "Gateway Timeout: the provider's credential was not checked in time", http.StatusGatewayTimeout
+		}
+		return "Internal Server Error: the provider's credential exceeds the authorizer's limits", http.StatusInternalServerError
+	}
 	return denied, http.StatusForbidden
+}
+
+// authorizerLimit reports whether err is an authorizer that stopped at one
+// of its run limits before it reached a verdict, and whether that limit is
+// time, the only one that depends on load: the facts and iterations limits
+// are reached again with the same credential and policy.
+func authorizerLimit(err error) (stopped, transient bool) {
+	switch {
+	case errors.Is(err, datalog.ErrWorldRunLimitTimeout):
+		return true, true
+	case errors.Is(err, datalog.ErrWorldRunLimitMaxFacts), errors.Is(err, datalog.ErrWorldRunLimitMaxIterations):
+		return true, false
+	}
+	return false, false
 }
 
 // labelGateKey builds a deterministic cache key from a required label set and
@@ -317,6 +340,9 @@ func (n *AgentMeshNode) checkProvider(providerBiscuit []byte, peerID peer.ID, re
 		meshRules := n.MeshPolicyRules
 		n.MeshPolicyMu.RUnlock()
 		if err := identity.RequirePublish(b, key, svcType, svcName, meshRules, n.BiscuitTimeout); err != nil {
+			if stopped, _ := authorizerLimit(err); stopped {
+				return fmt.Errorf("provider %s grant for %s undecided: %w", peerID, service, err)
+			}
 			return fmt.Errorf("%w: %w", ErrProviderNotGranted, err)
 		}
 	}

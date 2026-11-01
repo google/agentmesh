@@ -89,6 +89,11 @@ spec:
         - containerPort: {{ .Values.router.metricsPort }}
           name: metrics
           protocol: TCP
+        {{- if .Values.router.ingressPort }}
+        - containerPort: {{ .Values.router.ingressPort }}
+          name: ingress-http
+          protocol: TCP
+        {{- end }}
         # /healthz answers as soon as the process is up; /readyz once the
         # router has enrolled and its libp2p host is online.
         startupProbe:
@@ -125,6 +130,17 @@ spec:
         - "--listen=/ip4/0.0.0.0/tcp/4501"
         - "--listen=/ip4/0.0.0.0/udp/4501/quic-v1"
         - "--metrics-addr=0.0.0.0:{{ .Values.router.metricsPort }}"
+        {{- if .Values.router.ingressPort }}
+        - "--ingress-addr=0.0.0.0:{{ .Values.router.ingressPort }}"
+        # In-cluster plaintext behind the Gateway; TLS terminates at the Gateway listener.
+        - "--allow-insecure-ingress-http"
+        {{- if .Values.router.ingressUrl }}
+        - "--ingress-url={{ .Values.router.ingressUrl }}"
+        {{- end }}
+        {{- if .Values.router.publicControlPlaneUrl }}
+        - "--public-control-plane={{ .Values.router.publicControlPlaneUrl }}"
+        {{- end }}
+        {{- end }}
         {{- if .Values.router.externalAddrs }}
         {{- range .Values.router.externalAddrs }}
         - "--external-addr={{ . }}"

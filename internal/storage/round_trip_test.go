@@ -827,6 +827,7 @@ func TestRouterLeaseRoundTripsEveryField(t *testing.T) {
 		DHTSize:         42,
 		Connections:     1200,
 		ConnectionLimit: 4000,
+		IngressURL:      "https://bananas.sam-mesh.dev/ingress",
 	}
 	requireAllFieldsSet(t, want)
 

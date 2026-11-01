@@ -286,6 +286,27 @@ least one `TaskRule` in every appended block.
 | **`egress://<name>`** | Enforced on HTTP request & TCP `CONNECT` | Must be empty for an HTTP or TCP rule to match. | Enforced against `Method` and `Path` when non-empty (a TCP `CONNECT` tunnel has `Method: "CONNECT"` and `Path: ""`, so any rule with `allowed_paths` denies a tunnel). | Intersected across blocks `1..k` and translated by `CloudTokenExchanger` at egress. |
 | **`system://<name>`** | Enforced on stream handshake | Enforced when a tool call is made. | Same as `mcp://`. | Ignored by wire PEP. |
 
+#### One authorizer assembly for every PEP
+
+Every enforcement point builds its Datalog authorizer through
+`identity.AuthorizeMeshRequest(authorizer, MeshRequest, MeshPolicy)`: the
+node's in-mesh verifier (`/libp2p-http`, `/mesh/mcp`, the local sidecar), the
+node's external ingress handler (`/mesh/ingress/1.0.0`), the router's edge
+check on `/ingress/*`, and the control plane's `/sts/token`. `MeshRequest`
+says what the request is (`service()`, `method()`/`path()` when it is HTTP,
+`host()`/`port()` when it is egress, the connection peer when there is a
+libp2p stream to bind `client_peer_id` to, `target_unrestricted` for a local
+or control-plane caller); `MeshPolicy` says what the PEP adds (its own
+`target_fact()`s, local attenuation, the synced mesh rules). The assembly
+always adds `BaselineTargetCheck`, the baseline policies and rules, and
+`expiration()`, so a PEP cannot leave one out, and an absent field means "not
+present" (fails closed), never "unrestricted". `MeshRequest.TaskRequest()`
+derives the `TaskAuthorizationRule` context from the same value. A rule
+added to one path therefore reaches every path; the only intended
+differences are the inputs a path does not have (no connection peer on an
+HTTPS bearer) and the checks a path adds on top (`allowed_ingress`,
+`ServiceIngress.allow`, `stsDestinationRules`).
+
 ---
 
 ### 4.3 Subject vs. actor (`actor_node`), stateless exchange, and revocation
@@ -317,7 +338,12 @@ minted statelessly on the control plane with zero database writes:
 - `user(...)`, `email(...)`, `group(...)`, `idp_role(...)`, and `role(...)` are
   resolved strictly from the caller's `subject_token`.
 - No `node()` fact is minted, which prevents `node:<peer_id>` policy bindings on
-  the origin node from leaking to the delegated caller.
+  the origin node from leaking to the delegated caller. On router external HTTP
+  ingress (`/ingress/*` in `edge` mode), `ValidateIngressCallerPreDial` and
+  `AuthorizeIngressDelegatedBiscuit` reject `mesh:role:router` Biscuits and
+  unattenuated standing Member Biscuits (`node(...)` with zero `tar_block`
+  blocks), accepting only Delegated Session Biscuits or task-attenuated
+  Biscuits.
 
 Before handing a task token to an untrusted leaf process or sandbox, the holder
 calls `Seal()`, discarding the ephemeral next-block key so no further blocks can
@@ -326,7 +352,8 @@ be appended.
 Revocation operates at two levels. Root-prefix revocation (`GET /revocations`)
 uses `b.RevocationIds()[0]` to identify the authority block, so revoking a root
 token or banning a peer or user at the control plane invalidates both the root
-Biscuit and every offline-attenuated child derived from it across the mesh.
+Biscuit and every offline-attenuated child derived from it across the mesh
+(enforced by both `agentmesh-node` and `agentmesh-router`).
 Local task revocation (`POST /oauth/revoke`) lets an orchestrator revoke a
 specific child Task Biscuit at the local `agentmesh-node` as soon as a task finishes,
 caching `RevocationIds()[last]` in the node's revocation LRU until the token's
@@ -358,7 +385,7 @@ as a standard OIDC issuer:
 | **libp2p data path** (node-to-node, node-to-router) | Channel binding: Block 0 `client_peer_id` must equal the `connection_peer_id` authenticated by the libp2p Noise or TLS handshake. | The transport private key | None needed; the token is unusable on any other connection. |
 | **Control plane mesh protocol** (`/enroll`, `/enroll/status`, `/register`, `/refresh`, `/routers/lease`, `/token/exchange`, `/sts/token`) | Ed25519 signature over `mesh:<endpoint>:<peer_id>:<challenge_unix_ms>`, carried in protobuf fields (`challenge_unix_ms`, `challenge_signature`) or `X-Mesh-Challenge-Ts` / `X-Mesh-Challenge-Sig` on `GET /enroll/status`. | Endpoint name, peer ID, timestamp | 5-minute freshness window (`challengeMaxAge`) with one-shot `Date`-header clock-skew recovery on `401`; `/refresh` additionally redeems only the last Biscuit issued to the peer. |
 | **Control plane read & report endpoints** (`GET /policies`, `GET /egress`, `GET /revocations`, `POST /nodes/catalog`) | Bearer Member Biscuit of an admitted node (`admittedNodeWithChallenge`) plus `X-Mesh-Challenge-Ts` / `X-Mesh-Challenge-Sig` signed over `mesh:<endpoint>:<peer_id>:<ts>` (`policies`, `egress`, `revocations`, `nodes-catalog`), verified against the node's stored Ed25519 public key via `verifyFreshChallenge`. | Enrolled node credential, endpoint name, peer ID, timestamp | 5-minute freshness window (`challengeMaxAge`) with one-shot `Date`-header clock-skew recovery on `401`, bounded by Biscuit TTL and ban/revocation list. |
-| **OAuth 2.1 external client surface** (`/oauth/authorize`, `/oauth/token`, `/mcp` over HTTPS) | Authorization Code + PKCE (`S256`) on the code grant. The `client_peer_id` of the minted Biscuit is the calling node's when a node calls, otherwise the `actor_peer_id` form parameter or the control plane's own peer ID (`resolveDefaultActorPeer`). | A claimed peer ID (the Biscuit is a bearer token on the HTTPS `/mcp` hop unless sender-constrained with DPoP; see §5.2) | Single-use authorization codes with PKCE verifier check on the code exchange; none on the resulting bearer Biscuit. |
+| **OAuth 2.1 & external HTTP ingress surface** (`/oauth/authorize`, `/oauth/token`, node `/mcp` and router `/ingress/*` over HTTPS) | Authorization Code + PKCE (`S256`) on the code grant, or RFC 8693 token exchange (`POST /oauth/token`). External HTTPS callers have no libp2p connection, so `BaselineReplayCheck` (`client_peer_id == connection_peer_id`) is omitted on `/mcp` and `/ingress/*`; instead `/ingress/*` (`edge` mode) rejects `mesh:role:router` and unattenuated standing Member Biscuits, verifies signature, revocations, `tar_block`, and `ServiceIngress.allow` at the router before dialing any provider, and re-verifies end-to-end at the serving node over `/mesh/ingress/1.0.0`. | A claimed peer ID (the Biscuit is a bearer token on the HTTPS `/mcp` or `/ingress/*` hop unless sender-constrained with DPoP on `/mcp`; see §5.2) | Single-use authorization codes with PKCE verifier check on the code exchange; authority-block revocation (`GET /revocations`) and short TTL on the resulting bearer Biscuit. |
 
 ---
 
@@ -526,10 +553,13 @@ redemption of the last Biscuit issued to the peer.
 ### 5.2 Optional DPoP (RFC 9449) at the OAuth 2.1 border
 
 Inside the mesh, libp2p channel binding (`client_peer_id == connection_peer_id`)
-provides per-connection proof of possession between nodes. An external MCP
-client, however, reaches a node's `/mcp` ingress over HTTPS with no libp2p
-channel, so the Biscuit minted for it at `/oauth/token` carries a claimed
-`client_peer_id` and is a bearer token on that HTTPS hop.
+provides per-connection proof of possession between nodes. An external HTTP
+client, however, reaches a node's `/mcp` ingress or a router's `/ingress/*`
+(`edge` mode) over HTTPS with no libp2p channel, so `BaselineReplayCheck`
+cannot bind the request to a libp2p stream; the Biscuit minted at
+`/oauth/token` carries a claimed `client_peer_id` and acts as a bearer token on
+that HTTPS hop (with `mesh:role:router` and unattenuated standing Member
+Biscuits explicitly refused on `/ingress/*`).
 
 DPoP (RFC 9449) is the standard mechanism to sender-constrain that external
 OAuth hop: when a client sends a `DPoP` header at `/oauth/token`, the control
@@ -538,10 +568,10 @@ as `client_key_thumbprint("<jkt>")` in the Biscuit authority block, and returns
 `token_type: DPoP`, and the node's `/mcp` ingress verifies the `DPoP` proof with
 `ath` over the Biscuit and checks
 `client_key_thumbprint($t), connection_key_thumbprint($t)`. Because the MCP
-authorization specification does not require DPoP and off-the-shelf MCP clients
-(Claude Code, Gemini CLI, Cursor, VS Code) only send Authorization Code + PKCE
-today, DPoP is optional (`dpop_bound_access_tokens_required: false`) and a
-Biscuit minted without a `DPoP` proof remains a bearer token at `/mcp`.
+and A2A specifications do not require DPoP and off-the-shelf MCP and A2A clients
+(Claude Code, Gemini CLI, Cursor, VS Code, `a2aclient`) only send bearer tokens
+over TLS today, DPoP is optional (`dpop_bound_access_tokens_required: false`) on
+`/mcp` and omitted on `/ingress/*`.
 
 ### 5.3 No built-in Azure or AWS IMDS node enrollment `TokenSource`
 

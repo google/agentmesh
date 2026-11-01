@@ -275,3 +275,80 @@ func TestMigrationRenamesSamPrefixesToMesh(t *testing.T) {
 		t.Errorf("egress ServedBy = %+v, want [mesh:role:node]", egress)
 	}
 }
+
+func TestRouterIngressURLAndPolicyIngressRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cp.db")
+	db := openAtSchemaVersion(t, path, 20)
+	now := time.Now()
+	if _, err := db.Exec(`INSERT INTO routers (peer_id, multiaddresses, last_lease_renewal, expires_at, connected_peers, dht_size, connections, connection_limit)
+		VALUES ('12D3KooWRouterOld', '["/ip4/127.0.0.1/tcp/4001"]', ?, ?, '[]', 1, 0, 100)`, now.UnixMilli(), now.Add(time.Hour).UnixMilli()); err != nil {
+		t.Fatalf("insert pre-v21 router: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := NewSQLStore("sqlite", path)
+	if err != nil {
+		t.Fatalf("NewSQLStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	ctx := context.Background()
+
+	if err := store.UpsertRouterLease(ctx, &RouterLease{
+		PeerID:      "12D3KooWRouterNew",
+		Addresses:   []string{"/ip4/127.0.0.1/tcp/4002"},
+		LastRenewal: now,
+		ExpiresAt:   now.Add(time.Hour),
+		IngressURL:  "https://bananas.sam-mesh.dev/ingress",
+	}); err != nil {
+		t.Fatalf("UpsertRouterLease: %v", err)
+	}
+
+	routers, err := store.GetActiveRouters(ctx)
+	if err != nil {
+		t.Fatalf("GetActiveRouters: %v", err)
+	}
+	if len(routers) != 2 {
+		t.Fatalf("len(routers) = %d, want 2", len(routers))
+	}
+	var gotOld, gotNew string
+	for _, r := range routers {
+		switch r.PeerID {
+		case "12D3KooWRouterOld":
+			gotOld = r.IngressURL
+		case "12D3KooWRouterNew":
+			gotNew = r.IngressURL
+		}
+	}
+	if gotOld != "" {
+		t.Errorf("pre-v21 router IngressURL = %q, want empty", gotOld)
+	}
+	if gotNew != "https://bananas.sam-mesh.dev/ingress" {
+		t.Errorf("new router IngressURL = %q, want https://bananas.sam-mesh.dev/ingress", gotNew)
+	}
+
+	wantGrant := &api.IngressGrant{
+		Services:         []string{"a2a://*"},
+		AllowedAuthModes: []api.IngressAuthMode{api.IngressAuthMode_INGRESS_AUTH_MODE_EDGE, api.IngressAuthMode_INGRESS_AUTH_MODE_PASSTHROUGH},
+	}
+	if err := store.SaveMeshPolicy(ctx, []*api.PolicyRole{
+		{
+			Name:           "agent-host",
+			AllowedIngress: []*api.IngressGrant{wantGrant},
+		},
+	}, nil); err != nil {
+		t.Fatalf("SaveMeshPolicy: %v", err)
+	}
+	roles, _, err := store.GetMeshPolicy(ctx)
+	if err != nil {
+		t.Fatalf("GetMeshPolicy: %v", err)
+	}
+	if len(roles) != 1 || len(roles[0].AllowedIngress) != 1 {
+		t.Fatalf("roles = %+v, want 1 role with 1 ingress grant", roles)
+	}
+	gotGrant := roles[0].AllowedIngress[0]
+	if !reflect.DeepEqual(gotGrant.Services, wantGrant.Services) || !reflect.DeepEqual(gotGrant.AllowedAuthModes, wantGrant.AllowedAuthModes) {
+		t.Errorf("got grant %+v, want %+v", gotGrant, wantGrant)
+	}
+}

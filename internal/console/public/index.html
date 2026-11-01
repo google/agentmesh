@@ -206,10 +206,8 @@
                         </div>
                     </div>
                     <!-- Admins only: a revoked node keeps its record, so it can be restored. -->
-                    <div id="revoked-nodes" hidden>
-                        <div class="section-header section-header-spaced">
-                            <h2>Revoked Nodes</h2>
-                        </div>
+                    <details id="revoked-nodes" class="section-header-spaced" hidden>
+                        <summary class="section-header"><h2>Revoked Nodes</h2></summary>
                         <div class="card">
                             <div class="table-responsive">
                             <table class="data-table">
@@ -225,7 +223,7 @@
                             </table>
                             </div>
                         </div>
-                    </div>
+                    </details>
                     <!-- Loaded on open, never by the refresh: expired rows pile up for the
                          retention period, yet an expired OIDC node can renew until revoked. -->
                     <details id="expired-nodes" class="section-header-spaced">

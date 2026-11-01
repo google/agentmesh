@@ -395,6 +395,12 @@ type Router struct {
 	metricsServer *http.Server
 	metricsAddr   net.Addr
 
+	ingressServer  *http.Server
+	ingressAddr    net.Addr
+	ingressLimiter *ratelimit.PeerRateLimiter
+
+	revokedTokens revocationSet
+
 	// identityLoggedAt is when the "Router Online" line was last written.
 	identityLoggedAt atomic.Pointer[time.Time]
 	// leasedAddrs is the address list of the last accepted lease, joined.
@@ -416,12 +422,18 @@ func NewRouter(ctx context.Context, config Options) (*Router, error) {
 		cancel()
 		return nil, fmt.Errorf("failed to create handshake rate limiter: %w", err)
 	}
+	ingressLimiter, err := ratelimit.NewPeerRateLimiterWithRate(handshakeLimiterSize, ingressRateLimitPerIP, ingressRateBurstPerIP)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create ingress rate limiter: %w", err)
+	}
 
 	return &Router{
 		config:           config,
 		ctx:              ctx,
 		cancel:           cancel,
 		handshakeLimiter: handshakeLimiter,
+		ingressLimiter:   ingressLimiter,
 		syncTrigger:      make(chan struct{}, 1),
 	}, nil
 }
@@ -600,6 +612,14 @@ func (r *Router) Start() (retErr error) {
 		},
 	})
 
+	if r.config.IngressAddr != "" {
+		if err := r.serveIngress(r.config.IngressAddr); err != nil {
+			return fmt.Errorf("failed to start ingress listener: %w", err)
+		}
+	}
+
+	r.isReady.Store(true)
+
 	// 5. Start background routines
 	r.wg.Add(5)
 	go r.runControlPlaneSyncLoop()
@@ -614,7 +634,6 @@ func (r *Router) Start() (retErr error) {
 		p2plimits.ObserveStreamPressure(hostNode.Network().Conns, busiestConnStreams, logger.Warnf).Run(r.ctx, streamPressureInterval)
 	}()
 
-	r.isReady.Store(true)
 	logger.Infof("Router Online. PeerID: %s, ListenAddrs: %v", r.Host.ID(), r.Host.Addrs())
 	return nil
 }
@@ -1048,6 +1067,7 @@ func (r *Router) listenForControlPlaneEvents(ctx context.Context) {
 				if bannedPeer, err := peer.Decode(event.PeerId); err == nil {
 					logger.Infof("[Router Event] Received BANNED event for peer %s, evicting from authenticated peers and adding to blocklist", bannedPeer)
 					r.forgetPeer(bannedPeer)
+					r.records.removePeer(bannedPeer)
 					// The timestamp is what stops an /info answer that was
 					// already in flight from undoing this (see
 					// reconcileBannedPeers).
@@ -1121,15 +1141,179 @@ func (r *Router) runControlPlaneSyncLoop() {
 // signs for is refused until the rotation is learned and the credential
 // refreshed (syncKeys).
 func (r *Router) syncControlPlane() {
-	if err := r.syncKeys(); err != nil {
+	if err := r.syncKeys(); err != nil && r.ctx.Err() == nil {
 		logger.Errorf("Failed keys sync: %v", err)
 	}
 	r.renewLease()
 	r.connectBootstrapRouters()
-	if err := r.syncPolicy(); err != nil {
+	if err := r.syncPolicy(); err != nil && r.ctx.Err() == nil {
 		logger.Errorf("Failed policy sync: %v", err)
 	}
+	if err := r.syncRevocations(); err != nil && r.ctx.Err() == nil {
+		logger.Errorf("Failed revocations sync: %v", err)
+	}
 	r.refreshExpiringCredential()
+}
+
+func (r *Router) syncRevocations() error {
+	r.keysMu.RLock()
+	tok := r.credential.biscuit
+	r.keysMu.RUnlock()
+	if len(tok) == 0 {
+		return nil
+	}
+	fetchedAt := time.Now()
+	resp, err := r.controlPlane(10*time.Second).FetchRevocations(r.ctx, tok)
+	if errors.Is(err, cpclient.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	expiry := fetchedAt.Add(24 * time.Hour)
+	for _, revID := range resp.GetRevocationIds() {
+		r.recordRevokedBiscuitID(revID, expiry)
+	}
+	r.credentials.Range(func(k, v any) bool {
+		pid, ok := k.(peer.ID)
+		cred, credOK := v.(memberCredential)
+		if ok && credOK && r.isBiscuitRevoked(cred.biscuit) {
+			logger.Infof("[Revocations] Evicting peer %s with revoked biscuit", pid)
+			r.forgetPeer(pid)
+			if r.records != nil {
+				r.records.removePeer(pid)
+			}
+			if r.Host != nil {
+				_ = r.Host.Network().ClosePeer(pid)
+			}
+		}
+		return true
+	})
+	if len(resp.GetBannedPeerIds()) > 0 {
+		r.reconcileBannedPeers(resp.GetBannedPeerIds(), fetchedAt)
+	}
+	return nil
+}
+
+const revokedPruneMin = 64
+
+// revocationSet holds active revoked Biscuit authority revocation IDs synced
+// from the control plane. Entries expire by timestamp and are never evicted by
+// capacity, so high-churn revocation cannot push live revocations out of the
+// deny list. Zero-value safe for test routers constructed as &Router{}.
+type revocationSet struct {
+	mu      sync.Mutex
+	entries map[string]time.Time
+	pruneAt int
+}
+
+func normalizeRevocationKey(revID string) string {
+	revID = strings.TrimSpace(revID)
+	if revID == "" {
+		return ""
+	}
+	if (len(revID) == 64 || len(revID) == 128) && isHexDigits(revID) {
+		if raw, err := hex.DecodeString(revID); err == nil && len(raw) > 0 {
+			return base64.RawURLEncoding.EncodeToString(raw)
+		}
+	}
+	return revID
+}
+
+func isHexByte(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
+func isHexDigits(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if !isHexByte(s[i]) {
+			return false
+		}
+	}
+	return len(s) > 0
+}
+
+func (s *revocationSet) add(revID string, expiry time.Time) {
+	key := normalizeRevocationKey(revID)
+	if key == "" {
+		return
+	}
+	now := time.Now()
+	if !now.Before(expiry) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.entries == nil {
+		s.entries = make(map[string]time.Time)
+	}
+	if len(s.entries) >= max(revokedPruneMin, s.pruneAt) {
+		for k, exp := range s.entries {
+			if !now.Before(exp) {
+				delete(s.entries, k)
+			}
+		}
+		s.pruneAt = max(revokedPruneMin, 2*len(s.entries))
+	}
+	if existing, ok := s.entries[key]; !ok || expiry.After(existing) {
+		s.entries[key] = expiry
+	}
+}
+
+func (s *revocationSet) isRevoked(b *biscuit.Biscuit, now time.Time) bool {
+	if s == nil || b == nil {
+		return false
+	}
+	ids := b.RevocationIds()
+	if len(ids) == 0 {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.entries) == 0 {
+		return false
+	}
+	for _, id := range ids {
+		key := base64.RawURLEncoding.EncodeToString(id)
+		if exp, ok := s.entries[key]; ok {
+			if now.Before(exp) {
+				return true
+			}
+			delete(s.entries, key)
+		}
+	}
+	return false
+}
+
+func (s *revocationSet) activeCount(now time.Time) int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for k, exp := range s.entries {
+		if now.Before(exp) {
+			n++
+		} else {
+			delete(s.entries, k)
+		}
+	}
+	return n
+}
+
+func (r *Router) recordRevokedBiscuitID(revID string, expiry time.Time) {
+	if r == nil {
+		return
+	}
+	r.revokedTokens.add(revID, expiry)
+}
+
+func (r *Router) isBiscuitRevoked(b *biscuit.Biscuit) bool {
+	if r == nil || b == nil {
+		return false
+	}
+	return r.revokedTokens.isRevoked(b, time.Now())
 }
 
 // refreshExpiringCredential refreshes the router's own credential once less
@@ -1276,6 +1460,7 @@ func (r *Router) sendLease(ctx context.Context, ttl *time.Duration, attempts int
 				ChallengeSignature: sig,
 				Connections:        inbound,
 				ConnectionLimit:    int32(r.config.HighWaterMark),
+				IngressUrl:         r.leasedIngressURL(),
 			}
 			if ttl != nil {
 				req.Ttl = durationpb.New(*ttl)
@@ -1427,6 +1612,7 @@ func (r *Router) reconcileBannedPeers(peerIDs []string, fetchedAt time.Time) {
 		logger.Infof("[Federation] Peer %s is banned, adding to blocklist", p)
 		r.bannedPeers.Store(p, fetchedAt)
 		r.forgetPeer(p)
+		r.records.removePeer(p)
 		if r.Host != nil {
 			_ = r.Host.Network().ClosePeer(p)
 		}
@@ -1652,7 +1838,11 @@ var authHandshakeTimeout = 10 * time.Second
 
 // handshakeLimiterSize is how many distinct peers' handshake budgets are
 // tracked at once (LRU beyond that).
-const handshakeLimiterSize = 4096
+const (
+	handshakeLimiterSize  = 4096
+	ingressRateLimitPerIP = 200
+	ingressRateBurstPerIP = 400
+)
 
 // HandleAuthHandshake processes incoming auth connections.
 // It is part of mutual auth:
@@ -1704,6 +1894,14 @@ func (r *Router) HandleAuthHandshake(s network.Stream) {
 		// counter carries the rate.
 		if r.authFailureLog.allow(remotePeer, time.Now()) {
 			logger.Warnf("[AuthN] Authorization failed for peer %s: %v (further failures from this peer are logged once per minute)", remotePeer, err)
+		}
+		authHandshakesTotal.WithLabelValues(handshakeUnauthorized).Inc()
+		_ = s.Reset()
+		return
+	}
+	if r.isBiscuitRevoked(b) {
+		if r.authFailureLog.allow(remotePeer, time.Now()) {
+			logger.Warnf("[AuthN] Rejecting revoked biscuit for peer %s", remotePeer)
 		}
 		authHandshakesTotal.WithLabelValues(handshakeUnauthorized).Inc()
 		_ = s.Reset()
@@ -1782,6 +1980,9 @@ func (r *Router) performMutualAuth(s network.Stream) error {
 	if err != nil {
 		return fmt.Errorf("failed to verify peer router biscuit: %w", err)
 	}
+	if r.isBiscuitRevoked(b) {
+		return fmt.Errorf("peer router %s biscuit is revoked", remotePeer)
+	}
 
 	// Enforce required role inside the biscuit
 	if err := identity.RequireRole(b, verifyingKey, r.config.RequiredRole, r.config.BiscuitTimeout); err != nil {
@@ -1809,6 +2010,14 @@ func (r *Router) Close() error {
 	r.cancel()
 
 	var errs []error
+	if r.ingressServer != nil {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := r.ingressServer.Shutdown(shutdownCtx); err != nil {
+			_ = r.ingressServer.Close()
+			errs = append(errs, err)
+		}
+		shutdownCancel()
+	}
 	if r.metricsServer != nil {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := r.metricsServer.Shutdown(shutdownCtx); err != nil {

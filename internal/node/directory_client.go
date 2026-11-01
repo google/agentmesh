@@ -115,11 +115,15 @@ type routerDirectory struct {
 }
 
 func (d *routerDirectory) Provide(ctx context.Context, key []byte, service string) error {
+	return d.ProvideWithIngress(ctx, key, service, nil)
+}
+
+func (d *routerDirectory) ProvideWithIngress(ctx context.Context, key []byte, service string, ingress *api.ServiceIngress) error {
 	addrs := d.addrs()
 	if len(addrs) > api.DirectoryMaxAddrs {
 		addrs = addrs[:api.DirectoryMaxAddrs]
 	}
-	rec := &api.DirectoryProvide{Key: key, Service: service, Addrs: make([]string, 0, len(addrs))}
+	rec := &api.DirectoryProvide{Key: key, Service: service, Addrs: make([]string, 0, len(addrs)), Ingress: ingress}
 	for _, a := range addrs {
 		rec.Addrs = append(rec.Addrs, a.String())
 	}
