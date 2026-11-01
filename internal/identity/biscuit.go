@@ -607,7 +607,10 @@ func verifyBiscuit(biscuitData []byte, expectedPeer peer.ID, trustedPublicKeys [
 	}
 
 	if authorizer == nil {
-		return nil, nil, time.Time{}, fmt.Errorf("no valid key found for verification: %v", lastErr)
+		if lastErr == nil {
+			lastErr = errors.New("no trusted keys")
+		}
+		return nil, nil, time.Time{}, fmt.Errorf("no valid key found for verification: %w", lastErr)
 	}
 
 	if err := RequireAuthorityBinding(b, expectedPeer); err != nil {
