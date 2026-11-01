@@ -84,11 +84,6 @@ Inference and A2A discovery return metadata, but this executable provides no
 HTTP proxy, `/v1` endpoint, local socket or `local_proxy_url`. Use an SDK client
 or an `agentmesh-node` HTTP proxy to invoke those protocols.
 
-This source implementation is the executable portion of
-[#544](https://github.com/google/agentmesh/issues/544). Official MCP registry
-registration and release automation are separate work; this configuration does
-not depend on a published registry entry.
-
 ## Use
 
 Both programs below are in

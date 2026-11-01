@@ -1,6 +1,6 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "dev.sam-mesh/mesh",
+  "name": "io.github.google/agentmesh",
   "title": "Agent Mesh",
   "description": "Discover and call remote MCP tools as your own authenticated Agent Mesh member.",
   "repository": {
