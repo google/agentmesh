@@ -146,7 +146,13 @@ func (r *Router) IngressHandler() http.Handler {
 			if r.gated == nil {
 				return nil, errors.New("router host is not initialized")
 			}
-			return gostream.Dial(network.WithAllowLimitedConn(ctx, "ingress"), r.gated, pid, api.IngressProtocolID)
+			// The inbound request carries no deadline, so an unresponsive
+			// provider or a hung stream negotiation would hold this
+			// goroutine for as long as the client waits. The stream, once
+			// open, outlives dialCtx.
+			dialCtx, cancel := context.WithTimeout(ctx, ingressDialTimeout)
+			defer cancel()
+			return gostream.Dial(network.WithAllowLimitedConn(dialCtx, "ingress"), r.gated, pid, api.IngressProtocolID)
 		},
 		MaxIdleConnsPerHost:   16,
 		IdleConnTimeout:       60 * time.Second,
@@ -299,7 +305,7 @@ func (r *Router) handleIngressRequest(w http.ResponseWriter, req *http.Request, 
 	clientIP := clientIPFromRemoteAddr(req.RemoteAddr)
 	req.Body = http.MaxBytesReader(w, req.Body, maxIngressBodyBytes)
 
-	if hasDotSegment(req.URL.Path) {
+	if api.HasDotSegment(req.URL.Path) {
 		routerIngressRequestsTotal.WithLabelValues(ingressModeUnknown, ingressOutcomeInvalid).Inc()
 		logger.Debugf("[Ingress] Rejecting dot-segment path from %s", clientIP)
 		http.Error(w, "Invalid path", http.StatusBadRequest)
@@ -949,15 +955,6 @@ func clientIPFromRemoteAddr(remoteAddr string) string {
 	return "unknown"
 }
 
-func hasDotSegment(p string) bool {
-	for _, seg := range strings.Split(p, "/") {
-		if seg == "." || seg == ".." {
-			return true
-		}
-	}
-	return false
-}
-
 func isHTTPTransportBinding(binding a2a.TransportProtocol) bool {
 	switch strings.ToUpper(string(binding)) {
 	case string(a2a.TransportProtocolJSONRPC), string(a2a.TransportProtocolHTTPJSON):
@@ -969,7 +966,7 @@ func isHTTPTransportBinding(binding a2a.TransportProtocol) bool {
 func resolveIngressInterfaceURL(base, raw string) string {
 	ref, err := url.Parse(raw)
 	if err != nil || ref.Scheme != "" || ref.Host != "" || ref.User != nil || ref.Opaque != "" ||
-		strings.HasPrefix(ref.Path, "/") || hasDotSegment(ref.Path) {
+		strings.HasPrefix(ref.Path, "/") || api.HasDotSegment(ref.Path) {
 		return base
 	}
 	out := base

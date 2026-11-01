@@ -474,7 +474,7 @@ func (n *AgentMeshNode) applyPendingEgress(ctx context.Context) {
 // path and the destination's host and port, as on the mesh datapath. The
 // client's Authorization was for the node and does not travel further.
 func handleLocalEgress(node *AgentMeshNode, w http.ResponseWriter, r *http.Request) {
-	if hasDotSegment(r.URL.Path) {
+	if api.HasDotSegment(r.URL.Path) {
 		http.Error(w, "Invalid path", http.StatusBadRequest)
 		return
 	}

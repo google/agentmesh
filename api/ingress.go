@@ -155,6 +155,21 @@ func ValidatePeerRecordIngress(ing *ServiceIngress) error {
 	return nil
 }
 
+// HasDotSegment reports whether a URL path carries a "." or ".." segment.
+// Policy is decided on the /<type>/<name> prefix of a path, so a dot segment
+// in what follows could resolve to a sibling service or file on the backend.
+// A backslash counts as a separator too: it reaches the backend
+// percent-encoded, and a backend on a platform that treats "\" as "/" would
+// otherwise see a traversal this check did not.
+func HasDotSegment(p string) bool {
+	for _, seg := range strings.Split(strings.ReplaceAll(p, "\\", "/"), "/") {
+		if seg == "." || seg == ".." {
+			return true
+		}
+	}
+	return false
+}
+
 // SanitizeExternalIngressHeaders removes ambient cookies, spoofable X-Mesh-*
 // and X-Peer-Id attribution headers, and (when stripAuthorization is true) the
 // external caller's Authorization header before forwarding an external ingress

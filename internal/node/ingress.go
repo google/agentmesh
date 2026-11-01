@@ -177,7 +177,7 @@ func (n *AgentMeshNode) externalIngressHandler() http.Handler {
 		}()
 
 		path := r.URL.Path
-		if hasDotSegment(path) {
+		if api.HasDotSegment(path) {
 			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeInvalid).Inc()
 			http.Error(w, "Invalid path", http.StatusBadRequest)
 			return

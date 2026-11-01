@@ -2530,7 +2530,7 @@ func (n *AgentMeshNode) StartIngressServer(ctx context.Context) error {
 			path := r.URL.Path
 			// Policy is decided on the /{type}/{name} prefix; a ".." segment in
 			// what follows could resolve to a sibling service on a shared backend.
-			if hasDotSegment(path) {
+			if api.HasDotSegment(path) {
 				http.Error(w, "Invalid path", http.StatusBadRequest)
 				return
 			}

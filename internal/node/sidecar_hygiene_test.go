@@ -34,9 +34,14 @@ func TestHasDotSegment(t *testing.T) {
 		"/mcp/a/x..y/tools":    false, // ".." inside a segment is just a name
 		"/mcp/a/tools/...":     false,
 		"/mesh/p/mcp/a/../b/x": true,
+		// A backslash reaches the backend percent-encoded; a backend that
+		// treats it as a separator would see a traversal, so it is one here.
+		"/mcp/a/..\\b/tools":  true,
+		"/mcp/a\\..\\b/tools": true,
+		"/mcp/a/x\\y/tools":   false,
 	} {
-		if got := hasDotSegment(path); got != want {
-			t.Errorf("hasDotSegment(%q) = %v, want %v", path, got, want)
+		if got := api.HasDotSegment(path); got != want {
+			t.Errorf("HasDotSegment(%q) = %v, want %v", path, got, want)
 		}
 	}
 }

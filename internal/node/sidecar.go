@@ -490,19 +490,6 @@ func stripSidecarTokenFromAuthorization(r *http.Request, token string) {
 	}
 }
 
-// hasDotSegment reports whether any path segment is "." or "..". Go's
-// ServeMux canonicalizes these with a redirect, but the mesh proxies pass
-// paths through to backends that may resolve them against a different
-// service prefix than the one authorization was decided on.
-func hasDotSegment(p string) bool {
-	for _, seg := range strings.Split(p, "/") {
-		if seg == "." || seg == ".." {
-			return true
-		}
-	}
-	return false
-}
-
 // constantTimeEqual compares two secrets without leaking their contents through
 // timing. Hashing first keeps the comparison length-independent, so a mismatched
 // length is no more distinguishable than a mismatched byte. This mirrors how the
@@ -776,7 +763,7 @@ func createEgressProxy(node *AgentMeshNode) http.Handler {
 		}
 		// The remote's policy is decided on the /{type}/{name} prefix this
 		// proxy forwards verbatim; a ".." in the rest is not ours to send.
-		if hasDotSegment(r.URL.Path) {
+		if api.HasDotSegment(r.URL.Path) {
 			http.Error(w, "Bad Request: path must not contain dot segments", http.StatusBadRequest)
 			return
 		}
