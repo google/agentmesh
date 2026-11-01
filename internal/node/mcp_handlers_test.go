@@ -23,6 +23,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1091,4 +1092,91 @@ func newPreDiscoverMCPHandler(t *testing.T, tools []*mcp.Tool) http.Handler {
 		}
 		real.ServeHTTP(w, r)
 	})
+}
+
+func TestHandleFindRemoteTools_Intent(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	backend := httptest.NewServer(newFakeMCPHandler(t, []*mcp.Tool{
+		{Name: "add_comment", Description: "Add a comment", InputSchema: map[string]any{"type": "object"}},
+		{Name: "review_changes", Description: "Inspect modifications", InputSchema: map[string]any{"type": "object"}},
+		{Name: "review_pr", Description: "Review a pull request", InputSchema: map[string]any{"type": "object"}},
+	}))
+	defer backend.Close()
+	caller, cleanupCaller := startBareNode(t, ctx)
+	defer cleanupCaller()
+	provider, cleanupProvider := startBareNode(t, ctx)
+	defer cleanupProvider()
+	_, root := enrollUnderRoot(t, caller, provider)
+	if err := buildAndSaveCustomBiscuit(caller, root, []string{"mcp://code-reviewer", "system://mesh.catalog"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := caller.Host.Connect(ctx, peer.AddrInfo{ID: provider.Host.ID(), Addrs: provider.Host.Addrs()}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"code-reviewer", "private-review"} {
+		if err := provider.RegisterService(ctx, &api.RegisterServiceRequest{
+			Service: &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_MCP, Name: name},
+			Backend: &api.RegisterServiceRequest_TargetUrl{TargetUrl: backend.URL},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name, service, exact, intent string
+		wantTools                    []string
+	}{
+		{
+			// Only the tool name contains both query words, and it starts
+			// behind add_comment in the unranked catalogue.
+			name: "snake_case name matches natural language", intent: "review changes",
+			wantTools: []string{"review_changes", "review_pr", "add_comment"},
+		},
+		{
+			name: "multi-word coverage outranks single-word match", intent: "review pull request",
+			wantTools: []string{"review_pr", "review_changes", "add_comment"},
+		},
+		{
+			name: "bare service", service: "code-reviewer", intent: "review pull request",
+			wantTools: []string{"review_pr", "review_changes", "add_comment"},
+		},
+		{
+			name: "namespaced service", service: "mcp://code-reviewer", intent: "review pull request",
+			wantTools: []string{"review_pr", "review_changes", "add_comment"},
+		},
+		{
+			name: "exact name wins over conflicting intent", exact: "add_comment", intent: "review pull request",
+			wantTools: []string{"add_comment"},
+		},
+		{
+			// Intent is a ranking hint, so zero overlap retains all authorized
+			// tools in deterministic tool-name order rather than hiding them.
+			name: "no overlap retains catalogue", intent: "weather forecast",
+			wantTools: []string{"add_comment", "review_changes", "review_pr"},
+		},
+		{name: "denied service stays hidden", service: "private-review", intent: "review pull request"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, _, err := caller.handleFindRemoteTools(ctx, nil, FindRemoteToolsParams{
+				PeerID: provider.Host.ID().String(), ServiceName: tc.service, ToolName: tc.exact, Intent: tc.intent,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var rows []remoteToolRow
+			if err := json.Unmarshal([]byte(result.Content[0].(*mcp.TextContent).Text), &rows); err != nil {
+				t.Fatal(err)
+			}
+			var gotTools []string
+			for _, row := range rows {
+				gotTools = append(gotTools, strings.TrimPrefix(row.ToolName, "mcp://code-reviewer/"))
+				if row.PeerID != provider.Host.ID().String() || !strings.HasPrefix(row.ToolName, "mcp://code-reviewer/") || row.Error != "" {
+					t.Errorf("unexpected or unauthorized row: %+v", row)
+				}
+			}
+			if !slices.Equal(gotTools, tc.wantTools) {
+				t.Errorf("tools = %v, want %v", gotTools, tc.wantTools)
+			}
+		})
+	}
 }

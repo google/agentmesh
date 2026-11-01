@@ -198,8 +198,12 @@ or function-word-only intent preserves the unranked catalogue order. Peer and
 service filters and authorization apply before ranking.
 
 For example, `{"intent":"review pull request","service_name":"code-reviewer"}`
-puts a tool described as "Review a pull request" ahead of an unrelated comment
-tool, while still returning both. Use `tool_name` for exact lookups.
+puts `review_pr` ("Review a pull request", three matching words) ahead of
+`review_changes` ("Inspect modifications", one matching word in its name),
+followed by an unrelated `add_comment` tool. Repeating a word does not increase
+its coverage. If no tool matches, all authorized tools are still returned in
+tool-name/peer-ID order.
+Use `tool_name` for exact lookups.
 
 ### `describe_remote_tool`
 
