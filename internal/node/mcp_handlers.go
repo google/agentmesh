@@ -15,13 +15,16 @@
 package node
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/google/agentmesh/api"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -186,7 +189,7 @@ func (n *AgentMeshNode) handleCallRemoteTool(ctx context.Context, req *mcp.CallT
 // FindRemoteToolsParams defines the parameters for the
 // find_remote_tools tool.
 type FindRemoteToolsParams struct {
-	Intent      string `json:"intent,omitempty" jsonschema:"Natural-language description of what the caller is looking for. Reserved for future semantic ranking; currently accepted but ignored."`
+	Intent      string `json:"intent,omitempty" jsonschema:"Rank tools by matching words in their names and descriptions. Nonmatching tools remain in the results. Ignored when tool_name is set."`
 	PeerID      string `json:"peer_id,omitempty" jsonschema:"Restrict the search to a single peer. Empty means search the whole mesh."`
 	ServiceName string `json:"service_name,omitempty" jsonschema:"Restrict results to tools whose name starts with this service prefix (e.g. 'code-reviewer'). Empty means no service filter."`
 	ToolName    string `json:"tool_name,omitempty" jsonschema:"Exact (non-namespaced) tool name to locate across the mesh, e.g. 'review_pr'. Empty means list all tools."`
@@ -212,14 +215,10 @@ type remoteToolRow struct {
 // Filtering:
 //   - If params.ServiceName is set, only tools from that service are returned.
 //     Bare ("everything") and namespaced ("mcp://everything") forms are equivalent.
-//   - params.Intent is accepted and logged at debug level, but does not
-//     filter or rank results in this implementation (placeholder for
-//     future semantic search).
+//   - params.ToolName selects an exact tool name, taking precedence over intent.
+//   - Otherwise params.Intent ranks the authorized results by word overlap in
+//     names and descriptions, retaining nonmatching tools and error rows.
 func (n *AgentMeshNode) handleFindRemoteTools(ctx context.Context, req *mcp.CallToolRequest, params FindRemoteToolsParams) (*mcp.CallToolResult, any, error) {
-	if params.Intent != "" {
-		logger.Debugf("[find_remote_tools] intent (ignored): %q", params.Intent)
-	}
-
 	selfID := n.Host.ID().String()
 	if params.PeerID != "" && params.PeerID == selfID {
 		return nil, nil, fmt.Errorf("peer_id %q is this node; cross-mesh discovery cannot target self", params.PeerID)
@@ -266,6 +265,9 @@ func (n *AgentMeshNode) handleFindRemoteTools(ctx context.Context, req *mcp.Call
 
 	if params.ToolName != "" {
 		rows = filterRowsByToolName(rows, params.ToolName)
+	} else if params.Intent != "" {
+		rows = rankRowsByIntent(rows, params.Intent)
+		logger.Debugf("[find_remote_tools] ranked %d rows by intent", len(rows))
 	}
 	return marshalToolRows(rows)
 }
@@ -318,6 +320,74 @@ func filterRowsByToolName(rows []remoteToolRow, toolName string) []remoteToolRow
 		}
 	}
 	return out
+}
+
+// rankRowsByIntent orders an already authorized catalogue by distinct query
+// word coverage, then by matches in the service/tool name. This is lexical
+// ranking, not semantic search: it neither infers synonyms nor drops results.
+func rankRowsByIntent(rows []remoteToolRow, intent string) []remoteToolRow {
+	query := toolSearchTerms(intent)
+	if len(query) == 0 {
+		return rows
+	}
+	type rankedRow struct {
+		row                   remoteToolRow
+		coverage, nameMatches int
+	}
+	ranked := make([]rankedRow, len(rows))
+	for i, row := range rows {
+		ranked[i].row = row
+		if row.Error != "" {
+			// Preserve diagnostics, after all actual tools.
+			ranked[i].coverage = -1
+			continue
+		}
+		names := toolSearchTerms(strings.TrimPrefix(row.ToolName, api.MCPServicePrefix))
+		description := toolSearchTerms(row.Description)
+		for term := range query {
+			_, inName := names[term]
+			_, inDescription := description[term]
+			if inName || inDescription {
+				ranked[i].coverage++
+			}
+			if inName {
+				ranked[i].nameMatches++
+			}
+		}
+	}
+	slices.SortFunc(ranked, func(a, b rankedRow) int {
+		if c := cmp.Compare(b.coverage, a.coverage); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(b.nameMatches, a.nameMatches); c != 0 {
+			return c
+		}
+		if c := strings.Compare(a.row.ToolName, b.row.ToolName); c != 0 {
+			return c
+		}
+		return strings.Compare(a.row.PeerID, b.row.PeerID)
+	})
+	for i, entry := range ranked {
+		rows[i] = entry.row
+	}
+	return rows
+}
+
+// toolSearchTerms splits case-insensitive Unicode words at punctuation (including
+// snake_case and hyphenated names), ignoring common English function words.
+func toolSearchTerms(text string) map[string]struct{} {
+	words := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	})
+	terms := make(map[string]struct{}, len(words))
+	for _, word := range words {
+		switch word {
+		case "a", "an", "and", "as", "at", "be", "by", "for", "from", "in", "is", "it", "of", "on", "or", "that", "the", "this", "to", "with":
+			continue
+		}
+		terms[word] = struct{}{}
+	}
+	return terms
 }
 
 // fetchRemoteToolCatalogue gets the remote node's service catalogue,
