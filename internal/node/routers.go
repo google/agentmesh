@@ -235,25 +235,6 @@ func (n *AgentMeshNode) WantRouters() int { return n.wantRouters() }
 // RefreshRouters re-reads the routers from the control plane.
 func (n *AgentMeshNode) RefreshRouters(ctx context.Context) error { return n.refreshRouterCatalog(ctx) }
 
-// attach marks a router as one the node keeps: protected from the node's
-// connection manager, redialled when it drops, and offered to AutoRelay for
-// a reservation.
-func (n *AgentMeshNode) attach(router peer.ID) {
-	n.mu.Lock()
-	if n.attached == nil {
-		n.attached = map[peer.ID]bool{}
-	}
-	n.attached[router] = true
-	n.mu.Unlock()
-	if n.connMgr != nil {
-		n.connMgr.Protect(router, routerTag)
-	}
-	n.refreshRelays()
-	// A router to announce to: services registered before this one was
-	// held, as the egress assignments are at start, go to the directory now.
-	n.triggerReprovide()
-}
-
 // detach gives a router up: the node stops redialling it and lets the
 // monitor top up from the others.
 func (n *AgentMeshNode) detach(router peer.ID) {
@@ -284,19 +265,6 @@ func (n *AgentMeshNode) refreshRelays() {
 		}
 	}
 	n.currentRelays = relays
-}
-
-// pickRouters chooses k routers to attach to, from the catalog, leaving out
-// those already attached, currently dialing or redialing, and those that sent
-// the node away. When the catalog has routers and none passes the selector,
-// the warning names both sides, since that is a configuration to fix rather
-// than a router to wait for.
-func (n *AgentMeshNode) pickRouters(k int) []peer.AddrInfo {
-	cands := n.routerCandidates()
-	n.mu.Lock()
-	exclude := n.excludedRoutersLocked()
-	n.mu.Unlock()
-	return n.selectAndWarnRouters(cands, k, exclude)
 }
 
 func (n *AgentMeshNode) excludedRoutersLocked() map[peer.ID]bool {

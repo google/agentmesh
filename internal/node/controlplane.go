@@ -72,6 +72,11 @@ func (n *AgentMeshNode) fetchControlPlaneInfo(ctx context.Context, controlPlaneU
 	return n.controlPlane(controlPlaneURL).FetchInfo(ctx)
 }
 
+// fetchControlPlaneKeys retrieves the full set of currently valid control
+// plane public keys from /keys, the same catch-up path routers use.
+// Enrollment only hands out the newest key, so this is how a node learns
+// keys still in their rotation grace period, or rotations it missed while
+// offline. The set is accepted only if signed by a key in trusted.
 func (n *AgentMeshNode) fetchControlPlaneKeys(ctx context.Context, controlPlaneURL string, trusted []ed25519.PublicKey) ([]ed25519.PublicKey, error) {
 	return n.controlPlane(controlPlaneURL).FetchKeys(ctx, trusted)
 }
@@ -79,15 +84,6 @@ func (n *AgentMeshNode) fetchControlPlaneKeys(ctx context.Context, controlPlaneU
 // FetchControlPlaneInfo retrieves the latest configuration from the control plane's /info endpoint.
 func FetchControlPlaneInfo(ctx context.Context, controlPlaneURL string) (*api.ControlPlaneInfoResponse, error) {
 	return controlPlaneClient(controlPlaneURL).FetchInfo(ctx)
-}
-
-// FetchControlPlaneKeys retrieves the full set of currently valid control
-// plane public keys from /keys, the same catch-up path routers use.
-// Enrollment only hands out the newest key, so this is how a node learns
-// keys still in their rotation grace period, or rotations it missed while
-// offline. The set is accepted only if signed by a key in trusted.
-func FetchControlPlaneKeys(ctx context.Context, controlPlaneURL string, trusted []ed25519.PublicKey) ([]ed25519.PublicKey, error) {
-	return controlPlaneClient(controlPlaneURL).FetchKeys(ctx, trusted)
 }
 
 // mergeTrustedKeys replaces the stored trust set with the authoritative set
