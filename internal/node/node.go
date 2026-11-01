@@ -60,10 +60,12 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/security/noise"
 	libp2ptls "github.com/libp2p/go-libp2p/p2p/security/tls"
 	"github.com/libp2p/go-msgio"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/multiformats/go-multiaddr"
 	madns "github.com/multiformats/go-multiaddr-dns"
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // PeerstoreKeyPrivateIPFailed is the key used in the libp2p Peerstore to track
@@ -134,12 +136,27 @@ func (n *AgentMeshNode) isAdmitted(p peer.ID) bool {
 	return admissionHolds(&n.authPeers, p)
 }
 
+// IsAdmitted reports whether peer p currently holds a valid mesh handshake admission.
+func (n *AgentMeshNode) IsAdmitted(p peer.ID) bool {
+	return n.isAdmitted(p)
+}
+
 // isAdmittedRouter reports whether a peer completed the auth handshake with a
 // credential carrying role("mesh:role:router") and that admission holds. It
 // requires isAdmitted too, so dropping a peer from authPeers (a ban, an
 // eviction) withdraws its router standing with it.
 func (n *AgentMeshNode) isAdmittedRouter(p peer.ID) bool {
 	return n.isAdmitted(p) && admissionHolds(&n.authRouters, p)
+}
+
+// IsAdmittedRouter reports whether peer p currently holds a valid router handshake admission.
+func (n *AgentMeshNode) IsAdmittedRouter(p peer.ID) bool {
+	return n.isAdmittedRouter(p)
+}
+
+// BanPeer records peer p in the revocation cache, drops its admission, and closes open connections to it.
+func (n *AgentMeshNode) BanPeer(p peer.ID, bannedAtMs int64) {
+	n.banPeer(p, bannedAtMs)
 }
 
 // admitPeer records a completed handshake: every admitted peer in authPeers,
@@ -188,6 +205,8 @@ type AgentMeshNode struct {
 	authenticatedRouters map[peer.ID]bool
 	// redialing holds the routers a redialRouter goroutine is working on.
 	redialing map[peer.ID]bool
+	// dialing holds the routers a dialAndAttach goroutine is attaching to.
+	dialing map[peer.ID]bool
 	// handshaking holds the routers a handshake is in flight with; a second
 	// caller waits for that one (authRouter).
 	handshaking map[peer.ID]chan struct{}
@@ -259,6 +278,15 @@ type AgentMeshNode struct {
 	// metricsRegistry holds this node's state collector; see metricsHandler.
 	metricsOnce     sync.Once
 	metricsRegistry *prometheus.Registry
+	perNodeMetrics  *perNodeMetrics
+	refusedMu       sync.Mutex
+	refusedStreams  map[string]uint64
+
+	catalogOnce      sync.Once
+	catalogMCPServer *mcp.Server
+	egressOnce       sync.Once
+	egressHandler    http.Handler
+	credentialLapsed atomic.Bool
 }
 
 // SetTokenSource configures the live platform/OIDC token source presented as
@@ -584,7 +612,13 @@ func (n *AgentMeshNode) Start(ctx context.Context) error {
 	// SyncControlPlane may already have listed them with labels and load;
 	// otherwise they are the stored addresses, which say nothing more.
 	if len(n.routerCandidates()) == 0 {
-		n.setRouterCatalog(candidatesFromAddrs(ctx, n.config.RouterAddrs))
+		addrs := n.config.RouterAddrs
+		if len(addrs) == 0 && n.config.DisableFatalExit && n.Store != nil {
+			if _, storedAddrs, loadErr := n.Store.LoadMeshConfig(); loadErr == nil && len(storedAddrs) > 0 {
+				addrs = parseMultiaddrs(storedAddrs)
+			}
+		}
+		n.setRouterCatalog(candidatesFromAddrs(ctx, addrs))
 	}
 	staticRelays := n.routerCandidates()
 	if n.RouterPeerID == "" && len(staticRelays) > 0 {
@@ -597,7 +631,25 @@ func (n *AgentMeshNode) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to create connection manager: %w", err)
 	}
 	n.connMgr = cm
-	rm, err := newResourceManager()
+	started := false
+	if n.config.Registerer != nil && n.perNodeMetrics == nil {
+		pid, pErr := peer.IDFromPrivateKey(n.config.PrivKey)
+		if pErr != nil {
+			return fmt.Errorf("failed to derive peer ID for metrics: %w", pErr)
+		}
+		pm, mErr := newPerNodeMetrics(n, pid, n.config.Registerer)
+		if mErr != nil {
+			return fmt.Errorf("failed to register metrics: %w", mErr)
+		}
+		n.perNodeMetrics = pm
+		defer func() {
+			if !started && n.perNodeMetrics != nil {
+				n.perNodeMetrics.unregister()
+				n.perNodeMetrics = nil
+			}
+		}()
+	}
+	rm, err := newResourceManagerFor(n)
 	if err != nil {
 		return fmt.Errorf("failed to create resource manager: %w", err)
 	}
@@ -740,6 +792,7 @@ func (n *AgentMeshNode) Start(ctx context.Context) error {
 	n.services = NewServiceRegistry(n.Directory, n.config.BackendProbeTimeout)
 	n.services.reprovideNow = n.triggerReprovide
 	n.services.onIngressRegistered = n.logIngressURLs
+	n.services.onProvideFailure = n.recordServiceProvideFailure
 	n.applyPendingEgress(ctx)
 
 	if _, err := n.admitByRouters(ctx); err != nil {
@@ -839,6 +892,7 @@ func (n *AgentMeshNode) Start(ctx context.Context) error {
 	// admin can see mesh-wide service topology.
 	n.startCatalogReportLoop(ctx, n.config.CatalogReportInitialDelay, n.config.CatalogReportInterval)
 
+	started = true
 	return nil
 }
 
@@ -1024,7 +1078,10 @@ func (n *AgentMeshNode) startConnectionMonitor(ctx context.Context, bootstrapDur
 				consecutiveFailures++
 				logger.Errorf("[Monitor] Failed to reconnect to a router. Consecutive failures: %d/%d", consecutiveFailures, maxFailures)
 				if consecutiveFailures >= maxFailures {
-					logger.Fatalf("[Monitor] Failed to reconnect to a router for %d consecutive checks. Exiting to avoid network partition.", maxFailures)
+					if !n.config.DisableFatalExit {
+						logger.Fatalf("[Monitor] Failed to reconnect to a router for %d consecutive checks. Exiting to avoid network partition.", maxFailures)
+					}
+					logger.Errorf("[Monitor] Failed to reconnect to a router for %d consecutive checks; keeping embedded member running for background recovery.", maxFailures)
 				}
 			}
 		}
@@ -1098,7 +1155,10 @@ func (n *AgentMeshNode) admitByRouters(ctx context.Context) (authenticated bool,
 				logger.Debugf("[AuthN] Routers not re-read from the control plane: %v", refreshErr)
 			}
 		}
-		targets := n.pickRouters(n.wantRouters())
+		targets := n.reserveRoutersToAttach()
+		if len(targets) == 0 && n.IsConnected() {
+			return true, nil
+		}
 		var fatal error
 		if len(targets) > 0 {
 			results := n.dialAndAttach(ctx, targets, biscuitBytes)
@@ -1114,6 +1174,9 @@ func (n *AgentMeshNode) admitByRouters(ctx context.Context) (authenticated bool,
 		}
 		if fatal != nil {
 			return false, fmt.Errorf("fatal auth failure: %w", fatal)
+		}
+		if n.IsConnected() {
+			return true, nil
 		}
 		if attempt >= n.config.RouterAuthAttempts || delay <= 0 {
 			return false, errors.New("failed to authenticate with any router: all connection attempts failed")
@@ -1530,27 +1593,48 @@ func (n *AgentMeshNode) StartRenewalLoopWithSource(ctx context.Context, src Toke
 	if src == nil {
 		src = n.getTokenSource()
 	}
+	initBackoff := n.config.RenewalInitialBackoff
+	if initBackoff <= 0 {
+		initBackoff = 2 * time.Second
+	}
+	maxBackoff := n.config.RenewalMaxBackoff
+	if maxBackoff < initBackoff {
+		maxBackoff = max(5*time.Minute, initBackoff)
+	}
 	go func() {
+		var failureBackoff time.Duration
 		for {
-			var renewAfter = DefaultRenewalFallback // Default fallback
+			renewAfter := DefaultRenewalFallback
 
 			exp, err := n.Store.LoadIdentityExpiration()
 			if err == nil && exp > 0 {
 				expTime := time.Unix(exp, 0)
 				duration := time.Until(expTime)
-				if duration > RenewalThreshold {
+				switch {
+				case duration > RenewalThreshold:
 					renewAfter = duration - RenewalBuffer
-				} else if duration > 0 {
-					renewAfter = duration / 2
-					if renewAfter < 2*time.Second {
-						renewAfter = 2 * time.Second
+					if failureBackoff > renewAfter {
+						renewAfter = min(failureBackoff, duration/2)
 					}
-				} else {
-					renewAfter = 1 * time.Second
+				case duration > 0:
+					renewAfter = max(duration/2, initBackoff)
+					if failureBackoff > renewAfter {
+						renewAfter = min(failureBackoff, max(duration/2, initBackoff))
+					}
+				case failureBackoff > 0:
+					renewAfter = failureBackoff
+				default:
+					renewAfter = min(time.Second, initBackoff)
 				}
+			} else if failureBackoff > 0 {
+				renewAfter = failureBackoff
 			}
 
-			fmt.Printf("[Auth] Next renewal in %v\n", renewAfter)
+			if n.config.DisableFatalExit {
+				logger.Debugf("[Auth] Next renewal in %v", renewAfter)
+			} else {
+				fmt.Printf("[Auth] Next renewal in %v\n", renewAfter)
+			}
 			timer := time.NewTimer(renewAfter)
 
 			select {
@@ -1558,50 +1642,86 @@ func (n *AgentMeshNode) StartRenewalLoopWithSource(ctx context.Context, src Toke
 				timer.Stop()
 				return
 			case <-timer.C:
-				fmt.Println("Renewing enrollment...")
+				if n.config.DisableFatalExit {
+					logger.Debug("[Auth] Renewing enrollment...")
+				} else {
+					fmt.Println("Renewing enrollment...")
+				}
 
-				// Try proactive biscuit token refresh first
+				// Try proactive biscuit token refresh first.
 				refreshErr := n.RefreshEnrollment(ctx)
 				if refreshErr == nil {
+					failureBackoff = 0
+					n.recordCredentialRenewed()
 					logger.Infof("Enrollment renewed successfully via proactive refresh.")
 					continue
 				}
 
-				logger.Warnw("Proactive biscuit refresh failed, falling back to full OIDC/JWT re-enrollment", "error", refreshErr)
+				logger.Warnw("Proactive biscuit refresh failed, falling back to full re-enrollment", "error", refreshErr)
 
-				var newJWT string
-				var fetchErr error
-				if src == nil {
-					fetchErr = errors.New("no token source configured for renewal")
-				} else {
-					newJWT, fetchErr = src.FetchToken(ctx)
-				}
-
-				if fetchErr == nil {
-					controlPlaneURL, loadErr := n.Store.LoadControlPlaneURL()
-					if loadErr != nil {
-						fetchErr = fmt.Errorf("failed to load control plane URL for renewal: %w", loadErr)
-					} else {
-						fetchErr = n.Enroll(ctx, controlPlaneURL, newJWT)
-					}
-				}
-
-				if fetchErr != nil {
-					logger.Errorf("Renewal failed: %v", fetchErr)
-
-					// Check if we are already expired and if so, die to avoid a split brain
-					exp, loadErr := n.Store.LoadIdentityExpiration()
-					if loadErr == nil && exp > 0 {
-						if time.Now().After(time.Unix(exp, 0)) {
-							logger.Fatalf("Identity expired and renewal failed. Exiting to avoid network partition.")
-						}
-					}
-				} else {
+				renewErr := n.fallbackReEnroll(ctx, src)
+				if renewErr == nil {
+					failureBackoff = 0
+					n.recordCredentialRenewed()
 					logger.Infof("Enrollment renewed successfully.")
+					continue
+				}
+
+				if failureBackoff == 0 {
+					failureBackoff = initBackoff
+				} else {
+					failureBackoff = min(failureBackoff*2, maxBackoff)
+				}
+				logger.Errorf("Renewal failed (next backoff %v): %v", failureBackoff, renewErr)
+
+				exp, loadErr := n.Store.LoadIdentityExpiration()
+				if loadErr == nil && exp > 0 && !time.Now().Before(time.Unix(exp, 0)) {
+					if !n.config.DisableFatalExit {
+						logger.Fatalf("Identity expired and renewal failed. Exiting to avoid network partition.")
+					}
+					n.recordCredentialLapse(errors.Join(refreshErr, renewErr))
 				}
 			}
 		}
 	}()
+}
+
+func (n *AgentMeshNode) fallbackReEnroll(ctx context.Context, src TokenSource) error {
+	var errs []error
+	if src != nil {
+		newJWT, fetchErr := src.FetchToken(ctx)
+		if fetchErr != nil {
+			errs = append(errs, fetchErr)
+		} else {
+			controlPlaneURL, loadErr := n.Store.LoadControlPlaneURL()
+			if loadErr != nil {
+				errs = append(errs, fmt.Errorf("failed to load control plane URL for renewal: %w", loadErr))
+			} else if enrollErr := n.Enroll(ctx, controlPlaneURL, newJWT); enrollErr == nil {
+				return nil
+			} else {
+				errs = append(errs, enrollErr)
+			}
+		}
+	}
+	if n.Store != nil {
+		if rt, _ := n.Store.LoadRefreshToken(); rt != "" {
+			if oidcErr := n.ReEnrollWithRefreshToken(ctx); oidcErr == nil {
+				return nil
+			} else {
+				errs = append(errs, oidcErr)
+			}
+		}
+	}
+	if n.config.BootstrapToken != "" || n.config.BootstrapTokenPath != "" {
+		if n.recoverEnrollment(ctx) {
+			return nil
+		}
+		errs = append(errs, errors.New("bootstrap re-enrollment did not succeed"))
+	}
+	if len(errs) == 0 {
+		return errors.New("no token source configured for renewal")
+	}
+	return errors.Join(errs...)
 }
 
 type RefreshError struct {
@@ -1664,7 +1784,7 @@ func (n *AgentMeshNode) RefreshEnrollment(ctx context.Context) error {
 
 	url := controlPlaneURL + "/refresh"
 	b64Biscuit := base64.StdEncoding.EncodeToString(currentBiscuit)
-	client := controlPlaneHTTPClient(30 * time.Second)
+	client := n.cpHTTPClient(30 * time.Second)
 	resp, err := cpclient.DoWithChallenge(client, time.Now, func(timestamp int64) (*http.Request, error) {
 		sig, err := privKey.Sign(api.RefreshChallenge(peerID.String(), timestamp))
 		if err != nil {
@@ -1747,8 +1867,12 @@ func (n *AgentMeshNode) RefreshEnrollment(ctx context.Context) error {
 	return nil
 }
 
-// verifyOwnBiscuit checks a token the control plane handed this node: signed
+// VerifyOwnBiscuit checks a token the control plane handed this node: signed
 // by a trusted key, bound to this peer, and carrying the configured role.
+func (n *AgentMeshNode) VerifyOwnBiscuit(token []byte) error {
+	return n.verifyOwnBiscuit(token)
+}
+
 func (n *AgentMeshNode) verifyOwnBiscuit(token []byte) error {
 	if len(token) == 0 {
 		return errors.New("empty biscuit token")
@@ -2168,13 +2292,20 @@ func (n *AgentMeshNode) Teardown() error {
 	if n.services != nil && n.Directory != nil && n.Host != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), withdrawTimeout)
 		n.services.WithdrawAll(ctx)
-		if err := n.Directory.Withdraw(ctx, api.PeerKey(n.Host.ID())); err != nil && !errors.Is(err, errNoDirectoryRouter) {
-			logger.Warnf("[Directory] Withdrawing this node's record: %v", err)
+		if err := n.Directory.Withdraw(ctx, api.PeerKey(n.Host.ID())); err != nil {
+			if errors.Is(err, errNoDirectoryRouter) {
+				logger.Debugf("[Directory] Withdrawing this node's record skipped: %v", err)
+			} else {
+				logger.Warnf("[Directory] Withdrawing this node's record: %v", err)
+			}
 		}
 		cancel()
 	}
 	if n.services != nil {
 		n.services.TeardownAll()
+	}
+	if n.perNodeMetrics != nil {
+		n.perNodeMetrics.unregister()
 	}
 	var errs []error
 	if n.Host != nil {
@@ -2642,6 +2773,9 @@ func (n *AgentMeshNode) StartIngressServer(ctx context.Context) error {
 				if len(claims.Roles) > 0 {
 					r.Header.Set(api.HeaderMeshRoles, strings.Join(claims.Roles, ","))
 				}
+				if t := outermostTaskName(claims.TaskRules); t != "" {
+					r.Header.Set(api.HeaderMeshTask, t)
+				}
 			}
 
 			// Under the type the policy was evaluated on: a same-named service
@@ -2912,4 +3046,100 @@ func (n *AgentMeshNode) startCatalogReportLoop(ctx context.Context, initialDelay
 			}
 		}
 	}()
+}
+
+// CredentialLapsed reports whether this node's member credential has expired
+// and has not yet been renewed.
+func (n *AgentMeshNode) CredentialLapsed() bool {
+	return n.credentialLapsed.Load()
+}
+
+// IdentityPredatesRotation reports whether the node's current Biscuit was
+// signed before a trusted key rotation observed via SyncTrustedKeys.
+func (n *AgentMeshNode) IdentityPredatesRotation() bool {
+	return n.identityPredatesRotation()
+}
+
+// Services returns the node's local service registry (available after Start).
+func (n *AgentMeshNode) Services() *ServiceRegistry {
+	return n.services
+}
+
+func (n *AgentMeshNode) rawEgressHandler() http.Handler {
+	n.egressOnce.Do(func() {
+		n.egressHandler = createEgressProxy(n)
+	})
+	return n.egressHandler
+}
+
+// EgressHandler returns an in-process HTTP handler that routes
+// /mesh/<peer_id>/<type>/<name>[/<path>] requests over authenticated libp2p
+// streams, enforcing provider Biscuit, label, egress-floor, and publish-grant
+// verification as well as A2A AgentCard rewriting.
+func (n *AgentMeshNode) EgressHandler() http.Handler {
+	return withCallerOrTokenAuth(n, "", false, n.rawEgressHandler())
+}
+
+// InferenceHandler returns an OpenAI-compatible HTTP handler serving
+// GET /v1/models, POST /v1/chat/completions, and POST /v1/completions backed
+// by local and remote inference://* services on the mesh.
+func (n *AgentMeshNode) InferenceHandler() http.Handler {
+	facade := newOpenAIFacade(n, n.rawEgressHandler())
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/models", facade.handleModels)
+	mux.HandleFunc("/v1/chat/completions", facade.handleCompletions)
+	mux.HandleFunc("/v1/completions", facade.handleCompletions)
+	return withCallerOrTokenAuth(n, "", true, mux)
+}
+
+// AttenuateToken appends a validated TaskAuthorizationRule (tar_block fact,
+// 0 Datalog rules, 0 checks) to the node's current Biscuit in memory without a
+// control-plane round trip, optionally sealing it so downstream holders cannot
+// append further blocks.
+func (n *AgentMeshNode) AttenuateToken(rule *api.TaskAuthorizationRule, ttl time.Duration, seal bool) (string, time.Time, error) {
+	if rule == nil {
+		return "", time.Time{}, errors.New("TaskAuthorizationRule is required")
+	}
+	raw := n.GetIdentity()
+	if len(raw) == 0 {
+		return "", time.Time{}, errors.New("no member credential loaded")
+	}
+
+	cloned := proto.Clone(rule).(*api.TaskAuthorizationRule)
+	now := time.Now()
+	var exp time.Time
+	if n.Store != nil {
+		if expUnix, err := n.Store.LoadIdentityExpiration(); err == nil && expUnix > 0 {
+			exp = time.Unix(expUnix, 0)
+		}
+	}
+	if exp.IsZero() {
+		exp = now.Add(api.BiscuitTokenTTL)
+	}
+	if ttl > 0 {
+		if candidate := now.Add(ttl); candidate.Before(exp) {
+			exp = candidate
+		}
+	}
+	if cloned.GetExpireTime() != nil {
+		if ruleExp := cloned.GetExpireTime().AsTime(); ruleExp.Before(exp) {
+			exp = ruleExp
+		}
+	}
+	if !now.Before(exp) {
+		return "", time.Time{}, errors.New("attenuated token expiration is in the past")
+	}
+	cloned.ExpireTime = timestamppb.New(exp)
+
+	out, err := identity.AttenuateBiscuit(raw, cloned)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	if seal {
+		out, err = identity.SealBiscuit(out)
+		if err != nil {
+			return "", time.Time{}, err
+		}
+	}
+	return base64.RawURLEncoding.EncodeToString(out), exp, nil
 }

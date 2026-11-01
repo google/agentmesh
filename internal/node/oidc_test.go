@@ -28,7 +28,15 @@ import (
 	"time"
 )
 
+func useEphemeralOIDCPort(t *testing.T) {
+	t.Helper()
+	orig := oidcLoopbackPorts
+	oidcLoopbackPorts = []string{"0"}
+	t.Cleanup(func() { oidcLoopbackPorts = orig })
+}
+
 func TestInteractiveLogin(t *testing.T) {
+	useEphemeralOIDCPort(t)
 	t.Setenv("SSH_CLIENT", "")
 	t.Setenv("SSH_TTY", "")
 
@@ -79,7 +87,9 @@ func TestInteractiveLogin(t *testing.T) {
 
 		go func() {
 			time.Sleep(100 * time.Millisecond)
-			_, _ = http.Get(redirectURI + "?code=dev_code_123&state=" + state)
+			if resp, gErr := http.Get(redirectURI + "?code=dev_code_123&state=" + state); gErr == nil {
+				_ = resp.Body.Close()
+			}
 		}()
 		return nil
 	}
@@ -204,6 +214,7 @@ func TestDiscoverEndpointsDoesNotHangOnUnresponsiveIssuer(t *testing.T) {
 }
 
 func TestInteractiveLoginWithRefresh(t *testing.T) {
+	useEphemeralOIDCPort(t)
 	t.Setenv("SSH_CLIENT", "")
 	t.Setenv("SSH_TTY", "")
 
@@ -262,7 +273,9 @@ func TestInteractiveLoginWithRefresh(t *testing.T) {
 
 		go func() {
 			time.Sleep(100 * time.Millisecond)
-			_, _ = http.Get(redirectURI + "?code=dev_code_123&state=" + state)
+			if resp, gErr := http.Get(redirectURI + "?code=dev_code_123&state=" + state); gErr == nil {
+				_ = resp.Body.Close()
+			}
 		}()
 		return nil
 	}
@@ -396,6 +409,7 @@ func TestInteractiveLoginWithDeviceAuth_Headless(t *testing.T) {
 // back to the device authorization flow when the provider advertises one,
 // instead of leaving the user to paste a callback code.
 func TestInteractiveLoginBrowserFailFallsBackToDevice(t *testing.T) {
+	useEphemeralOIDCPort(t)
 	t.Setenv("SSH_CLIENT", "")
 	t.Setenv("SSH_TTY", "")
 
@@ -748,6 +762,7 @@ func TestAuthModeDeviceWithoutEndpointErrors(t *testing.T) {
 // loopback flow even under a headless (SSH) environment with a device
 // endpoint available, and never falls back to device flow.
 func TestAuthModeBrowserIgnoresDevice(t *testing.T) {
+	useEphemeralOIDCPort(t)
 	t.Setenv("SSH_CLIENT", "1")
 	t.Setenv("SSH_TTY", "")
 
@@ -780,7 +795,9 @@ func TestAuthModeBrowserIgnoresDevice(t *testing.T) {
 		state := u.Query().Get("state")
 		go func() {
 			time.Sleep(50 * time.Millisecond)
-			_, _ = http.Get(redirectURI + "?code=dev_code_123&state=" + state)
+			if resp, gErr := http.Get(redirectURI + "?code=dev_code_123&state=" + state); gErr == nil {
+				_ = resp.Body.Close()
+			}
 		}()
 		return nil
 	}

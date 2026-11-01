@@ -157,11 +157,12 @@ func TestEnrollmentAndRenewal(t *testing.T) {
 			BootstrapTokenPath: tokFile,
 			AllowInsecure:      true,
 		}
+		t.Cleanup(func() { _ = s.Close() })
 		if err := s.ensureCredential(ctx); err != nil {
 			t.Fatalf("ensureCredential: %v", err)
 		}
-		if len(s.currentBiscuit()) == 0 {
-			t.Fatal("currentBiscuit is empty after bootstrap enrollment")
+		if len(s.node.GetIdentity()) == 0 {
+			t.Fatal("GetIdentity is empty after bootstrap enrollment")
 		}
 		_, cred, err := ReadStateDir(stateDir)
 		if err != nil {
@@ -183,6 +184,7 @@ func TestEnrollmentAndRenewal(t *testing.T) {
 			BootstrapToken:  "boot-secret",
 			AllowInsecure:   true,
 		}
+		t.Cleanup(func() { _ = seed.Close() })
 		if err := seed.ensureCredential(ctx); err != nil {
 			t.Fatalf("seed ensureCredential: %v", err)
 		}
@@ -194,6 +196,7 @@ func TestEnrollmentAndRenewal(t *testing.T) {
 			StateDir:      stateDir,
 			AllowInsecure: true,
 		}
+		t.Cleanup(func() { _ = online.Close() })
 		if err := online.ensureCredential(ctx); err != nil {
 			t.Fatalf("online resume ensureCredential: %v", err)
 		}
@@ -214,6 +217,7 @@ func TestEnrollmentAndRenewal(t *testing.T) {
 			StateDir:      stateDir,
 			AllowInsecure: true,
 		}
+		t.Cleanup(func() { _ = resumed.Close() })
 		if err := resumed.ensureCredential(ctx); err != nil {
 			t.Fatalf("resumed ensureCredential with offline CP: %v", err)
 		}
@@ -241,10 +245,11 @@ func TestEnrollmentAndRenewal(t *testing.T) {
 			Labels:        map[string]string{"env": "prod"},
 			AllowInsecure: true,
 		}
+		t.Cleanup(func() { _ = s.Close() })
 		if err := s.ensureCredential(ctx); err != nil {
 			t.Fatalf("ensureCredential(JWT): %v", err)
 		}
-		firstBiscuit := append([]byte(nil), s.currentBiscuit()...)
+		firstBiscuit := append([]byte(nil), s.node.GetIdentity()...)
 		refreshesBefore := cp.refreshes.Load()
 
 		if err := s.Refresh(ctx); err != nil {
@@ -253,12 +258,12 @@ func TestEnrollmentAndRenewal(t *testing.T) {
 		if cp.refreshes.Load() != refreshesBefore+1 {
 			t.Errorf("refreshes = %d, want %d", cp.refreshes.Load(), refreshesBefore+1)
 		}
-		if bytes.Equal(firstBiscuit, s.currentBiscuit()) {
+		if bytes.Equal(firstBiscuit, s.node.GetIdentity()) {
 			t.Error("expected Refresh to update credential via POST /refresh")
 		}
 	})
 
-	t.Run("oidc_session_refresh_token_recovery", func(t *testing.T) {
+	t.Run("oidc_session_refresh_token_recovery_and_immediate_persistence", func(t *testing.T) {
 		priv, _, err := crypto.GenerateEd25519Key(rand.Reader)
 		if err != nil {
 			t.Fatal(err)
@@ -272,17 +277,22 @@ func TestEnrollmentAndRenewal(t *testing.T) {
 			t.Fatal(err)
 		}
 		cpPub, cpPriv := cp.currentKeys()
-		nearExpired := mintTestBiscuit(t, cpPriv, pid.String(), api.RoleNode, time.Now().Add(time.Minute))
+		expired := mintTestBiscuit(t, cpPriv, pid.String(), api.RoleNode, time.Now().Add(-time.Minute))
 
-		// Reject direct /refresh so ensureCredential falls back to OIDC refresh_token -> /register.
+		// Reject direct /refresh AND fail /register on the first attempt to prove
+		// a rotated one-time refresh_token is persisted BEFORE /register runs.
 		cp.failRefresh.Store(true)
-		defer cp.failRefresh.Store(false)
+		cp.failRegister.Store(true)
+		defer func() {
+			cp.failRefresh.Store(false)
+			cp.failRegister.Store(false)
+		}()
 
 		stateDir := t.TempDir()
 		err = WriteStateDir(stateDir, privBytes, &api.MemberCredential{
 			ControlPlaneUrl: cp.srv.URL,
-			Biscuit:         nearExpired,
-			ExpireTime:      timestamppb.New(time.Now().Add(time.Minute)),
+			Biscuit:         expired,
+			ExpireTime:      timestamppb.New(time.Now().Add(-time.Minute)),
 			TrustedKeys:     []*api.TrustedSigningKey{{PublicKey: cpPub, ReceiveTime: timestamppb.New(time.Now())}},
 			OidcSession: &api.OIDCSession{
 				Issuer:       cp.srv.URL,
@@ -294,19 +304,39 @@ func TestEnrollmentAndRenewal(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		s := &Server{
+		first := &Server{
 			StateDir:      stateDir,
 			AllowInsecure: true,
 		}
-		if err := s.ensureCredential(ctx); err != nil {
-			t.Fatalf("ensureCredential via OIDC refresh_token: %v", err)
+		t.Cleanup(func() { _ = first.Close() })
+		if err := first.ensureCredential(ctx); err == nil {
+			t.Fatal("expected ensureCredential to fail while POST /register is down")
+		}
+		_, afterFailedRegister, err := ReadStateDir(stateDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := afterFailedRegister.GetOidcSession().GetRefreshToken(); got != "rt-rotated" {
+			t.Fatalf("refresh_token after failed /register = %q, want %q (must persist before /register)", got, "rt-rotated")
+		}
+
+		// Now bring /register back up: the second attempt uses the persisted
+		// "rt-rotated" token (one-time rotation to "rt-rotated-2") and succeeds.
+		cp.failRegister.Store(false)
+		second := &Server{
+			StateDir:      stateDir,
+			AllowInsecure: true,
+		}
+		t.Cleanup(func() { _ = second.Close() })
+		if err := second.ensureCredential(ctx); err != nil {
+			t.Fatalf("second ensureCredential via persisted rotated refresh_token: %v", err)
 		}
 		_, updated, err := ReadStateDir(stateDir)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := updated.GetOidcSession().GetRefreshToken(); got != "rt-rotated" {
-			t.Errorf("rotated refresh_token = %q, want %q", got, "rt-rotated")
+		if got := updated.GetOidcSession().GetRefreshToken(); got != "rt-rotated-2" {
+			t.Errorf("rotated refresh_token after recovery = %q, want %q", got, "rt-rotated-2")
 		}
 	})
 
@@ -318,6 +348,7 @@ func TestEnrollmentAndRenewal(t *testing.T) {
 			BootstrapToken:  "boot-secret",
 			AllowInsecure:   true,
 		}
+		t.Cleanup(func() { _ = seed.Close() })
 		if err := seed.ensureCredential(ctx); err != nil {
 			t.Fatalf("seed ensureCredential: %v", err)
 		}
@@ -329,6 +360,7 @@ func TestEnrollmentAndRenewal(t *testing.T) {
 			StateDir:      stateDir,
 			AllowInsecure: true,
 		}
+		t.Cleanup(func() { _ = resumed.Close() })
 		err := resumed.ensureCredential(ctx)
 		if !errors.Is(err, ErrCredentialRetired) {
 			t.Fatalf("ensureCredential err = %v, want ErrCredentialRetired", err)
@@ -353,9 +385,15 @@ type fakeControlPlaneHTTP struct {
 	cpPub                 ed25519.PublicKey
 	cpPriv                ed25519.PrivateKey
 	routerAddrs           []string
+	routers               []*api.RouterInfo
+	extraDatalogRules     []string
+	nextCredentialTTL     time.Duration
+	refreshCallTimes      []time.Time
 	srv                   *httptest.Server
 	failKeys              atomic.Bool
 	failRefresh           atomic.Bool
+	failRegister          atomic.Bool
+	failEnroll            atomic.Bool
 	pendingBootstrapPolls atomic.Int32
 	bootstrapEnrolls      atomic.Int32
 	refreshes             atomic.Int32
@@ -390,8 +428,12 @@ func newFakeControlPlaneHTTPWithKeys(t *testing.T, pub ed25519.PublicKey, priv e
 	mux.HandleFunc("/info", func(w http.ResponseWriter, _ *http.Request) {
 		f.mu.Lock()
 		addrs := append([]string(nil), f.routerAddrs...)
+		routers := append([]*api.RouterInfo(nil), f.routers...)
 		f.mu.Unlock()
-		writeProto(w, &api.ControlPlaneInfoResponse{RouterAddresses: addrs})
+		writeProto(w, &api.ControlPlaneInfoResponse{
+			RouterAddresses: addrs,
+			Routers:         routers,
+		})
 	})
 	mux.HandleFunc("/policies", func(w http.ResponseWriter, _ *http.Request) {
 		compiled, warnings := api.BuildPolicyRules([]*api.PolicyRole{
@@ -410,12 +452,19 @@ func newFakeControlPlaneHTTPWithKeys(t *testing.T, pub ed25519.PublicKey, priv e
 		for _, r := range compiled {
 			texts = append(texts, r.Text)
 		}
+		f.mu.Lock()
+		texts = append(texts, f.extraDatalogRules...)
+		f.mu.Unlock()
 		writeProto(w, &api.PolicyConfigGetResponse{DatalogRules: texts})
 	})
 	mux.HandleFunc("/revocations", func(w http.ResponseWriter, _ *http.Request) {
 		writeProto(w, &api.RevocationsResponse{})
 	})
 	mux.HandleFunc("/enroll", func(w http.ResponseWriter, r *http.Request) {
+		if f.failEnroll.Load() {
+			http.Error(w, "enroll unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		f.bootstrapEnrolls.Add(1)
 		var req api.BootstrapEnrollRequest
 		if !readProto(w, r, &req) {
@@ -441,7 +490,7 @@ func newFakeControlPlaneHTTPWithKeys(t *testing.T, pub ed25519.PublicKey, priv e
 		f.mu.Lock()
 		addrs := append([]string(nil), f.routerAddrs...)
 		f.mu.Unlock()
-		exp := time.Now().Add(time.Hour)
+		exp := f.credentialExpiry()
 		tok := mintTestBiscuit(t, privKey, pid.String(), api.RoleNode, exp)
 		writeProto(w, &api.BootstrapEnrollResponse{
 			Status:                api.EnrollmentStatus_ENROLLMENT_STATUS_APPROVED,
@@ -469,7 +518,7 @@ func newFakeControlPlaneHTTPWithKeys(t *testing.T, pub ed25519.PublicKey, priv e
 		f.mu.Lock()
 		addrs := append([]string(nil), f.routerAddrs...)
 		f.mu.Unlock()
-		exp := time.Now().Add(time.Hour)
+		exp := f.credentialExpiry()
 		tok := mintTestBiscuit(t, privKey, pid.String(), api.RoleNode, exp)
 		writeProto(w, &api.BootstrapEnrollResponse{
 			Status:                api.EnrollmentStatus_ENROLLMENT_STATUS_APPROVED,
@@ -480,6 +529,10 @@ func newFakeControlPlaneHTTPWithKeys(t *testing.T, pub ed25519.PublicKey, priv e
 		})
 	})
 	mux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
+		if f.failRegister.Load() {
+			http.Error(w, "register rejected", http.StatusBadRequest)
+			return
+		}
 		var req api.EnrollRequest
 		if !readProto(w, r, &req) {
 			return
@@ -493,7 +546,7 @@ func newFakeControlPlaneHTTPWithKeys(t *testing.T, pub ed25519.PublicKey, priv e
 		f.mu.Lock()
 		addrs := append([]string(nil), f.routerAddrs...)
 		f.mu.Unlock()
-		exp := time.Now().Add(time.Hour)
+		exp := f.credentialExpiry()
 		tok := mintTestBiscuit(t, privKey, pid.String(), api.RoleNode, exp)
 		writeProto(w, &api.EnrollResponse{
 			BiscuitToken:          tok,
@@ -503,6 +556,9 @@ func newFakeControlPlaneHTTPWithKeys(t *testing.T, pub ed25519.PublicKey, priv e
 		})
 	})
 	mux.HandleFunc("/refresh", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.refreshCallTimes = append(f.refreshCallTimes, time.Now())
+		f.mu.Unlock()
 		if f.failRefresh.Load() {
 			http.Error(w, "refresh disabled", http.StatusUnauthorized)
 			return
@@ -543,6 +599,7 @@ func newFakeControlPlaneHTTPWithKeys(t *testing.T, pub ed25519.PublicKey, priv e
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{
+			"issuer":         f.srv.URL,
 			"token_endpoint": f.srv.URL + "/oidc/token",
 		})
 	})
@@ -551,20 +608,52 @@ func newFakeControlPlaneHTTPWithKeys(t *testing.T, pub ed25519.PublicKey, priv e
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if r.FormValue("grant_type") != "refresh_token" || r.FormValue("refresh_token") != "rt-old" {
+		if r.FormValue("grant_type") != "refresh_token" {
+			http.Error(w, "bad grant_type", http.StatusUnauthorized)
+			return
+		}
+		var nextRT string
+		switch r.FormValue("refresh_token") {
+		case "rt-old":
+			nextRT = "rt-rotated"
+		case "rt-rotated":
+			nextRT = "rt-rotated-2"
+		default:
 			http.Error(w, "bad refresh_token", http.StatusUnauthorized)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"id_token":      "oidc-refreshed-id-token",
-			"refresh_token": "rt-rotated",
+			"refresh_token": nextRT,
 		})
 	})
 
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
 	return f
+}
+
+func (f *fakeControlPlaneHTTP) credentialExpiry() time.Time {
+	f.mu.Lock()
+	ttl := f.nextCredentialTTL
+	f.mu.Unlock()
+	if ttl > 0 {
+		return time.Now().Add(ttl)
+	}
+	return time.Now().Add(time.Hour)
+}
+
+func (f *fakeControlPlaneHTTP) setNextCredentialTTL(ttl time.Duration) {
+	f.mu.Lock()
+	f.nextCredentialTTL = ttl
+	f.mu.Unlock()
+}
+
+func (f *fakeControlPlaneHTTP) snapshotRefreshTimes() []time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]time.Time(nil), f.refreshCallTimes...)
 }
 
 func (f *fakeControlPlaneHTTP) currentKeys() (ed25519.PublicKey, ed25519.PrivateKey) {

@@ -38,3 +38,11 @@ func SetAllowInsecureControlPlane(allow bool) {
 func controlPlaneHTTPClient(timeout time.Duration) *http.Client {
 	return cpclient.NewHTTPClient(timeout, allowInsecureControlPlane.Load, "agentmesh-node")
 }
+
+// cpHTTPClient returns an HTTP client honoring either the process-wide
+// --insecure-control-plane setting or this node's Options.AllowInsecureControlPlane.
+func (n *AgentMeshNode) cpHTTPClient(timeout time.Duration) *http.Client {
+	return cpclient.NewHTTPClient(timeout, func() bool {
+		return allowInsecureControlPlane.Load() || (n != nil && n.config.AllowInsecureControlPlane)
+	}, "agentmesh-node")
+}

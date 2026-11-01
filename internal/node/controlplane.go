@@ -42,17 +42,17 @@ func controlPlaneClient(controlPlaneURL string) *cpclient.Client {
 // controlPlane returns a control plane client configured with this node's
 // peer ID and private key so authenticated requests carry a signed challenge.
 func (n *AgentMeshNode) controlPlane(controlPlaneURL string) *cpclient.Client {
-	c := controlPlaneClient(controlPlaneURL)
 	if n == nil {
-		return c
+		return controlPlaneClient(controlPlaneURL)
 	}
+	c := cpclient.New(controlPlaneURL, n.cpHTTPClient(10*time.Second))
 	priv := n.config.PrivKey
 	if priv == nil && n.Store != nil {
 		if kb, err := n.Store.LoadKey(); err == nil {
 			if len(kb) > 0 {
 				priv, _ = crypto.UnmarshalPrivateKey(kb)
 			} else {
-				priv = GetOrGenerateKey(n.Store)
+				priv, _ = LoadOrGenerateKey(n.Store)
 			}
 		}
 	}
@@ -66,6 +66,14 @@ func (n *AgentMeshNode) controlPlane(controlPlaneURL string) *cpclient.Client {
 		}
 	}
 	return c
+}
+
+func (n *AgentMeshNode) fetchControlPlaneInfo(ctx context.Context, controlPlaneURL string) (*api.ControlPlaneInfoResponse, error) {
+	return n.controlPlane(controlPlaneURL).FetchInfo(ctx)
+}
+
+func (n *AgentMeshNode) fetchControlPlaneKeys(ctx context.Context, controlPlaneURL string, trusted []ed25519.PublicKey) ([]ed25519.PublicKey, error) {
+	return n.controlPlane(controlPlaneURL).FetchKeys(ctx, trusted)
 }
 
 // FetchControlPlaneInfo retrieves the latest configuration from the control plane's /info endpoint.

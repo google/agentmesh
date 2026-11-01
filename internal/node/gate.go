@@ -105,25 +105,29 @@ func (n *AgentMeshNode) HandleMCPStream(s network.Stream, reqCtx RequestContext)
 	}()
 
 	transport := NewStreamTransport(s)
-	server := mcp.NewServer(&mcp.Implementation{
-		Name:    "agentmesh-node-catalog",
-		Version: "0.1.0",
-	}, nil)
-
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "list_local_services",
-		Description: "List services registered on the local node. Optionally filter by type.",
-	}, n.handleListLocalServices)
-
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "get_mesh_info",
-		Description: "Get information about the mesh network",
-	}, n.handleGetMeshInfoRemote)
-
 	ctx := context.Background()
-	if err := server.Run(ctx, transport); err != nil {
+	if err := n.catalogServer().Run(ctx, transport); err != nil {
 		logger.Errorf("[MCP] Catalog server error on stream from %s: %v", s.Conn().RemotePeer(), err)
 	}
+}
+
+func (n *AgentMeshNode) catalogServer() *mcp.Server {
+	n.catalogOnce.Do(func() {
+		srv := mcp.NewServer(&mcp.Implementation{
+			Name:    "agentmesh-node-catalog",
+			Version: "0.1.0",
+		}, nil)
+		mcp.AddTool(srv, &mcp.Tool{
+			Name:        "list_local_services",
+			Description: "List services registered on the local node. Optionally filter by type.",
+		}, n.handleListLocalServices)
+		mcp.AddTool(srv, &mcp.Tool{
+			Name:        "get_mesh_info",
+			Description: "Get information about the mesh network",
+		}, n.handleGetMeshInfoRemote)
+		n.catalogMCPServer = srv
+	})
+	return n.catalogMCPServer
 }
 func (g *nodeConnGate) InterceptUpgraded(n network.Conn) (allow bool, cc control.DisconnectReason) {
 	return true, 0

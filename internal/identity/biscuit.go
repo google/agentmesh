@@ -905,6 +905,7 @@ type VerifiedBiscuitClaims struct {
 	Groups          []string
 	IdpRoles        []string
 	Roles           []string
+	Labels          map[string]string
 	NodePeerID      string
 	ActorNodePeerID string
 	ClientPeerID    string
@@ -1056,6 +1057,25 @@ func InspectVerifiedBiscuit(biscuitData []byte, trustedPublicKeys []ed25519.Publ
 		return nil, err
 	}
 
+	var labels map[string]string
+	if labelFacts, lErr := authorizer.Query(biscuit.Rule{
+		Head: biscuit.Predicate{Name: "q", IDs: []biscuit.Term{biscuit.Variable("k"), biscuit.Variable("v")}},
+		Body: []biscuit.Predicate{{Name: api.FactLabel, IDs: []biscuit.Term{biscuit.Variable("k"), biscuit.Variable("v")}}},
+	}); lErr == nil {
+		for _, f := range labelFacts {
+			if len(f.IDs) == 2 {
+				k, okK := f.IDs[0].(biscuit.String)
+				v, okV := f.IDs[1].(biscuit.String)
+				if okK && okV {
+					if labels == nil {
+						labels = make(map[string]string)
+					}
+					labels[string(k)] = string(v)
+				}
+			}
+		}
+	}
+
 	return &VerifiedBiscuitClaims{
 		Biscuit:         b,
 		VerifyingKey:    verifyingKey,
@@ -1064,6 +1084,7 @@ func InspectVerifiedBiscuit(biscuitData []byte, trustedPublicKeys []ed25519.Publ
 		Groups:          queryStrings(api.FactGroup),
 		IdpRoles:        queryStrings(api.FactIdpRole),
 		Roles:           queryStrings(api.FactRole),
+		Labels:          labels,
 		NodePeerID:      nodePeerID,
 		ActorNodePeerID: actorNodePeerID,
 		ClientPeerID:    clientPeerID,

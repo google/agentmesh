@@ -23,11 +23,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/agentmesh/api"
+	"github.com/libp2p/go-libp2p/core/crypto"
 	"go.etcd.io/bbolt"
 	bbolterrors "go.etcd.io/bbolt/errors"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -63,10 +66,52 @@ var legacyKeys = []string{
 }
 
 // Store is the node's persistent state: its private key and its
-// api.MemberCredential, in a bbolt database whose file lock also tells a
-// second agentmesh-node that this data directory is in use.
+// api.MemberCredential. For the agentmesh-node daemon it is backed by a bbolt
+// database whose file lock tells a second instance that the data directory is
+// in use; for embedded SDK callers it can be backed by a cross-SDK state
+// directory (identity.key + credential.json) or held in memory.
 type Store struct {
-	db *bbolt.DB
+	db      *bbolt.DB
+	mu      sync.RWMutex
+	dir     string
+	memKey  []byte
+	memCred *api.MemberCredential
+}
+
+// NewMemoryStore returns an in-memory Store for ephemeral embedded members.
+func NewMemoryStore() *Store {
+	return &Store{memCred: &api.MemberCredential{}}
+}
+
+// NewStateDirStore opens or creates an owner-only state directory (identity.key
+// and credential.json) compatible with WriteStateDir, ReadStateDir, and the
+// TypeScript/Python SDKs. Either file may be absent on first run before the
+// member generates a key or enrolls.
+func NewStateDirStore(dir string) (*Store, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("create state directory %s: %w", dir, err)
+	}
+	var privKey []byte
+	keyPath := filepath.Join(dir, StateDirIdentityFile)
+	if rawKey, err := os.ReadFile(keyPath); err == nil {
+		if _, uErr := crypto.UnmarshalPrivateKey(rawKey); uErr != nil {
+			return nil, fmt.Errorf("%s: not a libp2p private key: %w", keyPath, uErr)
+		}
+		privKey = rawKey
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+
+	cred := &api.MemberCredential{}
+	credPath := filepath.Join(dir, StateDirCredentialFile)
+	if rawCred, err := os.ReadFile(credPath); err == nil {
+		if uErr := protojson.Unmarshal(rawCred, cred); uErr != nil {
+			return nil, fmt.Errorf("%s: %w", credPath, uErr)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	return &Store{dir: dir, memKey: privKey, memCred: cred}, nil
 }
 
 // ErrStoreLocked reports that another process already holds the data
@@ -209,6 +254,12 @@ func getCredential(b *bbolt.Bucket) (*api.MemberCredential, error) {
 
 // view reads the credential; an empty message stands for a node that has not enrolled.
 func (s *Store) view(fn func(c *api.MemberCredential) error) error {
+	if s.db == nil {
+		s.mu.RLock()
+		c := proto.Clone(s.memCred).(*api.MemberCredential)
+		s.mu.RUnlock()
+		return fn(c)
+	}
 	return s.db.View(func(tx *bbolt.Tx) error {
 		c, err := getCredential(tx.Bucket([]byte(bucketIdentity)))
 		if err != nil {
@@ -220,6 +271,19 @@ func (s *Store) view(fn func(c *api.MemberCredential) error) error {
 
 // update applies fn to the credential and writes it back in one transaction.
 func (s *Store) update(fn func(c *api.MemberCredential) error) error {
+	if s.db == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		next := proto.Clone(s.memCred).(*api.MemberCredential)
+		if err := fn(next); err != nil {
+			return err
+		}
+		if err := s.persistStateDirCredentialLocked(next); err != nil {
+			return err
+		}
+		s.memCred = next
+		return nil
+	}
 	return s.db.Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(bucketIdentity))
 		c, err := getCredential(b)
@@ -231,6 +295,17 @@ func (s *Store) update(fn func(c *api.MemberCredential) error) error {
 		}
 		return putCredential(b, c)
 	})
+}
+
+func (s *Store) persistStateDirCredentialLocked(c *api.MemberCredential) error {
+	if s.dir == "" {
+		return nil
+	}
+	raw, err := stateDirMarshal.Marshal(c)
+	if err != nil {
+		return err
+	}
+	return writeOwnerOnly(filepath.Join(s.dir, StateDirCredentialFile), append(raw, '\n'))
 }
 
 // Credential returns a copy of everything the node persists besides its
@@ -247,6 +322,19 @@ func (s *Store) Credential() (*api.MemberCredential, error) {
 // SetCredential replaces everything the node persists besides its private
 // key; `agentmesh-node state import` uses it.
 func (s *Store) SetCredential(c *api.MemberCredential) error {
+	if s.db == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if c == nil {
+			c = &api.MemberCredential{}
+		}
+		next := proto.Clone(c).(*api.MemberCredential)
+		if err := s.persistStateDirCredentialLocked(next); err != nil {
+			return err
+		}
+		s.memCred = next
+		return nil
+	}
 	return s.db.Update(func(tx *bbolt.Tx) error {
 		return putCredential(tx.Bucket([]byte(bucketIdentity)), c)
 	})
@@ -338,12 +426,31 @@ func (s *Store) LoadOIDCConfig() (string, string, string, error) {
 }
 
 func (s *Store) SaveKey(key []byte) error {
+	if s.db == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.dir != "" {
+			if _, err := crypto.UnmarshalPrivateKey(key); err != nil {
+				return fmt.Errorf("private key is not a libp2p key: %w", err)
+			}
+			if err := writeOwnerOnly(filepath.Join(s.dir, StateDirIdentityFile), key); err != nil {
+				return err
+			}
+		}
+		s.memKey = append([]byte(nil), key...)
+		return nil
+	}
 	return s.db.Update(func(tx *bbolt.Tx) error {
 		return tx.Bucket([]byte(bucketIdentity)).Put([]byte(keyPrivKey), key)
 	})
 }
 
 func (s *Store) LoadKey() ([]byte, error) {
+	if s.db == nil {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		return append([]byte(nil), s.memKey...), nil
+	}
 	var val []byte
 	_ = s.db.View(func(tx *bbolt.Tx) error {
 		val = append([]byte(nil), tx.Bucket([]byte(bucketIdentity)).Get([]byte(keyPrivKey))...)
@@ -455,6 +562,17 @@ func (s *Store) LoadControlPlaneURL() (string, error) {
 // a different mesh. It keeps the long-lived libp2p key (node_private_key), so
 // the node's PeerID survives the switch.
 func (s *Store) ResetMeshIdentity() error {
+	if s.db == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.dir != "" {
+			if err := os.Remove(filepath.Join(s.dir, StateDirCredentialFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+		s.memCred = &api.MemberCredential{}
+		return nil
+	}
 	return s.db.Update(func(tx *bbolt.Tx) error {
 		return tx.Bucket([]byte(bucketIdentity)).Delete([]byte(keyCredential))
 	})
@@ -508,6 +626,9 @@ func containsKeyBytes(keys [][]byte, want []byte) bool {
 }
 
 func (s *Store) Close() error {
+	if s.db == nil {
+		return nil
+	}
 	return s.db.Close()
 }
 

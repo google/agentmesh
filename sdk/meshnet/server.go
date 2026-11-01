@@ -18,49 +18,40 @@
 // unspoofable WhoIs caller inspection, a local progressive-discovery MCP
 // server, and a zero-secret OpenAI-compatible /v1 inference handler without an
 // external agentmesh-node sidecar binary.
+//
+// Internally, meshnet wraps internal/node.AgentMeshNode so embedded Go
+// applications and the standalone agentmesh-node binary share a single Policy
+// Enforcement Point (PEP), router attachment loop, directory client, and
+// credential lifecycle implementation.
 package meshnet
 
 import (
 	"context"
-	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
-	"slices"
+	"net/http"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/eclipse-biscuit/biscuit-go/v2"
 	"github.com/google/agentmesh/api"
-	"github.com/google/agentmesh/internal/identity"
-	"github.com/google/agentmesh/internal/ratelimit"
-	lru "github.com/hashicorp/golang-lru/v2"
-	"github.com/libp2p/go-libp2p"
-	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/google/agentmesh/internal/node"
 	"github.com/libp2p/go-libp2p/core/crypto"
-	"github.com/libp2p/go-libp2p/core/event"
-	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/libp2p/go-libp2p/core/peerstore"
-	"github.com/libp2p/go-libp2p/p2p/host/autorelay"
-	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
-	"github.com/libp2p/go-libp2p/p2p/net/swarm"
-	"github.com/libp2p/go-libp2p/p2p/security/noise"
-	libp2ptls "github.com/libp2p/go-libp2p/p2p/security/tls"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
-const (
-	rateLimiterSize     = 1024
-	revocationCacheSize = 4096
-	withdrawTimeout     = 5 * time.Second
-)
+// ErrCredentialLapsed reports that the member's Biscuit credential has expired
+// and background renewal failed. Background renewal continues retrying with
+// exponential backoff until Close is called or renewal succeeds.
+var ErrCredentialLapsed = errors.New("meshnet: member credential expired and renewal failed")
 
 // Server is an embedded Agent Mesh node. Configure its exported fields and call
-// Up (or ListenA2A after Up) to join the mesh in-process.
+// Up (and then ListenA2A, HTTPClient, MCPHandler, or InferenceHandler) to join
+// the mesh in-process.
 type Server struct {
 	// StateDir persists identity.key and credential.json (0700/0600, byte-for-byte
 	// compatible with sdk/js, sdk/python, and `agentmesh-node state export|import`).
@@ -108,97 +99,71 @@ type Server struct {
 
 	// ListenAddrs overrides the libp2p listen multiaddrs. When empty, Server
 	// binds ephemeral UDP QUIC and TCP ports on all interfaces so direct P2P and
-	// hole-punching work alongside Circuit Relay v2.
+	// hole-punching work alongside Circuit Relay v2 without colliding across
+	// multiple in-process Servers.
 	ListenAddrs []string
 
-	// AllowInsecure opts into http:// control-plane URLs on loopback and keeps
+	// AllowInsecure opts into http:// control-plane URLs and keeps
 	// loopback/private peer multiaddrs during local development and integration tests.
 	AllowInsecure bool
 
-	// Logger receives structured mesh events. Defaults to slog.Default().
+	// Registerer, when non-nil, registers per-Server state gauges and refusal
+	// counters wrapped with peer_id="<id>" so multiple Servers can share one
+	// Prometheus registry without colliding. Collectors are unregistered on
+	// Close. When nil, no per-Server Prometheus collectors are registered.
+	Registerer prometheus.Registerer
+
+	// OnCredentialLapse, when non-nil, is invoked whenever a background renewal
+	// attempt fails after the member's credential has expired. Background
+	// renewal continues retrying with exponential backoff (2s up to 5m).
+	OnCredentialLapse func(err error)
+
+	// Logger receives structured meshnet lifecycle warnings and diagnostics.
+	// Defaults to slog.Default().
 	Logger *slog.Logger
 
-	// Internal state initialized by Up.
+	// Unexported test seams (zero values use production defaults).
+	biscuitTimeout        time.Duration
+	renewalInitialBackoff time.Duration
+	renewalMaxBackoff     time.Duration
+
 	lifecycleMu sync.Mutex
 	started     bool
 	closed      bool
-	bgCancel    context.CancelFunc
-	addrSub     event.Subscription
+	runCancel   context.CancelFunc
 
-	privKey      crypto.PrivKey
-	privKeyBytes []byte
-	peerID       peer.ID
-	cpURL        string
+	privKey crypto.PrivKey
+	peerID  peer.ID
+	cpURL   string
+	store   *node.Store
+	node    *node.AgentMeshNode
 
-	keysMu          sync.RWMutex
-	trustedKeys     []trustedKey
-	issuedUnderKeys []ed25519.PublicKey
+	doneInitOnce  sync.Once
+	doneCloseOnce sync.Once
+	doneCh        chan struct{}
+	errMu         sync.RWMutex
+	lapseErr      error
 
-	credMu            sync.RWMutex
-	biscuit           []byte
-	expireTime        time.Time
-	storedRouterAddrs []string
-	oidcSession       *api.OIDCSession
-
-	refreshMu    sync.Mutex
-	reenrollMu   sync.Mutex
-	lastReenroll time.Time
-
-	host    host.Host
-	connMgr *connmgr.BasicConnMgr
-	pubsub  *pubsub.PubSub
-	dir     *routerDirectory
-
-	mu                        sync.Mutex
-	routerCatalog             []routerCandidate
-	attached                  map[peer.ID]bool
-	authenticatedRouters      map[peer.ID]bool
-	shunned                   map[peer.ID]time.Time
-	handshaking               map[peer.ID]chan struct{}
-	redialing                 map[peer.ID]bool
-	currentRelays             []peer.AddrInfo
-	dirSettings               api.DirectorySettings
-	peerLastEventTime         map[string]int64
-	transitCatalogRefreshedAt time.Time
-
-	authPeers   sync.Map
-	authRouters sync.Map
-	authSuccess chan struct{}
-	authOnce    sync.Once
-
-	policyMu        sync.RWMutex
-	meshPolicyRules []biscuit.Rule
-	meshPolicyTexts []string
-
-	revokedPeers  *lru.Cache[string, int64]
-	revokedTokens *lru.Cache[string, time.Time]
-	peerLabelGate *lru.Cache[string, time.Time]
-
-	rateLimiter            *ratelimit.PeerRateLimiter
-	handshakeLimiter       *ratelimit.PeerRateLimiter
-	externalIngressLimiter *ratelimit.PeerRateLimiter
-
-	refusedMu      sync.Mutex
-	refusedStreams map[string]uint64
-
-	syncInterval     time.Duration
-	syncTrigger      chan struct{}
-	reprovideTrigger chan struct{}
-
-	a2aMu       sync.RWMutex
-	a2aServices map[string]*a2aEntry
+	mcpHandlerOnce sync.Once
+	mcpHTTPHandler http.Handler
+	infHandlerOnce sync.Once
+	infHTTPHandler http.Handler
 
 	activeConns sync.Map
 	nextConnSeq atomic.Uint64
 }
 
 // Status describes the live mesh connectivity and credential state of a Server.
+// Because Up returns as soon as the first router admits the member while
+// remaining router dials finish in the background, AttachedRouters immediately
+// after Up may list one router before reaching Server.Routers.
 type Status struct {
-	PeerID          string
-	ControlPlaneURL string
-	AttachedRouters []string
-	IngressURLs     []string
-	ExpireTime      time.Time
+	PeerID           string
+	ControlPlaneURL  string
+	AttachedRouters  []string
+	IngressURLs      []string
+	ExpireTime       time.Time
+	CredentialLapsed bool
 }
 
 // CallerInfo carries the cryptographically verified mesh identity of an inbound
@@ -218,13 +183,69 @@ func (s *Server) log() *slog.Logger {
 	return slog.Default()
 }
 
-func (s *Server) biscuitTimeout() time.Duration {
-	return identity.DefaultAuthorizerTimeout
+func (s *Server) ensureDoneCh() chan struct{} {
+	s.doneInitOnce.Do(func() {
+		s.doneCh = make(chan struct{})
+	})
+	return s.doneCh
+}
+
+func (s *Server) signalDone() {
+	ch := s.ensureDoneCh()
+	s.doneCloseOnce.Do(func() {
+		close(ch)
+	})
+}
+
+func (s *Server) handleCredentialLapse(err error) {
+	wrapped := fmt.Errorf("%w: %w", ErrCredentialLapsed, err)
+	s.errMu.Lock()
+	s.lapseErr = wrapped
+	s.errMu.Unlock()
+	s.signalDone()
+	s.log().Error("member credential expired and renewal failed; retrying with exponential backoff",
+		"peer_id", s.peerID.String(),
+		"error", err,
+	)
+	if s.OnCredentialLapse != nil {
+		s.OnCredentialLapse(wrapped)
+	}
+}
+
+func (s *Server) handleCredentialRenewed() {
+	s.log().Info("member credential renewed", "peer_id", s.peerID.String())
+}
+
+// Done returns a channel that is closed when either the member's credential
+// lapses (Err() wraps ErrCredentialLapsed) or Close is called (Err() is nil
+// unless a lapse already occurred).
+func (s *Server) Done() <-chan struct{} {
+	return s.ensureDoneCh()
+}
+
+// Err returns nil while the Server's credential is healthy and after a clean
+// Close, or an error wrapping ErrCredentialLapsed if the member's credential
+// expired and background renewal failed. Check Status().CredentialLapsed to
+// observe whether a subsequent backoff retry has recovered the credential.
+func (s *Server) Err() error {
+	s.errMu.RLock()
+	defer s.errMu.RUnlock()
+	return s.lapseErr
+}
+
+func (s *Server) isRunning() bool {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	return s.started && !s.closed && s.node != nil && s.node.Host != nil
 }
 
 // Up loads or enrolls the member credential, syncs mesh trust material and
 // policy from the control plane, starts the gated libp2p host, authenticates
 // with mesh routers, and starts background renewal, sync, and reprovide loops.
+//
+// Up returns as soon as at least one router admits the member while any
+// remaining router dials up to Server.Routers complete in the background, so
+// the returned Status.AttachedRouters may initially list a single router.
 func (s *Server) Up(ctx context.Context) (*Status, error) {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
@@ -250,279 +271,85 @@ func (s *Server) Up(ctx context.Context) (*Status, error) {
 		return nil, fmt.Errorf("meshnet: invalid RouterPrefer: %w", err)
 	}
 
-	if err := s.initCaches(); err != nil {
-		return nil, err
-	}
+	s.ensureDoneCh()
 
 	if err := s.ensureCredential(ctx); err != nil {
 		return nil, err
 	}
 
-	if err := s.syncControlPlane(ctx); err != nil {
-		s.log().Warn("initial control plane sync completed with errors; falling back to cached state where available", "error", err)
+	if err := s.node.SyncControlPlane(ctx); err != nil {
+		s.log().Warn("initial control plane sync completed with errors; falling back to cached state where available",
+			"peer_id", s.peerID.String(),
+			"error", err,
+		)
 	}
-	if len(s.routerCandidates()) == 0 {
-		s.credMu.RLock()
-		stored := slices.Clone(s.storedRouterAddrs)
-		s.credMu.RUnlock()
-		if len(stored) > 0 {
-			s.setRouterCatalog(candidatesFromAddrs(ctx, parseMultiaddrs(stored)))
+
+	runCtx, runCancel := context.WithCancel(context.Background())
+	stopAbort := context.AfterFunc(ctx, runCancel)
+	startErr := s.node.Start(runCtx)
+	abortedByCaller := !stopAbort()
+	if startErr != nil {
+		runCancel()
+		_ = s.node.Teardown()
+		if s.store != nil {
+			_ = s.store.Close()
 		}
-	}
-
-	cm, err := connmgr.NewConnManager(connLowWaterMark, connHighWaterMark, connmgr.WithGracePeriod(time.Minute))
-	if err != nil {
-		return nil, fmt.Errorf("create connection manager: %w", err)
-	}
-	s.connMgr = cm
-
-	rm, err := s.newResourceManager()
-	if err != nil {
-		_ = cm.Close()
-		return nil, fmt.Errorf("create resource manager: %w", err)
-	}
-
-	listenAddrs := s.ListenAddrs
-	if len(listenAddrs) == 0 {
-		listenAddrs = []string{
-			"/ip4/0.0.0.0/udp/0/quic-v1",
-			"/ip4/0.0.0.0/tcp/0",
-			"/ip6/::/udp/0/quic-v1",
-			"/ip6/::/tcp/0",
+		s.node = nil
+		s.store = nil
+		if abortedByCaller && ctx.Err() != nil {
+			return nil, ctx.Err()
 		}
+		return nil, startErr
 	}
 
-	numRelays := s.Routers
-	if numRelays <= 0 {
-		numRelays = 2
-	}
-
-	opts := []libp2p.Option{
-		libp2p.Identity(s.privKey),
-		libp2p.DefaultTransports,
-		libp2p.Security(libp2ptls.ID, libp2ptls.New),
-		libp2p.Security(noise.ID, noise.New),
-		libp2p.ConnectionGater(&connGate{s: s}),
-		libp2p.ListenAddrStrings(listenAddrs...),
-		libp2p.EnableNATService(),
-		libp2p.EnableAutoNATv2(),
-		libp2p.EnableRelay(),
-		libp2p.EnableHolePunching(),
-		libp2p.ForceReachabilityPrivate(),
-		libp2p.ConnectionManager(cm),
-		libp2p.ResourceManager(rm),
-		libp2p.SwarmOpts(swarm.WithDialTimeout(15*time.Second), swarm.WithDialRanker(tcpFirstDialRanker)),
-		libp2p.AddrsFactory(s.announceFilter),
-	}
-
-	if len(s.routerCandidates()) > 0 {
-		opts = append(opts, libp2p.EnableAutoRelayWithPeerSource(
-			func(pCtx context.Context, _ int) <-chan peer.AddrInfo {
-				c := make(chan peer.AddrInfo, numRelays)
-				go func() {
-					defer close(c)
-					select {
-					case <-pCtx.Done():
-						return
-					case <-s.authSuccess:
-					}
-					s.mu.Lock()
-					relays := slices.Clone(s.currentRelays)
-					s.mu.Unlock()
-					rand.Shuffle(len(relays), func(i, j int) {
-						relays[i], relays[j] = relays[j], relays[i]
-					})
-					for _, r := range relays {
-						select {
-						case c <- r:
-						case <-pCtx.Done():
-							return
-						}
-					}
-				}()
-				return c
-			},
-			autorelay.WithNumRelays(numRelays),
-			autorelay.WithBootDelay(0),
-			autorelay.WithBackoff(5*time.Second),
-			autorelay.WithMinInterval(5*time.Second),
-		))
-	}
-
-	h, err := libp2p.New(opts...)
-	if err != nil {
-		_ = cm.Close()
-		return nil, fmt.Errorf("create libp2p host: %w", err)
-	}
-	s.host = h
-
-	for _, c := range s.routerCandidates() {
-		h.Peerstore().AddAddrs(c.ID, c.Addrs, peerstore.PermanentAddrTTL)
-	}
-
-	bgCtx, bgCancel := context.WithCancel(context.Background())
-	s.bgCancel = bgCancel
-
-	cleanupOnErr := func() {
-		bgCancel()
-		_ = h.Close()
-		_ = cm.Close()
-		s.host = nil
-		s.connMgr = nil
-	}
-
-	h.Network().Notify(&network.NotifyBundle{
-		ConnectedF: func(_ network.Network, c network.Conn) {
-			remoteAddr := c.RemoteMultiaddr()
-			if hasCircuit(remoteAddr) || !isPrivateIP(remoteAddr) {
-				_ = h.Peerstore().Put(c.RemotePeer(), peerstoreKeyPrivateIPFailed, true)
-			}
-		},
-		DisconnectedF: func(_ network.Network, c network.Conn) {
-			remotePeer := c.RemotePeer()
-			if len(h.Network().ConnsToPeer(remotePeer)) > 0 {
-				return
-			}
-			s.mu.Lock()
-			_, wasAuth := s.authenticatedRouters[remotePeer]
-			delete(s.authenticatedRouters, remotePeer)
-			attached := s.attached[remotePeer]
-			s.mu.Unlock()
-			if wasAuth {
-				s.log().Warn("router disconnected; clearing authenticated session", "router_peer_id", remotePeer.String())
-				if attached {
-					s.redialRouter(bgCtx, remotePeer)
-				}
-			}
-		},
-	})
-
-	gated := &meshHost{Host: h, s: s}
-	s.dir = &routerDirectory{
-		host:    gated,
-		routers: s.attachedRouters,
-		addrs:   h.Addrs,
-		log:     s.log,
-	}
-
-	// Register handshake and credential-gated stream handlers BEFORE dialing
-	// routers so incoming streams during or immediately after router admission
-	// find every protocol ready.
-	h.SetStreamHandler(api.AuthProtocolID, s.recoverStream("auth", s.handleAuthHandshake))
-	h.SetStreamHandler(api.GoAwayProtocolID, s.recoverStream("goaway", func(st network.Stream) {
-		s.handleGoAway(bgCtx, st)
-	}))
-	h.SetStreamHandler(api.MCPProtocolID, s.recoverStream("mcp", s.handleMCPStream))
-
-	if err := s.startHTTPServers(bgCtx); err != nil {
-		cleanupOnErr()
-		return nil, err
-	}
-
-	ps, err := pubsub.NewFloodSub(bgCtx, gated, pubsub.WithMessageSignaturePolicy(pubsub.StrictSign))
-	if err != nil {
-		cleanupOnErr()
-		return nil, fmt.Errorf("init floodsub: %w", err)
-	}
-	if err := ps.RegisterTopicValidator(api.GossipEvents, s.validateMeshEvent); err != nil {
-		cleanupOnErr()
-		return nil, fmt.Errorf("register gossip validator: %w", err)
-	}
-	s.pubsub = ps
-	go s.listenForControlPlaneEvents(bgCtx)
-
-	if err := s.admitByRouters(ctx); err != nil {
-		cleanupOnErr()
-		return nil, err
-	}
-
-	if sub, subErr := h.EventBus().Subscribe(new(event.EvtLocalAddressesUpdated)); subErr == nil {
-		s.addrSub = sub
-		go func() {
-			for {
-				select {
-				case <-bgCtx.Done():
-					return
-				case _, ok := <-sub.Out():
-					if !ok {
-						return
-					}
-					s.triggerReprovide()
-				}
-			}
-		}()
-	}
-
-	s.startReprovideLoop(bgCtx)
-	s.startControlPlaneSyncLoop(bgCtx)
-	s.startRenewalLoop(bgCtx)
-
+	s.node.StartRenewalLoopWithSource(runCtx, s.tokenSource())
+	s.runCancel = runCancel
 	s.started = true
+
 	st := s.Status()
 	return &st, nil
 }
 
-func (s *Server) initCaches() error {
-	s.attached = make(map[peer.ID]bool)
-	s.authenticatedRouters = make(map[peer.ID]bool)
-	s.shunned = make(map[peer.ID]time.Time)
-	s.handshaking = make(map[peer.ID]chan struct{})
-	s.redialing = make(map[peer.ID]bool)
-	s.peerLastEventTime = make(map[string]int64)
-	s.dirSettings = api.DefaultDirectorySettings()
-	s.authSuccess = make(chan struct{})
-	s.syncTrigger = make(chan struct{}, 1)
-	s.reprovideTrigger = make(chan struct{}, 1)
-	s.refusedStreams = make(map[string]uint64)
-	s.a2aServices = make(map[string]*a2aEntry)
-
-	var err error
-	if s.rateLimiter, err = ratelimit.NewPeerRateLimiterWithRate(rateLimiterSize, 20, 30); err != nil {
-		return err
-	}
-	if s.handshakeLimiter, err = ratelimit.NewPeerRateLimiter(rateLimiterSize); err != nil {
-		return err
-	}
-	if s.externalIngressLimiter, err = ratelimit.NewPeerRateLimiterWithRate(rateLimiterSize, 200, 400); err != nil {
-		return err
-	}
-	if s.revokedPeers, err = lru.New[string, int64](revocationCacheSize); err != nil {
-		return err
-	}
-	if s.revokedTokens, err = lru.New[string, time.Time](revocationCacheSize); err != nil {
-		return err
-	}
-	if s.peerLabelGate, err = lru.New[string, time.Time](labelGateCacheSize); err != nil {
-		return err
-	}
-	return nil
-}
-
 // Status returns a snapshot of the member's PeerID, control-plane URL,
-// attached routers, public router ingress base URLs, and credential expiry.
+// currently attached routers, public router ingress base URLs, credential
+// expiry, and live credential-lapse state. Because Up returns on the first
+// router admission while additional router dials finish in the background,
+// AttachedRouters may list fewer than Server.Routers immediately after Up.
 func (s *Server) Status() Status {
-	routers := s.attachedRouters()
-	routerStrs := make([]string, 0, len(routers))
-	for _, r := range routers {
-		routerStrs = append(routerStrs, r.String())
-	}
-	sort.Strings(routerStrs)
-
 	var peerIDStr string
 	if s.peerID != "" {
 		peerIDStr = s.peerID.String()
 	}
+
+	var routerStrs []string
+	var ingressURLs []string
+	var lapsed bool
+	if s.node != nil {
+		if s.node.Host != nil {
+			routers := s.node.AttachedRouterIDs()
+			routerStrs = make([]string, 0, len(routers))
+			for _, r := range routers {
+				routerStrs = append(routerStrs, r.String())
+			}
+			sort.Strings(routerStrs)
+		}
+		ingressURLs = s.node.RouterIngressURLs()
+		lapsed = s.node.CredentialLapsed()
+	}
+
 	return Status{
-		PeerID:          peerIDStr,
-		ControlPlaneURL: s.cpURL,
-		AttachedRouters: routerStrs,
-		IngressURLs:     s.routerIngressURLs(),
-		ExpireTime:      s.credentialExpireTime(),
+		PeerID:           peerIDStr,
+		ControlPlaneURL:  s.cpURL,
+		AttachedRouters:  routerStrs,
+		IngressURLs:      ingressURLs,
+		ExpireTime:       s.credentialExpireTime(),
+		CredentialLapsed: lapsed,
 	}
 }
 
-// Close withdraws directory records (bounded to 5s), closes all registered
-// A2A listeners, stops background loops, and shuts down the libp2p host.
+// Close withdraws directory records (bounded to 5s), closes all registered A2A
+// listeners, unregisters per-Server Prometheus collectors, stops background
+// loops, and shuts down the libp2p host and state store.
 func (s *Server) Close() error {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
@@ -531,59 +358,103 @@ func (s *Server) Close() error {
 		return nil
 	}
 	s.closed = true
-
-	entries := s.listA2AEntries()
-	for _, e := range entries {
-		_ = e.privateLn.Close()
-		if e.publicLn != nil {
-			_ = e.publicLn.Close()
-		}
-	}
-
-	if s.dir != nil && s.host != nil {
-		wCtx, cancel := context.WithTimeout(context.Background(), withdrawTimeout)
-		hasAnnouncedA2A := false
-		for _, e := range entries {
-			if e.noAnnounce {
-				continue
-			}
-			hasAnnouncedA2A = true
-			if nameKey, err := api.ServiceKey(api.ServiceType_SERVICE_TYPE_A2A, e.name); err == nil {
-				if wErr := s.dir.withdraw(wCtx, nameKey); wErr != nil && !errors.Is(wErr, errNoDirectoryRouter) {
-					s.log().Debug("failed withdrawing A2A service key on close", "service", e.name, "error", wErr)
-				}
-			}
-		}
-		if hasAnnouncedA2A {
-			if typeKey, err := api.ServiceKey(api.ServiceType_SERVICE_TYPE_A2A, ""); err == nil {
-				if wErr := s.dir.withdraw(wCtx, typeKey); wErr != nil && !errors.Is(wErr, errNoDirectoryRouter) {
-					s.log().Debug("failed withdrawing A2A service type key on close", "error", wErr)
-				}
-			}
-		}
-		if wErr := s.dir.withdraw(wCtx, api.PeerKey(s.peerID)); wErr != nil && !errors.Is(wErr, errNoDirectoryRouter) {
-			s.log().Debug("failed withdrawing peer key on close", "error", wErr)
-		}
-		cancel()
-	}
-
-	if s.addrSub != nil {
-		_ = s.addrSub.Close()
-	}
-	if s.bgCancel != nil {
-		s.bgCancel()
-	}
+	s.signalDone()
 
 	var errs []error
-	if s.host != nil {
-		if err := s.host.Close(); err != nil {
+	if s.node != nil {
+		if err := s.node.Teardown(); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	if s.connMgr != nil {
-		if err := s.connMgr.Close(); err != nil {
+	if s.runCancel != nil {
+		s.runCancel()
+	}
+	if s.store != nil {
+		if err := s.store.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// Discover queries the mesh directory for providers offering serviceType (and
+// optionally a specific serviceName; pass "" to browse all providers of that
+// type via parallel catalog fan-out). Returned DiscoveredProvider.LocalProxyUrl
+// values can be passed directly to Server.HTTPClient.
+func (s *Server) Discover(ctx context.Context, serviceType api.ServiceType, serviceName string) ([]*api.DiscoveredProvider, error) {
+	if !s.isRunning() {
+		return nil, errors.New("meshnet: Server is not running (call Up first)")
+	}
+	if serviceType == api.ServiceType_SERVICE_TYPE_UNSPECIFIED {
+		return nil, errors.New("meshnet: serviceType must not be SERVICE_TYPE_UNSPECIFIED")
+	}
+	if _, err := api.ServiceTypeToString(serviceType); err != nil {
+		return nil, err
+	}
+	return s.node.DiscoverRemoteServices(ctx, serviceType, serviceName)
+}
+
+// MCPServer returns an in-process *mcp.Server exposing the 6 progressive mesh
+// discovery and tool-invocation tools (get_mesh_info, list_local_services,
+// discover_remote_services, find_remote_tools, describe_remote_tool,
+// call_remote_tool). Returns nil if Up has not succeeded.
+func (s *Server) MCPServer() *mcp.Server {
+	if !s.isRunning() {
+		return nil
+	}
+	return node.NewMCPServer(s.node)
+}
+
+// MCPHandler returns a stateless StreamableHTTP handler serving Server.MCPServer
+// at "/", "/mcp", and "/mcp/".
+func (s *Server) MCPHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.isRunning() {
+			http.Error(w, "meshnet: Server is not running", http.StatusServiceUnavailable)
+			return
+		}
+		switch r.URL.Path {
+		case "", "/", "/mcp", "/mcp/":
+		default:
+			http.NotFound(w, r)
+			return
+		}
+		s.mcpHandlerOnce.Do(func() {
+			s.mcpHTTPHandler = node.NewMCPHandler(s.node)
+		})
+		if r.URL.Path != "/mcp" {
+			r2 := r.Clone(r.Context())
+			r2.URL.Path = "/mcp"
+			r2.URL.RawPath = ""
+			r = r2
+		}
+		s.mcpHTTPHandler.ServeHTTP(w, r)
+	})
+}
+
+// InferenceHandler returns a zero-secret OpenAI-compatible HTTP handler serving
+// GET /v1/models, POST /v1/chat/completions, and POST /v1/completions backed by
+// inference://* providers on the mesh.
+func (s *Server) InferenceHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.isRunning() {
+			http.Error(w, "meshnet: Server is not running", http.StatusServiceUnavailable)
+			return
+		}
+		s.infHandlerOnce.Do(func() {
+			s.infHTTPHandler = s.node.InferenceHandler()
+		})
+		s.infHTTPHandler.ServeHTTP(w, r)
+	})
+}
+
+// AttenuateToken appends a validated TaskAuthorizationRule (tar_block fact,
+// 0 Datalog rules, 0 checks) to the Server's current Biscuit in memory without
+// a control-plane round trip, optionally sealing it so downstream holders
+// cannot append further blocks.
+func (s *Server) AttenuateToken(rule *api.TaskAuthorizationRule, ttl time.Duration, seal bool) (string, time.Time, error) {
+	if s.node == nil {
+		return "", time.Time{}, errors.New("meshnet: Server is not running (call Up first)")
+	}
+	return s.node.AttenuateToken(rule, ttl, seal)
 }

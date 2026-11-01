@@ -50,41 +50,123 @@ func expireUnix(t *timestamppb.Timestamp) int64 {
 	return t.AsTime().Unix()
 }
 
-// GetOrGenerateKey retrieves a persistent private key or creates one if it's the first run
-func GetOrGenerateKey(s *Store) crypto.PrivKey {
+// LoadOrGenerateKey retrieves the persistent libp2p private key from s or
+// generates and saves a new Ed25519 identity without terminating the process
+// on error.
+func LoadOrGenerateKey(s *Store) (crypto.PrivKey, error) {
 	kb, err := s.LoadKey()
-	if err == nil && len(kb) > 0 {
+	if err != nil {
+		return nil, fmt.Errorf("load key: %w", err)
+	}
+	if len(kb) > 0 {
 		priv, unmarshalErr := crypto.UnmarshalPrivateKey(kb)
 		if unmarshalErr != nil {
-			logger.Fatalf("Corrupt key in store: %v", unmarshalErr)
+			return nil, fmt.Errorf("corrupt key in store: %w", unmarshalErr)
 		}
-		return priv
+		return priv, nil
 	}
 	logger.Info("[Store] Generating new Peer Identity...")
 	priv, _, genErr := crypto.GenerateKeyPair(crypto.Ed25519, -1)
 	if genErr != nil {
-		logger.Fatalf("Failed to generate key: %v", genErr)
+		return nil, fmt.Errorf("generate key: %w", genErr)
 	}
 	raw, marshalErr := crypto.MarshalPrivateKey(priv)
 	if marshalErr != nil {
-		logger.Fatalf("Failed to marshal private key: %v", marshalErr)
+		return nil, fmt.Errorf("marshal private key: %w", marshalErr)
 	}
 	if saveErr := s.SaveKey(raw); saveErr != nil {
-		logger.Warnf("Failed to save key: %v", saveErr)
+		return nil, fmt.Errorf("save key: %w", saveErr)
+	}
+	return priv, nil
+}
+
+// GetOrGenerateKey retrieves a persistent private key or creates one if it's the first run
+func GetOrGenerateKey(s *Store) crypto.PrivKey {
+	priv, err := LoadOrGenerateKey(s)
+	if err != nil {
+		logger.Fatalf("Failed to load or generate key: %v", err)
 	}
 	return priv
 }
 
 func (n *AgentMeshNode) Enroll(ctx context.Context, controlPlaneURL string, jwt string) error {
-	enrollResp, err := n.enrollHTTP(ctx, controlPlaneURL, jwt, n.Host.ID(), n.config.PrivKey)
+	peerID, err := n.localPeerID()
 	if err != nil {
 		return err
+	}
+	enrollResp, err := n.enrollHTTP(ctx, controlPlaneURL, jwt, peerID, n.config.PrivKey)
+	if err != nil {
+		return err
+	}
+	if n.Store != nil {
+		if saveErr := n.Store.SaveControlPlaneURL(controlPlaneURL); saveErr != nil {
+			logger.Warnf("Failed to save control plane URL: %v", saveErr)
+		}
+	}
+	if n.Host == nil {
+		return nil
 	}
 
 	// Routers already holding a session are shown the new credential;
 	// connectToRouters skips them, as their sessions are live.
 	n.readmitRouters(ctx)
+	if len(enrollResp.RouterAddresses) == 0 && n.IsConnected() {
+		return nil
+	}
 	return n.connectToRouters(ctx, controlPlaneURL, enrollResp.RouterAddresses)
+}
+
+// EnrollJWTCredential obtains and persists a member credential via POST /register
+// without requiring a running libp2p host.
+func (n *AgentMeshNode) EnrollJWTCredential(ctx context.Context, controlPlaneURL, jwt string) (*api.EnrollResponse, error) {
+	priv := n.config.PrivKey
+	if priv == nil && n.Store != nil {
+		var err error
+		priv, err = LoadOrGenerateKey(n.Store)
+		if err != nil {
+			return nil, err
+		}
+		n.config.PrivKey = priv
+	}
+	if priv == nil {
+		return nil, errors.New("node has no private key")
+	}
+	peerID, err := peer.IDFromPrivateKey(priv)
+	if err != nil {
+		return nil, fmt.Errorf("derive peer ID: %w", err)
+	}
+	resp, err := n.enrollHTTP(ctx, controlPlaneURL, jwt, peerID, priv)
+	if err != nil {
+		return nil, err
+	}
+	if n.Store != nil {
+		if err := n.Store.SaveControlPlaneURL(controlPlaneURL); err != nil {
+			return nil, fmt.Errorf("save control plane URL: %w", err)
+		}
+	}
+	return resp, nil
+}
+
+// EnrollBootstrapCredential obtains and persists a member credential via
+// POST /enroll (polling /enroll/status if pending) without attaching to routers.
+func (n *AgentMeshNode) EnrollBootstrapCredential(ctx context.Context, controlPlaneURL, bootstrapToken string, trustedOnly bool) (*api.BootstrapEnrollResponse, error) {
+	if n.config.PrivKey == nil && n.Store != nil {
+		priv, err := LoadOrGenerateKey(n.Store)
+		if err != nil {
+			return nil, err
+		}
+		n.config.PrivKey = priv
+	}
+	resp, err := n.enrollBootstrapCredential(ctx, controlPlaneURL, bootstrapToken, trustedOnly)
+	if err != nil {
+		return nil, err
+	}
+	if n.Store != nil {
+		if err := n.Store.SaveControlPlaneURL(controlPlaneURL); err != nil {
+			return nil, fmt.Errorf("save control plane URL: %w", err)
+		}
+	}
+	return resp, nil
 }
 
 // adoptEnrolledKeys widens the trust set from the single key an enrollment
@@ -116,7 +198,7 @@ func (n *AgentMeshNode) enrollHTTP(ctx context.Context, controlPlaneURL, jwt str
 	url := controlPlaneURL + "/register"
 	logger.Infof("Enrolling via HTTP at %s", url)
 
-	client := controlPlaneHTTPClient(30 * time.Second)
+	client := n.cpHTTPClient(30 * time.Second)
 	resp, err := cpclient.DoWithChallengeRetry(ctx, client, time.Now, cpclient.DefaultEnrollBackoff, func(ts int64) (*http.Request, error) {
 		sig, err := privKey.Sign(api.RegisterChallenge(peerID.String(), ts))
 		if err != nil {
@@ -171,7 +253,10 @@ func (n *AgentMeshNode) ReEnrollWithRefreshToken(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	privKey := GetOrGenerateKey(n.Store)
+	privKey, err := LoadOrGenerateKey(n.Store)
+	if err != nil {
+		return err
+	}
 	peerID, err := peer.IDFromPublicKey(privKey.GetPublic())
 	if err != nil {
 		return fmt.Errorf("failed to derive peer ID from stored key: %w", err)
@@ -245,7 +330,7 @@ func (n *AgentMeshNode) connectToRouters(ctx context.Context, controlPlaneURL st
 // selector matches; the answer is the fallback when /info cannot be read.
 func (n *AgentMeshNode) joinRouters(ctx context.Context, controlPlaneURL string, addrs []string) error {
 	var cands []routerCandidate
-	if info, err := FetchControlPlaneInfo(ctx, controlPlaneURL); err == nil {
+	if info, err := n.fetchControlPlaneInfo(ctx, controlPlaneURL); err == nil {
 		cands = candidatesFromInfo(ctx, info)
 	} else {
 		logger.Debugf("Routers not read from /info after enrollment, using the enrollment answer: %v", err)
@@ -310,7 +395,7 @@ func (n *AgentMeshNode) enrollBootstrapCredential(ctx context.Context, controlPl
 	enrollURL := controlPlaneURL + "/enroll"
 	logger.Infof("Enrolling via Bootstrap token at %s", enrollURL)
 
-	client := controlPlaneHTTPClient(30 * time.Second)
+	client := n.cpHTTPClient(30 * time.Second)
 	resp, err := cpclient.DoWithChallengeRetry(ctx, client, time.Now, cpclient.DefaultEnrollBackoff, func(enrollTS int64) (*http.Request, error) {
 		enrollSig, err := n.config.PrivKey.Sign(api.EnrollChallenge(peerID.String(), enrollTS))
 		if err != nil {

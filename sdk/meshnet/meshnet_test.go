@@ -21,24 +21,30 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/eclipse-biscuit/biscuit-go/v2"
 	"github.com/google/agentmesh/api"
-	"github.com/google/agentmesh/internal/identity"
+	"github.com/google/agentmesh/internal/node"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-msgio"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func TestAttenuateToken(t *testing.T) {
@@ -80,17 +86,34 @@ func TestAttenuateToken(t *testing.T) {
 		if err != nil {
 			t.Fatalf("DecodeString: %v", err)
 		}
-		rules, err := identity.ExtractTaskRules(rawUnsealed)
-		if err != nil || len(rules) != 1 || rules[0].GetName() != "review-pr-42" {
-			t.Fatalf("ExtractTaskRules = %v, err=%v; want [review-pr-42]", rules, err)
+		unsealedTok, err := biscuit.Unmarshal(rawUnsealed)
+		if err != nil {
+			t.Fatalf("biscuit.Unmarshal(unsealed): %v", err)
+		}
+		codes := unsealedTok.Code()
+		if len(codes) != 1 {
+			t.Fatalf("len(unsealedTok.Code()) = %d, want 1 appended block", len(codes))
+		}
+		inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(codes[0]), "Block {"), "}"))
+		decodedRule, err := api.ParseTARBlockSource(inner)
+		if err != nil || decodedRule.GetName() != "review-pr-42" {
+			t.Fatalf("ParseTARBlockSource(%q) = %v, err=%v; want review-pr-42", inner, decodedRule, err)
 		}
 
-		// A second attenuation succeeds on an unsealed token.
-		if _, err := identity.AttenuateBiscuit(rawUnsealed, &api.TaskAuthorizationRule{
+		// A second attenuation block can be appended to an unsealed token.
+		nextFact, err := api.EncodeTARBlockFact(&api.TaskAuthorizationRule{
 			Name:       "narrower",
-			ExpireTime: rules[0].GetExpireTime(),
-			Rules:      rules[0].GetRules(),
-		}); err != nil {
+			ExpireTime: decodedRule.GetExpireTime(),
+			Rules:      decodedRule.GetRules(),
+		})
+		if err != nil {
+			t.Fatalf("EncodeTARBlockFact: %v", err)
+		}
+		bb := unsealedTok.CreateBlock()
+		if err := bb.AddFact(nextFact); err != nil {
+			t.Fatalf("AddFact: %v", err)
+		}
+		if _, err := unsealedTok.Append(rand.Reader, bb.Build()); err != nil {
 			t.Fatalf("expected unsealed token to allow further attenuation: %v", err)
 		}
 
@@ -103,17 +126,21 @@ func TestAttenuateToken(t *testing.T) {
 		if err != nil {
 			t.Fatalf("DecodeString(sealed): %v", err)
 		}
-		if _, err := identity.AttenuateBiscuit(rawSealed, &api.TaskAuthorizationRule{
-			Name:       "forged-append",
-			ExpireTime: rules[0].GetExpireTime(),
-			Rules:      rules[0].GetRules(),
-		}); err == nil {
-			t.Fatal("AttenuateBiscuit succeeded on a sealed token, want error")
+		sealedTok, err := biscuit.Unmarshal(rawSealed)
+		if err != nil {
+			t.Fatalf("biscuit.Unmarshal(sealed): %v", err)
+		}
+		forgedBB := sealedTok.CreateBlock()
+		if err := forgedBB.AddFact(nextFact); err != nil {
+			t.Fatalf("AddFact(forged): %v", err)
+		}
+		if _, err := sealedTok.Append(rand.Reader, forgedBB.Build()); err == nil {
+			t.Fatal("Append succeeded on a sealed token, want error")
 		}
 	})
 }
 
-func TestAgentCardRelativizeAndRegenerate(t *testing.T) {
+func TestSanitizeCallerHeadersAndAgentCardRelativize(t *testing.T) {
 	peerID := "12D3KooWExamplePeer"
 	privRoot := "/mesh/" + peerID + "/a2a/coder"
 	pubRoot := "/ingress/" + peerID + "/a2a/coder"
@@ -127,7 +154,6 @@ func TestAgentCardRelativizeAndRegenerate(t *testing.T) {
 			{URL: "https://bananas.sam-mesh.dev" + pubRoot + "/invoke?mode=fast", ProtocolBinding: a2a.TransportProtocolJSONRPC, ProtocolVersion: "1.0"},
 			{URL: "http://agentmesh.local" + privRoot, ProtocolBinding: a2a.TransportProtocolHTTPJSON, ProtocolVersion: "1.0"},
 			{URL: "http://127.0.0.1:9090/v1/rpc", ProtocolBinding: a2a.TransportProtocolJSONRPC, ProtocolVersion: "1.0"},
-			{URL: "127.0.0.1:50051", ProtocolBinding: a2a.TransportProtocolGRPC, ProtocolVersion: "1.0"},
 		},
 		Signatures: []a2a.AgentCardSignature{{Protected: "hdr", Signature: "sig"}},
 	}
@@ -136,9 +162,21 @@ func TestAgentCardRelativizeAndRegenerate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	relBytes, err := relativizeAgentCardMultiRoot(rawOrig, roots)
+	req := httptest.NewRequest(http.MethodGet, "http://agentmesh.local/.well-known/agent-card.json", nil)
+	resp := &http.Response{
+		StatusCode:    http.StatusOK,
+		Header:        http.Header{"Content-Type": {"application/json"}},
+		Body:          io.NopCloser(bytes.NewReader(rawOrig)),
+		ContentLength: int64(len(rawOrig)),
+		Request:       req,
+	}
+	if err := node.RelativizeAgentCardMultiRoot("coder", roots)(resp); err != nil {
+		t.Fatalf("RelativizeAgentCardMultiRoot: %v", err)
+	}
+	relBytes, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
 	if err != nil {
-		t.Fatalf("relativizeAgentCardMultiRoot: %v", err)
+		t.Fatal(err)
 	}
 	var relCard a2a.AgentCard
 	if err := json.Unmarshal(relBytes, &relCard); err != nil {
@@ -154,94 +192,67 @@ func TestAgentCardRelativizeAndRegenerate(t *testing.T) {
 		t.Errorf("interface[2].URL = %q, want %q", got, "v1/rpc")
 	}
 
-	base := "http://agentmesh.local" + privRoot
-	if err := regenerateAgentCardForMesh(&relCard, base); err != nil {
-		t.Fatalf("regenerateAgentCardForMesh: %v", err)
-	}
-	if len(relCard.SupportedInterfaces) != 3 {
-		t.Fatalf("len(SupportedInterfaces) = %d, want 3 (gRPC dropped)", len(relCard.SupportedInterfaces))
-	}
-	if got := relCard.SupportedInterfaces[0].URL; got != base+"/invoke?mode=fast" {
-		t.Errorf("regenerated[0] = %q, want %q", got, base+"/invoke?mode=fast")
-	}
-	if got := relCard.SupportedInterfaces[1].URL; got != base {
-		t.Errorf("regenerated[1] = %q, want %q", got, base)
-	}
-	if got := relCard.SupportedInterfaces[2].URL; got != base+"/v1/rpc" {
-		t.Errorf("regenerated[2] = %q, want %q", got, base+"/v1/rpc")
-	}
-	if len(relCard.Signatures) != 0 {
-		t.Errorf("Signatures = %v, want stripped", relCard.Signatures)
-	}
-
-	// Dot-segments (including backslash-separated segments) are never preserved.
-	for _, bad := range []string{"../admin", "..\\admin"} {
-		if got := meshInterfaceURL(base, bad); got != base {
-			t.Errorf("meshInterfaceURL(%q) = %q, want %q", bad, got, base)
-		}
-	}
-
-	etag := agentCardETag(relBytes)
-	if !etagMatches(etag, etag) || !etagMatches("W/"+etag, etag) || !etagMatches("*", etag) {
-		t.Errorf("etagMatches failed for %s", etag)
-	}
-	if etagMatches(`"other"`, etag) {
-		t.Errorf("etagMatches matched unrelated tag")
-	}
-
 	inHdr := http.Header{
-		"Authorization":    {"Bearer app-token"},
-		"Cookie":           {"sid=secret"},
-		"X-Mesh-Principal": {"spoofed"},
-		api.HeaderPeerID:   {"spoofed-peer"},
+		"Authorization":                    {"Bearer app-token"},
+		"Cookie":                           {"sid=secret"},
+		"X-Mesh-Principal":                 {"spoofed"},
+		api.HeaderPeerID:                   {"spoofed-peer"},
+		api.HeaderMeshRequiredLabels:       {"env=prod"},
+		api.HeaderMeshAuthentication:       {"Bearer task-token"},
+		api.HeaderMeshIngressCallerBiscuit: {"spoofed-caller"},
 	}
-	sanitized := sanitizeOutboundMeshHeaders(inHdr, []byte("biscuit-bytes"))
-	if sanitized.Get("Cookie") != "" || sanitized.Get("X-Mesh-Principal") != "" || sanitized.Get(api.HeaderPeerID) != "" {
-		t.Errorf("sanitizeOutboundMeshHeaders leaked restricted headers: %v", sanitized)
+	sanitized := sanitizeCallerMeshHeaders(inHdr)
+	if sanitized.Get("Cookie") != "" || sanitized.Get("X-Mesh-Principal") != "" || sanitized.Get(api.HeaderPeerID) != "" || sanitized.Get(api.HeaderMeshIngressCallerBiscuit) != "" {
+		t.Errorf("sanitizeCallerMeshHeaders leaked restricted headers: %v", sanitized)
 	}
 	if sanitized.Get("Authorization") != "Bearer app-token" {
 		t.Errorf("Authorization header was dropped: %v", sanitized)
 	}
-	if sanitized.Get(api.HeaderMeshBiscuit) == "" {
-		t.Error("X-Mesh-Biscuit not injected")
+	if sanitized.Get(api.HeaderMeshRequiredLabels) != "env=prod" {
+		t.Errorf("X-Mesh-Required-Labels was dropped: %v", sanitized)
+	}
+	if sanitized.Get(api.HeaderMeshAuthentication) != "Bearer task-token" {
+		t.Errorf("X-Mesh-Authentication was dropped: %v", sanitized)
 	}
 }
 
-func TestParseRequiredLabels(t *testing.T) {
-	cases := []struct {
-		name    string
-		header  string
-		want    map[string]string
-		wantErr bool
+func TestHTTPClientPathAndRequiredLabelValidation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	env := newStartedTestServer(t, ctx)
+	hc := env.server.HTTPClient()
+	validBase := fmt.Sprintf("http://agentmesh.local/mesh/%s/a2a/coder", env.routerHost.ID().String())
+
+	for _, tc := range []struct {
+		name   string
+		url    string
+		labels string
 	}{
-		{name: "empty", header: "", want: nil},
-		{name: "whitespace", header: "   ", want: nil},
-		{name: "valid_pair", header: "env=prod, region = us-central1", want: map[string]string{"env": "prod", "region": "us-central1"}},
-		{name: "trailing_comma_tolerated", header: "env=prod,", want: map[string]string{"env": "prod"}},
-		{name: "lone_commas_rejected", header: ",,", wantErr: true},
-		{name: "missing_equals", header: "env-prod", wantErr: true},
-		{name: "duplicate_key", header: "env=prod,env=staging", wantErr: true},
-		{name: "invalid_key", header: "BAD KEY!=val", wantErr: true},
-	}
-	for _, tc := range cases {
+		{name: "dot_segment", url: validBase + "/../admin"},
+		{name: "non_mesh_prefix", url: "http://agentmesh.local/v1/models"},
+		{name: "invalid_peer_id", url: "http://agentmesh.local/mesh/not-a-peer/a2a/coder"},
+		{name: "invalid_service_type", url: fmt.Sprintf("http://agentmesh.local/mesh/%s/unknown/coder", env.routerHost.ID().String())},
+		{name: "lone_commas_in_required_labels", url: validBase + "/invoke", labels: ",,"},
+		{name: "missing_equals_in_required_labels", url: validBase + "/invoke", labels: "env-prod"},
+		{name: "duplicate_key_in_required_labels", url: validBase + "/invoke", labels: "env=prod,env=staging"},
+		{name: "invalid_key_in_required_labels", url: validBase + "/invoke", labels: "BAD KEY!=val"},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := parseRequiredLabels(tc.header)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("parseRequiredLabels(%q) = %v, want error", tc.header, got)
-				}
-				return
-			}
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, tc.url, strings.NewReader(`{}`))
 			if err != nil {
-				t.Fatalf("parseRequiredLabels(%q) unexpected error: %v", tc.header, err)
+				t.Fatal(err)
 			}
-			if len(got) != len(tc.want) {
-				t.Fatalf("parseRequiredLabels(%q) = %v, want %v", tc.header, got, tc.want)
+			if tc.labels != "" {
+				req.Header.Set(api.HeaderMeshRequiredLabels, tc.labels)
 			}
-			for k, v := range tc.want {
-				if got[k] != v {
-					t.Errorf("got[%q] = %q, want %q", k, got[k], v)
-				}
+			resp, err := hc.Do(req)
+			if err != nil {
+				t.Fatalf("hc.Do(%s): %v", tc.url, err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 Bad Request", resp.StatusCode)
 			}
 		})
 	}
@@ -279,6 +290,7 @@ func TestListenA2AWhoIsDiscoverAndHTTPClient(t *testing.T) {
 			SupportedInterfaces: []*a2a.AgentInterface{
 				{URL: ep.PrivateURL.String() + "/invoke", ProtocolBinding: a2a.TransportProtocolJSONRPC, ProtocolVersion: "1.0"},
 			},
+			Signatures: []a2a.AgentCardSignature{{Protected: "hdr", Signature: "sig"}},
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(card)
@@ -352,6 +364,9 @@ func TestListenA2AWhoIsDiscoverAndHTTPClient(t *testing.T) {
 	}
 	if len(gotCard.SupportedInterfaces) != 1 || gotCard.SupportedInterfaces[0].URL != ep.PrivateURL.String()+"/invoke" {
 		t.Fatalf("SupportedInterfaces = %+v, want %s/invoke", gotCard.SupportedInterfaces, ep.PrivateURL.String())
+	}
+	if len(gotCard.Signatures) != 0 {
+		t.Errorf("Signatures = %v, want stripped on regenerated mesh card", gotCard.Signatures)
 	}
 	etag := cardResp.Header.Get("ETag")
 	if etag == "" {
@@ -435,6 +450,556 @@ func TestListenA2AWhoIsDiscoverAndHTTPClient(t *testing.T) {
 	if badLabelResp.StatusCode != http.StatusForbidden {
 		t.Fatalf("mismatched required label status = %d, want 403", badLabelResp.StatusCode)
 	}
+}
+
+func TestHTTPClientAuthorizerRunLimitReturns504And500(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	mesh := newInProcessMeshPair(t, ctx)
+	ep, err := mesh.provider.ListenA2A(ctx, A2AOptions{Name: "coder"})
+	if err != nil {
+		t.Fatalf("ListenA2A: %v", err)
+	}
+	httpSrv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+	go func() { _ = httpSrv.Serve(ep.PrivateListener) }()
+	t.Cleanup(func() {
+		_ = httpSrv.Close()
+		_ = ep.Close()
+	})
+
+	hc := mesh.caller.HTTPClient()
+
+	// 1. Transient Datalog evaluation timeout -> 504 Gateway Timeout (not 403).
+	mesh.caller.node.BiscuitTimeout = time.Nanosecond
+	resp504, err := hc.Post(ep.PrivateURL.String()+"/invoke", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("POST with 1ns BiscuitTimeout: %v", err)
+	}
+	body504, _ := io.ReadAll(resp504.Body)
+	_ = resp504.Body.Close()
+	if resp504.StatusCode != http.StatusGatewayTimeout {
+		t.Fatalf("authorizer timeout status = %d (%s), want 504 Gateway Timeout", resp504.StatusCode, body504)
+	}
+
+	// 2. Deterministic Datalog max-facts limit -> 500 Internal Server Error (not 403).
+	mesh.caller.node.BiscuitTimeout = time.Second
+	texts := make([]string, 0, 1100)
+	for i := range 1100 {
+		texts = append(texts, fmt.Sprintf("limit_fact_%d(true) <- role(%q)", i, api.RoleNode))
+	}
+	rules, err := api.ParseDatalogRules(texts)
+	if err != nil {
+		t.Fatalf("ParseDatalogRules: %v", err)
+	}
+	mesh.caller.node.MeshPolicyMu.Lock()
+	mesh.caller.node.MeshPolicyRules = rules
+	mesh.caller.node.MeshPolicyMu.Unlock()
+
+	resp500, err := hc.Post(ep.PrivateURL.String()+"/invoke", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("POST over Datalog fact limit: %v", err)
+	}
+	body500, _ := io.ReadAll(resp500.Body)
+	_ = resp500.Body.Close()
+	if resp500.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("authorizer max-facts status = %d (%s), want 500 Internal Server Error", resp500.StatusCode, body500)
+	}
+}
+
+func TestListenA2APublicNoAnnounceReturnsNilPublicURL(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	cpPub, cpPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rh, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rh.Close() })
+
+	routerBiscuit := mintTestBiscuit(t, cpPriv, rh.ID().String(), api.RoleRouter, time.Now().Add(time.Hour))
+	rh.SetStreamHandler(api.AuthProtocolID, func(st network.Stream) {
+		defer func() { _ = st.Close() }()
+		reader := msgio.NewVarintReaderSize(st, 64*1024)
+		msg, rErr := reader.ReadMsg()
+		if rErr != nil {
+			return
+		}
+		reader.ReleaseMsg(msg)
+		reply, _ := proto.Marshal(&api.AuthResponse{Success: true, Biscuit: routerBiscuit})
+		_ = msgio.NewVarintWriter(st).WriteMsg(reply)
+	})
+	rh.SetStreamHandler(api.DirectoryProtocolID, func(st network.Stream) {
+		defer func() { _ = st.Close() }()
+		reader := msgio.NewVarintReaderSize(st, 64*1024)
+		msg, rErr := reader.ReadMsg()
+		if rErr != nil {
+			return
+		}
+		reader.ReleaseMsg(msg)
+		reply, _ := proto.Marshal(&api.DirectoryResponse{})
+		_ = msgio.NewVarintWriter(st).WriteMsg(reply)
+	})
+
+	var routerAddrs []string
+	for _, a := range rh.Addrs() {
+		routerAddrs = append(routerAddrs, a.String()+"/p2p/"+rh.ID().String())
+	}
+	cp := newFakeControlPlaneHTTPWithKeys(t, cpPub, cpPriv, routerAddrs)
+	cp.mu.Lock()
+	cp.routers = []*api.RouterInfo{
+		{
+			PeerId:     rh.ID().String(),
+			Addresses:  routerAddrs,
+			IngressUrl: "https://bananas.sam-mesh.dev/ingress",
+		},
+	}
+	cp.mu.Unlock()
+
+	s := &Server{
+		StateDir:        t.TempDir(),
+		ControlPlaneURL: cp.srv.URL,
+		BootstrapToken:  "boot-secret",
+		ListenAddrs:     []string{"/ip4/127.0.0.1/tcp/0"},
+		AllowInsecure:   true,
+	}
+	if _, err := s.Up(ctx); err != nil {
+		t.Fatalf("Server.Up: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	unannounced, err := s.ListenA2A(ctx, A2AOptions{
+		Name:       "unannounced-agent",
+		Public:     true,
+		NoAnnounce: true,
+	})
+	if err != nil {
+		t.Fatalf("ListenA2A(NoAnnounce=true): %v", err)
+	}
+	t.Cleanup(func() { _ = unannounced.Close() })
+	if unannounced.PublicListener == nil {
+		t.Fatal("PublicListener is nil, want non-nil when Public=true")
+	}
+	if unannounced.PublicURL != nil {
+		t.Fatalf("PublicURL = %v, want nil when NoAnnounce=true (routers have no directory route)", unannounced.PublicURL)
+	}
+
+	announced, err := s.ListenA2A(ctx, A2AOptions{
+		Name:   "announced-agent",
+		Public: true,
+	})
+	if err != nil {
+		t.Fatalf("ListenA2A(NoAnnounce=false): %v", err)
+	}
+	t.Cleanup(func() { _ = announced.Close() })
+	wantPubURL := fmt.Sprintf("https://bananas.sam-mesh.dev/ingress/%s/a2a/announced-agent", s.Status().PeerID)
+	if announced.PublicURL == nil || announced.PublicURL.String() != wantPubURL {
+		t.Fatalf("PublicURL = %v, want %s", announced.PublicURL, wantPubURL)
+	}
+}
+
+func TestServerMetricsRegistererNoCollisionAndCleanup(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	cpPub, cpPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rh, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rh.Close() })
+
+	routerBiscuit := mintTestBiscuit(t, cpPriv, rh.ID().String(), api.RoleRouter, time.Now().Add(time.Hour))
+	rh.SetStreamHandler(api.AuthProtocolID, func(st network.Stream) {
+		defer func() { _ = st.Close() }()
+		reader := msgio.NewVarintReaderSize(st, 64*1024)
+		msg, rErr := reader.ReadMsg()
+		if rErr != nil {
+			return
+		}
+		reader.ReleaseMsg(msg)
+		reply, _ := proto.Marshal(&api.AuthResponse{Success: true, Biscuit: routerBiscuit})
+		_ = msgio.NewVarintWriter(st).WriteMsg(reply)
+	})
+	rh.SetStreamHandler(api.DirectoryProtocolID, func(st network.Stream) {
+		defer func() { _ = st.Close() }()
+		reader := msgio.NewVarintReaderSize(st, 64*1024)
+		msg, rErr := reader.ReadMsg()
+		if rErr != nil {
+			return
+		}
+		reader.ReleaseMsg(msg)
+		reply, _ := proto.Marshal(&api.DirectoryResponse{})
+		_ = msgio.NewVarintWriter(st).WriteMsg(reply)
+	})
+
+	var routerAddrs []string
+	for _, a := range rh.Addrs() {
+		routerAddrs = append(routerAddrs, a.String()+"/p2p/"+rh.ID().String())
+	}
+	cp := newFakeControlPlaneHTTPWithKeys(t, cpPub, cpPriv, routerAddrs)
+
+	reg := prometheus.NewRegistry()
+	dir1 := t.TempDir()
+	s1 := &Server{
+		StateDir:        dir1,
+		ControlPlaneURL: cp.srv.URL,
+		BootstrapToken:  "boot-secret",
+		ListenAddrs:     []string{"/ip4/127.0.0.1/tcp/0"},
+		AllowInsecure:   true,
+		Registerer:      reg,
+	}
+	st1, err := s1.Up(ctx)
+	if err != nil {
+		t.Fatalf("s1.Up: %v", err)
+	}
+	t.Cleanup(func() { _ = s1.Close() })
+
+	s2 := &Server{
+		StateDir:        t.TempDir(),
+		ControlPlaneURL: cp.srv.URL,
+		BootstrapToken:  "boot-secret",
+		ListenAddrs:     []string{"/ip4/127.0.0.1/tcp/0"},
+		AllowInsecure:   true,
+		Registerer:      reg,
+	}
+	st2, err := s2.Up(ctx)
+	if err != nil {
+		t.Fatalf("s2.Up (shared Registerer): %v", err)
+	}
+	t.Cleanup(func() { _ = s2.Close() })
+
+	// Trigger a gated stream refusal on s1 and verify s1's counter increments.
+	stranger, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stranger.Close() })
+	if err := stranger.Connect(ctx, peer.AddrInfo{ID: s1.node.Host.ID(), Addrs: s1.node.Host.Addrs()}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := stranger.NewStream(ctx, s1.node.Host.ID(), api.IngressProtocolID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Reset() }()
+	if _, err := st.Write([]byte("GET / HTTP/1.1\r\nHost: x\r\n\r\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	buf := make([]byte, 64)
+	_ = st.SetReadDeadline(time.Now().Add(time.Second))
+	if n, err := st.Read(buf); err == nil {
+		t.Fatalf("%s answered %q to an unauthenticated peer", api.IngressProtocolID, buf[:n])
+	}
+	if err := stranger.Network().ClosePeer(s1.node.Host.ID()); err != nil {
+		t.Fatal(err)
+	}
+	waitForCount(t, func() uint64 {
+		return s1.node.RefusedStreamCount("unauthenticated", api.IngressProtocolID)
+	}, 1, 5*time.Second)
+
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("reg.Gather: %v", err)
+	}
+	if v, ok := findMetricValue(families, "agentmesh_meshnet_ready", map[string]string{"peer_id": st1.PeerID}); !ok || v != 1 {
+		t.Errorf("s1 agentmesh_meshnet_ready = %v (ok=%v), want 1", v, ok)
+	}
+	if v, ok := findMetricValue(families, "agentmesh_meshnet_ready", map[string]string{"peer_id": st2.PeerID}); !ok || v != 1 {
+		t.Errorf("s2 agentmesh_meshnet_ready = %v (ok=%v), want 1", v, ok)
+	}
+	if v, ok := findMetricValue(families, "agentmesh_meshnet_routers", map[string]string{"peer_id": st1.PeerID, "state": "attached"}); !ok || v < 1 {
+		t.Errorf("s1 attached routers gauge = %v (ok=%v), want >= 1", v, ok)
+	}
+	if v, ok := findMetricValue(families, "agentmesh_meshnet_streams_refused_total", map[string]string{
+		"peer_id":  st1.PeerID,
+		"scope":    "unauthenticated",
+		"protocol": string(api.IngressProtocolID),
+	}); !ok || v < 1 {
+		t.Errorf("s1 streams_refused_total = %v (ok=%v), want >= 1", v, ok)
+	}
+
+	// Closing s1 unregisters its collectors so the same PeerID can re-register cleanly.
+	if err := s1.Close(); err != nil {
+		t.Fatalf("s1.Close: %v", err)
+	}
+	afterClose, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("reg.Gather after s1.Close: %v", err)
+	}
+	if _, ok := findMetricValue(afterClose, "agentmesh_meshnet_ready", map[string]string{"peer_id": st1.PeerID}); ok {
+		t.Fatal("s1 metrics remained registered after Close")
+	}
+
+	s1Restarted := &Server{
+		StateDir:        dir1,
+		ControlPlaneURL: cp.srv.URL,
+		ListenAddrs:     []string{"/ip4/127.0.0.1/tcp/0"},
+		AllowInsecure:   true,
+		Registerer:      reg,
+	}
+	if _, err := s1Restarted.Up(ctx); err != nil {
+		t.Fatalf("s1Restarted.Up with same PeerID and Registerer: %v", err)
+	}
+	t.Cleanup(func() { _ = s1Restarted.Close() })
+}
+
+func TestCredentialLapseExponentialBackoffAndSignal(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	cpPub, cpPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rh, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rh.Close() })
+
+	routerBiscuit := mintTestBiscuit(t, cpPriv, rh.ID().String(), api.RoleRouter, time.Now().Add(time.Hour))
+	rh.SetStreamHandler(api.AuthProtocolID, func(st network.Stream) {
+		defer func() { _ = st.Close() }()
+		reader := msgio.NewVarintReaderSize(st, 64*1024)
+		msg, rErr := reader.ReadMsg()
+		if rErr != nil {
+			return
+		}
+		reader.ReleaseMsg(msg)
+		reply, _ := proto.Marshal(&api.AuthResponse{Success: true, Biscuit: routerBiscuit})
+		_ = msgio.NewVarintWriter(st).WriteMsg(reply)
+	})
+	rh.SetStreamHandler(api.DirectoryProtocolID, func(st network.Stream) {
+		defer func() { _ = st.Close() }()
+		reader := msgio.NewVarintReaderSize(st, 64*1024)
+		msg, rErr := reader.ReadMsg()
+		if rErr != nil {
+			return
+		}
+		reader.ReleaseMsg(msg)
+		reply, _ := proto.Marshal(&api.DirectoryResponse{})
+		_ = msgio.NewVarintWriter(st).WriteMsg(reply)
+	})
+
+	var routerAddrs []string
+	for _, a := range rh.Addrs() {
+		routerAddrs = append(routerAddrs, a.String()+"/p2p/"+rh.ID().String())
+	}
+
+	var allowTokenSource atomic.Bool
+	allowTokenSource.Store(true)
+
+	// Dedicated fake CP whose /refresh blocks until the initial short-lived
+	// credential reaches its expiry boundary, then fails immediately so the
+	// very first failed renewal lands right at expiry with initial backoff.
+	var expUnix atomic.Int64
+	mux := http.NewServeMux()
+	var cpURL string
+	mux.HandleFunc("/keys", func(w http.ResponseWriter, _ *http.Request) {
+		resp := &api.KeysResponse{PublicKeys: [][]byte{cpPub}}
+		_ = api.SignKeysResponse(resp, []ed25519.PrivateKey{cpPriv}, time.Now())
+		writeProto(w, resp)
+	})
+	mux.HandleFunc("/info", func(w http.ResponseWriter, _ *http.Request) {
+		writeProto(w, &api.ControlPlaneInfoResponse{RouterAddresses: routerAddrs})
+	})
+	mux.HandleFunc("/policies", func(w http.ResponseWriter, _ *http.Request) {
+		compiled, _ := api.BuildPolicyRules([]*api.PolicyRole{
+			{Name: api.RoleNode, AllowedTargets: []string{"*"}, AllowedServices: []string{"*"}, AllowedPublish: []string{"*"}},
+		}, nil)
+		texts := make([]string, 0, len(compiled))
+		for _, r := range compiled {
+			texts = append(texts, r.Text)
+		}
+		writeProto(w, &api.PolicyConfigGetResponse{DatalogRules: texts})
+	})
+	mux.HandleFunc("/revocations", func(w http.ResponseWriter, _ *http.Request) {
+		writeProto(w, &api.RevocationsResponse{})
+	})
+	mux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
+		var req api.EnrollRequest
+		if !readProto(w, r, &req) {
+			return
+		}
+		var exp time.Time
+		if req.GetJwt() == "jwt-initial" {
+			exp = time.Now().Truncate(time.Second).Add(2 * time.Second)
+			expUnix.Store(exp.Unix())
+		} else {
+			exp = time.Now().Add(time.Hour)
+			expUnix.Store(exp.Unix())
+		}
+		tok := mintTestBiscuit(t, cpPriv, req.GetPeerId(), api.RoleNode, exp)
+		writeProto(w, &api.EnrollResponse{
+			BiscuitToken:          tok,
+			ControlPlanePublicKey: cpPub,
+			ExpireTime:            timestamppb.New(exp),
+			RouterAddresses:       routerAddrs,
+		})
+	})
+	mux.HandleFunc("/refresh", func(w http.ResponseWriter, r *http.Request) {
+		target := time.Unix(expUnix.Load(), 0)
+		if wait := time.Until(target); wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-r.Context().Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+		}
+		http.Error(w, "refresh unavailable", http.StatusServiceUnavailable)
+	})
+	cpSrv := httptest.NewServer(mux)
+	cpURL = cpSrv.URL
+	t.Cleanup(cpSrv.Close)
+
+	var lapseMu sync.Mutex
+	var lapseTimes []time.Time
+	lapseCh := make(chan struct{}, 8)
+
+	reg := prometheus.NewRegistry()
+	s := &Server{
+		StateDir:        t.TempDir(),
+		ControlPlaneURL: cpURL,
+		TokenSource: func(context.Context) (string, error) {
+			if !allowTokenSource.Load() {
+				return "", errors.New("idp unavailable")
+			}
+			if expUnix.Load() == 0 {
+				return "jwt-initial", nil
+			}
+			return "jwt-recovered", nil
+		},
+		ListenAddrs:           []string{"/ip4/127.0.0.1/tcp/0"},
+		AllowInsecure:         true,
+		Registerer:            reg,
+		renewalInitialBackoff: 80 * time.Millisecond,
+		renewalMaxBackoff:     time.Second,
+		OnCredentialLapse: func(err error) {
+			if !errors.Is(err, ErrCredentialLapsed) {
+				t.Errorf("OnCredentialLapse error %v does not wrap ErrCredentialLapsed", err)
+			}
+			lapseMu.Lock()
+			lapseTimes = append(lapseTimes, time.Now())
+			lapseMu.Unlock()
+			select {
+			case lapseCh <- struct{}{}:
+			default:
+			}
+		},
+	}
+	st, err := s.Up(ctx)
+	if err != nil {
+		t.Fatalf("s.Up: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	// Break TokenSource before expiry so fallback re-enrollment also fails.
+	allowTokenSource.Store(false)
+
+	select {
+	case <-s.Done():
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for s.Done() on credential lapse")
+	}
+	if !errors.Is(s.Err(), ErrCredentialLapsed) {
+		t.Fatalf("s.Err() = %v, want ErrCredentialLapsed", s.Err())
+	}
+	if !s.Status().CredentialLapsed {
+		t.Fatal("Status().CredentialLapsed = false, want true")
+	}
+
+	// Collect 3 consecutive lapse callbacks and verify exponential backoff (80ms -> 160ms).
+	for range 3 {
+		select {
+		case <-lapseCh:
+		case <-ctx.Done():
+			t.Fatal("timed out waiting for 3 exponential-backoff lapse callbacks")
+		}
+	}
+	lapseMu.Lock()
+	t0, t1, t2 := lapseTimes[0], lapseTimes[1], lapseTimes[2]
+	lapseMu.Unlock()
+
+	gap1 := t1.Sub(t0)
+	gap2 := t2.Sub(t1)
+	if gap1 < 50*time.Millisecond {
+		t.Errorf("first backoff gap = %v, want >= 50ms (initial 80ms)", gap1)
+	}
+	if gap2 < gap1+40*time.Millisecond {
+		t.Errorf("second backoff gap = %v, did not grow exponentially over first gap %v", gap2, gap1)
+	}
+
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("reg.Gather: %v", err)
+	}
+	if v, ok := findMetricValue(families, "agentmesh_meshnet_credential_lapsed", map[string]string{"peer_id": st.PeerID}); !ok || v != 1 {
+		t.Errorf("agentmesh_meshnet_credential_lapsed = %v (ok=%v), want 1", v, ok)
+	}
+	if v, ok := findMetricValue(families, "agentmesh_meshnet_credential_lapses_total", map[string]string{"peer_id": st.PeerID}); !ok || v < 3 {
+		t.Errorf("agentmesh_meshnet_credential_lapses_total = %v (ok=%v), want >= 3", v, ok)
+	}
+
+	// Restore TokenSource and verify the next backoff retry recovers Status().CredentialLapsed.
+	allowTokenSource.Store(true)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if !s.Status().CredentialLapsed {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if s.Status().CredentialLapsed {
+		t.Fatal("Status().CredentialLapsed remained true after TokenSource recovered")
+	}
+}
+
+func findMetricValue(families []*dto.MetricFamily, name string, wantLabels map[string]string) (float64, bool) {
+	for _, mf := range families {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			matched := true
+			for k, want := range wantLabels {
+				got := ""
+				for _, lp := range m.GetLabel() {
+					if lp.GetName() == k {
+						got = lp.GetValue()
+						break
+					}
+				}
+				if got != want {
+					matched = false
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+			if m.Gauge != nil {
+				return m.Gauge.GetValue(), true
+			}
+			if m.Counter != nil {
+				return m.Counter.GetValue(), true
+			}
+		}
+	}
+	return 0, false
 }
 
 func TestLocalMCPAndInferenceHandlers(t *testing.T) {
@@ -628,9 +1193,9 @@ func TestExternalIngressCanonicalizesActorNodePeerID(t *testing.T) {
 	req.Header.Set(api.HeaderMeshIngressCallerBiscuit, base64.RawURLEncoding.EncodeToString(callerBytes))
 
 	rec := httptest.NewRecorder()
-	s.externalIngressHandler().ServeHTTP(rec, req)
+	s.node.ExternalIngressHandler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("externalIngressHandler status = %d (%s), want 200", rec.Code, rec.Body.String())
+		t.Fatalf("ExternalIngressHandler status = %d (%s), want 200", rec.Code, rec.Body.String())
 	}
 
 	mu.Lock()
@@ -749,10 +1314,10 @@ func newInProcessMeshPair(t *testing.T, ctx context.Context) *inProcessMeshPair 
 	dirMu.Lock()
 	for _, srv := range []*Server{p, c} {
 		var maddrs []string
-		for _, ma := range srv.host.Addrs() {
+		for _, ma := range srv.node.Host.Addrs() {
 			maddrs = append(maddrs, ma.String())
 		}
-		peersByID[srv.host.ID()] = &api.PeerRecord{PeerId: srv.host.ID().String(), Addrs: maddrs}
+		peersByID[srv.node.Host.ID()] = &api.PeerRecord{PeerId: srv.node.Host.ID().String(), Addrs: maddrs}
 	}
 	dirMu.Unlock()
 

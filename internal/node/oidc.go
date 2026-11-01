@@ -78,6 +78,11 @@ const (
 	AuthModeBrowser AuthMode = "browser"
 )
 
+// oidcLoopbackPorts are the fixed loopback ports tried for browser OIDC
+// redirects (Dex requires pre-registered redirect URIs rather than :0).
+// Overridden in unit tests so test runs never collide on fixed host ports.
+var oidcLoopbackPorts = []string{"13000", "13001", "13002"}
+
 // ParseAuthMode validates a user-provided --auth-mode value. An empty string
 // maps to AuthModeAuto.
 func ParseAuthMode(s string) (AuthMode, error) {
@@ -172,7 +177,7 @@ func (n *AgentMeshNode) InteractiveLoginWithMode(ctx context.Context, authURL, t
 		// Try a few known ports to satisfy Dex which doesn't support RFC 8252 dynamic loopback
 		// Since Dex strictly matches redirect URIs (Dex Issue #4836), we can't use `localhost:0`.
 		// Instead, we try a small set of pre-registered fixed ports.
-		for _, p := range []string{"13000", "13001", "13002"} {
+		for _, p := range oidcLoopbackPorts {
 			listener, err = net.Listen("tcp", "127.0.0.1:"+p)
 			if err == nil {
 				break
@@ -180,10 +185,10 @@ func (n *AgentMeshNode) InteractiveLoginWithMode(ctx context.Context, authURL, t
 		}
 		if listener == nil {
 			if deviceAuthURL != "" {
-				logger.Warn("Could not bind local OIDC listener (ports 13000-13002 busy); falling back to device authorization flow.")
+				logger.Warnf("Could not bind local OIDC listener (ports %v busy: %v); falling back to device authorization flow.", oidcLoopbackPorts, err)
 				return n.DeviceLogin(ctx, deviceAuthURL, tokenURL, clientID, audience, requestRefresh)
 			}
-			logger.Warn("Could not bind local OIDC listener (ports 13000-13002 busy). Falling back to headless (OOB) authorization.")
+			logger.Warnf("Could not bind local OIDC listener (ports %v busy: %v). Falling back to headless (OOB) authorization.", oidcLoopbackPorts, err)
 			isHeadless = true
 			redirectURI = "urn:ietf:wg:oauth:2.0:oob"
 		} else {
@@ -289,6 +294,7 @@ func (n *AgentMeshNode) InteractiveLoginWithMode(ctx context.Context, authURL, t
 			}
 
 			w.Header().Set("Content-Type", "text/html")
+			w.Header().Set("Connection", "close")
 			_, _ = w.Write([]byte("<html><body><h1>Authorization successful!</h1><p>You can close this window and return to the CLI.</p></body></html>"))
 
 			select {
@@ -360,7 +366,7 @@ func (n *AgentMeshNode) InteractiveLoginWithMode(ctx context.Context, authURL, t
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := n.cpHTTPClient(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -425,7 +431,7 @@ func (n *AgentMeshNode) DeviceLogin(ctx context.Context, deviceAuthURL, tokenURL
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := n.cpHTTPClient(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("device authorization request failed: %w", err)
@@ -656,7 +662,7 @@ var oidcDiscoveryTimeout = 10 * time.Second
 
 // DiscoverTokenURL discovers the token URL from the OIDC issuer.
 func (n *AgentMeshNode) DiscoverTokenURL(ctx context.Context, issuerURL string) (string, error) {
-	client := &http.Client{Timeout: oidcDiscoveryTimeout}
+	client := n.cpHTTPClient(oidcDiscoveryTimeout)
 	provider, err := oidc.NewProvider(oidc.ClientContext(ctx, client), issuerURL)
 	if err != nil {
 		return "", fmt.Errorf("failed to create OIDC provider: %w", err)
@@ -691,7 +697,7 @@ type OIDCEndpoints struct {
 
 // DiscoverEndpointsWithDevice discovers token, authorization and device authorization endpoints.
 func (n *AgentMeshNode) DiscoverEndpointsWithDevice(ctx context.Context, issuerURL string) (*OIDCEndpoints, error) {
-	client := &http.Client{Timeout: oidcDiscoveryTimeout}
+	client := n.cpHTTPClient(oidcDiscoveryTimeout)
 	provider, err := oidc.NewProvider(oidc.ClientContext(ctx, client), issuerURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create OIDC provider: %w", err)
@@ -752,7 +758,7 @@ func (n *AgentMeshNode) RefreshJWT(ctx context.Context, tokenURL, clientID, clie
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := n.cpHTTPClient(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", "", err

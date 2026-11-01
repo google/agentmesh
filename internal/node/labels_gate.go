@@ -255,10 +255,10 @@ func (n *AgentMeshNode) VerifyProvider(ctx context.Context, peerID peer.ID, requ
 
 	providerBiscuit, err := n.fetchPeerBiscuit(ctx, peerID)
 	if err != nil {
-		providerReachTotal.WithLabelValues(reachFailure(err)).Inc()
+		n.recordProviderReach(reachFailure(err))
 		return fmt.Errorf("provider %s labels unverifiable: %w: %w", peerID, ErrProviderUnreachable, err)
 	}
-	providerReachTotal.WithLabelValues(reachOK).Inc()
+	n.recordProviderReach(reachOK)
 	if err := n.checkProvider(providerBiscuit, peerID, required, service); err != nil {
 		return err
 	}
