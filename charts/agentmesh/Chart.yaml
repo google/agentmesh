@@ -2,5 +2,5 @@ apiVersion: v2
 name: agentmesh
 description: A Helm chart for deploying the Agent Mesh control plane, router and console
 type: application
-version: 0.1.0
-appVersion: "1.0.0"
+version: 0.2.0
+appVersion: "v0.2.0"

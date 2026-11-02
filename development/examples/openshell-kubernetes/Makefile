@@ -42,7 +42,7 @@ SPIRE_CHART_VERSION ?= 0.29.0
 OPENSHELL_VERSION ?= 0.1.4
 # Name of this cluster's gateway in the openshell CLI; use one name per cluster.
 OPENSHELL_GATEWAY ?= openshell-k8s
-AGENTMESH_VERSION ?= v0.1.1
+AGENTMESH_VERSION ?= v0.2.0
 AGENTMESH_ONE_IMAGE ?= ghcr.io/google/agentmesh-one:$(AGENTMESH_VERSION)
 AGENTMESH_NODE_IMAGE ?= ghcr.io/google/agentmesh-node:$(AGENTMESH_VERSION)
 CALC_MCP_IMAGE ?= calc-mcp:local
