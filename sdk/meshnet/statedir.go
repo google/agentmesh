@@ -24,7 +24,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/agentmesh/api"
@@ -50,9 +49,9 @@ const minResumeLifetime = 5 * time.Minute
 // and no join token or TokenSource was supplied to re-enroll.
 var ErrCredentialRetired = errors.New("meshnet: saved credential signing key retired; provide a join token to re-enroll")
 
-// ErrStateDirLocked reports that another running Server already holds an
-// exclusive lock on StateDir.
-var ErrStateDirLocked = errors.New("meshnet: state directory is already locked by another Server")
+// ErrStateDirLocked reports that another running Server or agentmesh-node
+// instance already holds the bbolt file lock on StateDir.
+var ErrStateDirLocked = errors.New("meshnet: state directory is already locked by another instance")
 
 // WriteStateDir writes a member's libp2p private key and MemberCredential to
 // dir with owner-only permissions (0700 directory, 0600 files).
@@ -216,27 +215,31 @@ func (s *Server) newAgentMeshNode(store *node.Store, privKey crypto.PrivKey) (*n
 	return n, nil
 }
 
-func (s *Server) openStore() (*node.Store, *os.File, error) {
-	store := node.NewMemoryStore()
-
+func (s *Server) openStore() (*node.Store, string, error) {
 	dir := strings.TrimSpace(s.StateDir)
 	if dir == "" {
-		return store, nil, nil
+		tmpDir, err := os.MkdirTemp("", "meshnet-store-*")
+		if err != nil {
+			return nil, "", fmt.Errorf("create temporary store directory: %w", err)
+		}
+		store, err := node.NewStore(tmpDir)
+		if err != nil {
+			_ = os.RemoveAll(tmpDir)
+			return nil, "", err
+		}
+		return store, tmpDir, nil
 	}
 
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		_ = store.Close()
-		return nil, nil, fmt.Errorf("create state directory %s: %w", dir, err)
-	}
-	lockFile, err := lockStateDir(dir)
+	store, err := node.NewStore(dir)
 	if err != nil {
-		_ = store.Close()
-		return nil, nil, err
+		if errors.Is(err, node.ErrStoreLocked) {
+			return nil, "", fmt.Errorf("%w: %w", ErrStateDirLocked, err)
+		}
+		return nil, "", err
 	}
-	cleanupOnErr := func(e error) (*node.Store, *os.File, error) {
+	cleanupOnErr := func(e error) (*node.Store, string, error) {
 		_ = store.Close()
-		unlockStateDir(lockFile)
-		return nil, nil, e
+		return nil, "", e
 	}
 
 	keyPath := filepath.Join(dir, StateDirIdentityFile)
@@ -264,25 +267,29 @@ func (s *Server) openStore() (*node.Store, *os.File, error) {
 		return cleanupOnErr(rErr)
 	}
 
-	var persistMu sync.Mutex
-	store.SetOnChange(func() error {
-		persistMu.Lock()
-		defer persistMu.Unlock()
-		kb, lErr := store.LoadKey()
-		if lErr != nil {
-			return lErr
-		}
-		if len(kb) == 0 {
-			return nil
-		}
-		c, cErr := store.Credential()
-		if cErr != nil {
-			return cErr
-		}
-		return WriteStateDir(dir, kb, c)
-	})
+	return store, "", nil
+}
 
-	return store, lockFile, nil
+func (s *Server) syncStateDir(store *node.Store) error {
+	dir := strings.TrimSpace(s.StateDir)
+	if dir == "" || store == nil {
+		return nil
+	}
+	s.stateDirSyncMu.Lock()
+	defer s.stateDirSyncMu.Unlock()
+
+	kb, err := store.LoadKey()
+	if err != nil {
+		return err
+	}
+	if len(kb) == 0 {
+		return nil
+	}
+	cred, err := store.Credential()
+	if err != nil {
+		return err
+	}
+	return WriteStateDir(dir, kb, cred)
 }
 
 func (s *Server) verifyOwnBiscuit(raw []byte) bool {
@@ -327,12 +334,12 @@ func (s *Server) identityPredatesRotation() bool {
 }
 
 func (s *Server) ensureCredential(ctx context.Context) (retErr error) {
-	store, lockFile, err := s.openStore()
+	store, tmpDir, err := s.openStore()
 	if err != nil {
 		return err
 	}
 	s.store = store
-	s.stateDirLock = lockFile
+	s.storeTmpDir = tmpDir
 	defer func() {
 		if retErr != nil {
 			_ = s.closeStoreLocked()
@@ -405,6 +412,9 @@ func (s *Server) ensureCredential(ctx context.Context) (retErr error) {
 	s.node = n
 
 	finalize := func() error {
+		if err := s.syncStateDir(store); err != nil {
+			return err
+		}
 		rebuilt, rErr := s.newAgentMeshNode(store, privKey)
 		if rErr != nil {
 			return rErr
@@ -441,18 +451,25 @@ func (s *Server) ensureCredential(ctx context.Context) (retErr error) {
 		}
 
 		// Try OIDC refresh_token recovery if stored in credential.json.
-		// ReEnrollWithRefreshToken persists any rotated refresh_token immediately
-		// before calling POST /register so one-time refresh tokens are never lost.
+		// ReEnrollWithRefreshToken saves any rotated refresh_token to store before
+		// calling POST /register; syncStateDir flushes it immediately so one-time
+		// refresh tokens survive even if POST /register fails.
 		if cred.GetOidcSession().GetRefreshToken() != "" {
-			if oidcErr := n.ReEnrollWithRefreshToken(ctx); oidcErr == nil {
-				s.log().Info("re-enrolled via saved OIDC session", "peer_id", s.peerID.String())
-				return finalize()
-			} else {
-				s.log().Warn("re-enrollment via saved OIDC session failed on startup",
+			oidcErr := n.ReEnrollWithRefreshToken(ctx)
+			if syncErr := s.syncStateDir(store); syncErr != nil {
+				s.log().Warn("failed to sync OIDC session state to state directory",
 					"peer_id", s.peerID.String(),
-					"error", oidcErr,
+					"error", syncErr,
 				)
 			}
+			if oidcErr == nil {
+				s.log().Info("re-enrolled via saved OIDC session", "peer_id", s.peerID.String())
+				return finalize()
+			}
+			s.log().Warn("re-enrollment via saved OIDC session failed on startup",
+				"peer_id", s.peerID.String(),
+				"error", oidcErr,
+			)
 		}
 
 		// Try operator-supplied join token / TokenSource re-enrollment.
@@ -550,6 +567,12 @@ func (s *Server) startRenewalLoop(ctx context.Context, n *node.AgentMeshNode, st
 			case <-timer.C:
 				refreshErr := n.RefreshEnrollment(ctx)
 				if refreshErr == nil {
+					if syncErr := s.syncStateDir(store); syncErr != nil {
+						s.log().Warn("failed to sync renewed credential to state directory",
+							"peer_id", peerID.String(),
+							"error", syncErr,
+						)
+					}
 					failureBackoff = 0
 					s.handleCredentialRenewed(peerID)
 					continue
@@ -557,6 +580,12 @@ func (s *Server) startRenewalLoop(ctx context.Context, n *node.AgentMeshNode, st
 
 				renewErr := s.fallbackReEnroll(ctx, n, store, cpURL)
 				if renewErr == nil {
+					if syncErr := s.syncStateDir(store); syncErr != nil {
+						s.log().Warn("failed to sync re-enrolled credential to state directory",
+							"peer_id", peerID.String(),
+							"error", syncErr,
+						)
+					}
 					failureBackoff = 0
 					s.handleCredentialRenewed(peerID)
 					continue
@@ -596,11 +625,14 @@ func (s *Server) fallbackReEnroll(ctx context.Context, n *node.AgentMeshNode, st
 	}
 	if store != nil {
 		if rt, _ := store.LoadRefreshToken(); rt != "" {
-			if oidcErr := n.ReEnrollWithRefreshToken(ctx); oidcErr == nil {
-				return nil
-			} else {
-				errs = append(errs, oidcErr)
+			oidcErr := n.ReEnrollWithRefreshToken(ctx)
+			if syncErr := s.syncStateDir(store); syncErr != nil {
+				s.log().Warn("failed to sync OIDC session state to state directory", "error", syncErr)
 			}
+			if oidcErr == nil {
+				return nil
+			}
+			errs = append(errs, oidcErr)
 		}
 	}
 	var bootToken string
@@ -632,15 +664,15 @@ func (s *Server) fallbackReEnroll(ctx context.Context, n *node.AgentMeshNode, st
 // configured), verifies the returned credential, persists it to StateDir, and
 // re-authenticates attached router sessions.
 func (s *Server) Refresh(ctx context.Context) error {
-	n, _, _, _ := s.stateSnapshot()
+	n, store, _, _ := s.stateSnapshot()
 	if n == nil {
 		return errors.New("meshnet: Server is not running (call Up first)")
 	}
-	err := n.RefreshEnrollment(ctx)
-	if err == nil {
-		s.credentialLapsed.Store(false)
+	if err := n.RefreshEnrollment(ctx); err != nil {
+		return err
 	}
-	return err
+	s.credentialLapsed.Store(false)
+	return s.syncStateDir(store)
 }
 
 func credentialExpireTimeFromStore(store *node.Store) time.Time {
