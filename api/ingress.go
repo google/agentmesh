@@ -34,6 +34,12 @@ const (
 	// MaxIngressAllowEntries bounds the number of caller principal patterns a
 	// single ServiceIngress.allow list may carry in directory announcements.
 	MaxIngressAllowEntries = 64
+
+	// MaxIngressBodyBytes caps the body of one external ingress request. The
+	// router applies it on its public listener and the node applies it again
+	// on /mesh/ingress/1.0.0, so a router that forwards without the cap gains
+	// nothing.
+	MaxIngressBodyBytes int64 = 32 << 20
 )
 
 // IsInboundServiceType reports whether t is an inbound service type that a

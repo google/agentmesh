@@ -889,7 +889,7 @@ func RequireIngress(b *biscuit.Biscuit, key ed25519.PublicKey, svcType, svcName,
 		authorizer.AddPolicy(p)
 	}
 	if err := authorizer.Authorize(); err != nil {
-		return fmt.Errorf("credential does not grant %s ingress for %s://%s", mode, svcType, svcName)
+		return fmt.Errorf("credential does not grant %s ingress for %s://%s: %w", mode, svcType, svcName, err)
 	}
 	return nil
 }

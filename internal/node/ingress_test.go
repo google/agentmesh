@@ -21,6 +21,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -30,6 +31,7 @@ import (
 	"time"
 
 	"github.com/eclipse-biscuit/biscuit-go/v2"
+	"github.com/eclipse-biscuit/biscuit-go/v2/datalog"
 	"github.com/eclipse-biscuit/biscuit-go/v2/parser"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/agentmesh/api"
@@ -355,6 +357,18 @@ func TestExternalIngressHandler(t *testing.T) {
 			AllowedServices: []string{"a2a://assistant", "mcp://files"},
 			AllowedTargets:  []string{"email:owner@example.com"},
 		},
+		{
+			// The serving node's role: the ingress ceiling the control plane
+			// renders as granted_ingress_* rules. Nothing grants a2a://ungranted.
+			Name: "provider",
+			AllowedIngress: []*api.IngressGrant{
+				{Services: []string{"a2a://assistant", "mcp://files"}},
+				{
+					Services:         []string{"a2a://webhook", "a2a://sink"},
+					AllowedAuthModes: []api.IngressAuthMode{api.IngressAuthMode_INGRESS_AUTH_MODE_PASSTHROUGH},
+				},
+			},
+		},
 	}
 	policyBindings := []*api.PolicyBinding{
 		{
@@ -470,6 +484,19 @@ func TestExternalIngressHandler(t *testing.T) {
 			info: &api.ServiceInfo{
 				Name: "internal-only",
 				Type: api.ServiceType_SERVICE_TYPE_A2A,
+			},
+			handler: recordHandler,
+		},
+		{
+			// Opted in by the service owner, but the node's role does not
+			// grant it: the router's ceiling check is what keeps it out, and
+			// the node must not rely on the router having run it.
+			info: &api.ServiceInfo{
+				Name: "ungranted",
+				Type: api.ServiceType_SERVICE_TYPE_A2A,
+				Ingress: &api.ServiceIngress{
+					AuthMode: api.IngressAuthMode_INGRESS_AUTH_MODE_PASSTHROUGH,
+				},
 			},
 			handler: recordHandler,
 		},
@@ -692,6 +719,62 @@ func TestExternalIngressHandler(t *testing.T) {
 		}
 		if capturedHeaders.Get("Cookie") != "" || capturedHeaders.Get(api.HeaderMeshPrincipal) != "" {
 			t.Errorf("expected Cookie and X-Mesh-Principal stripped in passthrough, got %v", capturedHeaders)
+		}
+	})
+
+	t.Run("service the node's role does not grant is refused even from a router", func(t *testing.T) {
+		before := counterValue(t, externalIngressRequestsTotal.WithLabelValues(api.IngressAuthModeStringPassthrough, externalIngressOutcomeDeny))
+		req := httptest.NewRequest(http.MethodPost, "http://mesh/a2a/ungranted/events", strings.NewReader(`{"event":"ping"}`))
+		req.RemoteAddr = routerPID.String()
+		req.Header.Set(api.HeaderMeshBiscuit, routerB64)
+		req.Header.Set(api.HeaderMeshIngress, api.IngressAuthModeStringPassthrough)
+		req.Header.Set("Authorization", "******")
+		capturedPath = ""
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("ungranted passthrough status = %d, want 403: %s", rec.Code, rec.Body.String())
+		}
+		if capturedPath != "" {
+			t.Errorf("backend was called at %q, want no call", capturedPath)
+		}
+		after := counterValue(t, externalIngressRequestsTotal.WithLabelValues(api.IngressAuthModeStringPassthrough, externalIngressOutcomeDeny))
+		if after != before+1 {
+			t.Errorf("deny counter = %v, want %v", after, before+1)
+		}
+	})
+
+	t.Run("body above the ingress cap is cut at the node", func(t *testing.T) {
+		var readErr error
+		sink := &fakeService{
+			info: &api.ServiceInfo{
+				Name:    "sink",
+				Type:    api.ServiceType_SERVICE_TYPE_A2A,
+				Ingress: &api.ServiceIngress{AuthMode: api.IngressAuthMode_INGRESS_AUTH_MODE_PASSTHROUGH},
+			},
+			handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, readErr = io.Copy(io.Discard, r.Body)
+				w.WriteHeader(http.StatusOK)
+			}),
+		}
+		if err := reg.Register(context.Background(), sink); err != nil {
+			t.Fatalf("Register sink: %v", err)
+		}
+		t.Cleanup(func() { _ = reg.Unregister(context.Background(), "sink") })
+
+		body := io.LimitReader(zeroReader{}, api.MaxIngressBodyBytes+1)
+		req := httptest.NewRequest(http.MethodPost, "http://mesh/a2a/sink/", body)
+		req.RemoteAddr = routerPID.String()
+		req.Header.Set(api.HeaderMeshBiscuit, routerB64)
+		req.Header.Set(api.HeaderMeshIngress, api.IngressAuthModeStringPassthrough)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+		}
+		var maxErr *http.MaxBytesError
+		if !errors.As(readErr, &maxErr) {
+			t.Fatalf("backend read error = %v, want *http.MaxBytesError", readErr)
 		}
 	})
 
@@ -940,4 +1023,67 @@ func TestServiceRegistry_UnannouncedAndExternalIngressGate(t *testing.T) {
 			t.Fatalf("externalIngressHandler status = %d, want 404 when ExternalIngressAllowed() is false: %s", rec.Code, rec.Body.String())
 		}
 	})
+}
+
+// zeroReader yields zero bytes without end; LimitReader sizes it.
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
+}
+
+// The node's own ingress grant is read from its credential under the mesh
+// policy it holds. A grant passes; a role without one is refused; an
+// authorizer that stops at a run limit is reported as such, not as a refusal,
+// so the handler can answer 500 or 504 instead of 403.
+func TestRequireOwnIngressGrant(t *testing.T) {
+	cpPub, cpPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, priv := mustTestPeerID(t)
+	exp := time.Now().Add(time.Hour)
+	trusted := []TrustedKey{{Key: cpPub, ReceivedAt: time.Now()}}
+
+	granting := &api.PolicyRole{Name: api.RoleNode, AllowedIngress: []*api.IngressGrant{{Services: []string{"a2a://assistant"}}}}
+	withGrant, err := identity.MintBootstrapBiscuitToken(cpPriv, pid, api.RoleNode, exp, []*api.PolicyRole{granting}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutGrant, err := identity.MintBootstrapBiscuitToken(cpPriv, pid, api.RoleNode, exp, []*api.PolicyRole{{Name: api.RoleNode}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	newNode := func(token []byte, rules []biscuit.Rule) *AgentMeshNode {
+		n := &AgentMeshNode{config: Options{PrivKey: priv}, trustedKeys: trusted, BiscuitTimeout: 500 * time.Millisecond, MeshPolicyRules: rules}
+		n.SetIdentityCache(token)
+		return n
+	}
+
+	if err := newNode(withGrant, nil).requireOwnIngressGrant("a2a", "assistant", api.IngressAuthModeStringEdge); err != nil {
+		t.Fatalf("edge ingress on a granted service: %v, want nil", err)
+	}
+	if err := newNode(withGrant, nil).requireOwnIngressGrant("a2a", "assistant", api.IngressAuthModeStringPassthrough); err == nil {
+		t.Fatal("passthrough ingress without an explicit mode grant: nil, want a refusal")
+	}
+	err = newNode(withoutGrant, nil).requireOwnIngressGrant("a2a", "assistant", api.IngressAuthModeStringEdge)
+	if err == nil {
+		t.Fatal("ingress on a role without a grant: nil, want a refusal")
+	}
+	if stopped, _ := authorizerLimit(err); stopped {
+		t.Fatalf("refusal reported as a run limit: %v", err)
+	}
+	if (&AgentMeshNode{}).requireOwnIngressGrant("a2a", "assistant", api.IngressAuthModeStringEdge) == nil {
+		t.Fatal("node without a credential: nil, want an error")
+	}
+
+	err = newNode(withGrant, authorizerFactLimitRules()).requireOwnIngressGrant("a2a", "assistant", api.IngressAuthModeStringEdge)
+	if !errors.Is(err, datalog.ErrWorldRunLimitMaxFacts) {
+		t.Fatalf("over the facts limit = %v, want an error wrapping %v", err, datalog.ErrWorldRunLimitMaxFacts)
+	}
+	if stopped, transient := authorizerLimit(err); !stopped || transient {
+		t.Fatalf("authorizerLimit(%v) = (%v, %v), want (true, false)", err, stopped, transient)
+	}
 }

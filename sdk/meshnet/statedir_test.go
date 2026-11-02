@@ -617,6 +617,13 @@ func newFakeControlPlaneHTTPWithKeys(t *testing.T, pub ed25519.PublicKey, priv e
 				AllowedTargets:  []string{"*"},
 				AllowedServices: []string{"*"},
 				AllowedPublish:  []string{"*"},
+				// Edge-only ingress on every service, as agentmesh-one's
+				// development policy grants, plus the explicit passthrough
+				// grant one test's pass-agent needs; the node checks both.
+				AllowedIngress: []*api.IngressGrant{
+					{Services: []string{"*"}},
+					{Services: []string{"a2a://pass-agent"}, AllowedAuthModes: []api.IngressAuthMode{api.IngressAuthMode_INGRESS_AUTH_MODE_PASSTHROUGH}},
+				},
 			},
 		}, nil)
 		if len(warnings) > 0 {
