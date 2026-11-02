@@ -216,6 +216,12 @@ type AgentMeshNode struct {
 	delegatedBiscuitCache *lru.Cache[string, *api.TokenExchangeResponse]
 	stsTokenCache         *lru.Cache[string, *api.STSTokenResponse]
 	peerLabelGate         *lru.Cache[string, time.Time]
+	// peerBiscuitInFlight is the credential fetch running to each peer, so
+	// that concurrent first calls to one provider share one handshake
+	// (fetchPeerBiscuit); nil until the first fetch, the map is created
+	// under peerBiscuitMu because tests build AgentMeshNode directly.
+	peerBiscuitInFlight map[peer.ID]*peerBiscuitFetch
+	peerBiscuitMu       sync.Mutex
 	// authPeers is every peer that completed the handshake with this node,
 	// keyed by peer.ID, with the instant its admission lapses. authRouters
 	// holds the subset whose credential carried mesh:role:router, with the
@@ -2087,25 +2093,32 @@ var authHandshakeTimeout = 10 * time.Second
 // HandleAuthHandshake is the core libp2p stream handler for /mesh/auth/1.0.0.
 // This is the "Admission Office" of the mesh node.
 func (n *AgentMeshNode) HandleAuthHandshake(s network.Stream) {
-	defer func() {
+	closeStream := func() {
 		if err := s.Close(); err != nil {
 			logger.Errorf("[AuthN] Failed to close auth stream: %v", err)
 		}
-	}()
+	}
 	remotePeer := s.Conn().RemotePeer()
 
 	if n.revokedPeers != nil {
 		if _, revoked := n.revokedPeers.Get(remotePeer.String()); revoked {
 			logger.Warnf("[AuthN] Peer %s is revoked", remotePeer)
+			closeStream()
 			return
 		}
 	}
 
+	// A reset stream cannot be closed, so this refusal returns before the
+	// deferred Close: it is this node's decision, not an error. The code
+	// tells the peer why, so it reports a refusal rather than a
+	// destination that did not answer (authResponseError).
 	if n.handshakeLimiter != nil && !n.handshakeLimiter.Allow(remotePeer.String()) {
 		logger.Warnf("[AuthN] Handshake rate limit exceeded for %s", remotePeer)
-		_ = s.Reset()
+		_ = s.ResetWithError(network.StreamRateLimited)
 		return
 	}
+	defer closeStream()
+
 	if err := s.SetDeadline(time.Now().Add(authHandshakeTimeout)); err != nil {
 		logger.Debugf("[AuthN] Failed to set handshake deadline for %s: %v", remotePeer, err)
 	}

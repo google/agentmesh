@@ -19,7 +19,9 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,6 +29,7 @@ import (
 	"github.com/eclipse-biscuit/biscuit-go/v2/datalog"
 	"github.com/google/agentmesh/api"
 	"github.com/google/agentmesh/internal/identity"
+	"github.com/google/agentmesh/internal/ratelimit"
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -473,12 +476,136 @@ func TestReachFailureClassifiesWhatKeptTheProviderAway(t *testing.T) {
 		{fmt.Errorf("failed to open auth stream: %w", &swarm.DialError{Peer: peerID, Cause: swarm.ErrNoAddresses}), reachNoAddress},
 		{fmt.Errorf("failed to open auth stream: %w", &swarm.DialError{Peer: peerID, Cause: swarm.ErrAllDialsFailed, DialErrors: []swarm.TransportError{{Cause: errors.New("connection refused")}}}), reachDialFailed},
 		{fmt.Errorf("failed to open auth stream: %w", context.DeadlineExceeded), reachDialTimeout},
-		{errors.New("read auth response (peer may predate mutual auth): EOF"), reachNoAnswer},
+		{authResponseError(io.EOF), reachNoAnswer},
+		{authResponseError(&network.StreamError{Remote: true}), reachNoAnswer},
+		{authResponseError(&network.StreamError{Remote: true, ErrorCode: network.StreamRateLimited}), reachRateLimited},
 		{errors.New("auth rejected: expired"), reachAuthRejected},
 		{errors.New("something else"), reachOtherFailure},
 	} {
 		if got := reachFailure(tc.err); got != tc.want {
 			t.Errorf("reachFailure(%v) = %s, want %s", tc.err, got, tc.want)
 		}
+	}
+}
+
+// A burst of first calls to one provider is one handshake. Until the first
+// verdict is cached every call needs the provider's credential, and each
+// handshake a call opened on its own would count against the provider's
+// per-peer handshake budget (ratelimit.PeerBurst): 20 concurrent first
+// calls to one provider had up to half of them refused, and the caller
+// reported each refusal as a destination that did not answer.
+func TestVerifyProviderSharesOneHandshakeAcrossABurst(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	provider, cleanupProvider := startBareNode(t, ctx)
+	defer cleanupProvider()
+	caller, cleanupCaller := startBareNode(t, ctx)
+	defer cleanupCaller()
+	enrollUnderRoot(t, provider, caller)
+
+	// The provider's handler is held until the whole burst has joined, so
+	// that no call arrives after the first verdict is cached: the test is
+	// about sharing a handshake in flight, not about the verdict cache.
+	var handshakes atomic.Int32
+	release := make(chan struct{})
+	provider.Host.SetStreamHandler(api.AuthProtocolID, func(s network.Stream) {
+		handshakes.Add(1)
+		<-release
+		provider.HandleAuthHandshake(s)
+	})
+	if err := caller.Host.Connect(ctx, peer.AddrInfo{ID: provider.Host.ID(), Addrs: provider.Host.Addrs()}); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	shared := providerReachTotal.WithLabelValues(reachShared)
+	sharedBefore := counterValue(t, shared)
+	attempts := 3 * ratelimit.PeerBurst
+	errs := make(chan error, attempts)
+	for i := 0; i < attempts; i++ {
+		go func() { errs <- caller.VerifyProvider(ctx, provider.Host.ID(), nil, "") }()
+	}
+	// Every call but the one that opened the handshake joins it, and says
+	// so in the counter; that is the condition to wait on.
+	wantJoined := float64(attempts - 1)
+	for counterValue(t, shared)-sharedBefore < wantJoined {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("%v of %v calls joined the handshake in flight before the deadline", counterValue(t, shared)-sharedBefore, wantJoined)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	close(release)
+
+	for i := 0; i < attempts; i++ {
+		if err := <-errs; err != nil {
+			t.Errorf("VerifyProvider: %v", err)
+		}
+	}
+	if got := handshakes.Load(); got != 1 {
+		t.Errorf("the provider saw %d handshakes for %d concurrent first calls, want 1", got, attempts)
+	}
+	if got := counterValue(t, shared) - sharedBefore; got != wantJoined {
+		t.Errorf("shared = %v, want %v", got, wantJoined)
+	}
+}
+
+// A waiter answers to its own context: the handshake it joined runs on,
+// detached from the call that opened it, so one caller leaving fails
+// neither the others nor the handshake.
+func TestFetchPeerBiscuitWaiterLeavesOnItsOwnContext(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	provider, cleanupProvider := startBareNode(t, ctx)
+	defer cleanupProvider()
+	caller, cleanupCaller := startBareNode(t, ctx)
+	defer cleanupCaller()
+	enrollUnderRoot(t, provider, caller)
+
+	release := make(chan struct{})
+	provider.Host.SetStreamHandler(api.AuthProtocolID, func(s network.Stream) {
+		<-release
+		provider.HandleAuthHandshake(s)
+	})
+	if err := caller.Host.Connect(ctx, peer.AddrInfo{ID: provider.Host.ID(), Addrs: provider.Host.Addrs()}); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	shared := providerReachTotal.WithLabelValues(reachShared)
+	sharedBefore := counterValue(t, shared)
+	leaderCtx, leaderCancel := context.WithCancel(ctx)
+	leaderErr := make(chan error, 1)
+	go func() {
+		_, err := caller.fetchPeerBiscuit(leaderCtx, provider.Host.ID())
+		leaderErr <- err
+	}()
+	followerErr := make(chan error, 1)
+	go func() {
+		_, err := caller.fetchPeerBiscuit(ctx, provider.Host.ID())
+		followerErr <- err
+	}()
+	for counterValue(t, shared)-sharedBefore < 1 {
+		select {
+		case <-ctx.Done():
+			t.Fatal("the second call did not join the handshake in flight before the deadline")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	// The call that opened the handshake leaves; the follower must still
+	// get the credential once the provider answers.
+	leaderCancel()
+	if err := <-leaderErr; !errors.Is(err, context.Canceled) {
+		t.Fatalf("leaving caller: err = %v, want context.Canceled", err)
+	}
+	select {
+	case err := <-followerErr:
+		t.Fatalf("follower returned %v before the provider answered", err)
+	default:
+	}
+	close(release)
+	if err := <-followerErr; err != nil {
+		t.Errorf("follower: %v", err)
 	}
 }

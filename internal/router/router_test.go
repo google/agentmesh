@@ -22,6 +22,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"math/big"
 	"net/http"
@@ -1229,12 +1230,21 @@ func TestHandleAuthHandshakeBoundsUnauthenticatedPeers(t *testing.T) {
 				t.Fatal(err)
 			}
 			_ = s.SetDeadline(time.Now().Add(5 * time.Second))
-			if err := msgio.NewVarintWriter(s).WriteMsg(frame); err == nil {
-				if _, err := msgio.NewVarintReaderSize(s, 1024*64).ReadMsg(); err == nil {
-					answered++
-				}
+			err = msgio.NewVarintWriter(s).WriteMsg(frame)
+			if err == nil {
+				_, err = msgio.NewVarintReaderSize(s, 1024*64).ReadMsg()
 			}
 			_ = s.Close()
+			if err == nil {
+				answered++
+				continue
+			}
+			// A refusal names its reason, so the peer tells it apart from
+			// a node that did not answer.
+			var reset *network.StreamError
+			if !errors.As(err, &reset) || !reset.Remote || reset.ErrorCode != network.StreamRateLimited {
+				t.Errorf("handshake %d failed with %v, want a remote reset with StreamRateLimited", i, err)
+			}
 		}
 		if answered < ratelimit.PeerBurst {
 			t.Errorf("only %d of the first %d handshakes answered; limiter is too strict", answered, ratelimit.PeerBurst)

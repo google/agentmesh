@@ -30,6 +30,7 @@ import (
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
 	"github.com/libp2p/go-msgio"
@@ -573,12 +574,21 @@ func TestHandleAuthHandshakeBoundsUnauthenticatedPeers(t *testing.T) {
 				t.Fatal(err)
 			}
 			_ = s.SetDeadline(time.Now().Add(5 * time.Second))
-			if err := msgio.NewVarintWriter(s).WriteMsg(frame); err == nil {
-				if _, err := msgio.NewVarintReaderSize(s, 1024*64).ReadMsg(); err == nil {
-					answered++
-				}
+			err = msgio.NewVarintWriter(s).WriteMsg(frame)
+			if err == nil {
+				_, err = msgio.NewVarintReaderSize(s, 1024*64).ReadMsg()
 			}
 			_ = s.Close()
+			if err == nil {
+				answered++
+				continue
+			}
+			// A refusal names its reason, so the peer tells it apart from
+			// a node that did not answer.
+			var reset *network.StreamError
+			if !errors.As(err, &reset) || !reset.Remote || reset.ErrorCode != network.StreamRateLimited {
+				t.Errorf("handshake %d failed with %v, want a remote reset with StreamRateLimited", i, err)
+			}
 		}
 		// The token is valid, so every answer is a success: the only reason
 		// some go unanswered is the limiter.
