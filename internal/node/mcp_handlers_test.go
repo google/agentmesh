@@ -687,6 +687,91 @@ func TestCallMCPTool_ProviderNotGrantedIsNotRetried(t *testing.T) {
 	}
 }
 
+// A provider that answers a tools/call with a JSON-RPC error has refused it,
+// whether its MCP service denies a tool outside the caller's task or its
+// backend has no such tool. The answer is returned once, not retried.
+func TestCallMCPTool_JSONRPCErrorIsNotRetried(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	nodeA, cleanupA := startBareNode(t, ctx)
+	defer cleanupA()
+	nodeB, cleanupB := startBareNode(t, ctx)
+	defer cleanupB()
+
+	if err := nodeA.Host.Connect(ctx, peer.AddrInfo{ID: nodeB.Host.ID(), Addrs: nodeB.Host.Addrs()}); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	_, rootPriv := enrollUnderRoot(t, nodeA, nodeB)
+	nodeBIdentity, err := identity.MintBootstrapBiscuitToken(rootPriv, nodeB.Host.ID(), api.RoleNode, time.Now().Add(time.Hour), publishEverything, nil)
+	if err != nil {
+		t.Fatalf("mint nodeB identity: %v", err)
+	}
+	nodeB.SetIdentityCache(nodeBIdentity)
+
+	hostedSrv := httptest.NewServer(newFakeMCPHandler(t, []*mcp.Tool{
+		{Name: "review_pr", Description: "Run a code review", InputSchema: map[string]any{"type": "object"}},
+		{Name: "delete_repo", Description: "Delete a repository", InputSchema: map[string]any{"type": "object"}},
+	}))
+	defer hostedSrv.Close()
+	if err := nodeB.RegisterService(ctx, &api.RegisterServiceRequest{
+		Service: &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_MCP, Name: "code-reviewer"},
+		Backend: &api.RegisterServiceRequest_TargetUrl{TargetUrl: hostedSrv.URL},
+	}); err != nil {
+		t.Fatalf("RegisterService: %v", err)
+	}
+	defer func() { _ = nodeB.UnregisterService(ctx, "code-reviewer") }()
+
+	base, err := nodeA.Store.LoadIdentity()
+	if err != nil {
+		t.Fatalf("load nodeA identity: %v", err)
+	}
+	tar, err := api.BuildTARFromOAuthParams("oauth-task", `{"name":"review-only","rules":[{"allowed_services":["mcp://code-reviewer"],"operation":{"allowed_tools":["review_pr"]}}]}`, nil, "", nil)
+	if err != nil {
+		t.Fatalf("build task rule: %v", err)
+	}
+	reviewOnly, err := identity.AttenuateBiscuit(base, tar)
+	if err != nil {
+		t.Fatalf("attenuate: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		ctx     context.Context
+		tool    string
+		wantErr string
+	}{
+		{
+			name:    "tool outside the caller's task",
+			ctx:     WithCallerBiscuit(ctx, reviewOnly),
+			tool:    "mcp://code-reviewer/delete_repo",
+			wantErr: `task authorization denied tool "delete_repo"`,
+		},
+		{
+			name:    "tool the backend does not have",
+			ctx:     ctx,
+			tool:    "mcp://code-reviewer/no_such_tool",
+			wantErr: `unknown tool "no_such_tool"`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := nodeA.CallMCPTool(tc.ctx, nodeB.Host.ID(), tc.tool, map[string]any{}, nil)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("CallMCPTool(%s) = %v, want an error containing %q", tc.tool, err, tc.wantErr)
+			}
+			if strings.Contains(err.Error(), "retries") {
+				t.Fatalf("CallMCPTool(%s) = %v, want one answer with no retry", tc.tool, err)
+			}
+		})
+	}
+
+	// The task allows review_pr, so the same caller still reaches it.
+	if _, err := nodeA.CallMCPTool(WithCallerBiscuit(ctx, reviewOnly), nodeB.Host.ID(), "mcp://code-reviewer/review_pr", map[string]any{}, nil); err != nil {
+		t.Fatalf("CallMCPTool(review_pr) within the task = %v, want success", err)
+	}
+}
+
 // The operator's egress floor gates MCP egress even when the caller supplies no
 // required_labels: silence must not waive the floor (see #385).
 func TestCallMCPTool_EgressFloorEnforcement(t *testing.T) {
