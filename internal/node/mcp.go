@@ -475,11 +475,23 @@ func (n *AgentMeshNode) preparePeerAddrs(ctx context.Context, targetPeer peer.ID
 
 	changed := false
 	addrs := n.Host.Peerstore().Addrs(targetPeer)
-	if len(addrs) == 0 {
-		logger.Debugf("[Discovery] No addresses in peerstore for %s, asking the directory", targetPeer)
+	unresolved := false
+	if v, err := n.Host.Peerstore().Get(targetPeer, PeerstoreKeyUnresolved); err == nil {
+		unresolved, _ = v.(bool)
+	}
+	lookedUp := false
+	if len(addrs) == 0 || unresolved {
+		if unresolved {
+			logger.Debugf("[Discovery] Peerstore holds only this node's fallback circuits for %s, asking the directory again", targetPeer)
+		} else {
+			logger.Debugf("[Discovery] No addresses in peerstore for %s, asking the directory", targetPeer)
+		}
+		lookedUp = true
 		findCtx, cancel := context.WithTimeout(ctx, dhtLookupTimeout)
 		addrInfo, err := n.Directory.FindPeer(findCtx, targetPeer)
 		cancel()
+		// Nothing from the directory leaves addrs empty, so the fallback
+		// below is rebuilt from the routers this node holds now.
 		addrs = addrInfo.Addrs
 		switch {
 		case len(addrs) > 0:
@@ -575,6 +587,15 @@ func (n *AgentMeshNode) preparePeerAddrs(ctx context.Context, targetPeer peer.ID
 			if err == nil && addUnique(circuitAddr) {
 				changed = true
 			}
+		}
+	}
+
+	// The directory was asked and said nothing: whatever is dialed now is
+	// this node's guess, so the next lookup asks again. An answer, with
+	// addresses, lifts the mark.
+	if lookedUp {
+		if err := n.Host.Peerstore().Put(targetPeer, PeerstoreKeyUnresolved, len(addrs) == 0); err != nil {
+			logger.Errorf("[Discovery] Failed to put peerstore unresolved key for %s: %v", targetPeer, err)
 		}
 	}
 

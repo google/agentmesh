@@ -293,11 +293,15 @@ func addrInfoOf(rec *api.PeerRecord) (peer.AddrInfo, error) {
 	return info, nil
 }
 
-// rememberAddrs keeps what a lookup learned for a dial that follows.
+// rememberAddrs keeps what a lookup learned for a dial that follows. An
+// answer from the directory lifts the unresolved mark a failed lookup left.
 func rememberAddrs(ps peerstore.Peerstore, infos ...peer.AddrInfo) {
 	for _, info := range infos {
 		if len(info.Addrs) > 0 {
 			ps.AddAddrs(info.ID, info.Addrs, peerstore.TempAddrTTL)
+			if err := ps.Put(info.ID, PeerstoreKeyUnresolved, false); err != nil {
+				logger.Errorf("[Directory] Failed to clear peerstore unresolved key for %s: %v", info.ID, err)
+			}
 		}
 	}
 }

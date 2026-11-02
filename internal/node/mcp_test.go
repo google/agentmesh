@@ -16,6 +16,7 @@ package node
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -217,6 +218,102 @@ func TestPreparePeerAddrsFallsBackToAuthenticatedRouters(t *testing.T) {
 	node.preparePeerAddrs(ctx, announced.ID())
 	if got := addrsOf(announced.ID()); slices.Contains(got, circuit) {
 		t.Fatalf("a peer that announced a circuit was also given ours: %v", got)
+	}
+}
+
+// scriptedDirectory answers FindPeer from a queue of outcomes and counts the
+// calls; the other methods are not reached by preparePeerAddrs.
+type scriptedDirectory struct {
+	findPeer []func(peer.ID) (peer.AddrInfo, error)
+	calls    int
+}
+
+func (d *scriptedDirectory) Provide(context.Context, []byte, string) error { return nil }
+func (d *scriptedDirectory) Withdraw(context.Context, []byte) error        { return nil }
+func (d *scriptedDirectory) FindProviders(context.Context, []byte, int) ([]peer.AddrInfo, error) {
+	return nil, nil
+}
+func (d *scriptedDirectory) FindPeer(_ context.Context, p peer.ID) (peer.AddrInfo, error) {
+	d.calls++
+	if len(d.findPeer) == 0 {
+		return peer.AddrInfo{ID: p}, errors.New("no scripted answer")
+	}
+	next := d.findPeer[0]
+	d.findPeer = d.findPeer[1:]
+	return next(p)
+}
+
+// A directory lookup that fails leaves the peer with circuits through this
+// node's routers for the dial at hand, and nothing more: the next lookup asks
+// the directory again instead of dialing the guess for TempAddrTTL. Once the
+// directory answers, the peer's own addresses are dialed (our circuits stay
+// as a second path) and the directory is not asked again while they last.
+func TestPreparePeerAddrsAsksAgainAfterFailedLookup(t *testing.T) {
+	ctx := context.Background()
+	mn := mocknet.New()
+	localHost, err := mn.GenPeer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitted, err := mn.GenPeer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := mn.GenPeer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = mn.LinkAll()
+	if _, err := mn.ConnectPeers(localHost.ID(), admitted.ID()); err != nil {
+		t.Fatal(err)
+	}
+	// A node holds its router's addresses; mocknet does not fill them in.
+	localHost.Peerstore().AddAddrs(admitted.ID(), admitted.Addrs(), peerstore.PermanentAddrTTL)
+	ownCircuit := fmt.Sprintf("/p2p/%s/p2p-circuit", admitted.ID())
+	announced := multiaddr.StringCast("/ip4/203.0.113.7/tcp/4501")
+
+	dir := &scriptedDirectory{findPeer: []func(peer.ID) (peer.AddrInfo, error){
+		func(p peer.ID) (peer.AddrInfo, error) {
+			return peer.AddrInfo{ID: p}, errors.New("i/o deadline reached")
+		},
+		func(p peer.ID) (peer.AddrInfo, error) {
+			return peer.AddrInfo{ID: p, Addrs: []multiaddr.Multiaddr{announced}}, nil
+		},
+	}}
+	node := &AgentMeshNode{
+		Host:                 localHost,
+		Directory:            dir,
+		BiscuitTimeout:       500 * time.Millisecond,
+		authenticatedRouters: map[peer.ID]bool{admitted.ID(): true},
+	}
+	addrsOf := func() []string {
+		var got []string
+		for _, a := range localHost.Peerstore().Addrs(target.ID()) {
+			got = append(got, a.String())
+		}
+		sort.Strings(got)
+		return got
+	}
+
+	node.preparePeerAddrs(ctx, target.ID())
+	if dir.calls != 1 {
+		t.Fatalf("directory calls after a failed lookup = %d, want 1", dir.calls)
+	}
+	if got := addrsOf(); len(got) != 1 || got[0] != ownCircuit {
+		t.Fatalf("addresses after a failed lookup = %v, want only the fallback circuit %s", got, ownCircuit)
+	}
+
+	node.preparePeerAddrs(ctx, target.ID())
+	if dir.calls != 2 {
+		t.Fatalf("directory calls after the fallback was cached = %d, want 2: the guess must not stand in for a record", dir.calls)
+	}
+	if got := addrsOf(); !slices.Contains(got, announced.String()) {
+		t.Fatalf("addresses after the directory answered = %v, want %s among them", got, announced)
+	}
+
+	node.preparePeerAddrs(ctx, target.ID())
+	if dir.calls != 2 {
+		t.Fatalf("directory calls with a record in the peerstore = %d, want 2", dir.calls)
 	}
 }
 

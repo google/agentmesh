@@ -73,6 +73,15 @@ import (
 // subsequent discovery or tool calls when dialing unroutable private networks.
 const PeerstoreKeyPrivateIPFailed = "private_ip_failed"
 
+// PeerstoreKeyUnresolved marks a peer whose addresses in the Peerstore are
+// this node's own fallback, circuits through the routers that admitted this
+// node, written because the directory knew no address for the peer or did
+// not answer. Those circuits are kept for TempAddrTTL so that the dial has
+// them, but they are a guess, not a record: while the mark is set the next
+// lookup asks the directory again instead of trusting them, so a lookup that
+// timed out once does not stand for two minutes.
+const PeerstoreKeyUnresolved = "directory_unresolved"
+
 const (
 	// Cache sizes
 	RateLimiterSize       = 1000
