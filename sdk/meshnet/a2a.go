@@ -462,8 +462,15 @@ func (s *Server) deliverHTTP(
 
 	var dialOnce sync.Once
 	dialUsed := false
+	// Keep-alives stay on. With DisableKeepAlives the proxied request carries
+	// Connection: close, and net/http's server then skips draining an unread
+	// request body before it answers and closes its end of the net.Pipe. The
+	// transport's pending body write fails with io.ErrClosedPipe and races the
+	// response inside the round trip, so a handler that answers without
+	// reading the body (an agent card, an early refusal) is a 502 under load.
+	// dialOnce still bounds the transport to this one connection, and the
+	// deferred CloseIdleConnections closes it once the proxy returns.
 	tr := &http.Transport{
-		DisableKeepAlives:  true,
 		DisableCompression: true,
 		DialContext: func(dCtx context.Context, _, _ string) (net.Conn, error) {
 			var conn net.Conn

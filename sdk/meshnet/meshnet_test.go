@@ -1686,3 +1686,48 @@ func newInProcessMeshPair(t *testing.T, ctx context.Context) *inProcessMeshPair 
 
 	return &inProcessMeshPair{provider: p, caller: c}
 }
+
+// TestDeliverHTTPHandlerThatIgnoresBody drives deliverHTTP over its net.Pipe
+// against a handler that answers without reading the request body, as an
+// agent-card GET or an early refusal does. The transport must keep the
+// connection alive so net/http's server drains the body before it closes;
+// with Connection: close the server closed first and the transport's body
+// write raced the response, surfacing as a 502 under load.
+func TestDeliverHTTPHandlerThatIgnoresBody(t *testing.T) {
+	s := &Server{}
+	ln := newInprocListener("meshnet:test:ignore-body")
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() {
+		_ = srv.Close()
+		_ = ln.Close()
+	})
+
+	body := bytes.Repeat([]byte("x"), 64<<10)
+	caller := &CallerInfo{PeerID: "12D3KooWTestPeer", Principal: "node:test"}
+	for i := 0; i < 200; i++ {
+		req := httptest.NewRequest(http.MethodPost, "http://agentmesh.local/invoke", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		s.deliverHTTP(rec, req, ln, caller, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d: status = %d, body = %q, want 200", i, rec.Code, rec.Body.String())
+		}
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		live := 0
+		s.activeConns.Range(func(_, _ any) bool { live++; return true })
+		if live == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	s.activeConns.Range(func(k, _ any) bool {
+		t.Errorf("WhoIs entry %v still present after its connection closed", k)
+		return true
+	})
+}
