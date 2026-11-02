@@ -587,10 +587,12 @@ func TestEnroll_InvalidControlPlanePublicKeySize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	if err := node.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = node.Host.Close() }()
 
 	// 3. Call enroll which should fail due to public key validation
 	err = node.Enroll(context.Background(), srv.URL, "dummy-jwt")
