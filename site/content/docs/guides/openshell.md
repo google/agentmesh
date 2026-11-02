@@ -69,7 +69,7 @@ flowchart LR
   [OpenShell installation page](https://docs.openshell.ai/about/installation).
 - `agentmesh-one` and `agentmesh-node` images at `v0.1.0` or newer, the first
   release whose node token endpoint takes the client assertion grant. The
-  Compose project defaults to `v0.1.1`; set `AGENTMESH_VERSION` for another
+  Compose project defaults to `v0.2.0`; set `AGENTMESH_VERSION` for another
   release.
 - `python3` and `curl`.
 

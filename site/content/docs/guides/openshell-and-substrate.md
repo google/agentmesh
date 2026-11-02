@@ -96,7 +96,7 @@ sequenceDiagram
 
 | Component | Version |
 |---|---|
-| Agent Mesh (`agentmesh-one`, `agentmesh-node`) | `v0.1.1` |
+| Agent Mesh (`agentmesh-one`, `agentmesh-node`) | `v0.2.0` |
 | OpenShell | `0.1.3` (Docker driver), `0.1.4` (Kubernetes driver, Helm chart) |
 | Agent Sandbox (`agents.x-k8s.io`) | `v1.0.7` |
 | SPIRE (SPIFFE hardened charts) | `0.29.0` (CRDs `0.5.0`) |

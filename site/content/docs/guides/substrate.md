@@ -86,7 +86,7 @@ issuer directly. The last section shows that change.
 - A checkout of Agent Substrate; the example installs it from source with
   Substrate's own scripts.
 - `agentmesh-one` and `agentmesh-node` images at `v0.1.0` or newer. The
-  Makefile defaults to `v0.1.1`; set `AGENTMESH_VERSION` for another release.
+  Makefile defaults to `v0.2.0`; set `AGENTMESH_VERSION` for another release.
 
 ```bash
 cd development/examples/substrate-actor

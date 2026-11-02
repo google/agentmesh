@@ -39,7 +39,7 @@ KO_DOCKER_REPO ?= localhost:5001
 # to an image the nodes can pull.
 CALC_MCP_IMAGE ?=
 
-AGENTMESH_VERSION ?= v0.1.1
+AGENTMESH_VERSION ?= v0.2.0
 AGENTMESH_ONE_IMAGE ?= ghcr.io/google/agentmesh-one:$(AGENTMESH_VERSION)
 AGENTMESH_NODE_IMAGE ?= ghcr.io/google/agentmesh-node:$(AGENTMESH_VERSION)
 
