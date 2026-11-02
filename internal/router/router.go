@@ -1863,7 +1863,8 @@ func (r *Router) HandleAuthHandshake(s network.Stream) {
 	if r.handshakeLimiter != nil && !r.handshakeLimiter.Allow(remotePeer.String()) {
 		logger.Warnf("[AuthN] Handshake rate limit exceeded for %s", remotePeer)
 		authHandshakesTotal.WithLabelValues(handshakeRateLimited).Inc()
-		_ = s.Reset()
+		// The code tells the peer it was refused, not left unanswered.
+		_ = s.ResetWithError(network.StreamRateLimited)
 		return
 	}
 	if err := s.SetDeadline(time.Now().Add(authHandshakeTimeout)); err != nil {
