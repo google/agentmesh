@@ -58,7 +58,6 @@ const (
 	ingressOutcomeInvalid         = "invalid"
 	ingressOutcomeUnavailable     = "unavailable"
 
-	maxIngressBodyBytes     = 32 << 20
 	maxIngressCardBodyBytes = 1 << 20
 	a2aAgentCardSubpath     = ".well-known/agent-card.json"
 	ingressDialTimeout      = 10 * time.Second
@@ -303,7 +302,7 @@ func (r *Router) handleIngressRequest(w http.ResponseWriter, req *http.Request, 
 	}
 
 	clientIP := clientIPFromRemoteAddr(req.RemoteAddr)
-	req.Body = http.MaxBytesReader(w, req.Body, maxIngressBodyBytes)
+	req.Body = http.MaxBytesReader(w, req.Body, api.MaxIngressBodyBytes)
 
 	if api.HasDotSegment(req.URL.Path) {
 		routerIngressRequestsTotal.WithLabelValues(ingressModeUnknown, ingressOutcomeInvalid).Inc()

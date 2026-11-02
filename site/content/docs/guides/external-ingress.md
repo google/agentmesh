@@ -193,14 +193,23 @@ serves internal mesh peers over `/libp2p-http`.
 3. The router verifies the Biscuit signature, authority revocation ID, banned
    peer status, `TaskAuthorizationRule` chain (including MCP `tools/call` tool
    names), and `ServiceIngress.allow` locally **before** dialing any provider
-   node. Once admitted, both the router and the serving node (defense in depth
+   node, and checks that the provider's own credential grants
+   `allowed_ingress` for the service and auth mode under the current mesh
+   policy. Once admitted, both the router and the serving node (defense in depth
    over `/mesh/ingress/1.0.0`) enforce the full intersection of mesh Datalog
    RBAC, `TaskAuthorizationRule`, `ServiceIngress.allow`, and local
-   `agentmesh-node.yaml` `attenuation`. The node serves `/mesh/ingress/1.0.0`
+   `agentmesh-node.yaml` `attenuation`. The serving node repeats the
+   `allowed_ingress` check against its own credential and the mesh policy it
+   holds, so a router that forwards a service the node's role does not grant
+   gets `403` and a `deny` in
+   `agentmesh_node_external_ingress_requests_total`; an authorizer that stops
+   at a run limit before a verdict answers `504` (time) or `500` (facts or
+   iterations), counted as `undecided`. The node serves `/mesh/ingress/1.0.0`
    only to a peer that authenticated as `mesh:role:router`: a stream from any
    other peer, authenticated or not, is reset at the libp2p gate before the
    HTTP server reads it and counted in
-   `agentmesh_node_streams_refused_total{scope="not_router"}`.
+   `agentmesh_node_streams_refused_total{scope="not_router"}`. Request bodies
+   are capped at 32 MiB on the router's public listener and again on the node.
 4. The external `Authorization` header is stripped before reaching the local
    backend (replaced only if `target_auth_path` is configured on the node).
 5. For `a2a` services, unauthenticated `GET` requests to the service root or

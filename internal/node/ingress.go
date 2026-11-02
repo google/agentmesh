@@ -16,6 +16,8 @@ package node
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"sort"
@@ -37,6 +39,10 @@ const (
 	externalIngressOutcomeNotFound        = "not_found"
 	externalIngressOutcomeRateLimited     = "rate_limited"
 	externalIngressOutcomeInvalid         = "invalid"
+	// externalIngressOutcomeUndecided is an authorizer that stopped at a run
+	// limit before it reached a verdict; the request is neither allowed nor
+	// denied.
+	externalIngressOutcomeUndecided = "undecided"
 )
 
 var externalIngressRequestsTotal = promauto.NewCounterVec(
@@ -56,6 +62,7 @@ func init() {
 			externalIngressOutcomeNotFound,
 			externalIngressOutcomeRateLimited,
 			externalIngressOutcomeInvalid,
+			externalIngressOutcomeUndecided,
 		} {
 			externalIngressRequestsTotal.WithLabelValues(mode, outcome)
 		}
@@ -180,7 +187,9 @@ func (n *AgentMeshNode) StartExternalIngressServer(ctx context.Context) error {
 func (n *AgentMeshNode) externalIngressHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rc := &readCloserWithCount{ReadCloser: r.Body}
-		r.Body = rc
+		// The router caps the body on its public listener; cap it here too so
+		// the node does not take the router's word for it.
+		r.Body = http.MaxBytesReader(w, rc, api.MaxIngressBodyBytes)
 		wc := &responseWriterWithCount{ResponseWriter: w, statusCode: http.StatusOK}
 		w = wc
 
@@ -334,6 +343,26 @@ func (n *AgentMeshNode) externalIngressHandler() http.Handler {
 		target = serviceTypeStr + "://" + serviceName
 		backendPath := "/" + upstreamPath
 
+		// The router checked this node's role ceiling before it forwarded; check
+		// it here too, against this node's own credential and the mesh policy
+		// it holds, so a router that skips the check exposes nothing.
+		if err := n.requireOwnIngressGrant(serviceTypeStr, serviceName, modeStr); err != nil {
+			if stopped, transient := authorizerLimit(err); stopped {
+				externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeUndecided).Inc()
+				logger.Warnf("[ExternalIngress] Own ingress grant for %s undecided via router %s: %v", target, remotePeer, err)
+				status := http.StatusInternalServerError
+				if transient {
+					status = http.StatusGatewayTimeout
+				}
+				refuse(w, status, "Authorization undecided", proxyStatusDestinationUnreachable)
+				return
+			}
+			externalIngressRequestsTotal.WithLabelValues(modeMetric, externalIngressOutcomeDeny).Inc()
+			logger.Warnf("[ExternalIngress] Refusing %s ingress to %s via router %s: %v", modeStr, target, remotePeer, err)
+			refuse(w, http.StatusForbidden, "Forbidden: this node's role does not grant external ingress for the service", proxyStatusDenied)
+			return
+		}
+
 		if effectiveMode == api.IngressAuthMode_INGRESS_AUTH_MODE_PASSTHROUGH {
 			api.SanitizeExternalIngressHeaders(r.Header, false)
 			r.Header.Set(api.HeaderPeerID, remotePeer.String())
@@ -474,6 +503,33 @@ func (n *AgentMeshNode) externalIngressHandler() http.Handler {
 		}
 		svc.Handler().ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// requireOwnIngressGrant checks that this node's own credential, under the
+// mesh policy it holds, grants exposing svcType://svcName on external ingress
+// in mode: the same check the router runs before it forwards, repeated here
+// so that the node does not depend on the router having run it.
+func (n *AgentMeshNode) requireOwnIngressGrant(svcType, svcName, mode string) error {
+	token := n.GetIdentity()
+	if len(token) == 0 {
+		return errors.New("node holds no credential")
+	}
+	keys := n.trustedPublicKeys()
+	if len(keys) == 0 {
+		return errors.New("no trusted control plane keys loaded")
+	}
+	pid, err := n.localPeerID()
+	if err != nil {
+		return err
+	}
+	b, key, err := identity.VerifyBiscuitAndGetKey(token, pid, keys, n.BiscuitTimeout)
+	if err != nil {
+		return fmt.Errorf("own credential: %w", err)
+	}
+	n.MeshPolicyMu.RLock()
+	meshRules := n.MeshPolicyRules
+	n.MeshPolicyMu.RUnlock()
+	return identity.RequireIngress(b, key, svcType, svcName, mode, meshRules, n.BiscuitTimeout)
 }
 
 func (n *AgentMeshNode) buildExternalIngressEvalParams(serviceType, serviceName, method, path string, allow []string) (identity.IngressEvalParams, error) {

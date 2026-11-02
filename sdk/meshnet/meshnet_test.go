@@ -823,7 +823,7 @@ func TestCredentialLapseExponentialBackoffAndSignal(t *testing.T) {
 	})
 	mux.HandleFunc("/policies", func(w http.ResponseWriter, _ *http.Request) {
 		compiled, _ := api.BuildPolicyRules([]*api.PolicyRole{
-			{Name: api.RoleNode, AllowedTargets: []string{"*"}, AllowedServices: []string{"*"}, AllowedPublish: []string{"*"}},
+			{Name: api.RoleNode, AllowedTargets: []string{"*"}, AllowedServices: []string{"*"}, AllowedPublish: []string{"*"}, AllowedIngress: []*api.IngressGrant{{Services: []string{"*"}}}},
 		}, nil)
 		texts := make([]string, 0, len(compiled))
 		for _, r := range compiled {
