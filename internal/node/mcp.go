@@ -233,7 +233,7 @@ func (n *AgentMeshNode) CallMCPTool(ctx context.Context, targetPeer peer.ID, too
 		// transport error instead, which is still retried.
 		var rpcErr *jsonrpc.Error
 		if errors.As(err, &rpcErr) {
-			logger.Warnf("[MCP] Tool call answered with an error, not retrying: %v", err)
+			logger.Warnf("[MCP] Tool call to %s answered with an error, not retrying: %v", targetPeer, err)
 			return nil, err
 		}
 		// An authorizer that stopped at its facts or iterations limit stops
