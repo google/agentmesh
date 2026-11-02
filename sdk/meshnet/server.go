@@ -59,11 +59,11 @@ var ErrCredentialLapsed = errors.New("meshnet: member credential expired and ren
 // the mesh in-process.
 type Server struct {
 	// StateDir persists identity.key and credential.json (0700/0600, byte-for-byte
-	// compatible with sdk/js, sdk/python, and `agentmesh-node state export|import`),
-	// guarded by an exclusive non-blocking directory lock (ErrStateDirLocked) so two
-	// Servers cannot clobber the same state directory concurrently.
-	// When empty, Server runs with an ephemeral in-memory Ed25519 identity that
-	// creates no files on disk.
+	// compatible with sdk/js, sdk/python, and `agentmesh-node state export|import`)
+	// alongside the local bbolt store lock (agent.db), returning ErrStateDirLocked
+	// if another Server or agentmesh-node instance already holds the directory.
+	// When empty, Up creates an ephemeral Ed25519 identity in a temporary 0700
+	// directory that is removed on Close (or if Up fails).
 	StateDir string
 
 	// ControlPlaneURL is the Agent Mesh hub URL (e.g. "https://bananas.sam-mesh.dev").
@@ -140,13 +140,14 @@ type Server struct {
 	closed      bool
 	runCancel   context.CancelFunc
 
-	privKey      crypto.PrivKey
-	peerID       peer.ID
-	cpURL        string
-	store        *node.Store
-	stateDirLock *os.File
-	node         *node.AgentMeshNode
-	metrics      atomic.Pointer[serverMetrics]
+	privKey        crypto.PrivKey
+	peerID         peer.ID
+	cpURL          string
+	store          *node.Store
+	storeTmpDir    string
+	stateDirSyncMu sync.Mutex
+	node           *node.AgentMeshNode
+	metrics        atomic.Pointer[serverMetrics]
 
 	refusedMu      sync.Mutex
 	refusedStreams map[string]uint64
@@ -271,16 +272,25 @@ func (s *Server) stateSnapshot() (*node.AgentMeshNode, *node.Store, peer.ID, str
 }
 
 func (s *Server) closeStoreLocked() error {
-	var err error
+	var errs []error
 	if s.store != nil {
-		err = s.store.Close()
+		if s.started {
+			if err := s.syncStateDir(s.store); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if err := s.store.Close(); err != nil {
+			errs = append(errs, err)
+		}
 		s.store = nil
 	}
-	if s.stateDirLock != nil {
-		unlockStateDir(s.stateDirLock)
-		s.stateDirLock = nil
+	if s.storeTmpDir != "" {
+		if err := os.RemoveAll(s.storeTmpDir); err != nil {
+			errs = append(errs, err)
+		}
+		s.storeTmpDir = ""
 	}
-	return err
+	return errors.Join(errs...)
 }
 
 // Up loads or enrolls the member credential, syncs mesh trust material and
@@ -356,6 +366,9 @@ func (s *Server) Up(ctx context.Context) (*Status, error) {
 		return nil, startErr
 	}
 
+	if err := s.syncStateDir(s.store); err != nil {
+		s.log().Warn("failed to sync state directory after startup", "error", err)
+	}
 	s.startRenewalLoop(runCtx, s.node, s.store, s.peerID, s.cpURL)
 	s.runCancel = runCancel
 	s.started = true

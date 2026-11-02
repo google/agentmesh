@@ -23,7 +23,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/agentmesh/api"
@@ -65,38 +64,9 @@ var legacyKeys = []string{
 
 // Store is the node's persistent state: its private key and its
 // api.MemberCredential, in a bbolt database whose file lock also tells a
-// second agentmesh-node that this data directory is in use (or purely in memory
-// when constructed with NewMemoryStore).
+// second agentmesh-node that this data directory is in use.
 type Store struct {
-	db       *bbolt.DB
-	memMu    sync.RWMutex
-	memKey   []byte
-	memCred  *api.MemberCredential
-	onChange func() error
-}
-
-// NewMemoryStore returns an ephemeral in-memory Store that creates no files on
-// disk.
-func NewMemoryStore() *Store {
-	return &Store{memCred: &api.MemberCredential{}}
-}
-
-// SetOnChange registers an optional post-commit callback invoked after key or
-// credential mutations complete.
-func (s *Store) SetOnChange(fn func() error) {
-	s.memMu.Lock()
-	s.onChange = fn
-	s.memMu.Unlock()
-}
-
-func (s *Store) notifyChange() error {
-	s.memMu.RLock()
-	fn := s.onChange
-	s.memMu.RUnlock()
-	if fn != nil {
-		return fn()
-	}
-	return nil
+	db *bbolt.DB
 }
 
 // ErrStoreLocked reports that another process already holds the data
@@ -239,12 +209,6 @@ func getCredential(b *bbolt.Bucket) (*api.MemberCredential, error) {
 
 // view reads the credential; an empty message stands for a node that has not enrolled.
 func (s *Store) view(fn func(c *api.MemberCredential) error) error {
-	if s.db == nil {
-		s.memMu.RLock()
-		cloned := proto.Clone(s.memCred).(*api.MemberCredential)
-		s.memMu.RUnlock()
-		return fn(cloned)
-	}
 	return s.db.View(func(tx *bbolt.Tx) error {
 		c, err := getCredential(tx.Bucket([]byte(bucketIdentity)))
 		if err != nil {
@@ -256,20 +220,7 @@ func (s *Store) view(fn func(c *api.MemberCredential) error) error {
 
 // update applies fn to the credential and writes it back in one transaction.
 func (s *Store) update(fn func(c *api.MemberCredential) error) error {
-	if s.db == nil {
-		s.memMu.Lock()
-		next := proto.Clone(s.memCred).(*api.MemberCredential)
-		err := fn(next)
-		if err == nil {
-			s.memCred = next
-		}
-		s.memMu.Unlock()
-		if err != nil {
-			return err
-		}
-		return s.notifyChange()
-	}
-	if err := s.db.Update(func(tx *bbolt.Tx) error {
+	return s.db.Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(bucketIdentity))
 		c, err := getCredential(b)
 		if err != nil {
@@ -279,10 +230,7 @@ func (s *Store) update(fn func(c *api.MemberCredential) error) error {
 			return err
 		}
 		return putCredential(b, c)
-	}); err != nil {
-		return err
-	}
-	return s.notifyChange()
+	})
 }
 
 // Credential returns a copy of everything the node persists besides its
@@ -299,21 +247,9 @@ func (s *Store) Credential() (*api.MemberCredential, error) {
 // SetCredential replaces everything the node persists besides its private
 // key; `agentmesh-node state import` uses it.
 func (s *Store) SetCredential(c *api.MemberCredential) error {
-	if c == nil {
-		c = &api.MemberCredential{}
-	}
-	if s.db == nil {
-		s.memMu.Lock()
-		s.memCred = proto.Clone(c).(*api.MemberCredential)
-		s.memMu.Unlock()
-		return s.notifyChange()
-	}
-	if err := s.db.Update(func(tx *bbolt.Tx) error {
+	return s.db.Update(func(tx *bbolt.Tx) error {
 		return putCredential(tx.Bucket([]byte(bucketIdentity)), c)
-	}); err != nil {
-		return err
-	}
-	return s.notifyChange()
+	})
 }
 
 func (s *Store) SaveIdentity(biscuit []byte) error {
@@ -402,27 +338,12 @@ func (s *Store) LoadOIDCConfig() (string, string, string, error) {
 }
 
 func (s *Store) SaveKey(key []byte) error {
-	if s.db == nil {
-		s.memMu.Lock()
-		s.memKey = append([]byte(nil), key...)
-		s.memMu.Unlock()
-		return s.notifyChange()
-	}
-	if err := s.db.Update(func(tx *bbolt.Tx) error {
+	return s.db.Update(func(tx *bbolt.Tx) error {
 		return tx.Bucket([]byte(bucketIdentity)).Put([]byte(keyPrivKey), key)
-	}); err != nil {
-		return err
-	}
-	return s.notifyChange()
+	})
 }
 
 func (s *Store) LoadKey() ([]byte, error) {
-	if s.db == nil {
-		s.memMu.RLock()
-		val := append([]byte(nil), s.memKey...)
-		s.memMu.RUnlock()
-		return val, nil
-	}
 	var val []byte
 	_ = s.db.View(func(tx *bbolt.Tx) error {
 		val = append([]byte(nil), tx.Bucket([]byte(bucketIdentity)).Get([]byte(keyPrivKey))...)
@@ -534,18 +455,9 @@ func (s *Store) LoadControlPlaneURL() (string, error) {
 // a different mesh. It keeps the long-lived libp2p key (node_private_key), so
 // the node's PeerID survives the switch.
 func (s *Store) ResetMeshIdentity() error {
-	if s.db == nil {
-		s.memMu.Lock()
-		s.memCred = &api.MemberCredential{}
-		s.memMu.Unlock()
-		return s.notifyChange()
-	}
-	if err := s.db.Update(func(tx *bbolt.Tx) error {
+	return s.db.Update(func(tx *bbolt.Tx) error {
 		return tx.Bucket([]byte(bucketIdentity)).Delete([]byte(keyCredential))
-	}); err != nil {
-		return err
-	}
-	return s.notifyChange()
+	})
 }
 
 func trustedKeysToProto(keys []TrustedKey) []*api.TrustedSigningKey {
@@ -596,9 +508,6 @@ func containsKeyBytes(keys [][]byte, want []byte) bool {
 }
 
 func (s *Store) Close() error {
-	if s.db == nil {
-		return nil
-	}
 	return s.db.Close()
 }
 

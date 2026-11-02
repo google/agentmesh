@@ -451,10 +451,11 @@ Code, Gemini CLI, or a sandboxed coding tool), mount `srv.MCPHandler()` and
 
 `Server.StateDir` persists `identity.key` and `credential.json` with owner-only
 permissions (`0700` directory, `0600` files) using the exact protobuf/protojson
-layout shared by `agentmesh-node`, `sdk/js`, and `sdk/python`, guarded by an
-exclusive non-blocking directory lock (`meshnet.ErrStateDirLocked`) so two
-`Server` instances cannot clobber the same directory concurrently. When
-`StateDir` is empty, `Server` runs purely in memory with zero files on disk.
+layout shared by `agentmesh-node`, `sdk/js`, and `sdk/python`, alongside the
+`bbolt` store lock (`agent.db`, returning `meshnet.ErrStateDirLocked`) so
+concurrent `Server` or `agentmesh-node` instances cannot clobber the same
+directory. When `StateDir` is empty, `Up` creates an ephemeral identity in a
+temporary `0700` directory that is removed on `Close` (or if `Up` fails).
 
 An operator can enroll interactively once with `agentmesh-node` and pass the
 exported state directory directly to a Go binary built on `sdk/meshnet` (with no

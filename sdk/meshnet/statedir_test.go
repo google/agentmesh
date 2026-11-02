@@ -387,15 +387,33 @@ func TestEnrollmentAndRenewal(t *testing.T) {
 	})
 }
 
-func TestStateDirLockAndEphemeralMemoryIdentity(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+func TestStateDirLockAndEphemeralTempCleanup(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	env := newStartedTestServer(t, ctx)
 
-	t.Run("ephemeral_empty_StateDir_writes_zero_files_to_TMPDIR", func(t *testing.T) {
+	t.Run("ephemeral_empty_StateDir_uses_0700_temp_dir_and_cleans_up", func(t *testing.T) {
 		emptyTmp := t.TempDir()
 		t.Setenv("TMPDIR", emptyTmp)
+
+		failed := &Server{
+			ControlPlaneURL: env.cp.srv.URL,
+			BootstrapToken:  "wrong-token",
+			ListenAddrs:     []string{"/ip4/127.0.0.1/tcp/0"},
+			AllowInsecure:   true,
+		}
+		if _, err := failed.Up(ctx); err == nil {
+			_ = failed.Close()
+			t.Fatal("failed.Up succeeded with wrong token, want error")
+		}
+		failedEntries, err := os.ReadDir(emptyTmp)
+		if err != nil {
+			t.Fatalf("ReadDir(TMPDIR) after failed Up: %v", err)
+		}
+		if len(failedEntries) != 0 {
+			t.Fatalf("failed ephemeral Up left %d entries in TMPDIR (%v), want 0", len(failedEntries), failedEntries)
+		}
 
 		ephemeral := &Server{
 			ControlPlaneURL: env.cp.srv.URL,
@@ -415,8 +433,15 @@ func TestStateDirLockAndEphemeralMemoryIdentity(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ReadDir(TMPDIR) while running: %v", err)
 		}
-		if len(duringEntries) != 0 {
-			t.Fatalf("ephemeral Server wrote %d entries to TMPDIR while running (%v), want 0", len(duringEntries), duringEntries)
+		if len(duringEntries) != 1 {
+			t.Fatalf("TMPDIR entries while running = %d, want 1", len(duringEntries))
+		}
+		info, err := duringEntries[0].Info()
+		if err != nil {
+			t.Fatalf("entry.Info: %v", err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o700 {
+			t.Fatalf("ephemeral temp dir permissions = %04o, want 0700", perm)
 		}
 
 		if err := ephemeral.Close(); err != nil {
@@ -453,9 +478,9 @@ func TestStateDirLockAndEphemeralMemoryIdentity(t *testing.T) {
 			ListenAddrs:     []string{"/ip4/127.0.0.1/tcp/0"},
 			AllowInsecure:   true,
 		}
-		if _, err := s2.Up(ctx); !errors.Is(err, ErrStateDirLocked) {
+		if _, err := s2.Up(ctx); !errors.Is(err, ErrStateDirLocked) || !errors.Is(err, node.ErrStoreLocked) {
 			_ = s2.Close()
-			t.Fatalf("s2.Up on locked StateDir = %v, want ErrStateDirLocked", err)
+			t.Fatalf("s2.Up on locked StateDir = %v, want ErrStateDirLocked + node.ErrStoreLocked", err)
 		}
 
 		if err := s1.Close(); err != nil {
