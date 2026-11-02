@@ -196,7 +196,8 @@ func TestStaticServiceRegistrationRequiresConnection(t *testing.T) {
 		t.Fatalf("failed to create node: %v", err)
 	}
 	node.BiscuitTimeout = 10 * time.Second
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	if err := node.Start(ctx); err != nil {
 		t.Fatalf("failed to start node: %v", err)
 	}
@@ -282,7 +283,8 @@ func TestStaticServiceRegistrationCommandFailure(t *testing.T) {
 		t.Fatalf("failed to create node: %v", err)
 	}
 	node.BiscuitTimeout = 10 * time.Second
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	if err := node.Start(ctx); err != nil {
 		t.Fatalf("failed to start node: %v", err)
 	}
