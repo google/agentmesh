@@ -1,0 +1,5 @@
+# Egress Node at the boundary (edge)
+# Serves egress://aiplatform.googleapis.com based on the mesh policy label site: edge.
+version: "v1alpha1"
+labels:
+  site: edge
