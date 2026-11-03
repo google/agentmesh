@@ -141,7 +141,10 @@ whose interface URLs point at the mesh path. An interface served below the
 `target_url`, such as a JSON-RPC endpoint at `/invoke` or an HTTP+JSON
 binding under `/rest`, keeps that path below the mesh path. Bindings that the
 mesh cannot carry (gRPC) are removed, and the original signatures are dropped because the
-content changed. Standard A2A client SDKs then work without changes. Cards
+content changed. The extended agent card stays declared. When a client asks
+for it, the node rewrites its interfaces the same way and drops any the mesh
+does not carry, so the agent's own URLs never reach the client, while its
+extra skills and input modes do. Standard A2A client SDKs then work without changes. Cards
 must use the A2A 1.0 format. Older formats are refused. The
 [A2A chat use case](../../use-cases/chat-a2a/) runs one end to end.
 

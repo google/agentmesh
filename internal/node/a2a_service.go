@@ -24,6 +24,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 
@@ -35,7 +36,9 @@ import (
 func init() {
 	registerEgressMiddleware(api.ServiceTypeStringA2A, egressMiddleware{
 		gateRequest: a2aEgressGate,
-		serveLocal:  a2aServeAgentCard,
+		serveLocal: func(node *AgentMeshNode, rt http.RoundTripper, w http.ResponseWriter, r *http.Request, route egressRoute) bool {
+			return a2aServeAgentCard(node, rt, w, r, route) || a2aServeExtendedAgentCard(node, rt, w, r, route)
+		},
 	})
 }
 
@@ -169,8 +172,7 @@ func a2aServeAgentCard(node *AgentMeshNode, rt http.RoundTripper, w http.Respons
 		http.Error(w, "Bad Gateway: agent card is not valid JSON", http.StatusBadGateway)
 		return true
 	}
-	base := fmt.Sprintf("http://%s/mesh/%s/%s/%s", r.Host, route.peerID, route.serviceType, route.serviceName)
-	if err := regenerateAgentCardForMesh(&card, base); err != nil {
+	if err := regenerateAgentCardForMesh(&card, meshServiceBase(r, route)); err != nil {
 		logger.Warnf("[A2A] agent card from %s unusable through the mesh: %v", route.peerID, err)
 		http.Error(w, fmt.Sprintf("Bad Gateway: %v", err), http.StatusBadGateway)
 		return true
@@ -223,12 +225,22 @@ func etagMatches(header, etag string) bool {
 // the headers already prepared for egress (biscuit, agent claim, passthrough
 // Authorization) on the incoming request.
 func fetchRemoteAgentCard(node *AgentMeshNode, rt http.RoundTripper, r *http.Request, route egressRoute) (*http.Response, error) {
+	return a2aMeshRequest(node, rt, r, route, http.MethodGet, a2aAgentCardPath, nil)
+}
+
+// a2aMeshRequest sends one request to the agent over the mesh on behalf of
+// a held client request whose card answer this node rewrites itself.
+func a2aMeshRequest(node *AgentMeshNode, rt http.RoundTripper, r *http.Request, route egressRoute, method, upstreamPath string, body []byte) (*http.Response, error) {
 	ctx := allowLimitedEgressConn(r.Context())
 	if node != nil {
 		node.prepareEgressPeer(ctx, route.peerID)
 	}
-	url := fmt.Sprintf("libp2p://%s/%s/%s/%s", route.peerID, route.serviceType, route.serviceName, a2aAgentCardPath)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	url := fmt.Sprintf("libp2p://%s/%s/%s/%s", route.peerID, route.serviceType, route.serviceName, upstreamPath)
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, reader)
 	if err != nil {
 		return nil, err
 	}
@@ -244,13 +256,173 @@ func fetchRemoteAgentCard(node *AgentMeshNode, rt http.RoundTripper, r *http.Req
 	return (&http.Client{Transport: rt}).Do(req)
 }
 
+// meshServiceBase is the mesh URL of the service a held client request
+// names, which every interface of a card served to that client points at.
+func meshServiceBase(r *http.Request, route egressRoute) string {
+	return fmt.Sprintf("http://%s/mesh/%s/%s/%s", r.Host, route.peerID, route.serviceType, route.serviceName)
+}
+
+// a2aExtendedCardMethod is the JSON-RPC method that returns the extended
+// agent card (A2A 1.0, section 3.1.11); a2aExtendedCardSegment ends its
+// HTTP+JSON path.
+const (
+	a2aExtendedCardMethod  = "GetExtendedAgentCard"
+	a2aExtendedCardSegment = "extendedAgentCard"
+)
+
+// maxExtendedCardRequestBytes bounds how much of a JSON-RPC request body the
+// node reads to tell a GetExtendedAgentCard call apart. That call carries
+// no more than a tenant, so a body past the bound is relayed unread and the
+// streaming egress path stays as it was for every other method.
+const maxExtendedCardRequestBytes = 64 << 10
+
+// a2aServeExtendedAgentCard answers a GetExtendedAgentCard call (JSON-RPC,
+// or GET .../extendedAgentCard over HTTP+JSON) from this node: it forwards
+// the call to the agent, then serves the extended card with its interfaces
+// redacted (redactExtendedAgentCardForMesh), so a client that replaces its
+// card with this one (A2A 1.0, section 3.1.11) keeps talking through the
+// mesh and never learns the agent's own URLs. Other requests are left to
+// the streaming egress proxy, with their body intact.
+func a2aServeExtendedAgentCard(node *AgentMeshNode, rt http.RoundTripper, w http.ResponseWriter, r *http.Request, route egressRoute) bool {
+	body, ok := extendedAgentCardCall(r, route)
+	if !ok {
+		return false
+	}
+	upstreamPath := route.upstreamPath
+	if r.URL.RawQuery != "" {
+		upstreamPath += "?" + r.URL.RawQuery
+	}
+	resp, err := a2aMeshRequest(node, rt, r, route, r.Method, upstreamPath, body)
+	if err != nil {
+		logger.Warnf("[A2A] extended agent card call to %s failed: %v", route.peerID, err)
+		http.Error(w, "Bad Gateway: extended agent card call failed", http.StatusBadGateway)
+		return true
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxAgentCardBytes+1))
+	if err != nil || len(raw) > maxAgentCardBytes {
+		logger.Warnf("[A2A] extended agent card from %s unreadable or over %d bytes: %v", route.peerID, maxAgentCardBytes, err)
+		http.Error(w, "Bad Gateway: extended agent card unreadable", http.StatusBadGateway)
+		return true
+	}
+	if resp.StatusCode != http.StatusOK {
+		// The agent's own error; relay it as-is.
+		if ct := resp.Header.Get("Content-Type"); ct != "" {
+			w.Header().Set("Content-Type", ct)
+		}
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(raw)
+		return true
+	}
+
+	// The extended card is the whole HTTP+JSON body, or the JSON-RPC result;
+	// a JSON-RPC error carries no card and is relayed as-is.
+	var envelope map[string]json.RawMessage
+	cardJSON := raw
+	if body != nil {
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			logger.Warnf("[A2A] extended agent card response from %s is not a JSON-RPC response: %v", route.peerID, err)
+			http.Error(w, "Bad Gateway: extended agent card response is not valid JSON-RPC", http.StatusBadGateway)
+			return true
+		}
+		result, ok := envelope["result"]
+		if !ok {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(raw)
+			return true
+		}
+		cardJSON = result
+	}
+	out, err := redactedExtendedAgentCard(node, rt, r, route, cardJSON)
+	if err != nil {
+		logger.Warnf("[A2A] extended agent card from %s unusable through the mesh: %v", route.peerID, err)
+		http.Error(w, fmt.Sprintf("Bad Gateway: %v", err), http.StatusBadGateway)
+		return true
+	}
+	if envelope != nil {
+		envelope["result"] = out
+		if out, err = json.Marshal(envelope); err != nil {
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return true
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(len(out)))
+	_, _ = w.Write(out)
+	return true
+}
+
+// extendedAgentCardCall reports whether r is a GetExtendedAgentCard call,
+// returning the JSON-RPC body to forward (nil over HTTP+JSON). It leaves
+// r.Body readable from the start either way.
+func extendedAgentCardCall(r *http.Request, route egressRoute) ([]byte, bool) {
+	switch r.Method {
+	case http.MethodGet:
+		// The last segment, unless it is a task or push config ID.
+		parent := path.Base(path.Dir(route.upstreamPath))
+		return nil, path.Base(route.upstreamPath) == a2aExtendedCardSegment && parent != "tasks" && parent != "pushNotificationConfigs"
+	case http.MethodPost:
+		if r.Body == nil || r.Body == http.NoBody {
+			return nil, false
+		}
+		peeked, err := io.ReadAll(io.LimitReader(r.Body, maxExtendedCardRequestBytes+1))
+		r.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(peeked), r.Body), r.Body}
+		if err != nil || len(peeked) > maxExtendedCardRequestBytes {
+			return nil, false
+		}
+		// Decoded as Go A2A servers decode it: member names match
+		// case-insensitively and the last duplicate wins.
+		var call struct {
+			Method string `json:"method"`
+		}
+		if json.Unmarshal(peeked, &call) != nil || call.Method != a2aExtendedCardMethod {
+			return nil, false
+		}
+		return peeked, true
+	}
+	return nil, false
+}
+
+// redactedExtendedAgentCard decodes the agent's extended card and returns it
+// redacted against the public card this node serves for the same service.
+func redactedExtendedAgentCard(node *AgentMeshNode, rt http.RoundTripper, r *http.Request, route egressRoute, raw []byte) ([]byte, error) {
+	var ext a2a.AgentCard
+	if err := json.Unmarshal(raw, &ext); err != nil {
+		return nil, fmt.Errorf("extended agent card is not valid JSON: %w", err)
+	}
+	resp, err := fetchRemoteAgentCard(node, rt, r, route)
+	if err != nil {
+		return nil, fmt.Errorf("agent card fetch failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("agent card fetch: %s", resp.Status)
+	}
+	var public a2a.AgentCard
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxAgentCardBytes)).Decode(&public); err != nil {
+		return nil, fmt.Errorf("agent card is not valid JSON: %w", err)
+	}
+	if err := regenerateAgentCardForMesh(&public, meshServiceBase(r, route)); err != nil {
+		return nil, err
+	}
+	if err := redactExtendedAgentCardForMesh(&ext, &public); err != nil {
+		return nil, err
+	}
+	return json.Marshal(&ext)
+}
+
 // regenerateAgentCardForMesh rebuilds a fetched agent card for mesh use:
 // interface URLs point back at the mesh path, bindings the mesh cannot carry
 // (gRPC) are dropped, and the original signatures are removed since they no
 // longer match the content. Capabilities stay as the agent declares them:
 // the egress proxy relays an SSE stream as it arrives, and a card that turned
 // streaming off would oblige the agent behind it to refuse SendStreamingMessage
-// and SubscribeToTask (A2A 1.0, section 3.3.4), which it does not do.
+// and SubscribeToTask (A2A 1.0, section 3.3.4), which it does not do. The
+// extended card stays declared too: this node redacts it when a client asks
+// for it (a2aServeExtendedAgentCard).
 func regenerateAgentCardForMesh(card *a2a.AgentCard, base string) error {
 	kept := make([]*a2a.AgentInterface, 0, len(card.SupportedInterfaces))
 	for _, iface := range card.SupportedInterfaces {
@@ -265,8 +437,68 @@ func regenerateAgentCardForMesh(card *a2a.AgentCard, base string) error {
 	}
 	card.SupportedInterfaces = kept
 	card.Signatures = nil
-	// Required list fields must stay arrays: encoding/json marshals nil
-	// slices as null, which strict SDK card parsers (pydantic) reject.
+	keepRequiredCardLists(card)
+	return nil
+}
+
+// redactExtendedAgentCardForMesh rebuilds the agent's extended card for mesh
+// use against public, the card regenerated for the same service: an
+// interface the mesh carries takes the mesh URL public gives its binding,
+// and an interface whose binding public does not offer (gRPC, or one only
+// reachable inside the agent's network) is dropped, so none of the agent's
+// own URLs reach the client. Signatures go as on the public card, since the
+// content changed. Skills, input and output modes and every other member
+// stay as the agent wrote them: they are what the extended card is for.
+func redactExtendedAgentCardForMesh(card, public *a2a.AgentCard) error {
+	kept := make([]*a2a.AgentInterface, 0, len(card.SupportedInterfaces))
+	seen := map[a2a.AgentInterface]bool{}
+	for _, iface := range card.SupportedInterfaces {
+		if iface == nil || !a2aBindingOverHTTP(iface.ProtocolBinding) {
+			continue
+		}
+		meshURL, ok := meshURLForBinding(public, iface)
+		if !ok {
+			continue
+		}
+		redacted := *iface
+		redacted.URL = meshURL
+		if seen[redacted] {
+			continue
+		}
+		seen[redacted] = true
+		kept = append(kept, &redacted)
+	}
+	if len(kept) == 0 {
+		return fmt.Errorf("extended agent card advertises no interface the mesh carries for this agent")
+	}
+	card.SupportedInterfaces = kept
+	card.Signatures = nil
+	keepRequiredCardLists(card)
+	return nil
+}
+
+// meshURLForBinding is the URL the regenerated public card gives iface's
+// protocol binding, preferring an interface of the same protocol version.
+func meshURLForBinding(public *a2a.AgentCard, iface *a2a.AgentInterface) (string, bool) {
+	fallback, found := "", false
+	for _, p := range public.SupportedInterfaces {
+		if !strings.EqualFold(string(p.ProtocolBinding), string(iface.ProtocolBinding)) {
+			continue
+		}
+		if p.ProtocolVersion == iface.ProtocolVersion {
+			return p.URL, true
+		}
+		if !found {
+			fallback, found = p.URL, true
+		}
+	}
+	return fallback, found
+}
+
+// keepRequiredCardLists keeps the card's required list fields arrays:
+// encoding/json marshals nil slices as null, which strict SDK card parsers
+// (pydantic) reject.
+func keepRequiredCardLists(card *a2a.AgentCard) {
 	if card.Skills == nil {
 		card.Skills = []a2a.AgentSkill{}
 	}
@@ -276,7 +508,6 @@ func regenerateAgentCardForMesh(card *a2a.AgentCard, base string) error {
 	if card.DefaultOutputModes == nil {
 		card.DefaultOutputModes = []string{}
 	}
-	return nil
 }
 
 // meshInterfaceURL is the mesh URL of one agent interface. The provider's
