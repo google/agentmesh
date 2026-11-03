@@ -177,7 +177,7 @@ expect_contains "Cloud Audit Log captures federated principal: user:alice" \
 echo ""
 echo "== Credential Boundary Verification"
 # Case 6: Verify no long-lived Google Cloud service account keys (.json) exist in the client environment
-KEY_COUNT=$(find "${RUN_DIR}" -name "*.json" ! -name "policy.json" 2>/dev/null | grep -i "key" | wc -l || echo "0")
+KEY_COUNT=$(find "${RUN_DIR}" -iname "*key*.json" ! -name "policy.json" 2>/dev/null | wc -l | tr -d ' ')
 expect "agent holds zero Google Cloud service account keys" "0" "${KEY_COUNT}"
 
 echo ""
