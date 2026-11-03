@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# One pull request per ecosystem per week. Minor and patch updates are
+# grouped so a weekly run opens one PR instead of one per dependency.
+# A major update stays in its own PR: it needs a human decision and must
+# not block the rest of the batch.
 version: 2
 updates:
   - package-ecosystem: "gomod"
@@ -25,6 +29,12 @@ updates:
       k8s-deps:
         patterns:
           - "*k8s.io*"
+      go-deps:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -32,6 +42,13 @@ updates:
       interval: "weekly"
     cooldown:
       default-days: 7
+    groups:
+      actions:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   # Dev container features, and the digest-pinned base images of the two
   # dev container Dockerfiles.
@@ -41,6 +58,10 @@ updates:
       interval: "weekly"
     cooldown:
       default-days: 7
+    groups:
+      devcontainer-features:
+        patterns:
+          - "*"
 
   - package-ecosystem: "docker"
     directories:
@@ -50,6 +71,10 @@ updates:
       interval: "weekly"
     cooldown:
       default-days: 7
+    groups:
+      devcontainer-images:
+        patterns:
+          - "*"
 
   - package-ecosystem: "npm"
     directories:
@@ -59,6 +84,13 @@ updates:
       interval: "weekly"
     cooldown:
       default-days: 7
+    groups:
+      npm-deps:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: "pip"
     directories:
@@ -81,6 +113,13 @@ updates:
       interval: "weekly"
     cooldown:
       default-days: 7
+    groups:
+      pub-deps:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: "gradle"
     directory: "/mobile/agentmesh-node-app/android"
@@ -88,6 +127,13 @@ updates:
       interval: "weekly"
     cooldown:
       default-days: 7
+    groups:
+      gradle-deps:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
 
   - package-ecosystem: "docker"
     directories:
