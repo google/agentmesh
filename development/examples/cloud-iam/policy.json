@@ -1,0 +1,52 @@
+{
+  "roles": [
+    {
+      "name": "mesh:role:node",
+      "allowed_services": ["system://mesh.catalog"],
+      "allowed_targets": ["*"],
+      "allowed_labels": ["site=edge"]
+    },
+    {
+      "name": "analyst",
+      "allowed_services": ["egress://aiplatform.googleapis.com"],
+      "allowed_targets": ["*"],
+      "http": [
+        {
+          "service": "egress://aiplatform.googleapis.com",
+          "methods": ["POST"],
+          "paths": ["/v1/projects/*/locations/*/publishers/google/models/gemini*:generateContent"]
+        }
+      ]
+    },
+    {
+      "name": "restricted",
+      "allowed_services": ["egress://aiplatform.googleapis.com"],
+      "allowed_targets": ["*"],
+      "http": [
+        {
+          "service": "egress://aiplatform.googleapis.com",
+          "methods": ["GET"],
+          "paths": ["/v1/projects/*/locations/*/publishers/google/models"]
+        }
+      ]
+    }
+  ],
+  "bindings": [
+    {
+      "role": "analyst",
+      "members": ["user:alice"]
+    },
+    {
+      "role": "restricted",
+      "members": ["user:bob"]
+    }
+  ],
+  "egress": [
+    {
+      "name": "aiplatform.googleapis.com",
+      "target_url": "http://cloud-mock:8080",
+      "credential": "google-wif-token",
+      "served_by": ["site=edge"]
+    }
+  ]
+}
