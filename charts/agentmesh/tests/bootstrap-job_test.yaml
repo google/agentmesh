@@ -128,3 +128,15 @@ tests:
       - notMatchRegex:
           path: spec.template.spec.containers[0].args[0]
           pattern: 'agentmesh-box'
+
+  - it: router.bootstrapTokenMaxUsages overrides the one-use-per-replica default
+    set:
+      router.replicaCount: 2
+      router.bootstrapTokenMaxUsages: 20
+    documentSelector:
+      path: kind
+      value: Job
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.containers[0].args[0]
+          pattern: '"role": "mesh:role:router", "max_usages": 20\}'

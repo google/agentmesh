@@ -168,3 +168,9 @@ Mesh size and state come from the control plane
 `agentmesh_control_plane_enrolled_nodes{role,state}`); the router adds its live view
 (`agentmesh_router_authenticated_peers`, `agentmesh_router_auth_handshakes_total{result}`)
 alongside libp2p's own relay and connection metrics.
+
+## Several routers (`router.replicaCount` > 1)
+
+Each router announces its own pod IP (`--external-addr=/ip4/$(POD_IP)/tcp/4501`), because a router is identified by its peer id and the shared `-router` Service would send a dial to whichever pod it likes (the handshake then fails with "peer id mismatch"). With one replica, or with `router.externalAddrs` / `router.hostPort` set, nothing changes. The pod IP changes when a pod restarts; the router announces the new one when it enrolls.
+
+A router keeps no credential across restarts, so it enrolls again every time it starts. With the default bootstrap token (one use per replica) a restarted router is refused. Set `router.bootstrapTokenMaxUsages` to cover the restarts you expect, or avoid the token: `router.useOidcToken=true` with the cluster's service-account issuer trusted by the control plane (see the workload issuer section above).
