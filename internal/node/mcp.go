@@ -32,6 +32,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/routing"
 	"github.com/libp2p/go-libp2p/p2p/net/swarm"
 	"github.com/libp2p/go-msgio"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/multiformats/go-multiaddr"
 	"google.golang.org/protobuf/proto"
@@ -223,6 +224,14 @@ func (n *AgentMeshNode) CallMCPTool(ctx context.Context, targetPeer peer.ID, too
 		// and for the caller refusing a provider not granted the service.
 		if errors.Is(err, ErrAuthRejected) || errors.Is(err, ErrProviderNotGranted) {
 			logger.Warnf("[MCP] Tool call denied, not retrying: %v", err)
+			return nil, err
+		}
+		// The provider's task check refusing the call is a denial too. It
+		// answers with its own JSON-RPC code; any other JSON-RPC error, such
+		// as one from the MCP backend, is retried as before.
+		var rpcErr *jsonrpc.Error
+		if errors.As(err, &rpcErr) && rpcErr.Code == codeTaskDenied {
+			logger.Warnf("[MCP] Tool call to %s denied by task authorization, not retrying: %v", targetPeer, err)
 			return nil, err
 		}
 		// An authorizer that stopped at its facts or iterations limit stops
