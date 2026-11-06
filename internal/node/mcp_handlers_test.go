@@ -33,6 +33,7 @@ import (
 	"github.com/google/agentmesh/internal/identity"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -687,10 +688,9 @@ func TestCallMCPTool_ProviderNotGrantedIsNotRetried(t *testing.T) {
 	}
 }
 
-// A provider that answers a tools/call with a JSON-RPC error has refused it,
-// whether its MCP service denies a tool outside the caller's task or its
-// backend has no such tool. The answer is returned once, not retried.
-func TestCallMCPTool_JSONRPCErrorIsNotRetried(t *testing.T) {
+// A provider whose task check denies a tool outside the caller's task answers
+// with codeTaskDenied. That denial is returned once, not retried.
+func TestCallMCPTool_TaskDeniedToolIsNotRetried(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -735,35 +735,16 @@ func TestCallMCPTool_JSONRPCErrorIsNotRetried(t *testing.T) {
 		t.Fatalf("attenuate: %v", err)
 	}
 
-	tests := []struct {
-		name    string
-		ctx     context.Context
-		tool    string
-		wantErr string
-	}{
-		{
-			name:    "tool outside the caller's task",
-			ctx:     WithCallerBiscuit(ctx, reviewOnly),
-			tool:    "mcp://code-reviewer/delete_repo",
-			wantErr: `task authorization denied tool "delete_repo"`,
-		},
-		{
-			name:    "tool the backend does not have",
-			ctx:     ctx,
-			tool:    "mcp://code-reviewer/no_such_tool",
-			wantErr: `unknown tool "no_such_tool"`,
-		},
+	_, err = nodeA.CallMCPTool(WithCallerBiscuit(ctx, reviewOnly), nodeB.Host.ID(), "mcp://code-reviewer/delete_repo", map[string]any{}, nil)
+	if err == nil || !strings.Contains(err.Error(), `task authorization denied tool "delete_repo"`) {
+		t.Fatalf("CallMCPTool(delete_repo) = %v, want a task authorization denial", err)
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := nodeA.CallMCPTool(tc.ctx, nodeB.Host.ID(), tc.tool, map[string]any{}, nil)
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("CallMCPTool(%s) = %v, want an error containing %q", tc.tool, err, tc.wantErr)
-			}
-			if strings.Contains(err.Error(), "retries") {
-				t.Fatalf("CallMCPTool(%s) = %v, want one answer with no retry", tc.tool, err)
-			}
-		})
+	var rpcErr *jsonrpc.Error
+	if !errors.As(err, &rpcErr) || rpcErr.Code != codeTaskDenied {
+		t.Fatalf("CallMCPTool(delete_repo) = %v, want JSON-RPC code %d", err, codeTaskDenied)
+	}
+	if strings.Contains(err.Error(), "retries") {
+		t.Fatalf("CallMCPTool(delete_repo) = %v, want one answer with no retry", err)
 	}
 
 	// The task allows review_pr, so the same caller still reaches it.

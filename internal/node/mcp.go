@@ -226,14 +226,12 @@ func (n *AgentMeshNode) CallMCPTool(ctx context.Context, targetPeer peer.ID, too
 			logger.Warnf("[MCP] Tool call denied, not retrying: %v", err)
 			return nil, err
 		}
-		// A JSON-RPC error response is an answer too: the provider read the
-		// request and refused it, as its MCP service does for a tool outside
-		// the caller's task (tar_block) and its backend does for an unknown
-		// tool. A provider or backend that cannot be reached fails with a
-		// transport error instead, which is still retried.
+		// The provider's task check refusing the call is a denial too. It
+		// answers with its own JSON-RPC code; any other JSON-RPC error, such
+		// as one from the MCP backend, is retried as before.
 		var rpcErr *jsonrpc.Error
-		if errors.As(err, &rpcErr) {
-			logger.Warnf("[MCP] Tool call to %s answered with an error, not retrying: %v", targetPeer, err)
+		if errors.As(err, &rpcErr) && rpcErr.Code == codeTaskDenied {
+			logger.Warnf("[MCP] Tool call to %s denied by task authorization, not retrying: %v", targetPeer, err)
 			return nil, err
 		}
 		// An authorizer that stopped at its facts or iterations limit stops
