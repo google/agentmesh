@@ -114,13 +114,22 @@ spec:
           periodSeconds: 15
         resources:
           {{- toYaml .Values.router.resources | nindent 10 }}
-        {{- if .Values.router.hostPort }}
+        {{- $podIP := and (gt (int .Values.router.replicaCount) 1) (not .Values.router.externalAddrs) (not .Values.router.hostPort) }}
+        {{- if or .Values.router.hostPort $podIP }}
         env:
+        {{- if .Values.router.hostPort }}
         # kubelet expands $(HOST_IP) in the args below.
         - name: HOST_IP
           valueFrom:
             fieldRef:
               fieldPath: status.hostIP
+        {{- end }}
+        {{- if $podIP }}
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        {{- end }}
         {{- end }}
         args:
         - "--control-plane=http://{{ include "agentmesh.fullname" . }}-control-plane:{{ .Values.controlPlane.service.port }}"
@@ -148,6 +157,11 @@ spec:
         {{- else if .Values.router.hostPort }}
         - "--external-addr=/ip4/$(HOST_IP)/tcp/{{ .Values.router.hostPort }}"
         - "--external-addr=/ip4/$(HOST_IP)/udp/{{ .Values.router.hostPort }}/quic-v1"
+        {{- else if gt (int .Values.router.replicaCount) 1 }}
+        # one address per pod: a router's identity is its peer id, and the shared Service name sends a dial to whichever pod
+        # it likes ("peer id mismatch"). (Per-pod DNS would need serviceName to be a headless Service, which a StatefulSet
+        # cannot change on upgrade.) The pod IP changes on restart; the router announces the new one when it enrolls.
+        - "--external-addr=/ip4/$(POD_IP)/tcp/4501"
         {{- else }}
         - "--external-addr=/dns4/{{ include "agentmesh.fullname" . }}-router/tcp/{{ .Values.router.service.port }}"
         {{- end }}
