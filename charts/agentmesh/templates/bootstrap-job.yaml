@@ -136,7 +136,7 @@ spec:
           TOKEN_RESP=$(curl -sf -X POST \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-            -d '{"role": "mesh:role:router", "max_usages": {{ .Values.router.replicaCount | int }}}' \
+            -d '{"role": "mesh:role:router", "max_usages": {{ .Values.router.bootstrapTokenMaxUsages | default .Values.router.replicaCount | int }}}' \
             "${CP_URL}/admin/bootstrap-tokens")
 
           ROUTER_TOKEN=$(echo "${TOKEN_RESP}" | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
