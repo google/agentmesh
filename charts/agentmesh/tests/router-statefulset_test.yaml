@@ -70,6 +70,31 @@ tests:
       - notContains:
           path: spec.template.spec.containers[0].args
           content: --external-addr=/ip4/$(POD_IP)/tcp/4501
+      - notExists:
+          path: spec.template.spec.containers[0].env
+
+  - it: POD_IP is only injected when the router announces it
+    set:
+      router.replicaCount: 2
+      router.hostPort: 4501
+    documentSelector:
+      path: kind
+      value: StatefulSet
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HOST_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.hostIP
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POD_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
 
   - it: announced DNS address follows router.service.port
     set:
