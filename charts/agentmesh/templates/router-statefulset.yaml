@@ -114,7 +114,8 @@ spec:
           periodSeconds: 15
         resources:
           {{- toYaml .Values.router.resources | nindent 10 }}
-        {{- if or .Values.router.hostPort (gt (int .Values.router.replicaCount) 1) }}
+        {{- $podIP := and (gt (int .Values.router.replicaCount) 1) (not .Values.router.externalAddrs) (not .Values.router.hostPort) }}
+        {{- if or .Values.router.hostPort $podIP }}
         env:
         {{- if .Values.router.hostPort }}
         # kubelet expands $(HOST_IP) in the args below.
@@ -123,7 +124,7 @@ spec:
             fieldRef:
               fieldPath: status.hostIP
         {{- end }}
-        {{- if gt (int .Values.router.replicaCount) 1 }}
+        {{- if $podIP }}
         - name: POD_IP
           valueFrom:
             fieldRef:
