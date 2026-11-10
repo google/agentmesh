@@ -848,7 +848,9 @@ fn start_oidc_http_server(
             }
             let iss = Arc::clone(&issuer_bg);
             thread::spawn(move || {
-                let _ = handle_oidc_conn(stream, &iss);
+                if let Err(e) = handle_oidc_conn(stream, &iss) {
+                    eprintln!("OIDC connection error: {}", e);
+                }
             });
         }
     });
@@ -906,7 +908,9 @@ fn start_mcp_backend_server(bind_port: u16) -> Result<LoopbackServerHandle, Stri
                 break;
             }
             thread::spawn(move || {
-                let _ = handle_mcp_conn(stream);
+                if let Err(e) = handle_mcp_conn(stream) {
+                    eprintln!("MCP connection error: {}", e);
+                }
             });
         }
     });
