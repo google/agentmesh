@@ -130,6 +130,24 @@ explains how to enroll.
 | `--log-level` | `info` | `debug`, `info`, `warn` or `error`. |
 | `--log-format` | `text` | `text` or `json`. |
 
+### Security webhooks
+
+Out-of-band security containment signals dispatched to external supervisors when policy,
+transport, identity, or enrollment violations occur. See
+[Containment signals](../containment-signals/) for wire specifications and receiver blueprints.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--security-webhook-url` | | Target endpoint URL (`unix:/path/to.sock`, `https://...`, or `http://127.0.0.1:<port>`). |
+| `--security-webhook-hmac-path` | | File containing shared secret for HMAC-SHA256 signature verification. |
+| `--security-webhook-ca-cert-path` | | CA certificate bundle for verifying HTTPS webhook servers. |
+| `--security-webhook-client-cert-path`, `--security-webhook-client-key-path` | | Client TLS certificate and key for mutual TLS (mTLS). |
+| `--security-webhook-events` | | Comma-separated event types to forward (empty dispatches all). |
+| `--security-webhook-timeout` | `500ms` | Delivery timeout per dispatch request. |
+| `--security-webhook-max-retries` | `3` | Maximum retry attempts for transient delivery failures. |
+| `--security-webhook-queue-capacity` | `1024` | Capacity of the non-blocking ring-buffer dispatch queue. |
+| `--security-webhook-coalescing-window` | `1s` | Sliding deduplication window for repetitive signals. |
+
 ## `forward`
 
 Opens a local TCP listener and forwards each connection through the running

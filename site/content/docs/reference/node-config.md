@@ -50,6 +50,12 @@ attenuation:
 egress:
   require_labels:
     jurisdiction: eu
+
+security_signals:
+  enabled: true
+  endpoints:
+    - url: "unix:/var/run/containment.sock"
+      hmac_secret_path: /etc/agentmesh/containment-hmac.key
 ```
 
 ## `version`
@@ -155,6 +161,33 @@ It can add requirements but cannot remove or relax the floor. A floor that
 names a label which no provider carries makes the node unable to reach any
 provider, which can serve as an egress kill switch. Omit the block for no
 floor.
+
+## `security_signals`
+
+Configures out-of-band security webhook dispatch to external containment supervisors.
+See [Containment signals](../containment-signals/) for complete specifications and blueprints.
+
+```yaml
+security_signals:
+  enabled: true
+  queue_capacity: 1024
+  coalescing_window: "1s"
+  endpoints:
+    - url: "unix:/var/run/containment.sock"
+      hmac_secret_path: "/etc/agentmesh/containment-hmac.key"
+      timeout: "500ms"
+      max_retries: 3
+      event_types:
+        - "agentmesh.policy.denied"
+        - "agentmesh.transport.refused"
+```
+
+| Key | Meaning |
+|---|---|
+| `enabled` | Enables security signal event emission and webhook dispatch. |
+| `queue_capacity` | In-memory bounded ring buffer capacity (default `1024`). Sheds events on overflow. |
+| `coalescing_window` | Sliding deduplication window duration (e.g. `1s`) to suppress event bursts. |
+| `endpoints` | List of destination webhook endpoints (`url`, `hmac_secret_path`, `timeout`, `max_retries`, `event_types`, `ca_cert_path`, `client_cert_path`, `client_key_path`). |
 
 ## Kubernetes
 

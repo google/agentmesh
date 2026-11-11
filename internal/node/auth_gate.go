@@ -20,10 +20,12 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/agentmesh/api"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
+	"github.com/multiformats/go-multiaddr"
 )
 
 // streamScopeUnauthenticated labels a stream the gate refused: its peer
@@ -135,6 +137,16 @@ func (n *AgentMeshNode) requireAuthenticated(next network.StreamHandler) network
 			if n.config.OnStreamRefused != nil {
 				n.config.OnStreamRefused(streamScopeUnauthenticated, string(s.Protocol()))
 			}
+			reason := api.TransportRefusalReason_PEER_UNAUTHENTICATED
+			if n.revokedPeers != nil && n.revokedPeers.Contains(p.String()) {
+				reason = api.TransportRefusalReason_PEER_BANNED
+			}
+			var maddr multiaddr.Multiaddr
+			if s.Conn() != nil {
+				maddr = s.Conn().RemoteMultiaddr()
+			}
+			n.emitTransportRefused(p, maddr, s.Protocol(), reason,
+				fmt.Sprintf("peer %s did not authenticate within deadline: %v", p, err))
 			logger.Debugf("[AuthZ] Refusing %s stream from %s: %v", s.Protocol(), p, err)
 			_ = s.Reset()
 			return
@@ -155,6 +167,13 @@ func (n *AgentMeshNode) requireRouter(next network.StreamHandler) network.Stream
 			if n.config.OnStreamRefused != nil {
 				n.config.OnStreamRefused(streamScopeNotRouter, string(s.Protocol()))
 			}
+			var maddr multiaddr.Multiaddr
+			if s.Conn() != nil {
+				maddr = s.Conn().RemoteMultiaddr()
+			}
+			n.emitTransportRefused(p, maddr, s.Protocol(),
+				api.TransportRefusalReason_NOT_ROUTER_ROLE,
+				fmt.Sprintf("peer %s authenticated but lacks mesh:role:router for protocol %s", p, s.Protocol()))
 			logger.Warnf("[AuthZ] Refusing %s stream from %s: peer is authenticated but not a router", s.Protocol(), p)
 			_ = s.Reset()
 			return

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	cpclient "github.com/google/agentmesh/internal/controlplane/client"
+	"github.com/google/agentmesh/api"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 	"github.com/prometheus/client_golang/prometheus"
@@ -105,6 +106,9 @@ func (n *AgentMeshNode) syncRevocations(ctx context.Context, controlPlaneURL str
 	expiry := fetchedAt.Add(24 * time.Hour)
 	for _, revID := range resp.GetRevocationIds() {
 		n.RevokeBiscuitID(revID, expiry)
+	}
+	if len(resp.GetRevocationIds()) > 0 {
+		n.emitIdentityRevoked("", api.RevocationSource_LOCAL_CONTROL_PLANE_SYNC, "biscuit revocation IDs synchronized from control plane", resp.GetRevocationIds())
 	}
 	if len(resp.GetBannedPeerIds()) > 0 {
 		n.reconcileBannedPeers(resp.GetBannedPeerIds(), fetchedAt)
@@ -283,12 +287,14 @@ func (n *AgentMeshNode) reconcileBannedPeers(peerIDs []string, fetchedAt time.Ti
 		logger.Infof("Peer %s is no longer banned by the control plane; lifting the local ban", key)
 		n.revokedPeers.Remove(key)
 	}
-	for key, p := range banned {
-		if n.revokedPeers.Contains(key) {
+	for _, p := range banned {
+		canonical := p.String()
+		if n.revokedPeers.Contains(canonical) {
 			continue
 		}
-		logger.Infow("peer banned by the control plane", "event", meshEventBanned, "peer", key)
+		logger.Infow("peer banned by the control plane", "event", meshEventBanned, "peer", canonical)
 		n.banPeer(p, fetchedAtMs)
+		n.emitIdentityRevoked(canonical, api.RevocationSource_LOCAL_CONTROL_PLANE_SYNC, "peer ban reconciled from control plane sync", nil)
 	}
 }
 
