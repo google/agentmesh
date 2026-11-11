@@ -1,0 +1,65 @@
+# Cloud IAM Workload Identity Federation Example:
+# An agent outside Google Cloud calls Vertex AI through an Agent Mesh egress node
+# without storing any Google Cloud service account keys inside the agent.
+#
+# run.sh brings this up, executes each case, asserts audit log records, and tears down.
+name: agentmesh-cloud-iam
+
+x-agentmesh-node: &agentmesh-node
+  image: ${AGENTMESH_REGISTRY:-ghcr.io/google}/agentmesh-node:${AGENTMESH_TAG:-8de8bd76ddfa5c52957c02722b6bce2eac21ec72}
+  depends_on:
+    - router
+  volumes:
+    - ./.run:/run/example:ro
+    - ./node-edge.yaml:/etc/agentmesh/provider.yaml:ro
+
+services:
+  control-plane:
+    image: ${AGENTMESH_REGISTRY:-ghcr.io/google}/agentmesh-control-plane:${AGENTMESH_TAG:-8de8bd76ddfa5c52957c02722b6bce2eac21ec72}
+    command:
+      - --admin-token-path=/run/example/admin.token
+      - --db-dsn=/data/control-plane.db
+      - --auto-approve-enrollment
+    volumes:
+      - ./.run:/run/example:ro
+
+  router:
+    image: ${AGENTMESH_REGISTRY:-ghcr.io/google}/agentmesh-router:${AGENTMESH_TAG:-8de8bd76ddfa5c52957c02722b6bce2eac21ec72}
+    command:
+      - --control-plane=http://control-plane:8080
+      - --insecure-control-plane
+      - --bootstrap-token-path=/run/example/router.token
+      - --keys-path=/data/router.key
+      - --control-plane-sync-interval=5s
+    volumes:
+      - ./.run:/run/example:ro
+    depends_on:
+      - control-plane
+
+  node-edge:
+    <<: *agentmesh-node
+    command:
+      - --control-plane=http://control-plane:8080
+      - --insecure-control-plane
+      - --bootstrap-token-path=/run/example/node-edge.token
+      - --secrets-dir=/run/example/secrets
+      - --provider-config=/etc/agentmesh/provider.yaml
+      - --control-plane-sync-interval=5s
+    depends_on:
+      - control-plane
+      - router
+      - cloud-mock
+
+  cloud-mock:
+    image: python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170
+    command: ["python3", "/cloud_mock.py"]
+    volumes:
+      - ./cloud_mock.py:/cloud_mock.py:ro
+      - ./.run:/run/example:rw
+
+  tools:
+    image: curlimages/curl:8.11.1
+    profiles: ["cases"]
+    volumes:
+      - ./:/example:ro
+      - ./.run:/run/example:ro
