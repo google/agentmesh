@@ -84,9 +84,11 @@ The sandbox still holds nothing. What changes is that the mesh, not the
 orchestrator, decides what each sandbox identity may call, and revoking the
 sandbox's role takes effect without touching the proxy. The
 [OpenShell sandboxes guide](../../guides/openshell/) runs this end to end on
-one machine with SPIRE, and the [Substrate actors guide](../../guides/substrate/)
+one machine with SPIRE, the [Substrate actors guide](../../guides/substrate/)
 does the same on a kind cluster through Substrate's credential provider
-contract.
+contract, and the [Wasmtime sandboxes guide](../../guides/wasmtime/) runs the
+same per-sandbox exchange in-process for capability-isolated WebAssembly guests
+without Docker or Kubernetes.
 
 ## Blueprint 2: Docker Sandbox (`docker sbx`) & Kubernetes `agent-sandbox`
 

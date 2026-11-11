@@ -1,0 +1,20 @@
+# The node in the office. It publishes two MCP services backed by the same
+# calculator (mcp://calc and mcp://payroll) so the policy can allow one and
+# refuse the other, plus mcp://echo-headers to verify header hygiene.
+version: "v1alpha1"
+labels:
+  site: office
+  tier: wasm-sandbox-demo
+services:
+  - type: mcp
+    name: calc
+    description: "calculator MCP server in the office"
+    target_url: "http://127.0.0.1:__MCP_PORT__/mcp/calc"
+  - type: mcp
+    name: payroll
+    description: "restricted payroll MCP server the sandbox role may not call"
+    target_url: "http://127.0.0.1:__MCP_PORT__/mcp/payroll"
+  - type: mcp
+    name: echo-headers
+    description: "header echo MCP server verifying credential stripping and X-Mesh-Principal"
+    target_url: "http://127.0.0.1:__MCP_PORT__/mcp/echo-headers"
