@@ -74,7 +74,7 @@ func TestIsLoopbackBindHost(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := isLoopbackBindHost(tc.host); got != tc.want {
-				t.Errorf("isLoopbackBindHost(%q) = %v, want %v", tc.host, got, tc.want)
+				t.Fatalf("isLoopbackBindHost(%q) = %v, want %v", tc.host, got, tc.want)
 			}
 		})
 	}
