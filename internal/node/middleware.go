@@ -19,10 +19,12 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/eclipse-biscuit/biscuit-go/v2"
+	"github.com/eclipse-biscuit/biscuit-go/v2/datalog"
 	"github.com/google/agentmesh/api"
 	"github.com/google/agentmesh/internal/identity"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -203,6 +205,184 @@ func (n *AgentMeshNode) WithBiscuitAuth(next func(network.Stream, RequestContext
 	}
 }
 
+func classifyPolicyDenialReason(err error) api.PolicyDenialReason {
+	if err == nil {
+		return api.PolicyDenialReason_POLICY_DENIAL_REASON_UNSPECIFIED
+	}
+
+	msg := strings.ToLower(err.Error())
+
+	// 1. Task Authorization Rule (TAR) block violations take precedence.
+	// EvaluateTaskRules returns errors prefixed with "tar_block[...]" or "tar_block:".
+	// Even if a TAR block expired, it is classified as TASK_AUTHORIZATION_RULE_VIOLATION.
+	if strings.Contains(msg, "tar_block") {
+		return api.PolicyDenialReason_TASK_AUTHORIZATION_RULE_VIOLATION
+	}
+
+	// 2. Credential revocation and token expiration.
+	// Applies to revoked peer IDs, revoked authority/delegation Biscuits, and expired tokens.
+	if strings.Contains(msg, "revoked") ||
+		strings.Contains(msg, "expired") ||
+		strings.Contains(msg, "expiration") {
+		return api.PolicyDenialReason_EXPIRED_CREDENTIAL
+	}
+
+	// 3. Biscuit sentinel errors, Datalog runtime limits, and check failure phrases.
+	// Must be matched BEFORE any route or ACL checks to avoid false positives when
+	// service names (e.g. "db-service") or check formulas contain those words.
+	if errors.Is(err, biscuit.ErrNoMatchingPolicy) ||
+		errors.Is(err, biscuit.ErrPolicyDenied) ||
+		errors.Is(err, biscuit.ErrInvalidSignature) ||
+		errors.Is(err, datalog.ErrWorldRunLimitTimeout) ||
+		errors.Is(err, datalog.ErrWorldRunLimitMaxFacts) ||
+		errors.Is(err, datalog.ErrWorldRunLimitMaxIterations) ||
+		errors.Is(err, ErrAuthRejected) ||
+		strings.Contains(msg, "biscuit: verification failed") ||
+		strings.Contains(msg, "failed to verify check") ||
+		strings.Contains(msg, "failed to verify block") ||
+		strings.Contains(msg, "authorization check failed") ||
+		strings.Contains(msg, "datalog check failed") ||
+		strings.Contains(msg, "missing fact") ||
+		strings.Contains(msg, "untrusted biscuit token") ||
+		strings.Contains(msg, "not bound to peer") ||
+		strings.Contains(msg, "authorization check") ||
+		strings.Contains(msg, "authorization failed") ||
+		strings.Contains(msg, "authorizer failure") ||
+		strings.Contains(msg, "allow_network_target") ||
+		strings.Contains(msg, "datalog") ||
+		strings.Contains(msg, "biscuit") {
+		return api.PolicyDenialReason_DATALOG_EVALUATION_DENIED
+	}
+
+	// 4. Explicit non-Datalog route or ACL checks (anchored multi-word phrases only).
+	// Never match single-token "service", "role", "method", or "path" which collide with
+	// resource identifiers and URI components.
+	switch {
+	case strings.Contains(msg, "role mismatch") ||
+		strings.Contains(msg, "role required") ||
+		strings.Contains(msg, "insufficient role") ||
+		strings.Contains(msg, "not router role") ||
+		strings.Contains(msg, "unauthorized role") ||
+		strings.Contains(msg, "invalid role") ||
+		strings.Contains(msg, "forbidden: role") ||
+		strings.Contains(msg, "missing role") ||
+		strings.Contains(msg, "admin role required"):
+		return api.PolicyDenialReason_ROLE_MISMATCH
+
+	case errors.Is(err, ErrProviderNotGranted) ||
+		strings.Contains(msg, "unauthorized service") ||
+		strings.Contains(msg, "unknown service") ||
+		strings.Contains(msg, "service not allowed") ||
+		strings.Contains(msg, "service not granted") ||
+		strings.Contains(msg, "service not permitted") ||
+		strings.Contains(msg, "provider not granted") ||
+		strings.Contains(msg, "unregistered service"):
+		return api.PolicyDenialReason_UNAUTHORIZED_SERVICE
+
+	case strings.Contains(msg, "method not allowed") ||
+		strings.Contains(msg, "unauthorized path") ||
+		strings.Contains(msg, "unauthorized method") ||
+		strings.Contains(msg, "path not allowed") ||
+		strings.Contains(msg, "path not permitted") ||
+		strings.Contains(msg, "method not permitted") ||
+		strings.Contains(msg, "invalid path") ||
+		strings.Contains(msg, "invalid method") ||
+		strings.Contains(msg, "http grant"):
+		return api.PolicyDenialReason_UNAUTHORIZED_PATH_OR_METHOD
+
+	case strings.Contains(msg, "model_armor") ||
+		strings.Contains(msg, "modelarmor") ||
+		strings.Contains(msg, "ext_proc") ||
+		strings.Contains(msg, "extproc") ||
+		strings.Contains(msg, "inspection"):
+		return api.PolicyDenialReason_INSPECTION_FILTER_BLOCKED
+
+	default:
+		// 5. Default fallback to Datalog evaluation denial for any unclassified policy check rejection.
+		return api.PolicyDenialReason_DATALOG_EVALUATION_DENIED
+	}
+}
+
+func extractCallerClaimsFromAuthorizer(authorizer biscuit.Authorizer) (string, []string) {
+	if authorizer == nil {
+		return "", nil
+	}
+	var subject string
+	if facts, _ := authorizer.Query(biscuit.Rule{
+		Head: biscuit.Predicate{Name: "get_user", IDs: []biscuit.Term{biscuit.Variable("u")}},
+		Body: []biscuit.Predicate{{Name: api.FactUser, IDs: []biscuit.Term{biscuit.Variable("u")}}},
+	}); len(facts) > 0 && len(facts[0].IDs) > 0 {
+		if s, ok := facts[0].IDs[0].(biscuit.String); ok {
+			subject = string(s)
+		}
+	}
+	if subject == "" {
+		if facts, _ := authorizer.Query(biscuit.Rule{
+			Head: biscuit.Predicate{Name: "get_email", IDs: []biscuit.Term{biscuit.Variable("e")}},
+			Body: []biscuit.Predicate{{Name: api.FactEmail, IDs: []biscuit.Term{biscuit.Variable("e")}}},
+		}); len(facts) > 0 && len(facts[0].IDs) > 0 {
+			if s, ok := facts[0].IDs[0].(biscuit.String); ok {
+				subject = string(s)
+			}
+		}
+	}
+	var roles []string
+	if facts, _ := authorizer.Query(biscuit.Rule{
+		Head: biscuit.Predicate{Name: "get_role", IDs: []biscuit.Term{biscuit.Variable("r")}},
+		Body: []biscuit.Predicate{{Name: api.FactRole, IDs: []biscuit.Term{biscuit.Variable("r")}}},
+	}); len(facts) > 0 {
+		for _, f := range facts {
+			if len(f.IDs) > 0 {
+				if s, ok := f.IDs[0].(biscuit.String); ok {
+					roles = append(roles, string(s))
+				}
+			}
+		}
+	}
+	return subject, roles
+}
+
+func (n *AgentMeshNode) emitMiddlewarePolicyDenied(req RequestContext, authorizer biscuit.Authorizer, denialErr error) {
+	if n == nil || n.containmentDispatcher == nil || denialErr == nil {
+		return
+	}
+	reason := classifyPolicyDenialReason(denialErr)
+	dir := api.SignalCallerDirection_REMOTE_PEER
+	if req.Local {
+		dir = api.SignalCallerDirection_LOCAL_WORKLOAD
+	}
+
+	op := req.Protocol
+	res := req.Target
+	if req.HTTP != nil {
+		op = req.HTTP.Method
+		res = req.HTTP.Path
+	} else if req.MCPTool != "" {
+		op = req.MCPTool
+	} else if req.Egress != nil {
+		res = fmt.Sprintf("%s:%d", req.Egress.Host, req.Egress.Port)
+	}
+
+	var subject string
+	var roles []string
+	if authorizer != nil {
+		subject, roles = extractCallerClaimsFromAuthorizer(authorizer)
+	}
+
+	n.EmitPolicyDenied(PolicyDeniedParams{
+		Direction:          dir,
+		Reason:             reason,
+		Detail:             denialErr.Error(),
+		TargetService:      req.Target,
+		RequestedOperation: op,
+		RequestedResource:  res,
+		CallerPeerID:       req.PeerID.String(),
+		CallerSubject:      subject,
+		CallerRoles:        roles,
+		EventTime:          time.Now(),
+	})
+}
+
 // VerifyBiscuitToken checks revocation, cache, and evaluates the token against trusted keys and local policies.
 func (n *AgentMeshNode) VerifyBiscuitToken(biscuitBytes []byte, reqCtx RequestContext) error {
 	_, err := n.verifyBiscuitTokenWithRules(biscuitBytes, reqCtx)
@@ -216,7 +396,9 @@ func (n *AgentMeshNode) verifyBiscuitTokenWithRules(biscuitBytes []byte, reqCtx 
 	if n.revokedPeers != nil {
 		if _, isRevoked := n.revokedPeers.Get(remotePeer.String()); isRevoked {
 			logger.Warnf("[Auth] Peer %s is revoked", remotePeer)
-			return nil, fmt.Errorf("peer is revoked")
+			err := fmt.Errorf("peer is revoked")
+			n.emitMiddlewarePolicyDenied(reqCtx, nil, err)
+			return nil, err
 		}
 	}
 
@@ -243,9 +425,14 @@ func (n *AgentMeshNode) verifyBiscuitTokenWithRules(biscuitBytes []byte, reqCtx 
 
 	if !authorized {
 		if lastErr != nil {
+			if errors.Is(lastErr, biscuit.ErrInvalidSignature) {
+				n.emitMiddlewarePolicyDenied(reqCtx, nil, fmt.Errorf("untrusted biscuit token signature: %w", lastErr))
+			}
 			return nil, lastErr
 		}
-		return nil, fmt.Errorf("authorization failed")
+		err := fmt.Errorf("authorization failed")
+		n.emitMiddlewarePolicyDenied(reqCtx, nil, err)
+		return nil, err
 	}
 
 	return taskRules, nil
@@ -266,7 +453,9 @@ func (n *AgentMeshNode) authorizeWithRules(rawToken []byte, req RequestContext, 
 	}
 	if n.IsBiscuitRevoked(b) {
 		logger.Infow("Audit Traceability", append(req.auditFields(), "decision", "deny", "reason", "biscuit is revoked")...)
-		return nil, fmt.Errorf("biscuit is revoked")
+		err := fmt.Errorf("biscuit is revoked")
+		n.emitMiddlewarePolicyDenied(req, nil, err)
+		return nil, err
 	}
 
 	authorizer, err := b.Authorizer(pubKey, identity.AuthorizerOptions(n.BiscuitTimeout)...)
@@ -275,6 +464,7 @@ func (n *AgentMeshNode) authorizeWithRules(rawToken []byte, req RequestContext, 
 	}
 
 	if err := identity.RequireAuthorityRequestBinding(b, req.PeerID); err != nil {
+		n.emitMiddlewarePolicyDenied(req, authorizer, err)
 		return nil, err
 	}
 
@@ -313,12 +503,14 @@ func (n *AgentMeshNode) authorizeWithRules(rawToken []byte, req RequestContext, 
 		logger.Infow("Audit Traceability", append(req.auditFields(), "decision", "deny", "reason", err.Error())...)
 		logger.Debugf("Authorizer failure: %v, token: %s", err, b.String())
 		logger.Debugf("Authorizer state: %s", authorizer.PrintWorld())
+		n.emitMiddlewarePolicyDenied(req, authorizer, err)
 		return nil, err
 	}
 
 	if len(taskRules) > 0 {
 		if err := api.EvaluateTaskRules(taskRules, meshReq.TaskRequest(), time.Now()); err != nil {
 			logger.Infow("Audit Traceability", append(req.auditFields(), "decision", "deny", "reason", err.Error())...)
+			n.emitMiddlewarePolicyDenied(req, authorizer, err)
 			return nil, err
 		}
 	}
@@ -372,7 +564,9 @@ func (n *AgentMeshNode) authorizeWithRules(rawToken []byte, req RequestContext, 
 			if actorPID, pErr := peer.Decode(actorNodeStr); pErr == nil {
 				if _, isRevoked := n.revokedPeers.Get(actorPID.String()); isRevoked {
 					logger.Infow("Audit Traceability", append(req.auditFields(), "decision", "deny", "reason", "actor_node is revoked")...)
-					return nil, fmt.Errorf("actor_node %s is revoked", actorPID.String())
+					err := fmt.Errorf("actor_node %s is revoked", actorPID.String())
+					n.emitMiddlewarePolicyDenied(req, authorizer, err)
+					return nil, err
 				}
 			}
 		}

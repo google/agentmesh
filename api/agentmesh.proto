@@ -1066,3 +1066,233 @@ message RevocationsResponse {
   repeated string banned_peer_ids = 2;
 }
 
+// ============================================================================
+// Generic Security Signals & Containment Contract (Issue #879)
+// ============================================================================
+
+// Direction of the caller when a security event or policy evaluation occurs.
+enum SignalCallerDirection {
+  SIGNAL_CALLER_DIRECTION_UNSPECIFIED = 0;
+  // A local workload/agent process invoking the agentmesh-node sidecar.
+  LOCAL_WORKLOAD = 1;
+  // An external or remote peer sending traffic across the mesh network.
+  REMOTE_PEER = 2;
+}
+
+// Reason codes for policy evaluation denial.
+enum PolicyDenialReason {
+  POLICY_DENIAL_REASON_UNSPECIFIED = 0;
+  // Denied by Biscuit Datalog authorization policy evaluation.
+  DATALOG_EVALUATION_DENIED = 1;
+  // Denied by TaskAuthorizationRule (tar_block) narrowing or operation constraints.
+  TASK_AUTHORIZATION_RULE_VIOLATION = 2;
+  // Blocked by an inspection filter (ModelArmor or ExtProc).
+  INSPECTION_FILTER_BLOCKED = 3;
+  // Caller does not possess the required PolicyRole.
+  ROLE_MISMATCH = 4;
+  // Caller credential or Biscuit has expired.
+  EXPIRED_CREDENTIAL = 5;
+  // Requested service name is not allowed by policy.
+  UNAUTHORIZED_SERVICE = 6;
+  // Requested HTTP method or path pattern is not permitted by HTTPGrant.
+  UNAUTHORIZED_PATH_OR_METHOD = 7;
+}
+
+// Emitted as CloudEvents type "agentmesh.policy.denied" when an authorization check,
+// TAR rule narrowing, or inspection filter rejects a request.
+message PolicyDeniedSignal {
+  // Direction of the caller: LOCAL_WORKLOAD vs REMOTE_PEER.
+  SignalCallerDirection direction = 1;
+  // Structured policy denial reason code.
+  PolicyDenialReason reason = 2;
+  // Human-readable detail or rejection explanation.
+  string detail = 3;
+  // Target service requested (e.g. "bigquery", "calculator-mcp").
+  string target_service = 4;
+  // Requested operation (e.g. HTTP method "POST" or MCP tool "execute").
+  string requested_operation = 5;
+  // Requested path or resource pattern (e.g. "/v1/projects/*").
+  string requested_resource = 6;
+  // Caller peer ID (if REMOTE_PEER or known).
+  string caller_peer_id = 7;
+  // Caller principal/subject from Biscuit or JWT.
+  string caller_subject = 8;
+  // Caller roles extracted from Biscuit authority/delegation blocks.
+  repeated string caller_roles = 9;
+  // Attested caller labels from Biscuit.
+  map<string, string> caller_labels = 10;
+  // Instant when policy denial occurred. Per AGENTS.md, MUST be named *_time.
+  google.protobuf.Timestamp event_time = 11;
+}
+
+// Reason codes for libp2p connection or stream gate refusals.
+enum TransportRefusalReason {
+  TRANSPORT_REFUSAL_REASON_UNSPECIFIED = 0;
+  // Remote peer did not complete authentication within deadline.
+  PEER_UNAUTHENTICATED = 1;
+  // Remote peer attempted to access a router-only protocol without mesh:role:router.
+  NOT_ROUTER_ROLE = 2;
+  // Auth handshake wait timed out.
+  AUTH_DEADLINE_EXCEEDED = 3;
+  // Remote peer is in the banned/revocation set.
+  PEER_BANNED = 4;
+  // Protocol requested is not permitted for the peer's role.
+  PROTOCOL_UNAUTHORIZED = 5;
+}
+
+// Emitted as CloudEvents type "agentmesh.transport.refused" when the connection
+// or stream auth gate (internal/node/auth_gate.go) rejects an incoming stream/peer.
+message TransportRefusedSignal {
+  // Structured reason code for transport refusal.
+  TransportRefusalReason reason = 1;
+  // Human-readable detail message.
+  string detail = 2;
+  // Remote libp2p peer ID string.
+  string peer_id = 3;
+  // Remote multiaddr string (e.g. "/ip4/192.168.1.10/tcp/4001").
+  string remote_multiaddr = 4;
+  // Protocol ID requested (e.g. "/agentmesh/auth", "/libp2p-http").
+  string protocol_id = 5;
+  // Coalesced refusal count within the deduplication window (>= 1).
+  uint32 coalesced_count = 6;
+  // Timestamp of the first observed rejection in this coalescing window.
+  google.protobuf.Timestamp first_seen_time = 7;
+  // Timestamp of the most recent rejection. Per AGENTS.md, MUST be named *_time.
+  google.protobuf.Timestamp event_time = 8;
+}
+
+// Provenance/source of an identity revocation.
+enum RevocationSource {
+  REVOCATION_SOURCE_UNSPECIFIED = 0;
+  // Administrative action on agentmesh-control-plane.
+  CONTROL_PLANE_ADMIN = 1;
+  // MeshEvent.BANNED received via gossip / SSE broadcast.
+  MESH_EVENT_BANNED_GOSSIP = 2;
+  // Reconciled during control-plane synchronization.
+  LOCAL_CONTROL_PLANE_SYNC = 3;
+  // Token refresh endpoint refused due to active ban.
+  TOKEN_REFRESH_REJECTION = 4;
+}
+
+// Emitted as CloudEvents type "agentmesh.identity.revoked" when a peer identity
+// or Biscuit token is revoked or banned.
+message IdentityRevokedSignal {
+  // Subject peer ID that has been revoked or banned.
+  string peer_id = 1;
+  // Source or trigger of the revocation.
+  RevocationSource source = 2;
+  // Revocation reason provided by administrator or policy.
+  string reason = 3;
+  // Hex-encoded Biscuit authority revocation IDs (RevocationIds()[0]).
+  repeated string revocation_ids = 4;
+  // Peer ID of the node or control plane emitting the revocation.
+  string issuer_peer_id = 5;
+  // Instant when the revocation occurred. Per AGENTS.md, MUST be named *_time.
+  google.protobuf.Timestamp event_time = 6;
+}
+
+// Reason codes for enrollment rejection.
+enum EnrollmentRejectionReason {
+  ENROLLMENT_REJECTION_REASON_UNSPECIFIED = 0;
+  // Platform JWT token validation failed (signature, audience, issuer).
+  INVALID_JWT = 1;
+  // Bootstrap token has expired.
+  EXPIRED_BOOTSTRAP_TOKEN = 2;
+  // Bootstrap token max usage limit reached.
+  BOOTSTRAP_TOKEN_USAGE_EXCEEDED = 3;
+  // Requested labels failed policy attestation.
+  UNATTESTED_LABELS_REJECTED = 4;
+  // Proof of possession challenge signature is invalid.
+  INVALID_CHALLENGE_SIGNATURE = 5;
+  // Requested role is not permitted for the caller identity.
+  REQUESTED_ROLE_UNAUTHORIZED = 6;
+  // Peer is in the banned peer list.
+  PEER_PREVIOUSLY_BANNED = 7;
+  // Autonomous token recovery is disabled for the token or node.
+  AUTONOMOUS_RECOVERY_DISABLED = 8;
+}
+
+// Emitted as CloudEvents type "agentmesh.enrollment.rejected" when enrollment
+// or autonomous token recovery is rejected on /enroll or /refresh.
+message EnrollmentRejectedSignal {
+  // Peer ID attempting enrollment or recovery.
+  string peer_id = 1;
+  // Role requested in the enrollment attempt.
+  string requested_role = 2;
+  // Structured reason code for rejection.
+  EnrollmentRejectionReason reason = 3;
+  // Human-readable detail message.
+  string detail = 4;
+  // Bootstrap token ID used (if bootstrap enrollment).
+  string bootstrap_token_id = 5;
+  // Remote IP address or multiaddr of the enrollment requester.
+  string remote_address = 6;
+  // Labels submitted in the enrollment request.
+  map<string, string> submitted_labels = 7;
+  // True if this rejection occurred during an autonomous recovery attempt on /refresh.
+  bool is_autonomous_recovery = 8;
+  // Instant when rejection occurred. Per AGENTS.md, MUST be named *_time.
+  google.protobuf.Timestamp event_time = 9;
+}
+
+// SecuritySignalEvent is the CloudEvents 1.0 compliant envelope for dispatching
+// security state transitions to external runtimes over HTTP or Unix sockets.
+message SecuritySignalEvent {
+  // CloudEvents 'id': Unique event identifier (UUID v4).
+  string id = 1;
+  // CloudEvents 'source': URI identifying the emitting context (e.g. "urn:agentmesh:node:<peer_id>").
+  string source = 2;
+  // CloudEvents 'specversion': The CloudEvents specification version (always "1.0").
+  string spec_version = 3;
+  // CloudEvents 'type': Event type (e.g. "agentmesh.policy.denied").
+  string type = 4;
+  // CloudEvents 'time': Event generation instant. Per AGENTS.md, MUST be named *_time.
+  google.protobuf.Timestamp event_time = 5;
+  // CloudEvents 'datacontenttype': MIME type ("application/json" or "application/x-protobuf").
+  string data_content_type = 6;
+  // CloudEvents 'subject': Subject peer ID or identifier.
+  string subject = 7;
+
+  // Typed signal payload (mutually exclusive).
+  oneof data {
+    PolicyDeniedSignal policy_denied = 8;
+    TransportRefusedSignal transport_refused = 9;
+    IdentityRevokedSignal identity_revoked = 10;
+    EnrollmentRejectedSignal enrollment_rejected = 11;
+  }
+}
+
+// WebhookEndpointConfig defines a single outbound destination for security signals.
+message WebhookEndpointConfig {
+  // Target URL: https://..., http://127.0.0.1:<port>, or unix:/path/to.sock.
+  string url = 1;
+  // File path to the shared secret for HMAC-SHA256 signing (X-AgentMesh-Signature).
+  // Per AGENTS.md secret hygiene, MUST be a file path, never an inline secret string.
+  string hmac_secret_path = 2;
+  // File path to CA certificate bundle for server TLS verification.
+  string ca_cert_path = 3;
+  // File path to client TLS certificate for mTLS authentication.
+  string client_cert_path = 4;
+  // File path to client TLS private key for mTLS authentication.
+  string client_key_path = 5;
+  // Per-dispatch HTTP request / socket write deadline.
+  google.protobuf.Duration timeout = 6;
+  // Maximum retry attempts for transient delivery failures (default: 3).
+  uint32 max_retries = 7;
+  // Filter list of event types to dispatch. If empty, all signals are sent.
+  repeated string event_types = 8;
+}
+
+// SecuritySignalsConfig configures out-of-band security signal dispatching.
+message SecuritySignalsConfig {
+  // True if security signal dispatching is enabled.
+  bool enabled = 1;
+  // Destination endpoints.
+  repeated WebhookEndpointConfig endpoints = 2;
+  // Bounded ring-buffer queue capacity (default: 1024).
+  uint32 queue_capacity = 3;
+  // Window duration for coalescing repetitive events.
+  google.protobuf.Duration coalescing_window = 4;
+}
+
+

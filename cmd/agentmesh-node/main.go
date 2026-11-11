@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/google/agentmesh/api"
+	"github.com/google/agentmesh/internal/containment"
 	"github.com/google/agentmesh/internal/logging"
 	"github.com/google/agentmesh/internal/node"
 	"github.com/google/agentmesh/internal/pprofserver"
@@ -112,6 +113,17 @@ var (
 	secretsDirFlag               string
 	controlPlaneSyncIntervalFlag time.Duration
 	cloudProviderFlag            string
+
+	securityWebhookURLFlag         string
+	securityWebhookHMACPathFlag    string
+	securityWebhookCACertPathFlag  string
+	securityWebhookClientCertFlag  string
+	securityWebhookClientKeyFlag   string
+	securityWebhookTimeoutFlag     time.Duration
+	securityWebhookMaxRetriesFlag  uint32
+	securityWebhookEventsFlag      []string
+	securityWebhookQueueCapFlag    int
+	securityWebhookCoalesceWinFlag time.Duration
 )
 
 var logger = golog.Logger("agentmesh-node-cli")
@@ -438,6 +450,39 @@ func main() {
 				logger.Fatalf("Invalid --router-prefer: %v", err)
 			}
 
+			var containmentCfg containment.Config
+			if nodeConfig != nil && nodeConfig.SecuritySignals != nil {
+				containmentCfg = *nodeConfig.SecuritySignals
+			}
+			if securityWebhookURLFlag != "" {
+				containmentCfg.Enabled = true
+				if securityWebhookQueueCapFlag > 0 {
+					containmentCfg.QueueCapacity = securityWebhookQueueCapFlag
+				}
+				if securityWebhookCoalesceWinFlag > 0 {
+					containmentCfg.CoalescingWindow = securityWebhookCoalesceWinFlag
+				}
+				ep := containment.EndpointConfig{
+					URL:            securityWebhookURLFlag,
+					HMACSecretPath: securityWebhookHMACPathFlag,
+					CACertPath:     securityWebhookCACertPathFlag,
+					ClientCertPath: securityWebhookClientCertFlag,
+					ClientKeyPath:  securityWebhookClientKeyFlag,
+					Timeout:        securityWebhookTimeoutFlag,
+					MaxRetries:     securityWebhookMaxRetriesFlag,
+					EventTypes:     securityWebhookEventsFlag,
+				}
+				if ep.HMACSecretPath == "" {
+					if envPath := os.Getenv("AGENTMESH_CONTAINMENT_HMAC_SECRET_PATH"); envPath != "" {
+						ep.HMACSecretPath = envPath
+					} else if envSecret := os.Getenv("AGENTMESH_CONTAINMENT_HMAC_SECRET"); envSecret != "" {
+						ep.HMACSecret = []byte(envSecret)
+						_ = os.Unsetenv("AGENTMESH_CONTAINMENT_HMAC_SECRET")
+					}
+				}
+				containmentCfg.Endpoints = append(containmentCfg.Endpoints, ep)
+			}
+
 			buildRuntimeNodeOptions := func(priv crypto.PrivKey, cpPub ed25519.PublicKey, rAddrs []multiaddr.Multiaddr) node.Options {
 				return node.Options{
 					PrivKey:                  priv,
@@ -468,6 +513,7 @@ func main() {
 					DiscoveryConcurrency:     discoveryConcurrencyFlag,
 					BackendProbeTimeout:      backendProbeTimeoutFlag,
 					SecretsDir:               secretsDirFlag,
+					Containment:              containmentCfg,
 				}
 			}
 
@@ -739,6 +785,11 @@ func main() {
 				}
 			}
 
+			var containmentCfg containment.Config
+			if nodeConfig != nil && nodeConfig.SecuritySignals != nil {
+				containmentCfg = *nodeConfig.SecuritySignals
+			}
+
 			priv := node.GetOrGenerateKey(store)
 			meshNode, err := node.NewAgentMeshNode(node.Options{
 				PrivKey:                  priv,
@@ -760,6 +811,7 @@ func main() {
 				RequiredRole:             api.RoleNode,
 				ControlPlaneSyncInterval: controlPlaneSyncIntervalFlag,
 				BootstrapTokenPath:       bootstrapTokenPathFlag,
+				Containment:              containmentCfg,
 			})
 			if err != nil {
 				logger.Fatalf("Failed to initialize node for enrollment: %v", err)
@@ -892,6 +944,16 @@ func main() {
 	runCmd.Flags().DurationVar(&controlPlaneSyncIntervalFlag, "control-plane-sync-interval", node.DefaultControlPlaneSyncInterval, "How often signing keys, bans, router addresses and mesh policy are pulled from the control plane. Keep it well below the control plane's --key-grace-period; raise it on large meshes.")
 	runCmd.Flags().DurationVar(&backendProbeTimeoutFlag, "backend-probe-timeout", 0, "Timeout for probing a command-spawned service backend before advertising it (0 uses default 2s); raise this for backends with slower cold-start times")
 	runCmd.Flags().StringVar(&secretsDirFlag, "secrets-dir", node.DefaultSecretsDir, "Directory holding the credentials named by the control plane's egress destinations, one file per credential name")
+	runCmd.Flags().StringVar(&securityWebhookURLFlag, "security-webhook-url", "", "Out-of-band security containment webhook endpoint URL (https://..., http://127.0.0.1:port, or unix:/path/to.sock)")
+	runCmd.Flags().StringVar(&securityWebhookHMACPathFlag, "security-webhook-hmac-path", "", "Path to file containing shared secret for HMAC-SHA256 signature (or env AGENTMESH_CONTAINMENT_HMAC_SECRET)")
+	runCmd.Flags().StringVar(&securityWebhookCACertPathFlag, "security-webhook-ca-cert-path", "", "Path to CA certificate bundle for security webhook server verification")
+	runCmd.Flags().StringVar(&securityWebhookClientCertFlag, "security-webhook-client-cert-path", "", "Path to client TLS certificate for security webhook mTLS")
+	runCmd.Flags().StringVar(&securityWebhookClientKeyFlag, "security-webhook-client-key-path", "", "Path to client TLS private key for security webhook mTLS")
+	runCmd.Flags().DurationVar(&securityWebhookTimeoutFlag, "security-webhook-timeout", 500*time.Millisecond, "Per-dispatch HTTP/socket timeout for security webhook")
+	runCmd.Flags().Uint32Var(&securityWebhookMaxRetriesFlag, "security-webhook-max-retries", 3, "Maximum delivery retry attempts for security webhook")
+	runCmd.Flags().StringSliceVar(&securityWebhookEventsFlag, "security-webhook-events", nil, "Filter event types for security webhook (e.g. agentmesh.policy.denied); empty sends all")
+	runCmd.Flags().IntVar(&securityWebhookQueueCapFlag, "security-webhook-queue-capacity", 1024, "Bounded ring-buffer queue capacity for security webhook")
+	runCmd.Flags().DurationVar(&securityWebhookCoalesceWinFlag, "security-webhook-coalescing-window", time.Second, "Sliding deduplication window for security signals")
 	rootCmd.PersistentFlags().StringVar(&controlPlaneAddr, "control-plane", "", "Control plane URL")
 	rootCmd.PersistentFlags().BoolVar(&insecureControlPlaneFlag, "insecure-control-plane", false, "Accept a plaintext http:// control plane URL to a non-loopback host (whoever answers it becomes this node's trust root; only for networks you already trust)")
 	rootCmd.PersistentFlags().StringVar(&configFile, "config", node.DefaultConfigFile, "Path to agentmesh-node.yaml configuration file")

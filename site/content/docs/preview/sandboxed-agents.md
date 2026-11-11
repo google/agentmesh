@@ -19,8 +19,8 @@ one safely, you need two things that work together:
    services, MCP tools, HTTP paths, and cloud resources permitted for its
    current task.
 
-This page shows the four deployment blueprints for connecting sandboxed agents
-and multi-hop sub-agents to an Agent Mesh.
+This page shows the five deployment blueprints for connecting sandboxed agents,
+multi-hop sub-agents, and out-of-band containment supervisors to an Agent Mesh.
 
 ## Blueprint 1: NVIDIA OpenShell (zero credentials inside the sandbox)
 
@@ -268,6 +268,117 @@ intersection of `TAR_1` and `TAR_2`, mints an ES256 border JWT at the control
 plane (`POST /sts/token`), and exchanges it via `CloudTokenExchanger` for a
 downscoped cloud token.
 
+## Blueprint 5: Out-of-Band Host Containment & Supervisor Feedback Loop (Generic Security Webhooks)
+
+In high-consequence agent deployments, task-scoped authorization inside the mesh
+must be paired with an **out-of-band containment supervisor** (such as a
+Kubernetes container controller, an NVIDIA OpenShell or gVisor sandbox supervisor,
+or a host security daemon).
+
+When an agent suffers prompt injection, attempts lateral traversal, or violates
+its Task Authorization Rules, `agentmesh-node` denies the request and dispatches an
+asynchronous, machine-readable security signal across a local or remote webhook.
+The external supervisor receives the signal and enacts physical OS, container,
+or network containment outside the agent's reach.
+
+```mermaid
+flowchart TD
+  subgraph AgentSandbox["Agent Sandbox Boundary (OpenShell / gVisor / Pod)"]
+    Workload["Untrusted Agent Process<br/>(Prompt Injected / Malicious)"]
+  end
+
+  subgraph LocalMesh["Local Mesh Node Boundary"]
+    Node["agentmesh-node Sidecar<br/>(Policy Enforcement Point)"]
+    Dispatcher["Containment Dispatcher<br/>(Ring Buffer & HMAC Signer)"]
+  end
+
+  subgraph Supervisor["External Supervisor (Host / Orchestrator)"]
+    WebhookReceiver["Generic Webhook Receiver<br/>(CloudEvents 1.0 Handler)"]
+    ContainmentEngine["Containment Engine<br/>(cgroups / K8s API / Host Isolation)"]
+  end
+
+  Workload -- "1. Unauthorized Tool Call / Resource" --> Node
+  Node -- "2. Policy Denied (Biscuit / TAR block)" --> Node
+  Node -- "3. Non-blocking Enqueue" --> Dispatcher
+  Dispatcher -- "4. POST CloudEvents 1.0 (ProtoJSON)<br/>over unix:/..., https://..., or http://127.0.0.1:port" --> WebhookReceiver
+  WebhookReceiver -- "5. Verified Security Signal" --> ContainmentEngine
+  ContainmentEngine -- "6. Freeze cgroup / Evict Pod / Terminate Process" --> Workload
+```
+
+### 1. How security signals are dispatched
+
+1. **Non-blocking and zero data-path degradation:** Signal dispatch is decoupled
+   from request evaluation via an in-memory bounded ring buffer. If the webhook
+   destination is slow or unavailable, events are shed without stalling agent
+   traffic, and drops are counted in Prometheus metrics.
+2. **CloudEvents 1.0 compliant:** Signals are formatted as standard CloudEvents
+   1.0 HTTP requests with binary headers (`ce-specversion`, `ce-id`, `ce-type`,
+   `ce-source`, `ce-time`, `ce-subject`) and serialized via ProtoJSON.
+3. **Cryptographic integrity via HMAC-SHA256:** Payloads carry an
+   `X-AgentMesh-Signature` header (`sha256=<hex>`) computed over
+   `X-AgentMesh-Timestamp` and the payload body using a shared secret file.
+4. **Burst coalescing:** Rapid successive refusals (e.g. transport scan probes)
+   are deduplicated per `(signal_type, peer_id, service)` over a configurable
+   coalescing window, reporting aggregated `coalesced_count` without webhook
+   flooding.
+
+### 2. The four core security signals
+
+| CloudEvents Type | Source | Trigger Condition |
+| :--- | :--- | :--- |
+| `agentmesh.policy.denied` | `agentmesh-node` | Biscuit Datalog check failed, `tar_block` narrowing violation, or ModelArmor/ExtProc inspection blocked request. |
+| `agentmesh.transport.refused` | `agentmesh-node` | libp2p connection gate refused unauthenticated peer, invalid router role, or banned peer stream. |
+| `agentmesh.identity.revoked` | `agentmesh-control-plane` / `agentmesh-node` | Peer banned mesh-wide or Biscuit revocation IDs published. |
+| `agentmesh.enrollment.rejected` | `agentmesh-control-plane` | Token validation failed, bootstrap token expired, or autonomous recovery refused. |
+
+### 3. Configuring `agentmesh-node`
+
+To enable security webhook dispatch, start `agentmesh-node` with the containment flags:
+
+```bash
+# Using a local Unix domain socket (highest performance, host-local isolation)
+agentmesh-node run \
+  --control-plane https://mesh.example.com \
+  --security-webhook-url unix:///run/agentmesh/containment.sock \
+  --security-webhook-hmac-path /etc/agentmesh/containment-hmac.key \
+  --security-webhook-events agentmesh.policy.denied,agentmesh.identity.revoked
+
+# Or using a local TCP loopback endpoint
+agentmesh-node run \
+  --control-plane https://mesh.example.com \
+  --security-webhook-url http://127.0.0.1:8095/events \
+  --security-webhook-hmac-path /etc/agentmesh/containment-hmac.key \
+  --security-webhook-queue-capacity 2048 \
+  --security-webhook-coalescing-window 2s
+```
+
+### 4. External supervisor binding patterns
+
+The security signals contract is completely runtime-agnostic. Any external
+supervisor can bind to the webhook:
+
+- **Kubernetes Sandbox Controller:** A custom controller or webhook receiver
+  listens on `https://containment-controller.agentmesh.svc:8443/events` (secured with
+  TLS/mTLS; plaintext HTTP to non-loopback destinations is forbidden by anti-SSRF policy)
+  or a pod-local Unix socket / loopback endpoint (`unix:///run/agentmesh/containment.sock`). On receiving
+  `agentmesh.policy.denied` for a sandboxed pod, it applies a `quarantine: "true"`
+  label, triggering a NetworkPolicy egress cutoff, and deletes the pod via the
+  Kubernetes Core API.
+- **NVIDIA OpenShell / gVisor Supervisor:** The sandbox supervisor mounts a Unix
+  domain socket at `/run/agentmesh/containment.sock`. When an agent attempts an
+  unauthorized tool call, the supervisor immediately freezes the sandbox cgroup
+  (`echo 1 > /sys/fs/cgroup/openshell/<id>/cgroup.freeze`) and revokes its SPIRE
+  SVID workload credential.
+- **Host Security Daemons:** A local host daemon monitors OS-level events and
+  binds to the Agent Mesh containment socket. On receiving policy denials, it
+  terminates rogue process trees and applies host firewall drop rules.
+- **Enterprise SIEM / SOC Pipelines:** An event ingestion pipeline forwards
+  CloudEvents into Splunk, Elastic, or Datadog, mapping `PolicyDeniedSignal`
+  fields into OpenTelemetry / ECS formats for compliance and alerting.
+
+See the complete runnable reference receiver in
+[`development/examples/generic-containment-webhook/`](https://github.com/google/agentmesh/tree/main/development/examples/generic-containment-webhook).
+
 ## Further reading
 
 - [Agent architecture](../agent-architecture/): the two-token model, safe
@@ -276,3 +387,4 @@ downscoped cloud token.
   per-task `TaskAuthorizationRule` evaluation.
 - [Node API](../../reference/node-api/): `/oauth/token`, `/oauth/revoke`,
   `ext_authz`, `ext_proc`, and `/egress/*`.
+- [Containment signals reference](../../reference/containment-signals/): CloudEvents 1.0 wire format, HMAC verification, and configuration flags.
