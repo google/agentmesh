@@ -122,12 +122,16 @@ func NewWebhookHandler(cfg HandlerConfig) http.Handler {
 		}
 
 		// 2. Read request body safely
-		bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes))
+		defer func() { _ = r.Body.Close() }()
+		bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
 		if err != nil {
 			http.Error(w, "Bad Request: unable to read request body", http.StatusBadRequest)
 			return
 		}
-		defer func() { _ = r.Body.Close() }()
+		if len(bodyBytes) > maxBodyBytes {
+			http.Error(w, "Payload Too Large: request body exceeds 1MB limit", http.StatusRequestEntityTooLarge)
+			return
+		}
 
 		// 3. Verify HMAC-SHA256 signature if secret is configured
 		if len(cfg.HMACSecret) > 0 {

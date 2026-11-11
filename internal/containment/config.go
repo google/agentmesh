@@ -103,6 +103,18 @@ func FromProto(p *api.SecuritySignalsConfig) (*Config, error) {
 		cfg.CoalescingWindow = DefaultCoalescingWindow
 	}
 
+	var envSecret string
+	for _, ep := range p.Endpoints {
+		if ep != nil && ep.Url != "" && ep.HmacSecretPath == "" {
+			resolved, err := secrets.FromPathOrEnv("containment-hmac-secret", "", "AGENTMESH_CONTAINMENT_HMAC_SECRET")
+			if err != nil {
+				return nil, fmt.Errorf("resolve AGENTMESH_CONTAINMENT_HMAC_SECRET: %w", err)
+			}
+			envSecret = strings.TrimSpace(resolved)
+			break
+		}
+	}
+
 	for _, ep := range p.Endpoints {
 		if ep == nil || ep.Url == "" {
 			continue
@@ -110,6 +122,9 @@ func FromProto(p *api.SecuritySignalsConfig) (*Config, error) {
 		epCfg, err := EndpointFromProto(ep)
 		if err != nil {
 			return nil, err
+		}
+		if len(epCfg.HMACSecret) == 0 && epCfg.HMACSecretPath == "" && envSecret != "" {
+			epCfg.HMACSecret = []byte(envSecret)
 		}
 		cfg.Endpoints = append(cfg.Endpoints, epCfg)
 	}
@@ -154,14 +169,12 @@ func EndpointFromProto(ep *api.WebhookEndpointConfig) (EndpointConfig, error) {
 		epCfg.MaxRetries = DefaultMaxRetries
 	}
 
-	if ep.HmacSecretPath != "" {
-		secretStr, err := secrets.FromPathOrEnv("containment-hmac-secret", ep.HmacSecretPath, "AGENTMESH_CONTAINMENT_HMAC_SECRET")
-		if err != nil {
-			return EndpointConfig{}, fmt.Errorf("endpoint %s hmac secret error: %w", rawURL, err)
-		}
-		if secretStr != "" {
-			epCfg.HMACSecret = []byte(secretStr)
-		}
+	secretStr, err := secrets.FromPathOrEnv("containment-hmac-secret", ep.HmacSecretPath, "AGENTMESH_CONTAINMENT_HMAC_SECRET")
+	if err != nil && ep.HmacSecretPath != "" {
+		return EndpointConfig{}, fmt.Errorf("endpoint %s hmac secret error: %w", rawURL, err)
+	}
+	if trimmed := strings.TrimSpace(secretStr); trimmed != "" {
+		epCfg.HMACSecret = []byte(trimmed)
 	}
 
 	return epCfg, nil

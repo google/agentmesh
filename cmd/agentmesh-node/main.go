@@ -473,11 +473,8 @@ func main() {
 					EventTypes:     securityWebhookEventsFlag,
 				}
 				if ep.HMACSecretPath == "" {
-					if envPath := os.Getenv("AGENTMESH_CONTAINMENT_HMAC_SECRET_PATH"); envPath != "" {
+					if envPath := strings.TrimSpace(os.Getenv("AGENTMESH_CONTAINMENT_HMAC_SECRET_PATH")); envPath != "" {
 						ep.HMACSecretPath = envPath
-					} else if envSecret := os.Getenv("AGENTMESH_CONTAINMENT_HMAC_SECRET"); envSecret != "" {
-						ep.HMACSecret = []byte(envSecret)
-						_ = os.Unsetenv("AGENTMESH_CONTAINMENT_HMAC_SECRET")
 					}
 				}
 				containmentCfg.Endpoints = append(containmentCfg.Endpoints, ep)

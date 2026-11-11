@@ -704,3 +704,92 @@ func TestAdversarial_CoalescerMaxEntriesDoSBound(t *testing.T) {
 		t.Fatal("overflow event above MaxCoalescerEntries should bypass coalescing")
 	}
 }
+
+func TestHMACSecretEnvFallbackWithoutPath(t *testing.T) {
+	t.Run("FromProto resolves env secret across multiple pathless endpoints", func(t *testing.T) {
+		t.Setenv("AGENTMESH_CONTAINMENT_HMAC_SECRET", "  env-proto-secret\n")
+		cfg, err := FromProto(&api.SecuritySignalsConfig{
+			Enabled: true,
+			Endpoints: []*api.WebhookEndpointConfig{
+				{Url: "http://127.0.0.1:9001/events"},
+				{Url: "http://127.0.0.1:9002/events"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("FromProto failed: %v", err)
+		}
+		if len(cfg.Endpoints) != 2 {
+			t.Fatalf("len(Endpoints) = %d, want 2", len(cfg.Endpoints))
+		}
+		for i, ep := range cfg.Endpoints {
+			if string(ep.HMACSecret) != "env-proto-secret" {
+				t.Fatalf("endpoint %d HMACSecret = %q, want %q", i, string(ep.HMACSecret), "env-proto-secret")
+			}
+		}
+	})
+
+	t.Run("NewClient signs webhook requests using env fallback when HMACSecretPath is omitted", func(t *testing.T) {
+		var sig1, sig2 string
+		var ts1, ts2 string
+		var body1, body2 []byte
+
+		srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			sig1 = r.Header.Get(HeaderAgentMeshSignature)
+			ts1 = r.Header.Get(HeaderAgentMeshTimestamp)
+			var readErr error
+			body1, readErr = io.ReadAll(r.Body)
+			if readErr != nil {
+				t.Errorf("srv1 ReadAll: %v", readErr)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		t.Cleanup(srv1.Close)
+
+		srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			sig2 = r.Header.Get(HeaderAgentMeshSignature)
+			ts2 = r.Header.Get(HeaderAgentMeshTimestamp)
+			var readErr error
+			body2, readErr = io.ReadAll(r.Body)
+			if readErr != nil {
+				t.Errorf("srv2 ReadAll: %v", readErr)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		t.Cleanup(srv2.Close)
+
+		t.Setenv("AGENTMESH_CONTAINMENT_HMAC_SECRET", "  env-client-secret\r\n")
+		client, err := NewClient(
+			EndpointConfig{URL: srv1.URL},
+			EndpointConfig{URL: srv2.URL},
+		)
+		if err != nil {
+			t.Fatalf("NewClient failed: %v", err)
+		}
+		t.Cleanup(func() {
+			if closeErr := client.Close(); closeErr != nil {
+				t.Errorf("client.Close: %v", closeErr)
+			}
+		})
+
+		ev := &api.SecuritySignalEvent{
+			Id:          "env-hmac-1",
+			Source:      "urn:agentmesh:node:test",
+			SpecVersion: "1.0",
+			Type:        "agentmesh.policy.denied",
+			Subject:     "12D3KooWTest",
+			EventTime:   timestamppb.Now(),
+		}
+		if err := client.Send(context.Background(), ev); err != nil {
+			t.Fatalf("client.Send failed: %v", err)
+		}
+
+		want1 := ComputeSignature([]byte("env-client-secret"), ts1, body1)
+		if sig1 != want1 {
+			t.Fatalf("srv1 signature = %q, want %q", sig1, want1)
+		}
+		want2 := ComputeSignature([]byte("env-client-secret"), ts2, body2)
+		if sig2 != want2 {
+			t.Fatalf("srv2 signature = %q, want %q", sig2, want2)
+		}
+	})
+}
