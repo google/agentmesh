@@ -19,8 +19,10 @@ import (
 	"crypto/rand"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/eclipse-biscuit/biscuit-go/v2"
+	"github.com/eclipse-biscuit/biscuit-go/v2/datalog"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -309,7 +311,7 @@ func TestIngressDatalogPolicyEvaluation(t *testing.T) {
 	}
 
 	check := func(svcType, svcName, mode string) bool {
-		auth, err := tok.Authorizer(pub)
+		auth, err := tok.Authorizer(pub, biscuit.WithWorldOptions(datalog.WithMaxDuration(5*time.Second)))
 		if err != nil {
 			t.Fatalf("Authorizer: %v", err)
 		}
