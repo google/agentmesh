@@ -31,6 +31,8 @@ import (
 	"github.com/google/agentmesh/api"
 	"github.com/google/agentmesh/internal/containment"
 	"github.com/google/agentmesh/internal/storage"
+	"github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -384,7 +386,7 @@ func TestControlPlaneContainment_Revocation_AdminAndUserRevoke(t *testing.T) {
 func TestControlPlaneContainment_ServerClose_NilDispatcher(t *testing.T) {
 	issuer, _ := startCustomMockOIDC(t)
 	srv, store, _ := setupTestServer(t, issuer)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	srv.SetContainmentDispatcher(nil)
 	if err := srv.Close(); err != nil {
@@ -420,7 +422,7 @@ func TestControlPlaneContainment_ServerClose_DrainsDispatcher(t *testing.T) {
 	srv, store, _ := setupTestServer(t, issuer, func(o *Options) {
 		o.ContainmentDispatcher = disp
 	})
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	const numEvents = 5
 	for i := 0; i < numEvents; i++ {
@@ -476,7 +478,7 @@ func TestControlPlaneContainment_ServerClose_DrainTimeoutOnHangingWebhook(t *tes
 	srv, store, _ := setupTestServer(t, issuer, func(o *Options) {
 		o.ContainmentDispatcher = disp
 	})
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	srv.emitEnrollmentRejected(
 		"peer-hanging",
@@ -498,5 +500,49 @@ func TestControlPlaneContainment_ServerClose_DrainTimeoutOnHangingWebhook(t *tes
 	}
 	if err == nil || !strings.Contains(err.Error(), "containment dispatcher close") {
 		t.Fatalf("expected containment dispatcher close timeout error, got %v", err)
+	}
+}
+
+func TestControlPlaneContainment_CanonicalizesCIDv1PeerID(t *testing.T) {
+	_, pub, err := crypto.GenerateEd25519Key(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateEd25519Key: %v", err)
+	}
+	pID, err := peer.IDFromPublicKey(pub)
+	if err != nil {
+		t.Fatalf("IDFromPublicKey: %v", err)
+	}
+	canonical := pID.String()
+	cidV1Form := peer.ToCid(pID).String()
+
+	disp := newCPChanDispatcher(10)
+	srv := &Server{
+		containmentDispatcher: disp,
+	}
+
+	srv.emitEnrollmentRejected(
+		cidV1Form,
+		"invalid token",
+		api.EnrollmentRejectionReason_INVALID_JWT,
+		api.RoleNode,
+		nil,
+		time.Now(),
+		false,
+	)
+	erEvt := expectCPEvent(t, disp, "agentmesh.enrollment.rejected")
+	if erEvt.Subject != canonical {
+		t.Fatalf("emitEnrollmentRejected Subject = %q, want canonical %q", erEvt.Subject, canonical)
+	}
+	if got := erEvt.GetEnrollmentRejected().GetPeerId(); got != canonical {
+		t.Fatalf("emitEnrollmentRejected PeerId = %q, want canonical %q", got, canonical)
+	}
+
+	srv.emitIdentityRevoked(cidV1Form, api.RevocationSource_CONTROL_PLANE_ADMIN, "admin revoke", nil)
+	irEvt := expectCPEvent(t, disp, "agentmesh.identity.revoked")
+	if irEvt.Subject != canonical {
+		t.Fatalf("emitIdentityRevoked Subject = %q, want canonical %q", irEvt.Subject, canonical)
+	}
+	if got := irEvt.GetIdentityRevoked().GetPeerId(); got != canonical {
+		t.Fatalf("emitIdentityRevoked PeerId = %q, want canonical %q", got, canonical)
 	}
 }

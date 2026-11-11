@@ -36,6 +36,7 @@ import (
 	"github.com/google/agentmesh/api"
 	"github.com/google/agentmesh/internal/secrets"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -247,32 +248,22 @@ func NewSingleClient(cfg EndpointConfig) (Client, error) {
 		}
 
 	default:
-		return nil, fmt.Errorf("containment: unsupported scheme in URL %q: must start with https://, http://127.0.0.1, or unix:", rawTarget)
+		return nil, fmt.Errorf("containment: unsupported scheme in URL %q (must start with https://, http://127.0.0.1, or unix:)", rawTarget)
 	}
 
 	return c, nil
-}
-
-// NewClientFromProto constructs a Client directly from protobuf WebhookEndpointConfig.
-func NewClientFromProto(cfg *api.WebhookEndpointConfig) (Client, error) {
-	if cfg == nil {
-		return nil, errors.New("containment: nil WebhookEndpointConfig")
-	}
-	epCfg, err := EndpointFromProto(cfg)
-	if err != nil {
-		return nil, err
-	}
-	return NewSingleClient(epCfg)
 }
 
 func (c *singleClient) Deliver(ctx context.Context, event *api.SecuritySignalEvent) error {
 	return c.Send(ctx, event)
 }
 
-func (c *singleClient) Send(ctx context.Context, event *api.SecuritySignalEvent) error {
-	if event == nil {
+func (c *singleClient) Send(ctx context.Context, inEvent *api.SecuritySignalEvent) error {
+	if inEvent == nil {
 		return errors.New("containment: cannot send nil SecuritySignalEvent")
 	}
+
+	event := proto.Clone(inEvent).(*api.SecuritySignalEvent)
 
 	// 1. Check event type filter
 	signalType := event.Type
@@ -364,7 +355,7 @@ func (c *singleClient) Send(ctx context.Context, event *api.SecuritySignalEvent)
 
 		if err == nil {
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, MaxResponseBytes))
-			resp.Body.Close()
+			_ = resp.Body.Close()
 
 			statusStr := strconv.Itoa(resp.StatusCode)
 			containmentDeliveredTotal.WithLabelValues(event.Type, statusStr).Inc()

@@ -2205,14 +2205,6 @@ func (s *Server) Close() error {
 	return errors.Join(errs...)
 }
 
-// ContainmentDispatcher returns the active containment Dispatcher, or nil if unconfigured.
-func (s *Server) ContainmentDispatcher() containment.Dispatcher {
-	if s == nil {
-		return nil
-	}
-	return s.containmentDispatcher
-}
-
 // SetContainmentDispatcher injects a containment Dispatcher into the server.
 func (s *Server) SetContainmentDispatcher(d containment.Dispatcher) {
 	if s == nil {
@@ -2232,10 +2224,16 @@ func (s *Server) emitEnrollmentRejected(peerID, detail string, reason api.Enroll
 	if s == nil || s.containmentDispatcher == nil {
 		return
 	}
+	canonical := peerID
+	if canonical != "" {
+		if pID, err := peer.Decode(canonical); err == nil {
+			canonical = pID.String()
+		}
+	}
 	now := timestamppb.Now()
 	event := &api.SecuritySignalEvent{
 		Type:            "agentmesh.enrollment.rejected",
-		Subject:         peerID,
+		Subject:         canonical,
 		Source:          s.eventSource(),
 		EventTime:       now,
 		DataContentType: "application/json",
@@ -2244,7 +2242,7 @@ func (s *Server) emitEnrollmentRejected(peerID, detail string, reason api.Enroll
 			EnrollmentRejected: &api.EnrollmentRejectedSignal{
 				Reason:               reason,
 				Detail:               detail,
-				PeerId:               peerID,
+				PeerId:               canonical,
 				RequestedRole:        role,
 				SubmittedLabels:      labels,
 				IsAutonomousRecovery: isAutoRecovery,
@@ -2259,17 +2257,23 @@ func (s *Server) emitIdentityRevoked(peerID string, source api.RevocationSource,
 	if s == nil || s.containmentDispatcher == nil {
 		return
 	}
+	canonical := peerID
+	if canonical != "" {
+		if pID, err := peer.Decode(canonical); err == nil {
+			canonical = pID.String()
+		}
+	}
 	now := timestamppb.Now()
 	event := &api.SecuritySignalEvent{
 		Type:            "agentmesh.identity.revoked",
-		Subject:         peerID,
+		Subject:         canonical,
 		Source:          s.eventSource(),
 		EventTime:       now,
 		DataContentType: "application/json",
 		SpecVersion:     "1.0",
 		Data: &api.SecuritySignalEvent_IdentityRevoked{
 			IdentityRevoked: &api.IdentityRevokedSignal{
-				PeerId:        peerID,
+				PeerId:        canonical,
 				Source:        source,
 				Reason:        reason,
 				RevocationIds: revocationIDs,

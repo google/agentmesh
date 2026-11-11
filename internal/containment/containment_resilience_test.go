@@ -605,15 +605,102 @@ func TestAdversarial_NilAndEmptyEvents(t *testing.T) {
 	// 1. Dispatch nil event
 	disp.Dispatch(nil)
 
-	// 2. Dispatch empty event
+	// 2. Dispatch empty event and concurrent shared-pointer events (race detector guard)
 	disp.Dispatch(&api.SecuritySignalEvent{})
+
+	sharedEvent := &api.SecuritySignalEvent{
+		Data: &api.SecuritySignalEvent_PolicyDenied{
+			PolicyDenied: &api.PolicyDeniedSignal{
+				Direction:     api.SignalCallerDirection_LOCAL_WORKLOAD,
+				Reason:        api.PolicyDenialReason_DATALOG_EVALUATION_DENIED,
+				TargetService: "mcp://race-test",
+			},
+		},
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			disp.Dispatch(sharedEvent)
+			disp.Dispatch(&api.SecuritySignalEvent{})
+		}()
+	}
+	wg.Wait()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_ = disp.Close(ctx)
+	if err := disp.Close(ctx); err != nil {
+		t.Fatalf("disp.Close: %v", err)
+	}
 
 	finalNilDrops := GetDroppedCountFor("unknown", "nil_event")
 	if finalNilDrops-initialNilDrops != 1 {
 		t.Errorf("expected 1 nil_event drop, got delta %f", finalNilDrops-initialNilDrops)
+	}
+}
+
+func TestAdversarial_CoalescerMaxEntriesDoSBound(t *testing.T) {
+	c := NewCoalescer(10*time.Second, nil)
+	t.Cleanup(c.Close)
+
+	const overflow = 200
+	total := MaxCoalescerEntries + overflow
+
+	for i := 0; i < total; i++ {
+		ev := &api.SecuritySignalEvent{
+			Type:    "agentmesh.transport.refused",
+			Subject: fmt.Sprintf("spoofed-peer-%d", i),
+			Data: &api.SecuritySignalEvent_TransportRefused{
+				TransportRefused: &api.TransportRefusedSignal{
+					Reason:     api.TransportRefusalReason_PEER_UNAUTHENTICATED,
+					PeerId:     fmt.Sprintf("spoofed-peer-%d", i),
+					ProtocolId: "/mesh/auth/1.0.0",
+				},
+			},
+		}
+		if suppressed := c.Record(ev); suppressed {
+			t.Fatalf("unique spoofed peer %d was unexpectedly suppressed", i)
+		}
+	}
+
+	c.mu.Lock()
+	activeEntries := len(c.entries)
+	c.mu.Unlock()
+
+	if activeEntries != MaxCoalescerEntries {
+		t.Fatalf("coalescer active entries = %d, want %d", activeEntries, MaxCoalescerEntries)
+	}
+
+	// Existing entry within the bound must still coalesce duplicates.
+	dup := &api.SecuritySignalEvent{
+		Type:    "agentmesh.transport.refused",
+		Subject: "spoofed-peer-0",
+		Data: &api.SecuritySignalEvent_TransportRefused{
+			TransportRefused: &api.TransportRefusedSignal{
+				Reason:     api.TransportRefusalReason_PEER_UNAUTHENTICATED,
+				PeerId:     "spoofed-peer-0",
+				ProtocolId: "/mesh/auth/1.0.0",
+			},
+		},
+	}
+	if !c.Record(dup) {
+		t.Fatal("duplicate event for active key was not coalesced")
+	}
+
+	// Overflow entry was not stored, so a second occurrence also passes through without growing the map.
+	overflowEv := &api.SecuritySignalEvent{
+		Type:    "agentmesh.transport.refused",
+		Subject: fmt.Sprintf("spoofed-peer-%d", MaxCoalescerEntries+5),
+		Data: &api.SecuritySignalEvent_TransportRefused{
+			TransportRefused: &api.TransportRefusedSignal{
+				Reason:     api.TransportRefusalReason_PEER_UNAUTHENTICATED,
+				PeerId:     fmt.Sprintf("spoofed-peer-%d", MaxCoalescerEntries+5),
+				ProtocolId: "/mesh/auth/1.0.0",
+			},
+		},
+	}
+	if c.Record(overflowEv) {
+		t.Fatal("overflow event above MaxCoalescerEntries should bypass coalescing")
 	}
 }

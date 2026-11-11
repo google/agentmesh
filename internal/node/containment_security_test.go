@@ -28,6 +28,7 @@ import (
 
 	"github.com/google/agentmesh/api"
 	"github.com/google/agentmesh/internal/containment"
+	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
@@ -832,5 +833,56 @@ func TestContainmentSecurity_Concurrency_DispatcherCloseRace_ZeroPanic(t *testin
 
 		close(stopCh)
 		wg.Wait()
+	}
+}
+
+func TestContainmentSecurity_CanonicalizesAlternativePeerIDEncodings(t *testing.T) {
+	_, pub, err := crypto.GenerateEd25519Key(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateEd25519Key: %v", err)
+	}
+	pID, err := peer.IDFromPublicKey(pub)
+	if err != nil {
+		t.Fatalf("IDFromPublicKey: %v", err)
+	}
+	canonical := pID.String()
+	cidV1Form := peer.ToCid(pID).String()
+	if cidV1Form == canonical {
+		t.Fatalf("expected non-canonical CIDv1 string to differ from canonical %q", canonical)
+	}
+
+	disp := newChanDispatcher(10)
+	revokedCache, err := lru.New[string, int64](RevocationCacheSize)
+	if err != nil {
+		t.Fatalf("lru.New: %v", err)
+	}
+	n := &AgentMeshNode{
+		containmentDispatcher: disp,
+		revokedPeers:          revokedCache,
+	}
+
+	// 1. EmitPolicyDenied given CIDv1 form must emit canonical base58 PeerId and Subject.
+	n.EmitPolicyDenied(PolicyDeniedParams{
+		Direction:     api.SignalCallerDirection_REMOTE_PEER,
+		Reason:        api.PolicyDenialReason_DATALOG_EVALUATION_DENIED,
+		TargetService: "mcp://calc",
+		CallerPeerID:  cidV1Form,
+	})
+	pdEvt := expectEventTimeout(t, disp, "agentmesh.policy.denied", time.Second)
+	if pdEvt.Subject != canonical {
+		t.Fatalf("EmitPolicyDenied Subject = %q, want canonical %q", pdEvt.Subject, canonical)
+	}
+	if got := pdEvt.GetPolicyDenied().GetCallerPeerId(); got != canonical {
+		t.Fatalf("EmitPolicyDenied CallerPeerId = %q, want canonical %q", got, canonical)
+	}
+
+	// 2. reconcileBannedPeers given CIDv1 form must emit canonical base58 PeerId and Subject.
+	n.reconcileBannedPeers([]string{cidV1Form}, time.Now())
+	irEvt := expectEventTimeout(t, disp, "agentmesh.identity.revoked", time.Second)
+	if irEvt.Subject != canonical {
+		t.Fatalf("reconcileBannedPeers Subject = %q, want canonical %q", irEvt.Subject, canonical)
+	}
+	if got := irEvt.GetIdentityRevoked().GetPeerId(); got != canonical {
+		t.Fatalf("reconcileBannedPeers PeerId = %q, want canonical %q", got, canonical)
 	}
 }
