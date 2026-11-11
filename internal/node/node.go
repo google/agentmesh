@@ -39,6 +39,7 @@ import (
 
 	"github.com/eclipse-biscuit/biscuit-go/v2"
 	"github.com/google/agentmesh/api"
+	"github.com/google/agentmesh/internal/containment"
 	cpclient "github.com/google/agentmesh/internal/controlplane/client"
 	"github.com/google/agentmesh/internal/identity"
 	"github.com/google/agentmesh/internal/p2plimits"
@@ -54,6 +55,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/peerstore"
+	"github.com/libp2p/go-libp2p/core/protocol"
 	"github.com/libp2p/go-libp2p/p2p/host/autorelay"
 	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
 	"github.com/libp2p/go-libp2p/p2p/net/swarm"
@@ -65,6 +67,7 @@ import (
 	madns "github.com/multiformats/go-multiaddr-dns"
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // PeerstoreKeyPrivateIPFailed is the key used in the libp2p Peerstore to track
@@ -282,6 +285,8 @@ type AgentMeshNode struct {
 	catalogMCPServer *mcp.Server
 	egressOnce       sync.Once
 	egressHandler    http.Handler
+
+	containmentDispatcher containment.Dispatcher
 }
 
 // SetTokenSource configures the live platform/OIDC token source presented as
@@ -527,6 +532,16 @@ func NewAgentMeshNode(cfg Options) (*AgentMeshNode, error) {
 	node.peerLabelGate, err = lru.New[string, time.Time](labelGateCacheSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create label gate cache: %w", err)
+	}
+
+	if cfg.ContainmentDispatcher != nil {
+		node.containmentDispatcher = cfg.ContainmentDispatcher
+	} else if cfg.Containment.Enabled || len(cfg.Containment.Endpoints) > 0 {
+		disp, err := containment.NewDispatcher(cfg.Containment)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create containment dispatcher: %w", err)
+		}
+		node.containmentDispatcher = disp
 	}
 
 	return node, nil
@@ -1730,6 +1745,12 @@ func (n *AgentMeshNode) RefreshEnrollment(ctx context.Context) error {
 		// only a verified MeshEvent_BANNED is the control plane's word. The
 		// node keeps serving on its current biscuit until that expires.
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxControlPlaneBodyBytes))
+		var pidStr string
+		if pid, err := n.localPeerID(); err == nil {
+			pidStr = pid.String()
+		}
+		n.emitIdentityRevoked(pidStr, api.RevocationSource_TOKEN_REFRESH_REJECTION,
+			fmt.Sprintf("control plane refused token refresh (403 Forbidden): %s", string(body)), nil)
 		return &RefreshError{
 			StatusCode: resp.StatusCode,
 			Message:    fmt.Sprintf("refresh refused (403 Forbidden): %s", string(body)),
@@ -1935,6 +1956,7 @@ func (n *AgentMeshNode) handleBannedEvent(event *api.MeshEvent) {
 	// Not written to disk: a restarted node picks the ban back up from the
 	// control plane's ban set in /info, which is also how an unban reaches it.
 	n.banPeer(p, eventMs)
+	n.emitIdentityRevoked(canonicalID, api.RevocationSource_MESH_EVENT_BANNED_GOSSIP, "peer banned via control-plane gossip broadcast", nil)
 }
 
 func containsTrustedKey(keys []TrustedKey, key ed25519.PublicKey) bool {
@@ -2220,12 +2242,244 @@ func (n *AgentMeshNode) Teardown() error {
 		n.services.TeardownAll()
 	}
 	var errs []error
+	if n.containmentDispatcher != nil {
+		drainCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := n.containmentDispatcher.Close(drainCtx); err != nil {
+			errs = append(errs, fmt.Errorf("containment dispatcher close: %w", err))
+		}
+	}
 	if n.Host != nil {
 		if err := n.Host.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// ContainmentDispatcher returns the active containment Dispatcher, or nil if unconfigured.
+func (n *AgentMeshNode) ContainmentDispatcher() containment.Dispatcher {
+	if n == nil {
+		return nil
+	}
+	return n.containmentDispatcher
+}
+
+// SetContainmentDispatcher injects a containment Dispatcher into the node.
+func (n *AgentMeshNode) SetContainmentDispatcher(d containment.Dispatcher) {
+	if n == nil {
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.containmentDispatcher = d
+}
+
+// Close gracefully closes the containment dispatcher and tears down the node.
+func (n *AgentMeshNode) Close() error {
+	return n.CloseWithContext(context.Background())
+}
+
+// CloseWithContext gracefully closes the containment dispatcher and tears down the node with ctx.
+func (n *AgentMeshNode) CloseWithContext(ctx context.Context) error {
+	var errs []error
+	if n.containmentDispatcher != nil {
+		drainCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		if err := n.containmentDispatcher.Close(drainCtx); err != nil {
+			errs = append(errs, fmt.Errorf("containment dispatcher close: %w", err))
+		}
+	}
+	if err := n.Teardown(); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+type callerDirectionKey struct{}
+
+// WithCallerDirection attaches an api.SignalCallerDirection to a context.
+func WithCallerDirection(ctx context.Context, dir api.SignalCallerDirection) context.Context {
+	return context.WithValue(ctx, callerDirectionKey{}, dir)
+}
+
+// CallerDirectionFromContext extracts an api.SignalCallerDirection from a context.
+func CallerDirectionFromContext(ctx context.Context) (api.SignalCallerDirection, bool) {
+	if ctx == nil {
+		return api.SignalCallerDirection_SIGNAL_CALLER_DIRECTION_UNSPECIFIED, false
+	}
+	if val, ok := ctx.Value(callerDirectionKey{}).(api.SignalCallerDirection); ok {
+		return val, true
+	}
+	return api.SignalCallerDirection_SIGNAL_CALLER_DIRECTION_UNSPECIFIED, false
+}
+
+func (n *AgentMeshNode) detectCallerDirection(r *http.Request, reqCtx *RequestContext) api.SignalCallerDirection {
+	if reqCtx != nil && reqCtx.Local {
+		return api.SignalCallerDirection_LOCAL_WORKLOAD
+	}
+	if r != nil {
+		if dir, ok := CallerDirectionFromContext(r.Context()); ok && dir != api.SignalCallerDirection_SIGNAL_CALLER_DIRECTION_UNSPECIFIED {
+			return dir
+		}
+		if fromLocalSocket(r) {
+			return api.SignalCallerDirection_LOCAL_WORKLOAD
+		}
+		if r.RemoteAddr != "" {
+			if _, err := peer.Decode(r.RemoteAddr); err == nil {
+				return api.SignalCallerDirection_REMOTE_PEER
+			}
+		}
+	}
+	if reqCtx != nil && reqCtx.PeerID != "" {
+		if n.Host != nil && reqCtx.PeerID == n.Host.ID() {
+			return api.SignalCallerDirection_LOCAL_WORKLOAD
+		}
+		return api.SignalCallerDirection_REMOTE_PEER
+	}
+	return api.SignalCallerDirection_LOCAL_WORKLOAD
+}
+
+func (n *AgentMeshNode) eventSource() string {
+	if n != nil && n.Host != nil {
+		return fmt.Sprintf("agentmesh://node/%s", n.Host.ID().String())
+	}
+	return "agentmesh://node/local"
+}
+
+// PolicyDeniedParams bundles inputs for building a PolicyDeniedSignal.
+type PolicyDeniedParams struct {
+	Direction          api.SignalCallerDirection
+	Reason             api.PolicyDenialReason
+	Detail             string
+	TargetService      string
+	RequestedOperation string
+	RequestedResource  string
+	CallerPeerID       string
+	CallerSubject      string
+	CallerRoles        []string
+	CallerLabels       map[string]string
+	EventTime          time.Time
+}
+
+// EmitPolicyDenied constructs a CloudEvents 1.0 compliant SecuritySignalEvent
+// and submits it to the containment Dispatcher asynchronously. Strictly non-blocking.
+func (n *AgentMeshNode) EmitPolicyDenied(params PolicyDeniedParams) {
+	if n == nil || n.containmentDispatcher == nil {
+		return
+	}
+
+	eventTime := params.EventTime
+	if eventTime.IsZero() {
+		eventTime = time.Now()
+	}
+
+	var localPID string
+	if n.Host != nil {
+		localPID = n.Host.ID().String()
+	}
+
+	callerPeer := params.CallerPeerID
+	if callerPeer == "" && params.Direction == api.SignalCallerDirection_LOCAL_WORKLOAD {
+		callerPeer = localPID
+	}
+
+	subject := callerPeer
+	if subject == "" {
+		subject = params.CallerSubject
+	}
+	if subject == "" {
+		subject = localPID
+	}
+
+	event := &api.SecuritySignalEvent{
+		Source:          n.eventSource(),
+		SpecVersion:     "1.0",
+		Type:            "agentmesh.policy.denied",
+		EventTime:       timestamppb.New(eventTime),
+		DataContentType: "application/json",
+		Subject:         subject,
+		Data: &api.SecuritySignalEvent_PolicyDenied{
+			PolicyDenied: &api.PolicyDeniedSignal{
+				Direction:          params.Direction,
+				Reason:             params.Reason,
+				Detail:             params.Detail,
+				TargetService:      params.TargetService,
+				RequestedOperation: params.RequestedOperation,
+				RequestedResource:  params.RequestedResource,
+				CallerPeerId:       callerPeer,
+				CallerSubject:      params.CallerSubject,
+				CallerRoles:        params.CallerRoles,
+				CallerLabels:       params.CallerLabels,
+				EventTime:          timestamppb.New(eventTime),
+			},
+		},
+	}
+
+	n.containmentDispatcher.Dispatch(event)
+}
+
+func (n *AgentMeshNode) emitTransportRefused(p peer.ID, maddr multiaddr.Multiaddr, proto protocol.ID, reason api.TransportRefusalReason, detail string) {
+	if n == nil || n.containmentDispatcher == nil {
+		return
+	}
+	var remoteMaddr string
+	if maddr != nil {
+		remoteMaddr = maddr.String()
+	}
+	peerIDStr := p.String()
+	now := timestamppb.Now()
+	event := &api.SecuritySignalEvent{
+		Type:            "agentmesh.transport.refused",
+		Subject:         peerIDStr,
+		Source:          n.eventSource(),
+		EventTime:       now,
+		DataContentType: "application/json",
+		SpecVersion:     "1.0",
+		Data: &api.SecuritySignalEvent_TransportRefused{
+			TransportRefused: &api.TransportRefusedSignal{
+				Reason:          reason,
+				Detail:          detail,
+				PeerId:          peerIDStr,
+				RemoteMultiaddr: remoteMaddr,
+				ProtocolId:      string(proto),
+				CoalescedCount:  1,
+				FirstSeenTime:   now,
+				EventTime:       now,
+			},
+		},
+	}
+	n.containmentDispatcher.Dispatch(event)
+}
+
+func (n *AgentMeshNode) emitIdentityRevoked(peerID string, source api.RevocationSource, reason string, revocationIDs []string) {
+	if n == nil || n.containmentDispatcher == nil {
+		return
+	}
+	now := timestamppb.Now()
+	var issuer string
+	if n.Host != nil {
+		issuer = n.Host.ID().String()
+	}
+	event := &api.SecuritySignalEvent{
+		Type:            "agentmesh.identity.revoked",
+		Subject:         peerID,
+		Source:          n.eventSource(),
+		EventTime:       now,
+		DataContentType: "application/json",
+		SpecVersion:     "1.0",
+		Data: &api.SecuritySignalEvent_IdentityRevoked{
+			IdentityRevoked: &api.IdentityRevokedSignal{
+				PeerId:        peerID,
+				Source:        source,
+				Reason:        reason,
+				RevocationIds: revocationIDs,
+				IssuerPeerId:  issuer,
+				EventTime:     now,
+			},
+		},
+	}
+	n.containmentDispatcher.Dispatch(event)
 }
 
 func (n *AgentMeshNode) IsServiceRegistered(serviceName string) bool {

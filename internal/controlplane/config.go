@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/google/agentmesh/api"
+	"github.com/google/agentmesh/internal/containment"
 )
 
 // Options holds configuration for the control plane.
@@ -86,6 +87,10 @@ type Options struct {
 	// STSRateBurst is the per-node burst size for /token/exchange and
 	// /sts/token (defaults to STSRateBurstDefault).
 	STSRateBurst int
+	// Containment configures outbound containment webhook dispatching.
+	Containment containment.Config
+	// ContainmentDispatcher allows injecting a pre-built Dispatcher (e.g. for testing).
+	ContainmentDispatcher containment.Dispatcher
 }
 
 const (

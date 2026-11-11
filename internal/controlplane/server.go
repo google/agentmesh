@@ -40,6 +40,7 @@ import (
 	"github.com/eclipse-biscuit/biscuit-go/v2/parser"
 	jwt "github.com/golang-jwt/jwt/v5"
 	"github.com/google/agentmesh/api"
+	"github.com/google/agentmesh/internal/containment"
 	"github.com/google/agentmesh/internal/identity"
 	"github.com/google/agentmesh/internal/ratelimit"
 	"github.com/google/agentmesh/internal/storage"
@@ -167,6 +168,8 @@ type Server struct {
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 	shutdown bool
+
+	containmentDispatcher containment.Dispatcher
 }
 
 func parseWorkloadIssuers(raw string) (map[string]bool, map[string][]string) {
@@ -229,7 +232,7 @@ func NewServer(config Options, store storage.Store) (*Server, error) {
 
 	workloadIssuers, workloadEmailSuffixes := parseWorkloadIssuers(config.WorkloadIssuer)
 
-	return &Server{
+	srv := &Server{
 		config:                config,
 		store:                 store,
 		mesh:                  NewNopMeshAdapter(),
@@ -248,7 +251,20 @@ func NewServer(config Options, store storage.Store) (*Server, error) {
 		metricsRegistry:       reg,
 		ctx:                   ctx,
 		cancel:                cancel,
-	}, nil
+	}
+
+	if config.ContainmentDispatcher != nil {
+		srv.containmentDispatcher = config.ContainmentDispatcher
+	} else if config.Containment.Enabled || len(config.Containment.Endpoints) > 0 {
+		disp, err := containment.NewDispatcher(config.Containment)
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("failed to create containment dispatcher: %w", err)
+		}
+		srv.containmentDispatcher = disp
+	}
+
+	return srv, nil
 }
 
 // SetMeshAdapter sets a custom MeshAdapter implementation for the control plane.
@@ -928,6 +944,7 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	claims, token, err := identity.VerifyJWT(ctx, req.Jwt, s.config.AllowedAudiences, s.getProviders())
 	if err != nil {
 		logger.Errorw("JWT verification failed", "peer_id", req.PeerId, "error", err)
+		s.emitEnrollmentRejected(req.PeerId, s.jwtRefusalMessage(err), api.EnrollmentRejectionReason_INVALID_JWT, req.RequestedRole, req.Labels, time.Now(), false)
 		http.Error(w, s.jwtRefusalMessage(err), http.StatusUnauthorized)
 		return
 	}
@@ -935,6 +952,7 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	// subject would enroll an identity that can never be banned.
 	if oidcIdentityKey(claims) == "" {
 		logger.Warnw("JWT without a subject refused", "peer_id", req.PeerId)
+		s.emitEnrollmentRejected(req.PeerId, "JWT validation failed: token has no sub claim", api.EnrollmentRejectionReason_INVALID_JWT, req.RequestedRole, req.Labels, time.Now(), false)
 		http.Error(w, "JWT validation failed: token has no sub claim", http.StatusUnauthorized)
 		return
 	}
@@ -964,11 +982,13 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	if !pID.MatchesPublicKey(enrolleeKey) {
 		logger.Warnw("Registration peer_id does not match public_key", "peer_id", canonical)
+		s.emitEnrollmentRejected(canonical, "peer_id is not derived from public_key", api.EnrollmentRejectionReason_INVALID_CHALLENGE_SIGNATURE, req.RequestedRole, req.Labels, time.Now(), false)
 		http.Error(w, "peer_id is not derived from public_key", http.StatusBadRequest)
 		return
 	}
 	if err := verifyFreshChallenge(enrolleeKey, api.RegisterChallenge(canonical, req.ChallengeUnixMs), req.ChallengeUnixMs, req.ChallengeSignature); err != nil {
 		logger.Warnw("Register challenge verification failed", "peer_id", canonical, "error", err)
+		s.emitEnrollmentRejected(canonical, "Invalid registration challenge: "+err.Error(), api.EnrollmentRejectionReason_INVALID_CHALLENGE_SIGNATURE, req.RequestedRole, req.Labels, time.Now(), false)
 		writeChallengeError(w, "Invalid registration challenge: "+err.Error())
 		return
 	}
@@ -981,6 +1001,7 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if banned {
 		logger.Warnw("Banned node attempted enrollment", "peer_id", canonical)
+		s.emitEnrollmentRejected(canonical, "Node is banned", api.EnrollmentRejectionReason_PEER_PREVIOUSLY_BANNED, req.RequestedRole, req.Labels, time.Now(), false)
 		http.Error(w, "Node is banned", http.StatusForbidden)
 		return
 	}
@@ -991,6 +1012,7 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 			return
 		} else if banned {
 			logger.Warnw("Banned identity attempted enrollment", "peer_id", canonical, "identity", key)
+			s.emitEnrollmentRejected(canonical, "Identity is banned", api.EnrollmentRejectionReason_PEER_PREVIOUSLY_BANNED, req.RequestedRole, req.Labels, time.Now(), false)
 			http.Error(w, "Identity is banned", http.StatusForbidden)
 			return
 		}
@@ -1007,6 +1029,7 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.RequestedRole == "" {
+		s.emitEnrollmentRejected(canonical, "requested_role must be specified", api.EnrollmentRejectionReason_REQUESTED_ROLE_UNAUTHORIZED, "", req.Labels, time.Now(), false)
 		http.Error(w, "requested_role must be specified", http.StatusBadRequest)
 		return
 	}
@@ -1014,6 +1037,7 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	// Fail closed on malformed labels; they get attested into the biscuit
 	// and persisted for refreshes.
 	if err := api.ValidateLabels(req.Labels); err != nil {
+		s.emitEnrollmentRejected(canonical, "Invalid labels: "+err.Error(), api.EnrollmentRejectionReason_UNATTESTED_LABELS_REJECTED, req.RequestedRole, req.Labels, time.Now(), false)
 		http.Error(w, "Invalid labels: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -1041,6 +1065,7 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	// to mesh:system:authenticated, instead of getting it by omission.
 	if !resolvedMap[req.RequestedRole] {
 		logger.Warnw("Rejected enrollment for a role not bound to the identity", "peer_id", canonical, "requested_role", req.RequestedRole, "identity", oidcIdentityKey(claims), "resolved_roles", resolvedRoles)
+		s.emitEnrollmentRejected(canonical, fmt.Sprintf("requested role %q is not bound to this identity; bind it in mesh policy (to mesh:system:authenticated to open enrollment to every authenticated identity)", req.RequestedRole), api.EnrollmentRejectionReason_REQUESTED_ROLE_UNAUTHORIZED, req.RequestedRole, req.Labels, time.Now(), false)
 		http.Error(w, fmt.Sprintf("requested role %q is not bound to this identity; bind it in mesh policy (to mesh:system:authenticated to open enrollment to every authenticated identity)", req.RequestedRole), http.StatusForbidden)
 		return
 	}
@@ -1052,6 +1077,7 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	// a role it resolves to says it may carry them.
 	if err := api.LabelPatternsAllow(allowedLabelPatterns(finalRoles, policyRoles), req.Labels); err != nil {
 		logger.Warnw("Rejected undeclarable label at enrollment", "peer_id", canonical, "error", err)
+		s.emitEnrollmentRejected(canonical, "Label not permitted: "+err.Error(), api.EnrollmentRejectionReason_UNATTESTED_LABELS_REJECTED, req.RequestedRole, req.Labels, time.Now(), false)
 		http.Error(w, "Label not permitted: "+err.Error(), http.StatusForbidden)
 		return
 	}
@@ -1236,6 +1262,7 @@ func (s *Server) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 	nodeRecord, err := s.store.GetNode(ctx, canonical)
 	if err == storage.ErrNotFound {
 		logger.Warnw("Node not found for refresh", "peer_id", canonical)
+		s.emitEnrollmentRejected(canonical, "Node not enrolled", api.EnrollmentRejectionReason_EXPIRED_BOOTSTRAP_TOKEN, "", nil, time.Now(), recovering)
 		unauthorized("Node not enrolled")
 		return
 	} else if err != nil {
@@ -1247,6 +1274,8 @@ func (s *Server) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 	if err := nodeRecord.CheckAdmission(time.Now()); err != nil {
 		if errors.Is(err, storage.ErrNodeBanned) {
 			logger.Warnw("Banned node attempted refresh", "peer_id", canonical)
+			s.emitIdentityRevoked(canonical, api.RevocationSource_TOKEN_REFRESH_REJECTION, "Node is banned", nil)
+			s.emitEnrollmentRejected(canonical, "Node is banned", api.EnrollmentRejectionReason_PEER_PREVIOUSLY_BANNED, nodeRecord.Role, nodeRecord.Labels, time.Now(), recovering)
 			http.Error(w, "Node is banned", http.StatusForbidden)
 			return
 		}
@@ -1255,6 +1284,7 @@ func (s *Server) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 		// biscuit, and JWT identity all verify below.
 		if req.Jwt == "" || nodeRecord.EnrollmentType != "OIDC" {
 			logger.Warnw("Session expired for node", "peer_id", canonical, "expires_at", nodeRecord.ExpiresAt)
+			s.emitEnrollmentRejected(canonical, "Session expired, please re-enroll interactively", api.EnrollmentRejectionReason_EXPIRED_BOOTSTRAP_TOKEN, nodeRecord.Role, nodeRecord.Labels, time.Now(), recovering)
 			unauthorized("Session expired, please re-enroll interactively")
 			return
 		}
@@ -1270,6 +1300,7 @@ func (s *Server) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 
 	if err := verifyFreshChallenge(pubKey, api.RefreshChallenge(canonical, req.ChallengeUnixMs), req.ChallengeUnixMs, req.ChallengeSignature); err != nil {
 		logger.Warnw("Refresh challenge verification failed", "peer_id", canonical, "error", err)
+		s.emitEnrollmentRejected(canonical, "Challenge verification failed: "+err.Error(), api.EnrollmentRejectionReason_INVALID_CHALLENGE_SIGNATURE, nodeRecord.Role, nodeRecord.Labels, time.Now(), recovering)
 		unauthorized("Challenge verification failed: " + err.Error())
 		return
 	}
@@ -1282,6 +1313,7 @@ func (s *Server) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 	// all, standing in for the signature that could not be checked.
 	if subtle.ConstantTimeCompare(currentBiscuitBytes, nodeRecord.Biscuit) != 1 {
 		logger.Warnw("Refresh presented an already-rotated biscuit (possible replay)", "peer_id", nodeRecord.PeerID)
+		s.emitEnrollmentRejected(canonical, "Biscuit already rotated: only the latest issued token can be refreshed, re-enroll instead", api.EnrollmentRejectionReason_BOOTSTRAP_TOKEN_USAGE_EXCEEDED, nodeRecord.Role, nodeRecord.Labels, time.Now(), recovering)
 		unauthorized("Biscuit already rotated: only the latest issued token can be refreshed, re-enroll instead")
 		return
 	}
@@ -1295,6 +1327,7 @@ func (s *Server) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 	if recovering {
 		if !nodeRecord.AutonomousRecovery {
 			logger.Warnw("Refused retired-key refresh: node is not opted in to autonomous recovery", "peer_id", canonical, "error", verifyErr)
+			s.emitEnrollmentRejected(canonical, "Biscuit signing key has been retired and this node is not opted in to autonomous recovery: re-enroll with a new bootstrap token", api.EnrollmentRejectionReason_AUTONOMOUS_RECOVERY_DISABLED, nodeRecord.Role, nodeRecord.Labels, time.Now(), true)
 			http.Error(w, "Biscuit signing key has been retired and this node is not opted in to autonomous recovery: re-enroll with a new bootstrap token", http.StatusUnauthorized)
 			return
 		}
@@ -1315,6 +1348,7 @@ func (s *Server) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 		cancel()
 		if err != nil {
 			logger.Warnw("Refresh JWT verification failed", "peer_id", canonical, "error", err)
+			s.emitEnrollmentRejected(canonical, s.jwtRefusalMessage(err), api.EnrollmentRejectionReason_INVALID_JWT, nodeRecord.Role, nodeRecord.Labels, time.Now(), recovering)
 			http.Error(w, s.jwtRefusalMessage(err), http.StatusUnauthorized)
 			return
 		}
@@ -1331,6 +1365,7 @@ func (s *Server) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 		storedKey := oidcIdentityKey(storedClaims)
 		if freshKey == "" || freshKey != storedKey {
 			logger.Warnw("Refresh JWT identity mismatch", "peer_id", canonical, "expected", storedKey, "got", freshKey)
+			s.emitEnrollmentRejected(canonical, "JWT identity does not match enrolled node identity", api.EnrollmentRejectionReason_INVALID_JWT, nodeRecord.Role, nodeRecord.Labels, time.Now(), recovering)
 			http.Error(w, "JWT identity does not match enrolled node identity", http.StatusForbidden)
 			return
 		}
@@ -1340,6 +1375,8 @@ func (s *Server) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 			return
 		} else if banned {
 			logger.Warnw("Banned identity attempted refresh", "peer_id", canonical, "identity", freshKey)
+			s.emitIdentityRevoked(canonical, api.RevocationSource_TOKEN_REFRESH_REJECTION, "Identity is banned", nil)
+			s.emitEnrollmentRejected(canonical, "Identity is banned", api.EnrollmentRejectionReason_PEER_PREVIOUSLY_BANNED, nodeRecord.Role, nodeRecord.Labels, time.Now(), recovering)
 			http.Error(w, "Identity is banned", http.StatusForbidden)
 			return
 		}
@@ -1365,6 +1402,8 @@ func (s *Server) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 				return
 			} else if banned {
 				logger.Warnw("Banned identity attempted refresh without JWT", "peer_id", canonical, "identity", storedKey)
+				s.emitIdentityRevoked(canonical, api.RevocationSource_TOKEN_REFRESH_REJECTION, "Identity is banned", nil)
+				s.emitEnrollmentRejected(canonical, "Identity is banned", api.EnrollmentRejectionReason_PEER_PREVIOUSLY_BANNED, nodeRecord.Role, nodeRecord.Labels, time.Now(), recovering)
 				http.Error(w, "Identity is banned", http.StatusForbidden)
 				return
 			}
@@ -1379,6 +1418,8 @@ func (s *Server) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 				return
 			} else if banned {
 				logger.Warnw("Node owned by banned user attempted refresh", "peer_id", canonical, "owner_id", nodeRecord.OwnerID)
+				s.emitIdentityRevoked(canonical, api.RevocationSource_TOKEN_REFRESH_REJECTION, "Node owner is banned", nil)
+				s.emitEnrollmentRejected(canonical, "Node owner is banned", api.EnrollmentRejectionReason_PEER_PREVIOUSLY_BANNED, nodeRecord.Role, nodeRecord.Labels, time.Now(), recovering)
 				http.Error(w, "Node owner is banned", http.StatusForbidden)
 				return
 			}
@@ -1428,6 +1469,7 @@ func (s *Server) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 		// Same rule as enrollment, re-evaluated against current policy: a mesh
 		// that unbinds the role revokes the identity's seat at the next refresh.
 		if !resolvedMap[nodeRecord.Role] {
+			s.emitEnrollmentRejected(canonical, fmt.Sprintf("role %q is no longer bound to this identity", nodeRecord.Role), api.EnrollmentRejectionReason_REQUESTED_ROLE_UNAUTHORIZED, nodeRecord.Role, nodeRecord.Labels, time.Now(), recovering)
 			http.Error(w, fmt.Sprintf("role %q is no longer bound to this identity", nodeRecord.Role), http.StatusForbidden)
 			return
 		}
@@ -2152,8 +2194,91 @@ func (s *Server) Close() error {
 			errs = append(errs, err)
 		}
 	}
+	if s.containmentDispatcher != nil {
+		drainCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := s.containmentDispatcher.Close(drainCtx); err != nil {
+			errs = append(errs, fmt.Errorf("containment dispatcher close: %w", err))
+		}
+	}
 	s.wg.Wait()
 	return errors.Join(errs...)
+}
+
+// ContainmentDispatcher returns the active containment Dispatcher, or nil if unconfigured.
+func (s *Server) ContainmentDispatcher() containment.Dispatcher {
+	if s == nil {
+		return nil
+	}
+	return s.containmentDispatcher
+}
+
+// SetContainmentDispatcher injects a containment Dispatcher into the server.
+func (s *Server) SetContainmentDispatcher(d containment.Dispatcher) {
+	if s == nil {
+		return
+	}
+	s.containmentDispatcher = d
+}
+
+func (s *Server) eventSource() string {
+	if s != nil && s.config.ListenAddr != "" {
+		return fmt.Sprintf("agentmesh://controlplane/%s", s.config.ListenAddr)
+	}
+	return "agentmesh://controlplane"
+}
+
+func (s *Server) emitEnrollmentRejected(peerID, detail string, reason api.EnrollmentRejectionReason, role string, labels map[string]string, reqTime time.Time, isAutoRecovery bool) {
+	if s == nil || s.containmentDispatcher == nil {
+		return
+	}
+	now := timestamppb.Now()
+	event := &api.SecuritySignalEvent{
+		Type:            "agentmesh.enrollment.rejected",
+		Subject:         peerID,
+		Source:          s.eventSource(),
+		EventTime:       now,
+		DataContentType: "application/json",
+		SpecVersion:     "1.0",
+		Data: &api.SecuritySignalEvent_EnrollmentRejected{
+			EnrollmentRejected: &api.EnrollmentRejectedSignal{
+				Reason:               reason,
+				Detail:               detail,
+				PeerId:               peerID,
+				RequestedRole:        role,
+				SubmittedLabels:      labels,
+				IsAutonomousRecovery: isAutoRecovery,
+				EventTime:            now,
+			},
+		},
+	}
+	s.containmentDispatcher.Dispatch(event)
+}
+
+func (s *Server) emitIdentityRevoked(peerID string, source api.RevocationSource, reason string, revocationIDs []string) {
+	if s == nil || s.containmentDispatcher == nil {
+		return
+	}
+	now := timestamppb.Now()
+	event := &api.SecuritySignalEvent{
+		Type:            "agentmesh.identity.revoked",
+		Subject:         peerID,
+		Source:          s.eventSource(),
+		EventTime:       now,
+		DataContentType: "application/json",
+		SpecVersion:     "1.0",
+		Data: &api.SecuritySignalEvent_IdentityRevoked{
+			IdentityRevoked: &api.IdentityRevokedSignal{
+				PeerId:        peerID,
+				Source:        source,
+				Reason:        reason,
+				RevocationIds: revocationIDs,
+				IssuerPeerId:  "controlplane",
+				EventTime:     now,
+			},
+		},
+	}
+	s.containmentDispatcher.Dispatch(event)
 }
 
 // shutdownTimeout bounds the HTTP drain in Close; it stays under the 30s
@@ -2226,6 +2351,7 @@ func (s *Server) HandleEnroll(w http.ResponseWriter, r *http.Request) {
 	tokenRecord, err := s.store.GetBootstrapToken(ctx, tokenID)
 	if err == storage.ErrNotFound {
 		logger.Errorw("Invalid bootstrap token attempt", "peer_id", req.PeerId)
+		s.emitEnrollmentRejected(req.PeerId, "Invalid bootstrap token", api.EnrollmentRejectionReason_EXPIRED_BOOTSTRAP_TOKEN, req.RequestedRole, req.Labels, time.Now(), false)
 		s.writeEnrollError(w, api.EnrollmentStatus_ENROLLMENT_STATUS_REJECTED, "Invalid bootstrap token")
 		return
 	} else if err != nil {
@@ -2236,18 +2362,21 @@ func (s *Server) HandleEnroll(w http.ResponseWriter, r *http.Request) {
 
 	if time.Now().After(tokenRecord.ExpiresAt) {
 		logger.Warnw("Expired bootstrap token used", "peer_id", req.PeerId, "token_id", tokenRecord.ID)
+		s.emitEnrollmentRejected(req.PeerId, "Bootstrap token expired", api.EnrollmentRejectionReason_EXPIRED_BOOTSTRAP_TOKEN, req.RequestedRole, req.Labels, time.Now(), false)
 		s.writeEnrollError(w, api.EnrollmentStatus_ENROLLMENT_STATUS_REJECTED, "Bootstrap token expired")
 		return
 	}
 
 	if tokenRecord.IsRevoked() {
 		logger.Warnw("Revoked bootstrap token used", "peer_id", req.PeerId, "token_id", tokenRecord.ID)
+		s.emitEnrollmentRejected(req.PeerId, "Bootstrap token revoked", api.EnrollmentRejectionReason_EXPIRED_BOOTSTRAP_TOKEN, req.RequestedRole, req.Labels, time.Now(), false)
 		s.writeEnrollError(w, api.EnrollmentStatus_ENROLLMENT_STATUS_REJECTED, "Bootstrap token revoked")
 		return
 	}
 
 	if tokenRecord.UsagesCount >= tokenRecord.MaxUsages {
 		logger.Warnw("Max usages exceeded for bootstrap token", "peer_id", req.PeerId, "token_id", tokenRecord.ID)
+		s.emitEnrollmentRejected(req.PeerId, "Bootstrap token max usages exceeded", api.EnrollmentRejectionReason_BOOTSTRAP_TOKEN_USAGE_EXCEEDED, req.RequestedRole, req.Labels, time.Now(), false)
 		s.writeEnrollError(w, api.EnrollmentStatus_ENROLLMENT_STATUS_REJECTED, "Bootstrap token max usages exceeded")
 		return
 	}
@@ -2259,22 +2388,26 @@ func (s *Server) HandleEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if banned {
 		logger.Warnw("Bootstrap token from a banned identity used", "peer_id", req.PeerId, "token_id", tokenRecord.ID, "owner", tokenRecord.OwnerID)
+		s.emitEnrollmentRejected(req.PeerId, "Bootstrap token owner is banned", api.EnrollmentRejectionReason_PEER_PREVIOUSLY_BANNED, req.RequestedRole, req.Labels, time.Now(), false)
 		s.writeEnrollError(w, api.EnrollmentStatus_ENROLLMENT_STATUS_REJECTED, "Bootstrap token owner is banned")
 		return
 	}
 
 	if req.RequestedRole == "" {
+		s.emitEnrollmentRejected(req.PeerId, "requested_role must be specified", api.EnrollmentRejectionReason_REQUESTED_ROLE_UNAUTHORIZED, req.RequestedRole, req.Labels, time.Now(), false)
 		s.writeEnrollError(w, api.EnrollmentStatus_ENROLLMENT_STATUS_REJECTED, "requested_role must be specified")
 		return
 	}
 
 	if req.RequestedRole != tokenRecord.Role {
 		logger.Warnw("Requested role does not match bootstrap token role", "peer_id", req.PeerId, "requested", req.RequestedRole, "token_role", tokenRecord.Role)
+		s.emitEnrollmentRejected(req.PeerId, fmt.Sprintf("requested role %q does not match bootstrap token role %q", req.RequestedRole, tokenRecord.Role), api.EnrollmentRejectionReason_REQUESTED_ROLE_UNAUTHORIZED, req.RequestedRole, req.Labels, time.Now(), false)
 		s.writeEnrollError(w, api.EnrollmentStatus_ENROLLMENT_STATUS_REJECTED, fmt.Sprintf("requested role %q does not match bootstrap token role %q", req.RequestedRole, tokenRecord.Role))
 		return
 	}
 
 	if err := api.ValidateLabels(req.Labels); err != nil {
+		s.emitEnrollmentRejected(req.PeerId, "Invalid labels: "+err.Error(), api.EnrollmentRejectionReason_UNATTESTED_LABELS_REJECTED, req.RequestedRole, req.Labels, time.Now(), false)
 		s.writeEnrollError(w, api.EnrollmentStatus_ENROLLMENT_STATUS_REJECTED, "Invalid labels: "+err.Error())
 		return
 	}
@@ -2292,11 +2425,13 @@ func (s *Server) HandleEnroll(w http.ResponseWriter, r *http.Request) {
 	// peer's biscuit.
 	enrolleeKey, err := crypto.UnmarshalPublicKey(req.PublicKey)
 	if err != nil {
+		s.emitEnrollmentRejected(canonical, "Invalid public key", api.EnrollmentRejectionReason_INVALID_CHALLENGE_SIGNATURE, req.RequestedRole, req.Labels, time.Now(), false)
 		s.writeEnrollError(w, api.EnrollmentStatus_ENROLLMENT_STATUS_REJECTED, "Invalid public key")
 		return
 	}
 	if !pID.MatchesPublicKey(enrolleeKey) {
 		logger.Warnw("Enrollment peer_id does not match public_key", "peer_id", canonical)
+		s.emitEnrollmentRejected(canonical, "peer_id is not derived from public_key", api.EnrollmentRejectionReason_INVALID_CHALLENGE_SIGNATURE, req.RequestedRole, req.Labels, time.Now(), false)
 		s.writeEnrollError(w, api.EnrollmentStatus_ENROLLMENT_STATUS_REJECTED, "peer_id is not derived from public_key")
 		return
 	}
@@ -2306,6 +2441,7 @@ func (s *Server) HandleEnroll(w http.ResponseWriter, r *http.Request) {
 			writeChallengeError(w, "Invalid enrollment challenge: "+err.Error())
 			return
 		}
+		s.emitEnrollmentRejected(canonical, "Invalid enrollment challenge: "+err.Error(), api.EnrollmentRejectionReason_INVALID_CHALLENGE_SIGNATURE, req.RequestedRole, req.Labels, time.Now(), false)
 		s.writeEnrollError(w, api.EnrollmentStatus_ENROLLMENT_STATUS_REJECTED, "Invalid enrollment challenge: "+err.Error())
 		return
 	}
@@ -2319,6 +2455,7 @@ func (s *Server) HandleEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if banned {
 		logger.Warnw("Banned node attempted bootstrap enrollment", "peer_id", canonical)
+		s.emitEnrollmentRejected(canonical, "Node is banned", api.EnrollmentRejectionReason_PEER_PREVIOUSLY_BANNED, req.RequestedRole, req.Labels, time.Now(), false)
 		s.writeEnrollError(w, api.EnrollmentStatus_ENROLLMENT_STATUS_REJECTED, "Node is banned")
 		return
 	}
@@ -2333,6 +2470,7 @@ func (s *Server) HandleEnroll(w http.ResponseWriter, r *http.Request) {
 			if refreshErr != nil {
 				if errors.Is(refreshErr, storage.ErrNodeBanned) || errors.Is(refreshErr, storage.ErrNodeSessionExpired) || errors.Is(refreshErr, errBootstrapRoleMismatch) || errors.Is(refreshErr, storage.ErrBootstrapTokenUnusable) {
 					logger.Warnw("Refused bootstrap re-enrollment", "peer_id", req.PeerId, "error", refreshErr)
+					s.emitEnrollmentRejected(canonical, "Enrollment no longer valid: "+refreshErr.Error(), api.EnrollmentRejectionReason_PEER_PREVIOUSLY_BANNED, req.RequestedRole, req.Labels, time.Now(), false)
 					s.writeEnrollError(w, api.EnrollmentStatus_ENROLLMENT_STATUS_REJECTED, "Enrollment no longer valid: "+refreshErr.Error())
 					return
 				}
@@ -2394,6 +2532,7 @@ func (s *Server) HandleEnroll(w http.ResponseWriter, r *http.Request) {
 		// label and a signed one. Manual approval attests them separately.
 		if err := api.LabelPatternsAllow(allowedLabelPatterns([]string{tokenRecord.Role}, policyRoles), req.Labels); err != nil {
 			logger.Warnw("Rejected undeclarable label at bootstrap enrollment", "peer_id", canonical, "error", err)
+			s.emitEnrollmentRejected(canonical, "Label not permitted: "+err.Error(), api.EnrollmentRejectionReason_UNATTESTED_LABELS_REJECTED, req.RequestedRole, req.Labels, time.Now(), false)
 			s.writeEnrollError(w, api.EnrollmentStatus_ENROLLMENT_STATUS_REJECTED, "Label not permitted: "+err.Error())
 			return
 		}
@@ -2402,6 +2541,7 @@ func (s *Server) HandleEnroll(w http.ResponseWriter, r *http.Request) {
 		if err := s.store.ConsumeBootstrapTokenUsage(ctx, tokenRecord.ID, time.Now()); err != nil {
 			if errors.Is(err, storage.ErrBootstrapTokenUnusable) {
 				logger.Warnw("Bootstrap token no longer usable at enrollment", "peer_id", canonical, "token_id", tokenRecord.ID)
+				s.emitEnrollmentRejected(canonical, "Bootstrap token expired, revoked or exhausted", api.EnrollmentRejectionReason_BOOTSTRAP_TOKEN_USAGE_EXCEEDED, req.RequestedRole, req.Labels, time.Now(), false)
 				s.writeEnrollError(w, api.EnrollmentStatus_ENROLLMENT_STATUS_REJECTED, "Bootstrap token expired, revoked or exhausted")
 				return
 			}
@@ -2945,6 +3085,7 @@ func (s *Server) HandleAdminEnrollmentAction(w http.ResponseWriter, r *http.Requ
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
 		}
+		s.emitEnrollmentRejected(enrollReq.PeerID, "Enrollment request rejected by admin", api.EnrollmentRejectionReason_REQUESTED_ROLE_UNAUTHORIZED, "", enrollReq.Labels, enrollReq.CreatedAt, false)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("Enrollment rejected"))
 		return
@@ -3218,6 +3359,9 @@ func (s *Server) HandleAdminRevoke(w http.ResponseWriter, r *http.Request) {
 	if err := s.getMeshAdapter().PublishEvent(ctx, api.MeshEvent_BANNED, node.PeerID, nil); err != nil {
 		logger.Warnf("Failed to publish BANNED event for node %s to mesh: %v", node.PeerID, err)
 	}
+
+	revokeReason := "Administrative revocation via /admin/revoke"
+	s.emitIdentityRevoked(node.PeerID, api.RevocationSource_CONTROL_PLANE_ADMIN, revokeReason, nil)
 
 	resp := &api.TokenRevokeResponse{
 		Success: true,
@@ -3626,6 +3770,8 @@ func (s *Server) HandleUserRevoke(w http.ResponseWriter, r *http.Request) {
 	if err := s.getMeshAdapter().PublishEvent(ctx, api.MeshEvent_BANNED, node.PeerID, nil); err != nil {
 		logger.Warnf("Failed to publish BANNED event for node %s to mesh: %v", node.PeerID, err)
 	}
+
+	s.emitIdentityRevoked(node.PeerID, api.RevocationSource_CONTROL_PLANE_ADMIN, fmt.Sprintf("Revoked by user %s", user.ID), nil)
 
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("Node revoked successfully"))

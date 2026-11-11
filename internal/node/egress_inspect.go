@@ -272,6 +272,7 @@ func (s *EgressService) serveInspectedEgress(w http.ResponseWriter, r *http.Requ
 					"verdict", "block",
 					"phase", "request",
 				)
+				s.emitInspectionDenied(r, callerCtx, "model_armor", "request", "prompt matched sanitization filter")
 				w.Header().Set("Proxy-Status", fmt.Sprintf("agentmesh-node; error=%s; details=\"model_armor\"", proxyStatusDenied))
 				http.Error(w, "Request blocked by Model Armor policy", http.StatusForbidden)
 				return
@@ -318,6 +319,7 @@ func (s *EgressService) serveInspectedEgress(w http.ResponseWriter, r *http.Requ
 				if session != nil {
 					session.Close()
 				}
+				s.emitInspectionDenied(r, callerCtx, "ext_proc", "request", imm.GetDetails())
 				writeImmediateResponse(w, imm, s.info.Name, callerCtx.task)
 				return
 			}
@@ -384,6 +386,7 @@ func (s *EgressService) serveInspectedEgress(w http.ResponseWriter, r *http.Requ
 			continue
 		}
 		if imm != nil {
+			s.emitInspectionDenied(r, callerCtx, "ext_proc", "response", imm.GetDetails())
 			writeImmediateResponse(w, imm, s.info.Name, callerCtx.task)
 			return
 		}
@@ -446,6 +449,7 @@ func (s *EgressService) serveInspectedEgress(w http.ResponseWriter, r *http.Requ
 				"verdict", "block",
 				"phase", "response",
 			)
+			s.emitInspectionDenied(r, callerCtx, "model_armor", "response", "response matched sanitization filter")
 			w.Header().Set("Proxy-Status", fmt.Sprintf("agentmesh-node; error=%s; details=\"model_armor_response\"", proxyStatusDenied))
 			http.Error(w, "Response blocked by Model Armor policy", http.StatusForbidden)
 			return
@@ -855,4 +859,37 @@ func replaceStringInJSONValue(v any, original, replacement string) (any, bool) {
 	default:
 		return v, false
 	}
+}
+
+func (s *EgressService) emitInspectionDenied(r *http.Request, callerCtx egressCallerContext, tier, phase, detail string) {
+	if s == nil || s.node == nil {
+		return
+	}
+	dir := s.node.detectCallerDirection(r, nil)
+
+	var op, res string
+	if r != nil {
+		op = r.Method
+		if r.URL != nil {
+			res = r.URL.Path
+		}
+	}
+
+	var targetService string
+	if s.info != nil && s.info.Name != "" {
+		targetService = api.EgressServicePrefix + s.info.Name
+	}
+
+	s.node.EmitPolicyDenied(PolicyDeniedParams{
+		Direction:          dir,
+		Reason:             api.PolicyDenialReason_INSPECTION_FILTER_BLOCKED,
+		Detail:             fmt.Sprintf("%s %s blocked: %s", tier, phase, detail),
+		TargetService:      targetService,
+		RequestedOperation: op,
+		RequestedResource:  res,
+		CallerPeerID:       callerCtx.actorNode,
+		CallerSubject:      callerCtx.principal,
+		CallerRoles:        callerCtx.roles,
+		EventTime:          time.Now(),
+	})
 }
