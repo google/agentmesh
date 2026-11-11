@@ -415,10 +415,8 @@ func TestAdversarial_WebhookBoundaries(t *testing.T) {
 		req := makeSignedReq(http.MethodPost, time.Now().UnixMilli(), oversized)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
-		// Because LimitReader truncates at 1MB, the truncated body fails either
-		// HMAC verification (401) or ProtoJSON parsing (400). In both cases, oversized payloads are rejected.
-		if rec.Code != http.StatusBadRequest && rec.Code != http.StatusUnauthorized {
-			t.Errorf("oversized body: expected 400 Bad Request or 401 Unauthorized, got %d", rec.Code)
+		if rec.Code != http.StatusRequestEntityTooLarge {
+			t.Errorf("oversized body: expected 413 Payload Too Large, got %d", rec.Code)
 		}
 	})
 

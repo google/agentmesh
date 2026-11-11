@@ -89,10 +89,28 @@ func NewClient(endpoints ...EndpointConfig) (Client, error) {
 		return &multiClient{}, nil
 	}
 
+	// Resolve AGENTMESH_CONTAINMENT_HMAC_SECRET once upfront before secrets.FromPathOrEnv
+	// unsets it from process environment, so multiple endpoints omitting hmac_secret_path
+	// all inherit the fallback secret.
+	var envSecret string
+	for _, ep := range endpoints {
+		if ep.URL != "" && len(ep.HMACSecret) == 0 && ep.HMACSecretPath == "" {
+			resolved, err := secrets.FromPathOrEnv("containment-hmac-secret", "", "AGENTMESH_CONTAINMENT_HMAC_SECRET")
+			if err != nil {
+				return nil, fmt.Errorf("containment: resolve AGENTMESH_CONTAINMENT_HMAC_SECRET: %w", err)
+			}
+			envSecret = strings.TrimSpace(resolved)
+			break
+		}
+	}
+
 	var clients []Client
 	for _, ep := range endpoints {
 		if ep.URL == "" {
 			continue
+		}
+		if len(ep.HMACSecret) == 0 && ep.HMACSecretPath == "" && envSecret != "" {
+			ep.HMACSecret = []byte(envSecret)
 		}
 		c, err := NewSingleClient(ep)
 		if err != nil {
@@ -124,17 +142,17 @@ func NewSingleClient(cfg EndpointConfig) (Client, error) {
 		hasHMAC: false,
 	}
 
-	// 1. Resolve HMAC secret (direct bytes or file path)
+	// 1. Resolve HMAC secret (direct bytes, file path, or environment fallback)
 	if len(cfg.HMACSecret) > 0 {
 		c.hmacSecret = append([]byte(nil), cfg.HMACSecret...)
 		c.hasHMAC = true
-	} else if cfg.HMACSecretPath != "" {
+	} else {
 		secretStr, err := secrets.FromPathOrEnv("containment-hmac-secret", cfg.HMACSecretPath, "AGENTMESH_CONTAINMENT_HMAC_SECRET")
-		if err != nil {
+		if err != nil && cfg.HMACSecretPath != "" {
 			return nil, fmt.Errorf("containment: read hmac_secret_path %q: %w", cfg.HMACSecretPath, err)
 		}
-		if secretStr != "" {
-			c.hmacSecret = []byte(secretStr)
+		if trimmed := strings.TrimSpace(secretStr); trimmed != "" {
+			c.hmacSecret = []byte(trimmed)
 			c.hasHMAC = true
 		}
 	}
