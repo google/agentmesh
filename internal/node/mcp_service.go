@@ -358,6 +358,12 @@ func (m *MCPService) HandleStreamPassThrough(s network.Stream, reqCtx RequestCon
 	}
 }
 
+// codeTaskDenied is the JSON-RPC error code this node answers with when the
+// caller's task rules deny a request on an MCP stream. It is AgentMesh's own
+// code, outside the -32768 to -32000 range JSON-RPC reserves, so a caller can
+// tell this denial apart from an error the MCP backend returns.
+const codeTaskDenied = -31403
+
 // authorizeMCPRequest evaluates reqCtx.TaskRules against an inbound JSON-RPC
 // request on an MCP stream. Returns a JSON-RPC error response when denied, or
 // nil when allowed.
@@ -374,7 +380,7 @@ func (m *MCPService) authorizeMCPRequest(req *jsonrpc.Request, reqCtx RequestCon
 			AllowMCPStreamInit: true,
 		}, time.Now()); err != nil {
 			logger.Warnf("[MCPService] %s: TAR denied %s from %s: %v", svcName, req.Method, reqCtx.PeerID, err)
-			return &jsonrpc.Response{ID: req.ID, Error: &jsonrpc.Error{Code: jsonrpc.CodeInvalidRequest, Message: fmt.Sprintf("task authorization denied %s: %v", req.Method, err)}}
+			return &jsonrpc.Response{ID: req.ID, Error: &jsonrpc.Error{Code: codeTaskDenied, Message: fmt.Sprintf("task authorization denied %s: %v", req.Method, err)}}
 		}
 		return nil
 	case "tools/call":
@@ -390,7 +396,7 @@ func (m *MCPService) authorizeMCPRequest(req *jsonrpc.Request, reqCtx RequestCon
 			MCPTool:     params.Name,
 		}, time.Now()); err != nil {
 			logger.Warnf("[MCPService] %s: TAR denied tools/call %q from %s: %v", svcName, params.Name, reqCtx.PeerID, err)
-			return &jsonrpc.Response{ID: req.ID, Error: &jsonrpc.Error{Code: jsonrpc.CodeInvalidRequest, Message: fmt.Sprintf("task authorization denied tool %q: %v", params.Name, err)}}
+			return &jsonrpc.Response{ID: req.ID, Error: &jsonrpc.Error{Code: codeTaskDenied, Message: fmt.Sprintf("task authorization denied tool %q: %v", params.Name, err)}}
 		}
 		return nil
 	default:
@@ -399,7 +405,7 @@ func (m *MCPService) authorizeMCPRequest(req *jsonrpc.Request, reqCtx RequestCon
 			ServiceName: svcName,
 		}, time.Now()); err != nil {
 			logger.Warnf("[MCPService] %s: TAR denied %s from %s: %v", svcName, req.Method, reqCtx.PeerID, err)
-			return &jsonrpc.Response{ID: req.ID, Error: &jsonrpc.Error{Code: jsonrpc.CodeInvalidRequest, Message: fmt.Sprintf("task authorization denied %s: %v", req.Method, err)}}
+			return &jsonrpc.Response{ID: req.ID, Error: &jsonrpc.Error{Code: codeTaskDenied, Message: fmt.Sprintf("task authorization denied %s: %v", req.Method, err)}}
 		}
 		return nil
 	}
