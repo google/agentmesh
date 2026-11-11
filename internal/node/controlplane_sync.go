@@ -287,13 +287,14 @@ func (n *AgentMeshNode) reconcileBannedPeers(peerIDs []string, fetchedAt time.Ti
 		logger.Infof("Peer %s is no longer banned by the control plane; lifting the local ban", key)
 		n.revokedPeers.Remove(key)
 	}
-	for key, p := range banned {
-		if n.revokedPeers.Contains(key) {
+	for _, p := range banned {
+		canonical := p.String()
+		if n.revokedPeers.Contains(canonical) {
 			continue
 		}
-		logger.Infow("peer banned by the control plane", "event", meshEventBanned, "peer", key)
+		logger.Infow("peer banned by the control plane", "event", meshEventBanned, "peer", canonical)
 		n.banPeer(p, fetchedAtMs)
-		n.emitIdentityRevoked(key, api.RevocationSource_LOCAL_CONTROL_PLANE_SYNC, "peer ban reconciled from control plane sync", nil)
+		n.emitIdentityRevoked(canonical, api.RevocationSource_LOCAL_CONTROL_PLANE_SYNC, "peer ban reconciled from control plane sync", nil)
 	}
 }
 

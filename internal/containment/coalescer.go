@@ -21,9 +21,14 @@ import (
 	"time"
 
 	"github.com/google/agentmesh/api"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+// MaxCoalescerEntries bounds active deduplication keys and timers to prevent
+// memory/timer exhaustion when unauthenticated remote peers spoof peer IDs.
+const MaxCoalescerEntries = 1024
 
 // SummaryCallback is invoked when a coalescing window closes and duplicate events occurred.
 type SummaryCallback func(summary *api.SecuritySignalEvent)
@@ -76,6 +81,11 @@ func (c *Coalescer) Record(event *api.SecuritySignalEvent) bool {
 	if subject == "" {
 		subject = extractSubject(event)
 	}
+	if subject != "" {
+		if pID, err := peer.Decode(subject); err == nil {
+			subject = pID.String()
+		}
+	}
 	key := fmt.Sprintf("%s|%s|%s", event.Type, subject, targetService)
 
 	now := time.Now()
@@ -85,10 +95,15 @@ func (c *Coalescer) Record(event *api.SecuritySignalEvent) bool {
 
 	entry, exists := c.entries[key]
 	if !exists {
+		if len(c.entries) >= MaxCoalescerEntries {
+			containmentCoalescerOverflowTotal.Inc()
+			return false
+		}
+		cloned := proto.Clone(event).(*api.SecuritySignalEvent)
 		newEntry := &coalesceEntry{
 			key:           key,
-			firstEvent:    event,
-			lastEvent:     event,
+			firstEvent:    cloned,
+			lastEvent:     cloned,
 			firstSeenTime: now,
 			lastSeenTime:  now,
 			count:         0,
@@ -97,11 +112,12 @@ func (c *Coalescer) Record(event *api.SecuritySignalEvent) bool {
 			c.flushEntry(key)
 		})
 		c.entries[key] = newEntry
+		containmentCoalescerEntries.Set(float64(len(c.entries)))
 		return false
 	}
 
 	entry.count++
-	entry.lastEvent = event
+	entry.lastEvent = proto.Clone(event).(*api.SecuritySignalEvent)
 	entry.lastSeenTime = now
 	return true
 }
@@ -118,6 +134,7 @@ func (c *Coalescer) flushEntry(key string) {
 		return
 	}
 	delete(c.entries, key)
+	containmentCoalescerEntries.Set(float64(len(c.entries)))
 	c.mu.Unlock()
 
 	if entry.count > 0 && c.onSummary != nil {
@@ -182,6 +199,7 @@ func (c *Coalescer) Close() {
 		}
 	}
 	c.entries = make(map[string]*coalesceEntry)
+	containmentCoalescerEntries.Set(float64(len(c.entries)))
 	c.mu.Unlock()
 
 	for _, entry := range toFlush {
@@ -248,7 +266,9 @@ func extractSubject(event *api.SecuritySignalEvent) string {
 
 func generateUUID() string {
 	var b [16]byte
-	_, _ = rand.Read(b[:])
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(fmt.Sprintf("containment: crypto/rand failed: %v", err))
+	}
 	b[6] = (b[6] & 0x0f) | 0x40 // RFC 4122 version 4
 	b[8] = (b[8] & 0x3f) | 0x80 // RFC 4122 variant
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",

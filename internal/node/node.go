@@ -2380,6 +2380,11 @@ func (n *AgentMeshNode) EmitPolicyDenied(params PolicyDeniedParams) {
 	}
 
 	callerPeer := params.CallerPeerID
+	if callerPeer != "" {
+		if pID, err := peer.Decode(callerPeer); err == nil {
+			callerPeer = pID.String()
+		}
+	}
 	if callerPeer == "" && params.Direction == api.SignalCallerDirection_LOCAL_WORKLOAD {
 		callerPeer = localPID
 	}
@@ -2456,6 +2461,12 @@ func (n *AgentMeshNode) emitIdentityRevoked(peerID string, source api.Revocation
 	if n == nil || n.containmentDispatcher == nil {
 		return
 	}
+	canonical := peerID
+	if canonical != "" {
+		if pID, err := peer.Decode(canonical); err == nil {
+			canonical = pID.String()
+		}
+	}
 	now := timestamppb.Now()
 	var issuer string
 	if n.Host != nil {
@@ -2463,14 +2474,14 @@ func (n *AgentMeshNode) emitIdentityRevoked(peerID string, source api.Revocation
 	}
 	event := &api.SecuritySignalEvent{
 		Type:            "agentmesh.identity.revoked",
-		Subject:         peerID,
+		Subject:         canonical,
 		Source:          n.eventSource(),
 		EventTime:       now,
 		DataContentType: "application/json",
 		SpecVersion:     "1.0",
 		Data: &api.SecuritySignalEvent_IdentityRevoked{
 			IdentityRevoked: &api.IdentityRevokedSignal{
-				PeerId:        peerID,
+				PeerId:        canonical,
 				Source:        source,
 				Reason:        reason,
 				RevocationIds: revocationIDs,

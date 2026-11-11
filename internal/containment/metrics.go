@@ -71,6 +71,20 @@ var (
 			Help: "Current depth of the containment webhook ring buffer queue.",
 		},
 	)
+
+	containmentCoalescerEntries = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "agentmesh_containment_coalescer_entries",
+			Help: "Current number of active deduplication entries held by the containment coalescer.",
+		},
+	)
+
+	containmentCoalescerOverflowTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "agentmesh_containment_coalescer_overflow_total",
+			Help: "Total containment signals that bypassed coalescing because the active entry cap was reached.",
+		},
+	)
 )
 
 // GetDroppedCount returns the sum of dropped events across all reasons and types.
@@ -101,28 +115,10 @@ func GetDroppedCountFor(signalType, reason string) float64 {
 	return m.GetCounter().GetValue()
 }
 
-// GetQueuedCountFor returns the count of queued events for a specific signal type.
-func GetQueuedCountFor(signalType string) float64 {
-	m := &dto.Metric{}
-	if err := containmentQueuedTotal.WithLabelValues(signalType).Write(m); err != nil {
-		return 0
-	}
-	return m.GetCounter().GetValue()
-}
-
 // GetDeliveredCountFor returns the count of delivered events for a specific signal type and status code.
 func GetDeliveredCountFor(signalType, statusCode string) float64 {
 	m := &dto.Metric{}
 	if err := containmentDeliveredTotal.WithLabelValues(signalType, statusCode).Write(m); err != nil {
-		return 0
-	}
-	return m.GetCounter().GetValue()
-}
-
-// GetCoalescedCountFor returns the count of coalesced events for a specific signal type.
-func GetCoalescedCountFor(signalType string) float64 {
-	m := &dto.Metric{}
-	if err := containmentCoalescedTotal.WithLabelValues(signalType).Write(m); err != nil {
 		return 0
 	}
 	return m.GetCounter().GetValue()

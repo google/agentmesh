@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	"github.com/google/agentmesh/api"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -72,23 +73,17 @@ func NewDispatcher(cfg Config) (Dispatcher, error) {
 	return d, nil
 }
 
-// NewDispatcherFromPtr constructs a Dispatcher from a *Config pointer.
-func NewDispatcherFromPtr(cfg *Config) (Dispatcher, error) {
-	if cfg == nil {
-		return NewDispatcher(Config{})
-	}
-	return NewDispatcher(*cfg)
-}
-
 // Dispatch queues an event for out-of-band delivery. Strictly non-blocking.
-func (d *dispatcher) Dispatch(event *api.SecuritySignalEvent) {
+func (d *dispatcher) Dispatch(inEvent *api.SecuritySignalEvent) {
 	if d == nil {
 		return
 	}
-	if event == nil {
+	if inEvent == nil {
 		containmentDroppedTotal.WithLabelValues("unknown", "nil_event").Inc()
 		return
 	}
+
+	event := proto.Clone(inEvent).(*api.SecuritySignalEvent)
 
 	d.mu.RLock()
 	if d.closed {
@@ -129,17 +124,21 @@ func (d *dispatcher) Dispatch(event *api.SecuritySignalEvent) {
 		tr.CoalescedCount = 1
 	}
 
+	eventType := event.Type
+	eventSubject := event.Subject
+	eventID := event.Id
+
 	// Strictly non-blocking enqueue
 	select {
 	case d.queue <- event:
-		containmentQueuedTotal.WithLabelValues(event.Type).Inc()
+		containmentQueuedTotal.WithLabelValues(eventType).Inc()
 		containmentQueueDepth.Set(float64(len(d.queue)))
 	default:
-		containmentDroppedTotal.WithLabelValues(event.Type, "buffer_full").Inc()
+		containmentDroppedTotal.WithLabelValues(eventType, "buffer_full").Inc()
 		logger.Warnw("Containment signal queue full; shedding event",
-			"type", event.Type,
-			"subject", event.Subject,
-			"id", event.Id,
+			"type", eventType,
+			"subject", eventSubject,
+			"id", eventID,
 			"capacity", cap(d.queue),
 			"reason", "buffer_full",
 		)
@@ -152,23 +151,27 @@ func (d *dispatcher) enqueueDirect(event *api.SecuritySignalEvent) {
 		return
 	}
 
+	eventType := event.Type
+	eventSubject := event.Subject
+	eventID := event.Id
+
 	d.mu.RLock()
 	if d.closed {
 		d.mu.RUnlock()
-		containmentDroppedTotal.WithLabelValues(event.Type, "dispatcher_closed").Inc()
+		containmentDroppedTotal.WithLabelValues(eventType, "dispatcher_closed").Inc()
 		return
 	}
 
 	select {
 	case d.queue <- event:
-		containmentQueuedTotal.WithLabelValues(event.Type).Inc()
+		containmentQueuedTotal.WithLabelValues(eventType).Inc()
 		containmentQueueDepth.Set(float64(len(d.queue)))
 	default:
-		containmentDroppedTotal.WithLabelValues(event.Type, "buffer_full").Inc()
+		containmentDroppedTotal.WithLabelValues(eventType, "buffer_full").Inc()
 		logger.Warnw("Containment signal queue full; shedding summary event",
-			"type", event.Type,
-			"subject", event.Subject,
-			"id", event.Id,
+			"type", eventType,
+			"subject", eventSubject,
+			"id", eventID,
 			"capacity", cap(d.queue),
 			"reason", "buffer_full",
 		)
@@ -181,7 +184,13 @@ func (d *dispatcher) workerLoop() {
 	for event := range d.queue {
 		containmentQueueDepth.Set(float64(len(d.queue)))
 		if d.client != nil {
-			_ = d.client.Send(context.Background(), event)
+			if err := d.client.Send(context.Background(), event); err != nil {
+				logger.Debugw("Containment webhook delivery attempt returned error",
+					"id", event.Id,
+					"type", event.Type,
+					"err", err,
+				)
+			}
 		}
 		containmentQueueDepth.Set(float64(len(d.queue)))
 	}

@@ -127,7 +127,7 @@ func NewWebhookHandler(cfg HandlerConfig) http.Handler {
 			http.Error(w, "Bad Request: unable to read request body", http.StatusBadRequest)
 			return
 		}
-		defer r.Body.Close()
+		defer func() { _ = r.Body.Close() }()
 
 		// 3. Verify HMAC-SHA256 signature if secret is configured
 		if len(cfg.HMACSecret) > 0 {
@@ -412,7 +412,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("Fatal: creating Unix domain socket listener at %s: %v", sockPath, err)
 		}
-		defer os.Remove(sockPath)
+		defer func() { _ = os.Remove(sockPath) }()
 
 		unixServer := &http.Server{
 			Handler:           mux,
