@@ -171,13 +171,10 @@ type Client struct {
 }
 
 // New normalizes baseURL, https:// when no scheme is given and no trailing
-// slash, and speaks through httpClient, which the caller builds with
-// NewHTTPClient so its own transport policy applies.
+// slash via api.NormalizeControlPlaneURL, and speaks through httpClient, which the
+// caller builds with NewHTTPClient so its own transport policy applies.
 func New(baseURL string, httpClient *http.Client) *Client {
-	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
-		baseURL = "https://" + baseURL
-	}
-	return &Client{baseURL: strings.TrimSuffix(baseURL, "/"), http: httpClient, now: time.Now}
+	return &Client{baseURL: api.NormalizeControlPlaneURL(baseURL), http: httpClient, now: time.Now}
 }
 
 // WithIdentity configures the peer ID and private key used to sign

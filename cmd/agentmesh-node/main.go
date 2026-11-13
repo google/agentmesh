@@ -224,12 +224,9 @@ func decideJoinAction(identityExists, hasPubKey, interactive bool, controlPlaneA
 }
 
 // normalizeControlPlaneURL adds the https:// scheme if missing and drops any
-// trailing slash.
+// trailing slash via api.NormalizeControlPlaneURL.
 func normalizeControlPlaneURL(url string) string {
-	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
-		url = "https://" + url
-	}
-	return strings.TrimSuffix(url, "/")
+	return api.NormalizeControlPlaneURL(url)
 }
 
 // parseRouterAddrs keeps the stored router addresses that still parse.

@@ -33,6 +33,23 @@ import (
 // on the path.
 var ErrInsecureControlPlaneURL = errors.New("plaintext http:// control plane URL to a non-loopback host")
 
+// NormalizeControlPlaneURL canonicalizes a control plane URL: it trims surrounding
+// whitespace, prepends https:// if no scheme is present, strips all trailing slashes,
+// and returns an empty string when the input is empty.
+func NormalizeControlPlaneURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
+		raw = "https://" + raw
+	}
+	for strings.HasSuffix(raw, "/") && !strings.HasSuffix(raw, "://") {
+		raw = strings.TrimSuffix(raw, "/")
+	}
+	return raw
+}
+
 // ValidateControlPlaneTransport accepts https://, accepts http:// only to a
 // loopback host, and otherwise refuses unless allowInsecure is set by the
 // operator (the --insecure-control-plane flag) for a network they trust.

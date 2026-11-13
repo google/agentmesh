@@ -46,6 +46,24 @@ func writeProto(t *testing.T, w http.ResponseWriter, msg proto.Message) {
 	}
 }
 
+func TestNewBaseURLNormalization(t *testing.T) {
+	cases := map[string]string{
+		"":                              "",
+		"   ":                           "",
+		"hub.sam-mesh.dev":              "https://hub.sam-mesh.dev",
+		"http://127.0.0.1:8080":         "http://127.0.0.1:8080",
+		"https://hub.sam-mesh.dev/":     "https://hub.sam-mesh.dev",
+		"https://hub.sam-mesh.dev//":    "https://hub.sam-mesh.dev",
+		"  https://hub.sam-mesh.dev/  ": "https://hub.sam-mesh.dev",
+	}
+	for in, want := range cases {
+		c := New(in, nil)
+		if c.baseURL != want {
+			t.Errorf("New(%q).baseURL = %q, want %q", in, c.baseURL, want)
+		}
+	}
+}
+
 func TestHTTPClientUserAgent(t *testing.T) {
 	for _, component := range []string{"agentmesh-node", "agentmesh-router"} {
 		t.Run(component, func(t *testing.T) {
