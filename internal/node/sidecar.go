@@ -34,7 +34,6 @@ import (
 	"time"
 
 	"github.com/google/agentmesh/api"
-	libp2phttp "github.com/libp2p/go-libp2p-http"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -714,7 +713,7 @@ func (node *AgentMeshNode) prepareEgressPeer(ctx context.Context, peerID string)
 }
 
 func createEgressProxy(node *AgentMeshNode) http.Handler {
-	transport := libp2phttp.NewTransport(node.Host)
+	transport := newLibp2pHTTPTransport(node.Host)
 
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
