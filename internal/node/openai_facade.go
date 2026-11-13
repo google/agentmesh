@@ -29,7 +29,6 @@ import (
 	"time"
 
 	"github.com/google/agentmesh/api"
-	libp2phttp "github.com/libp2p/go-libp2p-http"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -103,7 +102,7 @@ type openAIFacade struct {
 }
 
 func newOpenAIFacade(node *AgentMeshNode, egress http.Handler) *openAIFacade {
-	client := &http.Client{Transport: libp2phttp.NewTransport(node.Host)}
+	client := &http.Client{Transport: newLibp2pHTTPTransport(node.Host)}
 	return &openAIFacade{
 		forward:     egress,
 		ttl:         modelRegistryTTL,
