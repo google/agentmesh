@@ -80,7 +80,7 @@ func TestLibp2pHTTPTransportResetsStreamOnCancel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if line, err := bufio.NewReader(resp.Body).ReadString('\n'); err != nil || line != "first\n" {
 		t.Fatalf("first line = %q, %v", line, err)
 	}
@@ -104,7 +104,7 @@ func TestLibp2pHTTPTransportKeepsStreamUntilCancel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if line, err := bufio.NewReader(resp.Body).ReadString('\n'); err != nil || line != "first\n" {
 		t.Fatalf("first line = %q, %v", line, err)
 	}
