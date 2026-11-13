@@ -1022,7 +1022,9 @@ func (s *Server) HandleSTSToken(w http.ResponseWriter, r *http.Request) {
 				if len(d.GetServedBy()) > 0 {
 					callingRoles := s.nodeRoles(r.Context(), nodeRecord)
 					if !api.EgressServedBy(d, callingRoles, nodeRecord.Labels) {
-						http.Error(w, fmt.Sprintf("calling node %s is not in served_by for egress://%s", nodeRecord.PeerID, destHost), http.StatusForbidden)
+						reason := fmt.Sprintf("calling node %s is not in served_by for egress://%s", nodeRecord.PeerID, destHost)
+						logSTSDenyBeforeBiscuit(nodeRecord.PeerID, &req, reason)
+						http.Error(w, reason, http.StatusForbidden)
 						return
 					}
 				}
@@ -1033,6 +1035,7 @@ func (s *Server) HandleSTSToken(w http.ResponseWriter, r *http.Request) {
 
 	audience, audErr := s.resolveEgressAudience(r.Context(), req.Destination, req.Audience)
 	if audErr != nil {
+		logSTSDenyBeforeBiscuit(nodeRecord.PeerID, &req, audErr.Error())
 		http.Error(w, audErr.Error(), http.StatusForbidden)
 		return
 	}
@@ -1127,6 +1130,24 @@ func (s *Server) HandleSTSToken(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/x-protobuf")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(respData)
+}
+
+// logSTSDenyBeforeBiscuit writes the Border Crossing deny line for a /sts/token
+// refusal that happens after the calling node's PoP challenge has verified but
+// before the caller's Biscuit is checked (served_by and audience). actor_node is
+// proven at that point; client_peer_id is left empty because nothing in the
+// Biscuit has been verified yet, and audience is the one the caller requested.
+func logSTSDenyBeforeBiscuit(actorNode string, req *api.STSTokenRequest, reason string) {
+	logger.Infow("Border Crossing",
+		"direction", "outbound",
+		"endpoint", "/sts/token",
+		"decision", "deny",
+		"actor_node", actorNode,
+		"client_peer_id", "",
+		"audience", req.GetAudience(),
+		"destination", req.GetDestination(),
+		"reason", reason,
+	)
 }
 
 func (s *Server) resolveEgressAudience(ctx context.Context, destination, reqAudience string) (string, error) {
