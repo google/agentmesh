@@ -32,6 +32,9 @@ concurrency:
 
 env:
   GO_VERSION: "1.26"
+  # Pinned: a new release on the stable channel must not break main.
+  # Keep in sync with mobile.yml.
+  FLUTTER_VERSION: "3.50.0"
 
 jobs:
   build-ffi:
@@ -54,6 +57,7 @@ jobs:
     - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
       with:
         channel: 'stable'
+        flutter-version: ${{ env.FLUTTER_VERSION }}
         cache: true
     - name: Install dependencies
       run: flutter pub get
@@ -74,6 +78,7 @@ jobs:
     - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
       with:
         channel: 'stable'
+        flutter-version: ${{ env.FLUTTER_VERSION }}
         cache: true
     - name: Set up JDK
       uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0

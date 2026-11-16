@@ -21,7 +21,7 @@ The app compiles the core Go mesh networking and routing logic into a C-compatib
 ## Prerequisites
 
 Before building the application, ensure you have configured:
-1. **Flutter SDK**: Installed and configured (run `flutter doctor` to verify).
+1. **Flutter SDK**: Version 3.47+ installed and configured (run `flutter doctor` to verify). CI builds with the version pinned as `FLUTTER_VERSION` in `.github/workflows/test_flutter.yaml`.
 2. **Go Compiler**: Version 1.26+ installed.
 3. **Android NDK**: Required to cross-compile the Go library for Android platforms. Ensure the `ANDROID_NDK_HOME` environment variable points to your NDK installation.
 
