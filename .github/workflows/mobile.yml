@@ -34,6 +34,9 @@ permissions: {}
 env:
   APP_DIR: mobile/agentmesh-node-app
   PACKAGE_NAME: dev.sammesh.connect
+  # Pinned: a release build must use the Flutter version that CI tests.
+  # Keep in sync with test_flutter.yaml.
+  FLUTTER_VERSION: "3.50.0"
 
 jobs:
   build:
@@ -68,6 +71,7 @@ jobs:
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           channel: 'stable'
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
 
       - name: Determine version
