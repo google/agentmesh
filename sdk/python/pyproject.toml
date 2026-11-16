@@ -16,7 +16,7 @@ dependencies = [
     # HTTP/1.1 on a libp2p stream (/libp2p-http) and forwarding to a backend.
     "h11>=0.14",
     "httpx>=0.27",
-    "libp2p>=0.8,<0.9",
+    "libp2p>=0.8.1,<0.9",
     "mcp>=2,<3",
     "multiaddr>=0.2",
     # py-libp2p requires protobuf<7; stay co-installable.

@@ -43,7 +43,6 @@ from libp2p.security.tls.transport import PROTOCOL_ID as TLS_PROTOCOL_ID
 from libp2p.security.tls.transport import IdentityConfig, TLSTransport
 from libp2p.stream_muxer.yamux.yamux import PROTOCOL_ID as YAMUX_PROTOCOL_ID
 from libp2p.stream_muxer.yamux.yamux import Yamux
-from libp2p.transport.websocket.transport import WebsocketTransport
 from multiaddr.resolvers import DNSResolver
 
 from .identity import Identity
@@ -98,29 +97,9 @@ def create_mesh_host(identity: Identity, listen_addrs: Sequence[str] = ()) -> tu
         # dials as if direct.
         connection_config=ConnectionConfig(min_connections=0, low_watermark=0),
     )
-    for transport in host.get_network().transport_manager.get_transports():  # type: ignore[attr-defined]
-        if isinstance(transport, WebsocketTransport):
-            _dial_websockets_by_name(transport)
     if str(host.get_id()) != identity.peer_id:
         raise RuntimeError(f"libp2p derived peer {host.get_id()} for identity {identity.peer_id}")
     return host, [multiaddr.Multiaddr(a) for a in listen_addrs]
-
-
-def _dial_websockets_by_name(transport: WebsocketTransport) -> None:
-    """py-libp2p resolves a `/dns4/<host>/tcp/443/wss` address to its IP
-    before dialing and then names the IP in the TLS SNI and the Host header,
-    which a TLS-terminating edge (agentmesh-one behind a tunnel) answers with 403.
-    The transport's own dial of an unresolved address keeps the name; the
-    dial here goes straight to it, as go-libp2p and js-libp2p do. Fixed
-    upstream by libp2p/py-libp2p#1549, not in 0.8; drop this with the
-    release that has it."""
-    # Bound here so a py-libp2p that renamed it fails at host construction.
-    dial_resolved = transport._dial_resolved  # noqa: SLF001
-
-    async def dial(maddr: multiaddr.Multiaddr):  # noqa: ANN202 - py-libp2p's RawConnection
-        return await dial_resolved(maddr)
-
-    transport.dial = dial  # type: ignore[method-assign]
 
 
 # agentmesh-node's swarm dial timeout. py-libp2p has none of its own: a SYN to an
