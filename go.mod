@@ -3,7 +3,7 @@ module github.com/google/agentmesh
 go 1.26.6
 
 require (
-	github.com/a2aproject/a2a-go/v2 v2.7.0
+	github.com/a2aproject/a2a-go/v2 v2.8.0
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/dustin/go-humanize v1.1.0
 	github.com/eclipse-biscuit/biscuit-go/v2 v2.2.2
@@ -32,14 +32,14 @@ require (
 	go.etcd.io/bbolt v1.5.0
 	go.uber.org/zap v1.28.0
 	golang.org/x/net v0.62.0
-	golang.org/x/oauth2 v0.37.0
-	golang.org/x/sys v0.49.0
+	golang.org/x/oauth2 v0.38.0
+	golang.org/x/sys v0.50.0
 	golang.org/x/time v0.16.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261026165753-2ffab32bce7e
 	google.golang.org/grpc v1.85.0
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/yaml.v2 v2.4.0
-	modernc.org/sqlite v1.61.1
+	modernc.org/sqlite v1.62.0
 )
 
 require (
@@ -154,7 +154,7 @@ require (
 	golang.org/x/tools v0.52.0 // indirect
 	gonum.org/v1/gonum v0.17.0 // indirect
 	lukechampine.com/blake3 v1.4.1 // indirect
-	modernc.org/libc v1.79.0 // indirect
+	modernc.org/libc v1.80.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
