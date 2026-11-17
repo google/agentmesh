@@ -119,6 +119,7 @@ which is meant for development clusters.
 
 For the router, `router.hostPort: 4501` binds TCP and UDP port 4501 on the
 Kubernetes node where the router pod runs, and announces that node's IP.
+With more than one router replica, each router announces its own pod IP.
 `router.externalAddrs` replaces the announced addresses, for example with a
 fixed DNS name:
 
