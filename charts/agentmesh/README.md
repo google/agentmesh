@@ -171,6 +171,6 @@ alongside libp2p's own relay and connection metrics.
 
 ## Several routers (`router.replicaCount` > 1)
 
-Each router announces its own pod IP (`--external-addr=/ip4/$(POD_IP)/tcp/4501`), because a router is identified by its peer id and the shared `-router` Service would send a dial to whichever pod it likes (the handshake then fails with "peer id mismatch"). With one replica, or with `router.externalAddrs` / `router.hostPort` set, nothing changes. The pod IP changes when a pod restarts; the router announces the new one when it enrolls.
+With more than one replica the chart leaves out `--external-addr`, so each router announces the addresses it listens on: its own pod IP, for TCP and QUIC. A router is identified by its peer id, and the shared `-router` Service would send a dial to whichever pod it likes (the handshake then fails with "peer id mismatch"). The router puts its address in its lease, which it sends on its first sync with the control plane after it starts and renews from then on. With one replica, or with `router.externalAddrs` / `router.hostPort` set, nothing changes.
 
-A router keeps no credential across restarts, so it enrolls again every time it starts. With the default bootstrap token (one use per replica) a restarted router is refused. Set `router.bootstrapTokenMaxUsages` to cover the restarts you expect, or avoid the token: `router.useOidcToken=true` with the cluster's service-account issuer trusted by the control plane (see the workload issuer section above).
+Change `replicaCount` through Helm (`helm upgrade --set router.replicaCount=N`). `kubectl scale` does not render the template again, so the routers keep the address the chart rendered before.
