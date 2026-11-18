@@ -15,7 +15,6 @@
 package node
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"time"
@@ -87,19 +86,14 @@ func FetchControlPlaneInfo(ctx context.Context, controlPlaneURL string) (*api.Co
 }
 
 // mergeTrustedKeys replaces the stored trust set with the authoritative set
-// from /keys, preserving ReceivedAt for keys already known so local grace
-// pruning keeps working across syncs.
+// from /keys. The control plane lists every key that is still valid, its
+// current key and any in their rotation grace period, so each listed key's
+// ReceivedAt becomes now: local pruning then ages a key from the last time
+// the control plane vouched for it, and never drops one it still lists.
 func mergeTrustedKeys(existing []TrustedKey, fetched []ed25519.PublicKey, now time.Time) []TrustedKey {
 	merged := make([]TrustedKey, 0, len(fetched))
 	for _, key := range fetched {
-		tk := TrustedKey{Key: key, ReceivedAt: now}
-		for _, old := range existing {
-			if bytes.Equal(old.Key, key) {
-				tk.ReceivedAt = old.ReceivedAt
-				break
-			}
-		}
-		merged = append(merged, tk)
+		merged = append(merged, TrustedKey{Key: key, ReceivedAt: now})
 	}
 	return merged
 }
