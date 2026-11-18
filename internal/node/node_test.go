@@ -373,18 +373,9 @@ func TestPruneTrustedKeys(t *testing.T) {
 // finds a valid identity that no trusted key verifies.
 func TestKeyPruningKeepsTheIdentitySigner(t *testing.T) {
 	now := time.Now()
-	signerPub, signerPriv, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	otherPub, _, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stalePub, _, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	signerPub, signerPriv := mustGenerateKey(t)
+	otherPub, _ := mustGenerateKey(t)
+	stalePub, _ := mustGenerateKey(t)
 	priv, _, err := crypto.GenerateEd25519Key(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -931,9 +922,9 @@ func TestStaleIdentityErrorUnwraps(t *testing.T) {
 func TestKeyPruningKeepsEveryLatestKey(t *testing.T) {
 	now := time.Now()
 	synced := now.Add(-48 * time.Hour)
-	retiring, _, _ := ed25519.GenerateKey(nil)
-	current, _, _ := ed25519.GenerateKey(nil)
-	dropped, _, _ := ed25519.GenerateKey(nil)
+	retiring, _ := mustGenerateKey(t)
+	current, _ := mustGenerateKey(t)
+	dropped, _ := mustGenerateKey(t)
 	keys := []TrustedKey{{Key: retiring, ReceivedAt: synced}, {Key: current, ReceivedAt: synced}, {Key: dropped, ReceivedAt: synced.Add(-time.Hour)}}
 	got := pruneTrustedKeys(keys, now, 24*time.Hour, func(k ed25519.PublicKey) bool { return k.Equal(retiring) })
 	if len(got) != 2 || !got[0].Key.Equal(retiring) || !got[1].Key.Equal(current) {
@@ -950,9 +941,13 @@ func TestFallbackKeyStaysOldThroughTheStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
-	rotated, _, _ := ed25519.GenerateKey(nil)
-	configured, _, _ := ed25519.GenerateKey(nil)
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
+	rotated, _ := mustGenerateKey(t)
+	configured, _ := mustGenerateKey(t)
 	learned := time.Now().Add(-30 * time.Hour).Truncate(time.Second)
 	if err := store.SaveTrustedKeys([]TrustedKey{{Key: rotated, ReceivedAt: learned}}); err != nil {
 		t.Fatal(err)
