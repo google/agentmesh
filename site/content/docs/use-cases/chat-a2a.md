@@ -29,7 +29,9 @@ request, fetches the card from the agent over the mesh, and serves a
 regenerated card whose interface URLs point back at the mesh path that the
 client fetched from. Protocol bindings that the mesh cannot carry are
 dropped (gRPC needs its own end-to-end connection). Capabilities such as
-streaming stay as the agent declares them. The client follows the regenerated card as it would for
+streaming and the extended agent card stay as the agent declares them. The
+extended card is rewritten the same way when the client asks for it, so it
+names the mesh path and none of the agent's own interface URLs. The client follows the regenerated card as it would for
 any A2A server. Discovery, sending messages and `contextId` round-tripping
 all work without changes, while the traffic flows over libp2p between the
 nodes.

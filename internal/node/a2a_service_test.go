@@ -166,7 +166,7 @@ func TestA2AServeAgentCardRegenerates(t *testing.T) {
 	  "name": "T",
 	  "description": "d",
 	  "version": "1.0.0",
-	  "capabilities": {"streaming": true},
+	  "capabilities": {"streaming": true, "extendedAgentCard": true},
 	  "supportedInterfaces": [
 	    {"url": "http://localhost:7777/", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"},
 	    {"url": "localhost:50051", "protocolBinding": "GRPC", "protocolVersion": "1.0"}
@@ -222,11 +222,270 @@ func TestA2AServeAgentCardRegenerates(t *testing.T) {
 	if !card.Capabilities.Streaming {
 		t.Errorf("streaming = %v, want true as the agent declares it", card.Capabilities.Streaming)
 	}
+	if !card.Capabilities.ExtendedAgentCard {
+		t.Errorf("extendedAgentCard = %v, want true as the agent declares it", card.Capabilities.ExtendedAgentCard)
+	}
 	if len(card.Signatures) != 0 {
-		t.Error("stale signatures must be dropped from the regenerated card")
+		t.Errorf("len(signatures) = %d, want 0: stale signatures must be dropped from the regenerated card", len(card.Signatures))
 	}
 	if card.Name != "T" || card.Version != "1.0.0" {
 		t.Errorf("agent identity fields must survive regeneration: %+v", card)
+	}
+}
+
+// extendedCardAgent fakes the mesh transport for an agent whose public card
+// names its JSON-RPC endpoint "invoke" and its HTTP+JSON binding "rest"
+// (as the provider's node relativizes them), and whose extended card names
+// its own URLs, private ones included, and adds a skill and an input mode.
+// Extended card calls answer with extended; every outbound request is kept.
+func extendedCardAgent(t *testing.T, extended func(*http.Request) *http.Response) (http.RoundTripper, *[]*http.Request) {
+	t.Helper()
+	var outbound []*http.Request
+	return roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		outbound = append(outbound, r)
+		if r.Method == http.MethodGet && r.URL.Path == "/a2a/agent/.well-known/agent-card.json" {
+			return cardResponse(http.StatusOK, `{
+			  "name": "T", "version": "1.0.0",
+			  "capabilities": {"extendedAgentCard": true},
+			  "supportedInterfaces": [
+			    {"url": "invoke", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"},
+			    {"url": "rest", "protocolBinding": "HTTP+JSON", "protocolVersion": "1.0"}
+			  ],
+			  "skills": [{"id": "echo", "name": "echo", "description": "d", "tags": []}],
+			  "defaultInputModes": ["text"], "defaultOutputModes": ["text"]
+			}`), nil
+		}
+		return extended(r), nil
+	}), &outbound
+}
+
+const extendedCardJSON = `{
+  "name": "T", "version": "1.0.0",
+  "capabilities": {"extendedAgentCard": true},
+  "supportedInterfaces": [
+    {"url": "http://10.0.0.5:7777/invoke", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"},
+    {"url": "http://agent.internal:8080/rest", "protocolBinding": "HTTP+JSON", "protocolVersion": "1.0", "tenant": "t1"},
+    {"url": "10.0.0.5:50051", "protocolBinding": "GRPC", "protocolVersion": "1.0"}
+  ],
+  "signatures": [{"protected": "eyJh", "signature": "sig"}],
+  "skills": [
+    {"id": "echo", "name": "echo", "description": "d", "tags": []},
+    {"id": "vision", "name": "vision", "description": "d", "tags": []}
+  ],
+  "defaultInputModes": ["text", "image/png"], "defaultOutputModes": ["text"]
+}`
+
+// privateCardURLs are the agent's own URLs in extendedCardJSON; none may
+// reach a client of the mesh.
+var privateCardURLs = []string{"10.0.0.5", "agent.internal"}
+
+// checkRedactedExtendedCard checks an extended card served through the mesh:
+// interfaces at the mesh URLs of the public card, the agent's own URLs gone,
+// the extended skills and input modes kept, the stale signature dropped.
+func checkRedactedExtendedCard(t *testing.T, raw []byte, card *a2a.AgentCard) {
+	t.Helper()
+	for _, private := range privateCardURLs {
+		if strings.Contains(string(raw), private) {
+			t.Errorf("served extended card names %q, want none of the agent's own URLs: %s", private, raw)
+		}
+	}
+	base := "http://127.0.0.1:8080/mesh/12D3KooWpeer/a2a/agent"
+	var got []string
+	for _, iface := range card.SupportedInterfaces {
+		got = append(got, string(iface.ProtocolBinding)+" "+iface.URL+" "+iface.Tenant)
+	}
+	want := []string{"JSONRPC " + base + "/invoke ", "HTTP+JSON " + base + "/rest t1"}
+	if strings.Join(got, ", ") != strings.Join(want, ", ") {
+		t.Errorf("interfaces = %q, want %q", got, want)
+	}
+	if !card.Capabilities.ExtendedAgentCard {
+		t.Errorf("extendedAgentCard = %v, want true as the agent declares it", card.Capabilities.ExtendedAgentCard)
+	}
+	if len(card.Skills) != 2 || card.Skills[1].ID != "vision" {
+		t.Errorf("skills = %+v, want the agent's two extended skills (echo, vision)", card.Skills)
+	}
+	if got, want := strings.Join(card.DefaultInputModes, ","), "text,image/png"; got != want {
+		t.Errorf("defaultInputModes = %q, want %q", got, want)
+	}
+	if len(card.Signatures) != 0 {
+		t.Errorf("len(signatures) = %d, want 0: stale signatures must be dropped from the redacted card", len(card.Signatures))
+	}
+}
+
+func TestA2AServeExtendedAgentCardJSONRPCRedacts(t *testing.T) {
+	const call = `{"jsonrpc":"2.0","id":"7","method":"GetExtendedAgentCard","params":{}}`
+	rt, outbound := extendedCardAgent(t, func(r *http.Request) *http.Response {
+		return cardResponse(http.StatusOK, `{"jsonrpc":"2.0","id":"7","result":`+extendedCardJSON+`}`)
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/mesh/12D3KooWpeer/a2a/agent/invoke", strings.NewReader(call))
+	req.Host = "127.0.0.1:8080"
+	req.Header.Set("Authorization", "Bearer user")
+	if !serveEgressLocally(nil, rt, rec, req) {
+		t.Fatal("GetExtendedAgentCard must be handled locally")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+	}
+
+	if len(*outbound) == 0 {
+		t.Fatal("no outbound request, want the call forwarded to the agent")
+	}
+	forwarded := (*outbound)[0]
+	if got, want := forwarded.Method+" "+forwarded.URL.String(), "POST libp2p://12D3KooWpeer/a2a/agent/invoke"; got != want {
+		t.Errorf("forwarded call = %q, want %q", got, want)
+	}
+	if got := forwarded.Header.Get("Authorization"); got != "Bearer user" {
+		t.Errorf("forwarded Authorization = %q, want %q: the extended card is for the authenticated caller", got, "Bearer user")
+	}
+	sent, err := io.ReadAll(forwarded.Body)
+	if err != nil {
+		t.Fatalf("read forwarded body: %v", err)
+	}
+	if string(sent) != call {
+		t.Errorf("forwarded body = %s, want %s", sent, call)
+	}
+
+	var resp struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      string          `json:"id"`
+		Result  json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response is not JSON-RPC: %v: %s", err, rec.Body.String())
+	}
+	if resp.JSONRPC != "2.0" || resp.ID != "7" {
+		t.Errorf("jsonrpc, id = %q, %q, want %q, %q", resp.JSONRPC, resp.ID, "2.0", "7")
+	}
+	var card a2a.AgentCard
+	if err := json.Unmarshal(resp.Result, &card); err != nil {
+		t.Fatalf("result is not an AgentCard: %v", err)
+	}
+	checkRedactedExtendedCard(t, rec.Body.Bytes(), &card)
+}
+
+func TestA2AServeExtendedAgentCardHTTPJSONRedacts(t *testing.T) {
+	rt, outbound := extendedCardAgent(t, func(r *http.Request) *http.Response {
+		return cardResponse(http.StatusOK, extendedCardJSON)
+	})
+	for _, upstream := range []string{"rest/extendedAgentCard", "rest/t1/extendedAgentCard"} {
+		*outbound = nil
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/mesh/12D3KooWpeer/a2a/agent/"+upstream, nil)
+		req.Host = "127.0.0.1:8080"
+		if !serveEgressLocally(nil, rt, rec, req) {
+			t.Fatalf("GET %s must be handled locally", upstream)
+		}
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s: status = %d, want 200, body: %s", upstream, rec.Code, rec.Body.String())
+		}
+		if got, want := (*outbound)[0].URL.String(), "libp2p://12D3KooWpeer/a2a/agent/"+upstream; got != want {
+			t.Errorf("forwarded URL = %q, want %q", got, want)
+		}
+		var card a2a.AgentCard
+		if err := json.Unmarshal(rec.Body.Bytes(), &card); err != nil {
+			t.Fatalf("GET %s: body is not an AgentCard: %v", upstream, err)
+		}
+		checkRedactedExtendedCard(t, rec.Body.Bytes(), &card)
+	}
+}
+
+func TestA2AServeExtendedAgentCardDropsBindingsTheMeshDoesNotOffer(t *testing.T) {
+	// Only the extended card names an interface outside the public card's
+	// bindings, or nothing the mesh carries at all: what the public card
+	// does not offer through the mesh is redacted, and a card left with no
+	// interface fails closed rather than going out with the agent's URLs.
+	ext := &a2a.AgentCard{SupportedInterfaces: []*a2a.AgentInterface{
+		{URL: "http://10.0.0.5:7777/", ProtocolBinding: a2a.TransportProtocolJSONRPC, ProtocolVersion: "1.0"},
+		{URL: "http://10.0.0.5:7777/rest", ProtocolBinding: a2a.TransportProtocolHTTPJSON, ProtocolVersion: "1.0"},
+	}}
+	public := &a2a.AgentCard{SupportedInterfaces: []*a2a.AgentInterface{
+		{URL: "http://mesh/x/invoke", ProtocolBinding: a2a.TransportProtocolJSONRPC, ProtocolVersion: "0.3"},
+	}}
+	if err := redactExtendedAgentCardForMesh(ext, public); err != nil {
+		t.Fatalf("redactExtendedAgentCardForMesh = %v, want nil", err)
+	}
+	if len(ext.SupportedInterfaces) != 1 || ext.SupportedInterfaces[0].URL != "http://mesh/x/invoke" || ext.SupportedInterfaces[0].ProtocolVersion != "1.0" {
+		t.Errorf("interfaces = %+v, want only JSONRPC 1.0 at %q", ext.SupportedInterfaces, "http://mesh/x/invoke")
+	}
+
+	grpcOnly := &a2a.AgentCard{SupportedInterfaces: []*a2a.AgentInterface{
+		{URL: "10.0.0.5:50051", ProtocolBinding: a2a.TransportProtocolGRPC, ProtocolVersion: "1.0"},
+	}}
+	if err := redactExtendedAgentCardForMesh(grpcOnly, public); err == nil {
+		t.Errorf("redactExtendedAgentCardForMesh = nil, interfaces %+v; want an error for a card the mesh cannot carry", grpcOnly.SupportedInterfaces)
+	}
+}
+
+func TestA2AServeExtendedAgentCardFailsClosed(t *testing.T) {
+	// A card the mesh cannot carry is refused, never relayed as the agent
+	// wrote it.
+	rt, _ := extendedCardAgent(t, func(r *http.Request) *http.Response {
+		return cardResponse(http.StatusOK, `{"name":"T","supportedInterfaces":[{"url":"10.0.0.5:50051","protocolBinding":"GRPC"}]}`)
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/mesh/12D3KooWpeer/a2a/agent/extendedAgentCard", nil)
+	if !serveEgressLocally(nil, rt, rec, req) {
+		t.Fatal("extended card GET must be handled locally")
+	}
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+	if strings.Contains(rec.Body.String(), "10.0.0.5") {
+		t.Errorf("body = %q, want none of the agent's own URLs", rec.Body.String())
+	}
+}
+
+func TestA2AServeExtendedAgentCardRelaysErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, path, body string
+		status                   int
+		reply                    string
+	}{
+		{"JSON-RPC error", "POST", "/mesh/12D3KooWpeer/a2a/agent", `{"jsonrpc":"2.0","id":1,"method":"GetExtendedAgentCard"}`,
+			http.StatusOK, `{"jsonrpc":"2.0","id":1,"error":{"code":-32007,"message":"not configured"}}`},
+		{"HTTP+JSON status", "GET", "/mesh/12D3KooWpeer/a2a/agent/extendedAgentCard", "",
+			http.StatusUnauthorized, `{"error":"unauthenticated"}`},
+	} {
+		rt, _ := extendedCardAgent(t, func(*http.Request) *http.Response { return cardResponse(tc.status, tc.reply) })
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+		if !serveEgressLocally(nil, rt, rec, req) {
+			t.Fatalf("%s: must be handled locally", tc.name)
+		}
+		if rec.Code != tc.status || rec.Body.String() != tc.reply {
+			t.Errorf("%s: got %d %s, want %d %s", tc.name, rec.Code, rec.Body.String(), tc.status, tc.reply)
+		}
+	}
+}
+
+func TestA2AServeExtendedAgentCardLeavesOtherCallsToTheProxy(t *testing.T) {
+	// Every other call streams through the proxy with its body intact,
+	// including one too large to be a GetExtendedAgentCard call.
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		t.Errorf("mesh request %s %s, want none", r.Method, r.URL)
+		return cardResponse(http.StatusOK, "{}"), nil
+	})
+	large := `{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"pad":"` + strings.Repeat("x", maxExtendedCardRequestBytes) + `"}}`
+	for _, tc := range []struct{ method, path, body string }{
+		{"POST", "/mesh/12D3KooWpeer/a2a/agent/invoke", `{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{}}`},
+		{"POST", "/mesh/12D3KooWpeer/a2a/agent", large},
+		{"POST", "/mesh/12D3KooWpeer/a2a/agent", `not json`},
+		{"GET", "/mesh/12D3KooWpeer/a2a/agent/tasks/extendedAgentCard", ""},
+	} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+		if serveEgressLocally(nil, rt, rec, req) {
+			t.Errorf("%s %s must stream through the proxy", tc.method, tc.path)
+			continue
+		}
+		got, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("read body left for the proxy: %v", err)
+		}
+		if string(got) != tc.body {
+			t.Errorf("%s %s: body left for the proxy has %d bytes, want the %d sent", tc.method, tc.path, len(got), len(tc.body))
+		}
 	}
 }
 
