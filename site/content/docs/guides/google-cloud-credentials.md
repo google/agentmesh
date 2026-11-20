@@ -15,6 +15,9 @@ Then the node mints a short-lived token at the control plane, exchanges it
 at Google STS, and injects the Google access token. No service account key
 exists. The member holds no Google credential.
 
+A runnable local example with an automated verification script and audit-log
+checks is available under [development/examples/cloud-iam/](https://github.com/google/agentmesh/tree/main/development/examples/cloud-iam).
+
 How it works:
 
 ```text
