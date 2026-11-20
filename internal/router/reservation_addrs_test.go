@@ -116,18 +116,18 @@ func hasCircuit(ma multiaddr.Multiaddr) bool {
 	return strings.HasSuffix(ma.String(), "/p2p-circuit")
 }
 
-// The circuit addresses follow the addresses the router leases: the
-// configured external ones when set, and a malformed one is a start-up
-// error rather than an address silently dropped from the lease.
+// The circuit addresses follow the lease: the --external-addr addresses plus
+// the WebTransport address of the QUIC one. A malformed --external-addr fails
+// at start instead of disappearing from the lease.
 func TestRouterCircuitAddrsFollowTheExternalAddrs(t *testing.T) {
-	h := newLoopbackHost(t, libp2p.DisableRelay())
+	h, webTransport := newWebTransportHost(t)
 	r := &Router{Host: h, config: Options{ExternalAddrs: []string{"/dns4/router.example/tcp/4501", "/ip4/203.0.113.9/udp/4501/quic-v1"}}}
 	var got []string
 	for _, ma := range r.circuitAddrs() {
 		got = append(got, ma.String())
 	}
 	suffix := "/p2p/" + h.ID().String() + "/p2p-circuit"
-	want := []string{"/dns4/router.example/tcp/4501" + suffix, "/ip4/203.0.113.9/udp/4501/quic-v1" + suffix}
+	want := []string{"/dns4/router.example/tcp/4501" + suffix, "/ip4/203.0.113.9/udp/4501/quic-v1" + suffix, "/ip4/203.0.113.9/udp/4501/quic-v1" + webTransport + suffix}
 	if !slices.Equal(got, want) {
 		t.Errorf("circuitAddrs = %v, want %v", got, want)
 	}

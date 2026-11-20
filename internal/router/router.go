@@ -166,34 +166,6 @@ func (r *Router) reservationTTL() time.Duration {
 	return relay.DefaultResources().ReservationTTL
 }
 
-// advertisedAddrs are the addresses the router leases to the control plane
-// and is reached at: the configured external ones, else what the host
-// listens on.
-func (r *Router) advertisedAddrs() []multiaddr.Multiaddr {
-	if len(r.config.ExternalAddrs) == 0 {
-		return r.Host.Addrs()
-	}
-	addrs := make([]multiaddr.Multiaddr, 0, len(r.config.ExternalAddrs))
-	for _, s := range r.config.ExternalAddrs {
-		if ma, err := multiaddr.NewMultiaddr(s); err == nil {
-			addrs = append(addrs, ma)
-		}
-	}
-	return addrs
-}
-
-// circuitAddrs are advertisedAddrs with /p2p/<router>/p2p-circuit appended:
-// where a peer that reserved with this router is reached.
-func (r *Router) circuitAddrs() []multiaddr.Multiaddr {
-	via := multiaddr.StringCast("/p2p/" + r.Host.ID().String() + "/p2p-circuit")
-	advertised := r.advertisedAddrs()
-	addrs := make([]multiaddr.Multiaddr, 0, len(advertised))
-	for _, a := range advertised {
-		addrs = append(addrs, a.Encapsulate(via))
-	}
-	return addrs
-}
-
 func (a *relayACL) AllowConnect(src peer.ID, srcAddr multiaddr.Multiaddr, dest peer.ID) bool {
 	if _, banned := a.r.bannedPeers.Load(src); banned {
 		logger.Debugf("[Relay] Rejecting connect from %s to %s: src is banned", src, dest)
@@ -404,8 +376,14 @@ type Router struct {
 	// identityLoggedAt is when the "Router Online" line was last written.
 	identityLoggedAt atomic.Pointer[time.Time]
 	// leasedAddrs is the address list of the last accepted lease, joined.
-	leasedAddrs    atomic.Pointer[string]
-	authFailureLog perPeerLogLimiter
+	leasedAddrs atomic.Pointer[string]
+	// resolvedExternalAddrs are the router's own addresses found in its
+	// /dnsaddr --external-addr entries at the last lookup.
+	resolvedExternalAddrs atomic.Pointer[[]multiaddr.Multiaddr]
+	// externalAddrLookupFailures counts the /dnsaddr lookups that failed
+	// since the last one that answered.
+	externalAddrLookupFailures atomic.Int32
+	authFailureLog             perPeerLogLimiter
 }
 
 // NewRouter initializes the router.
@@ -635,6 +613,7 @@ func (r *Router) Start() (retErr error) {
 	}()
 
 	logger.Infof("Router Online. PeerID: %s, ListenAddrs: %v", r.Host.ID(), r.Host.Addrs())
+	r.warnAddrsWithoutWebTransport(r.externalAddrs())
 	return nil
 }
 
@@ -1386,6 +1365,7 @@ func (r *Router) renewLease() {
 	if r.shutdown.Load() {
 		return
 	}
+	r.resolveExternalAddrs(r.ctx)
 	r.sendLease(r.ctx, nil, 2)
 }
 

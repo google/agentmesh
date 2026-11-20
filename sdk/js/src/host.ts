@@ -16,7 +16,7 @@
 // agentmesh-node's is (internal/node/node.go): yamux the muxer, circuit relay v2
 // for reachability through the routers. Transports and the security
 // protocol come from the runtime (platform/transports.ts): on Node TCP and
-// WebSocket with TLS, in a browser WebSocket with Noise.
+// WebSocket with TLS, in a browser WebSocket and WebTransport with Noise.
 
 import { yamux } from "@chainsafe/libp2p-yamux";
 import { circuitRelayTransport } from "@libp2p/circuit-relay-v2";

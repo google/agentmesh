@@ -12,19 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// How a member in a browser reaches the mesh: WebSocket, the one transport a
-// page can open to a router (agentmesh-one's single port, or a router behind a
-// TLS-terminating proxy as wss), secured with Noise. A browser cannot run
-// libp2p's TLS, which needs a self-signed certificate over a raw socket;
-// routers and nodes accept Noise beside TLS, and both bind the connection to
-// the peer ID.
+// A browser reaches a router over WebSocket or WebTransport. WebTransport works
+// by IP: the browser checks the router's certificate against the certhash in
+// its address. A browser can't run libp2p's TLS, so it secures both with Noise.
 
 import { noise } from "@chainsafe/libp2p-noise";
 import { webSockets } from "@libp2p/websockets";
+import { webTransport } from "@libp2p/webtransport";
 import type { Libp2pOptions } from "libp2p";
 
 export function transports(): NonNullable<Libp2pOptions["transports"]> {
-  return [webSockets()];
+  return [webSockets(), webTransport()];
 }
 
 export function connectionEncrypters(): NonNullable<Libp2pOptions["connectionEncrypters"]> {
