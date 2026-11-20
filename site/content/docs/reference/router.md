@@ -35,8 +35,8 @@ replica count.
 |---|---|---|
 | `--control-plane` | `http://127.0.0.1:8080` | Control plane URL. `https://` is required unless the host is loopback. |
 | `--insecure-control-plane` | `false` | Accept plaintext `http://` to a non-loopback host, such as an in-cluster Service. |
-| `--listen` | `/ip4/0.0.0.0/tcp/5001`, `/ip6/::/tcp/5001` | libp2p listen addresses. Repeatable. Add `/ip4/0.0.0.0/udp/5001/quic-v1` for QUIC. |
-| `--external-addr` | none | Addresses to announce instead of the detected ones, such as `/dnsaddr/bootstrap.example.com` or `/ip4/<public-ip>/tcp/5001`. Repeatable. |
+| `--listen` | `/ip4/0.0.0.0/tcp/5001`, `/ip6/::/tcp/5001` | libp2p listen addresses. Repeatable. Add `/ip4/0.0.0.0/udp/5001/quic-v1` for QUIC, and `/ip4/0.0.0.0/udp/5001/quic-v1/webtransport` for WebTransport on the same port. |
+| `--external-addr` | none | Addresses to announce instead of the detected ones, such as `/dnsaddr/bootstrap.example.com` or `/ip4/<public-ip>/tcp/5001`. Repeatable. If the router also listens on `/webtransport`, it announces a `/webtransport` address for each external QUIC address, given here or found under its peer ID in a `/dnsaddr`. A `/dnsaddr` record that names another `/dnsaddr` is not followed. The external QUIC address must reach the port of the `/webtransport` listener. The router adds the certhash, because it changes and cannot be configured. |
 | `--keys-path` | `router.key` | The router's private key. It fixes the peer ID across restarts and belongs on persistent storage. |
 | `--control-plane-sync-interval` | `5m` | How often the router's one pass over the control plane runs: it renews the lease, re-reads `/info`, `/keys` and `/policies`, and refreshes its own credential when it nears expiry. A mesh event runs a pass at once. Must be well below the control plane's `--lease-duration` and `--key-grace-period`. |
 | `--allow-loopback` | `false` | Announce and accept loopback and link-local addresses. For a router and nodes on one host. |

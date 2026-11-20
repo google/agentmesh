@@ -15,9 +15,11 @@
 // The pieces the browser SDK test stands up around Chromium: agentmesh-one from
 // bin/, a TLS-terminating edge in front of it that routes by name the way
 // `agentmesh-one --tunnel` puts one there, a static server for the page, and the
-// Node example programs from sdk/js as the other members.
+// Node example programs from sdk/js as the other members, and agentmesh-router
+// from bin/ as a second router that a page reaches over WebTransport.
 
 const { spawn, spawnSync } = require('node:child_process');
+const dgram = require('node:dgram');
 const fs = require('node:fs');
 const http = require('node:http');
 const https = require('node:https');
@@ -35,6 +37,9 @@ function missing() {
   if (!fs.existsSync(path.join(REPO_ROOT, 'bin', 'agentmesh-one'))) {
     return 'bin/agentmesh-one is not built (make build)';
   }
+  if (!fs.existsSync(path.join(REPO_ROOT, 'bin', 'agentmesh-router'))) {
+    return 'bin/agentmesh-router is not built (make build)';
+  }
   if (!fs.existsSync(path.join(PAGE_DIR, 'index.html')) || !fs.existsSync(path.join(SDK_JS, 'build', 'examples', 'a2a-call.js'))) {
     return 'the sdk/js browser example is not built (tests/ui/run.sh builds it)';
   }
@@ -49,6 +54,17 @@ function freePort() {
       srv.close(() => resolve(port));
     });
     srv.on('error', reject);
+  });
+}
+
+function freeUDPPort() {
+  return new Promise((resolve, reject) => {
+    const sock = dgram.createSocket('udp4');
+    sock.on('error', reject);
+    sock.bind(0, '127.0.0.1', () => {
+      const { port } = sock.address();
+      sock.close(() => resolve(port));
+    });
   });
 }
 
@@ -88,6 +104,7 @@ async function startSamOne({ externalUrl } = {}) {
   }
   return {
     localUrl,
+    dataDir,
     publicUrl: externalUrl ?? localUrl,
     joinToken: fs.readFileSync(path.join(dataDir, 'join-token'), 'utf8').trim(),
     get output() {
@@ -98,6 +115,40 @@ async function startSamOne({ externalUrl } = {}) {
       fs.rmSync(dataDir, { recursive: true, force: true });
     },
   };
+}
+
+/**
+ * Runs bin/agentmesh-router against samOne with QUIC and WebTransport on one
+ * loopback UDP port, announced by --external-addr as an operator announces a
+ * public address. Resolves once the router has leased its addresses.
+ */
+async function startWebTransportRouter(samOne) {
+  const minted = spawnSync(path.join(REPO_ROOT, 'bin', 'agentmesh-one'), ['token', 'create', '--role', 'mesh:role:router', '--data-dir', samOne.dataDir, '--server', samOne.localUrl], { encoding: 'utf8' });
+  const token = /^Token:\s+(\S+)/m.exec(minted.stdout ?? '')?.[1];
+  if (minted.status !== 0 || !token) {
+    throw new Error(`agentmesh-one token create exited with ${minted.status}: ${minted.stderr}`);
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentmesh-router-ui-'));
+  fs.writeFileSync(path.join(dir, 'token'), token + '\n', { mode: 0o600 });
+  const externalAddr = `/ip4/127.0.0.1/udp/${await freeUDPPort()}/quic-v1`;
+  const args = ['--control-plane', samOne.localUrl, '--bootstrap-token-path', path.join(dir, 'token'), '--keys-path', path.join(dir, 'router.key'), '--listen', externalAddr, '--listen', `${externalAddr}/webtransport`, '--external-addr', externalAddr];
+  const proc = spawn(path.join(REPO_ROOT, 'bin', 'agentmesh-router'), args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  let output = '';
+  proc.stdout.on('data', (d) => (output += d));
+  proc.stderr.on('data', (d) => (output += d));
+  const stop = () => {
+    proc.kill();
+    fs.rmSync(dir, { recursive: true, force: true });
+  };
+  for (let i = 0; i < 300; i++) {
+    const leased = /Lease advertises \d+ address\(es\): \[(.*)\]/.exec(output)?.[1];
+    if (leased) {
+      return { externalAddr, leased: leased.split(' '), peerId: /\/p2p\/(12D3Koo\w+)/.exec(leased)[1], stop };
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  stop();
+  throw new Error(`agentmesh-router did not lease its addresses:\n${output}`);
 }
 
 /** A self-signed certificate for host, from openssl; null when openssl is not installed. */
@@ -246,4 +297,4 @@ function exampleEnv({ publicUrl, joinToken, caFile }, stateName) {
   };
 }
 
-module.exports = { PAGE_DIR, missing, freePort, startSamOne, selfSignedCert, startTLSEdge, serveStatic, runExample, startExampleAgent, exampleEnv };
+module.exports = { PAGE_DIR, missing, freePort, startSamOne, startWebTransportRouter, selfSignedCert, startTLSEdge, serveStatic, runExample, startExampleAgent, exampleEnv };

@@ -69,7 +69,7 @@ Milestones 1 to 5 are implemented and tested in both languages:
 | Control plane pull before join and on `agentmesh-node`'s interval: `/keys` verified against the trusted set, credential refresh after a rotation, `/info` bans and router catalog (`routers` and `router_addresses`) | yes | yes |
 | Gossip events from the control plane (`/mesh/events/v1`, StrictSign): ban enforced at once, key rotation adopted, policy update pulls | yes | yes |
 | Banned peers refused: connections dropped and denied, handshakes and requests refused, dials refused | yes | yes |
-| Runs in a browser page: WebSocket and Noise to the router, state in IndexedDB, the agent answered by a fetch handler; `sdk/js/examples/browser` against `agentmesh-one`, tested in Chromium | yes | — |
+| Runs in a browser page: WebSocket or WebTransport, with Noise, to the router, state in IndexedDB, the agent answered by a fetch handler; `sdk/js/examples/browser` against `agentmesh-one`, tested in Chromium | yes | — |
 | Published to a registry from the release workflow | npm `@agentmesh-p2p/sdk` | PyPI `agentmesh-p2p` |
 
 A member built this way is on the mesh and uses it in both directions: it
@@ -767,7 +767,7 @@ one follows is named so a change on one side can be carried to the others.
 | `libp2p-http.ts` | `libp2p_http.py` | `/libp2p-http` client (streaming) and the A2A ingress for the agent, as go-libp2p-http and `StartIngressServer`; mesh URLs |
 | `http1.ts` | — | HTTP/1.1 heads and bodies on a libp2p stream, for `libp2p-http.ts` (Python uses `h11` in `libp2p_http.py`) |
 | `libp2p-http-node.ts` | — | the ingress for a Node request listener (an Express app), Node's own HTTP server over the stream |
-| `platform/*.ts`, `platform/*.browser.ts` | — | what differs between Node and a browser: transports and security (TCP+WebSocket with TLS then Noise; WebSocket with Noise), state (files; IndexedDB), the biscuit WASM loader, the ingress. `package.json`'s `browser` field maps each to its twin; `scripts/bundle-browser.mjs` bundles for a page and fails if the browser graph reaches a `node:` module |
+| `platform/*.ts`, `platform/*.browser.ts` | — | what differs between Node and a browser: transports and security (TCP+WebSocket with TLS then Noise; WebSocket and WebTransport with Noise), state (files; IndexedDB), the biscuit WASM loader, the ingress. `package.json`'s `browser` field maps each to its twin; `scripts/bundle-browser.mjs` bundles for a page and fails if the browser graph reaches a `node:` module |
 | — | `httpx_transport.py` | `MeshTransport`, the mesh as an `httpx.AsyncBaseTransport` (JS has `session.fetch()` instead) |
 | `sync.ts` | `sync.py` | ban set and mesh event verification, as `reconcileBannedPeers` and `verifyEvent` |
 | `conformance.ts`, `conformance-join.ts` | `conformance.py`, `conformance_join.py` | the runners the integration tests drive |

@@ -174,3 +174,9 @@ alongside libp2p's own relay and connection metrics.
 With more than one replica the chart leaves out `--external-addr`, so each router announces the addresses it listens on: its own pod IP, for TCP and QUIC. A router is identified by its peer id, and the shared `-router` Service would send a dial to whichever pod it likes (the handshake then fails with "peer id mismatch"). The router puts its address in its lease, which it sends on its first sync with the control plane after it starts and renews from then on. With one replica, or with `router.externalAddrs` / `router.hostPort` set, nothing changes.
 
 Change `replicaCount` through Helm (`helm upgrade --set router.replicaCount=N`). `kubectl scale` does not render the template again, so the routers keep the address the chart rendered before.
+
+## Browsers
+
+A browser page reaches a router over WebSocket or WebTransport only. The chart's routers listen on TCP and QUIC, so a page cannot join through them, and the chart has no value for another listen address.
+
+To let a page in over WebTransport, add one argument to the router container, for example with a Helm post-renderer: `--listen=/ip4/0.0.0.0/udp/4501/quic-v1/webtransport`. It shares the UDP port of the QUIC listener, so it needs no new port. With `router.hostPort` set, or with a QUIC address in `router.externalAddrs`, the router then announces a `/webtransport` address for each QUIC address it announces. The page checks the router's self-signed certificate against the `certhash` in that address, so it needs no hostname and no CA certificate.

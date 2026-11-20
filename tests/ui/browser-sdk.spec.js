@@ -18,7 +18,8 @@
 // a Node member, calls a Node agent, and after a reload resumes the saved
 // enrollment without a token. Once against agentmesh-one directly and once behind
 // a TLS-terminating edge reached by name, the topology `agentmesh-one --tunnel`
-// leaves the page in, where the router is advertised as wss.
+// leaves the page in, where the router is advertised as wss. A last test adds
+// a router that the page reaches by IP over WebTransport.
 
 const { test, expect } = require('@playwright/test');
 const stack = require('./lib/agentmesh-one');
@@ -97,3 +98,43 @@ for (const topology of topologies) {
     }
   });
 }
+
+// The router announces a QUIC address by IP and listens on WebTransport on
+// the same port; it has no WebSocket listener and no CA certificate. The page
+// reads the router's WebTransport address from the control plane, dials it,
+// and completes the mesh handshake with the router on that connection.
+test('a browser page reaches a router by IP over WebTransport', async ({ page }) => {
+  const why = stack.missing();
+  test.skip(why !== '', why);
+
+  const stops = [];
+  try {
+    const samOne = await stack.startSamOne();
+    stops.push(() => samOne.stop());
+    const router = await stack.startWebTransportRouter(samOne);
+    stops.push(() => router.stop());
+    expect(router.leased.filter((addr) => addr.startsWith(`${router.externalAddr}/webtransport/certhash/`)), `leased: ${router.leased}`).toHaveLength(1);
+    const site = await stack.serveStatic(stack.PAGE_DIR);
+    stops.push(() => site.stop());
+
+    const query = new URLSearchParams({ controlPlaneUrl: samOne.publicUrl, bootstrapToken: samOne.joinToken, allowInsecure: 'true' });
+    await page.goto(`${site.url}/?${query}`);
+    await page.getByRole('button', { name: 'Join' }).click();
+    await expect(page.locator('#status')).toContainText('accepting a2a://agent', { timeout: 30_000 });
+
+    // The page's open connections to the router, then "admitted" once the
+    // router passed the mesh handshake.
+    const toRouter = () =>
+      page.evaluate((routerPeer) => {
+        const { node, routers } = window.agentmesh.session;
+        const open = node.getConnections().filter((c) => c.remotePeer.toString() === routerPeer && c.status === 'open');
+        return [...open.map((c) => c.remoteAddr.toString()), routers.some((r) => r.peerId === routerPeer) ? 'admitted' : 'not admitted'].join(' ');
+      }, router.peerId);
+    await expect.poll(toRouter, { timeout: 30_000 }).toMatch(/^\S+\/webtransport\/certhash\/\S+ admitted$/);
+    expect((await toRouter()).startsWith(`${router.externalAddr}/webtransport/certhash/`)).toBe(true);
+  } finally {
+    for (const stop of stops.reverse()) {
+      stop();
+    }
+  }
+});

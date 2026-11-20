@@ -89,6 +89,8 @@ spec:
         - "--insecure-control-plane"
         - "--listen=/ip4/0.0.0.0/tcp/4501"
         - "--listen=/ip4/0.0.0.0/udp/4501/quic-v1"
+        # Browsers reach the router here; it shares the QUIC socket.
+        - "--listen=/ip4/0.0.0.0/udp/4501/quic-v1/webtransport"
         - "--external-addr=/dnsaddr/bootstrap.${ENV_NAME}.sam-mesh.dev"
         - "--jwt-path=/var/run/secrets/tokens/agentmesh-token"
         - "--keys-path=/data/router.key"

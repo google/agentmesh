@@ -946,12 +946,17 @@ The JS SDK is the same package in a page. `AgentMesh.enroll`, `join`,
 `acceptA2A`, `fetch()` and the rest work as above; what differs is how
 the page reaches the mesh and where it keeps its state:
 
-- The page connects to a router over WebSocket and secures the connection
-  with Noise. Routers and nodes offer TLS first and accept Noise, so a
-  Node, Python or Go member reached through a relay meets the page on
-  Noise, end to end. `agentmesh-one` listens on WebSocket by default; behind
-  `--tunnel` or any TLS-terminating proxy it advertises the router as
-  `wss`, which a page served over `https` needs.
+- The page connects to a router over WebSocket or WebTransport and secures
+  the connection with Noise. Routers and nodes offer TLS first and accept
+  Noise, so a Node, Python or Go member reached through a relay meets the
+  page on Noise, end to end. `agentmesh-one` listens on WebSocket by default;
+  behind `--tunnel` or any TLS-terminating proxy it advertises the router as
+  `wss`, which a page served over `https` needs. A router started with
+  `--listen /ip4/0.0.0.0/udp/<port>/quic-v1/webtransport` beside its QUIC
+  listener is reached by IP address: the page checks the router's
+  self-signed certificate against the `certhash` in the address the router
+  advertises. A page with a Content Security Policy allows `https:` in
+  `connect-src` for it.
 - The control plane answers the page's requests from any origin. Enrollment
   and refresh authenticate by the token or biscuit the request carries, so a
   page on another origin sends nothing a program could not send already.

@@ -581,6 +581,7 @@ jobs:
             --bootstrap-token-path=/run/secrets/bootstrap-token \
             --listen=/ip4/0.0.0.0/tcp/4501 \
             --listen=/ip4/0.0.0.0/udp/4501/quic-v1 \
+            --listen=/ip4/0.0.0.0/udp/4501/quic-v1/webtransport \
             --external-addr=/ip4/${EXTERNAL_IP}/tcp/4501 \
             --external-addr=/ip4/${EXTERNAL_IP}/udp/4501/quic-v1 \
             --metrics-addr=127.0.0.1:9090'
