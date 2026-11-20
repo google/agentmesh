@@ -1,450 +1,532 @@
 <!doctype html>
-<html lang="{{ .Site.Language.Lang }}" class="no-js" data-bs-theme="dark">
+<html lang="{{ .Site.Language.Lang }}" class="no-js" data-type="software">
 
 <head>
   {{ partial "head.html" . }}
+  <meta name="page-type" content="software">
+  <meta name="site-kind" content="software">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Google+Sans+Code:wght@400;500&display=swap">
+  <script>
+    // Apply the same colour mode the docs use (td-color-theme) before first paint.
+    (function () {
+      var mode = 'auto';
+      try { mode = localStorage.getItem('td-color-theme') || 'auto'; } catch (e) {}
+      if (mode === 'auto') {
+        mode = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      }
+      document.documentElement.setAttribute('data-bs-theme', mode === 'dark' ? 'dark' : 'light');
+    })();
+  </script>
 </head>
 
 <body class="agentmesh-landing-page">
-  <div class="mesh-grid"></div>
-  <div class="mesh-glow-cyan"></div>
-  <div class="mesh-glow-yellow"></div>
+  <a class="gm-skip" href="#main">Skip to content</a>
 
-  <!-- Top Navigation -->
-  <header class="am-topbar">
-    <div class="am-topbar-inner">
-      <a href="{{ "" | relURL }}" class="am-brand">
-        <img src="{{ "favicon.png" | relURL }}" alt="Agent Mesh">
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><path d="M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10zM2 13h2a1 1 0 0 0 0-2H2a1 1 0 0 0 0 2zm18 0h2a1 1 0 0 0 0-2h-2a1 1 0 0 0 0 2zM11 2v2a1 1 0 0 0 2 0V2a1 1 0 0 0-2 0zm0 18v2a1 1 0 0 0 2 0v-2a1 1 0 0 0-2 0zM5.99 4.58a1 1 0 0 0-1.41 1.41l1.06 1.06a1 1 0 0 0 1.41-1.41L5.99 4.58zm12.37 12.37a1 1 0 0 0-1.41 1.41l1.06 1.06a1 1 0 0 0 1.41-1.41l-1.06-1.06zm1.06-10.96a1 1 0 0 0-1.41-1.41l-1.06 1.06a1 1 0 0 0 1.41 1.41l1.06-1.06zM7.05 18.36a1 1 0 0 0-1.41-1.41l-1.06 1.06a1 1 0 0 0 1.41 1.41l1.06-1.06z"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.39 5.39 0 0 1-4.4 2.26 5.4 5.4 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/></symbol>
+    <symbol id="i-github" viewBox="0 0 24 24"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56v-1.97c-3.2.7-3.87-1.37-3.87-1.37-.52-1.33-1.28-1.69-1.28-1.69-1.04-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.73-1.54-2.56-.29-5.25-1.28-5.25-5.69 0-1.26.45-2.29 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.8 1.19 1.83 1.19 3.09 0 4.42-2.69 5.39-5.26 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><path d="M12.65 10A6 6 0 0 0 7 6a6 6 0 1 0 5.65 8H17v4h4v-4h2v-4H12.65zM7 14a2 2 0 1 1 0-4 2 2 0 0 1 0 4z"/></symbol>
+    <symbol id="i-dns" viewBox="0 0 24 24"><path d="M20 13H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1v-6c0-.55-.45-1-1-1zM7 19c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM20 3H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1V4c0-.55-.45-1-1-1zM7 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></symbol>
+    <symbol id="i-hub" viewBox="0 0 24 24"><path d="M8.4 18.2c.38.5.6 1.12.6 1.8 0 1.66-1.34 3-3 3s-3-1.34-3-3 1.34-3 3-3c.44 0 .85.09 1.23.26l1.41-1.77a4.98 4.98 0 0 1-.84-5.84L6.06 8.88A3 3 0 1 1 7.4 6.6l1.75 1.13A4.98 4.98 0 0 1 15.3 7.6l1.48-1.48A3 3 0 1 1 18 8.82l-1.48 1.48a4.99 4.99 0 0 1-.42 5.07l1.68 1.68A3 3 0 1 1 16.4 18.4l-1.65-1.65a4.98 4.98 0 0 1-4.95-.32L8.4 18.2zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/></symbol>
+    <symbol id="i-label" viewBox="0 0 24 24"><path d="M17.63 5.84C17.27 5.33 16.67 5 16 5L5 5.01C3.9 5.01 3 5.9 3 7v10c0 1.1.9 1.99 2 1.99L16 19c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16z"/></symbol>
+    <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.99 5.99 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></symbol>
+    <symbol id="i-plug" viewBox="0 0 24 24"><path d="M20.5 11H19V7c0-1.1-.9-2-2-2h-4V3.5a2.5 2.5 0 0 0-5 0V5H4c-1.1 0-1.99.9-1.99 2v3.8H3.5c1.49 0 2.7 1.21 2.7 2.7s-1.21 2.7-2.7 2.7H2V20c0 1.1.9 2 2 2h3.8v-1.5c0-1.49 1.21-2.7 2.7-2.7s2.7 1.21 2.7 2.7V22H17c1.1 0 2-.9 2-2v-4h1.5a2.5 2.5 0 0 0 0-5z"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M18 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 4h5v8l-2.5-1.5L6 12V4z"/></symbol>
+    <symbol id="i-code" viewBox="0 0 24 24"><path d="M9.4 16.6L4.8 12l4.6-4.6L8 6l-6 6 6 6 1.4-1.4zm5.2 0l4.6-4.6-4.6-4.6L16 6l6 6-6 6-1.4-1.4z"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></symbol>
+  </svg>
+
+  <!-- Top app bar -->
+  <header class="gm-bar" data-gm-bar>
+    <div class="gm-wrap gm-bar-inner">
+      <a href="{{ "" | relURL }}" class="gm-brand" aria-label="Agent Mesh home">
+        <img src="{{ "favicon.png" | relURL }}" alt="" width="32" height="32">
         <span>Agent Mesh</span>
       </a>
-      <nav class="am-nav-links" aria-label="Landing navigation">
-        <a href="#how-it-works">How It Works</a>
-        <a href="#what-it-is">What It Is</a>
+      <nav class="gm-nav" id="gm-nav" aria-label="Page sections">
+        <a href="#how-it-works">How it works</a>
+        <a href="#what-it-is">What it is</a>
         <a href="#deployment">Deployment</a>
         <a href="#security">Security</a>
         <a href="#demos">Demos</a>
+        <a href="{{ "docs/" | relURL }}" class="gm-nav-docs">Docs</a>
       </nav>
-      <div class="am-nav-cta">
-        <a href="{{ "docs/" | relURL }}" class="btn-sleek btn-cyan btn-sm">Docs</a>
-        <a href="{{ .Site.Params.github_repo }}" target="_blank" rel="noopener" class="btn-sleek btn-dark btn-sm">GitHub</a>
+      <div class="gm-bar-actions">
+        <button type="button" class="gm-icon-btn" data-gm-theme aria-label="Switch to dark theme">
+          <svg class="gm-theme-dark" aria-hidden="true"><use href="#i-moon"/></svg>
+          <svg class="gm-theme-light" aria-hidden="true"><use href="#i-sun"/></svg>
+        </button>
+        <a href="{{ .Site.Params.github_repo }}" class="gm-icon-btn" target="_blank" rel="noopener" aria-label="Agent Mesh on GitHub">
+          <svg aria-hidden="true"><use href="#i-github"/></svg>
+        </a>
+        <a href="{{ "docs/getting-started/your-own-mesh/" | relURL }}" class="gm-btn gm-btn-filled gm-bar-cta">Start your own mesh</a>
+        <button type="button" class="gm-icon-btn gm-menu-btn" data-gm-menu aria-controls="gm-nav" aria-expanded="false" aria-label="Open menu">
+          <svg class="gm-menu-open" aria-hidden="true"><use href="#i-menu"/></svg>
+          <svg class="gm-menu-close" aria-hidden="true"><use href="#i-close"/></svg>
+        </button>
       </div>
     </div>
   </header>
 
-  <!-- 1. HERO + QUICKSTART TERMINAL -->
-  <div class="landing-container">
-    <div class="hero-brand-col">
-      <div class="logo-row">
-        <div class="logo-container">
-          <div class="logo-backdrop-glow"></div>
-          <img src="{{ "favicon.png" | relURL }}" alt="Agent Mesh Logo" class="agentmesh-hero-logo">
+  <main id="main">
+    <!-- 1. Hero -->
+    <section class="gm-hero" aria-labelledby="gm-hero-title">
+      <div class="gm-wrap gm-hero-grid">
+        <div class="gm-hero-copy gm-enter">
+          <p class="gm-chip"><span class="gm-chip-dot"></span>Open source · Apache 2.0</p>
+          <h1 id="gm-hero-title">A zero-trust network for <span class="gm-hl">AI agents</span></h1>
+          <p class="gm-lede">
+            Agent Mesh connects agents, MCP tools and models across laptops, isolated sandboxes and
+            Kubernetes. Nodes dial out, so no port opens, and no agent holds an API key.
+          </p>
+          <ul class="gm-schemes" aria-label="Service types on the mesh">
+            <li><span class="gm-dot gm-c-blue"></span><code>mcp://</code> tools</li>
+            <li><span class="gm-dot gm-c-red"></span><code>a2a://</code> agents</li>
+            <li><span class="gm-dot gm-c-yellow"></span><code>inference://</code> models</li>
+            <li><span class="gm-dot gm-c-green"></span><code>egress://</code> APIs</li>
+          </ul>
+          <div class="gm-actions">
+            <a href="{{ "docs/getting-started/your-own-mesh/" | relURL }}" class="gm-btn gm-btn-filled">Start your own mesh</a>
+            <a href="{{ "docs/" | relURL }}" class="gm-btn gm-btn-outlined">Read the docs</a>
+          </div>
         </div>
+
+        <div class="gm-hero-visual gm-enter gm-enter-late">
+          <div class="gm-code" data-visual>
+            <div class="gm-code-head">
+              <span class="gm-code-tab"><svg aria-hidden="true"><use href="#i-code"/></svg>bash</span>
+              <span class="gm-code-title">Run your own mesh</span>
+              <button type="button" class="gm-code-copy" data-copy-text="curl -sSLO https://google.github.io/agentmesh/install.sh&#10;bash install.sh&#10;agentmesh-one --data-dir ~/mesh --port 8080 &amp;&#10;agentmesh-node join http://127.0.0.1:8080 --bootstrap-token-path ~/mesh/join-token&#10;agentmesh-node run --daemonize&#10;agentmesh-node skill install" aria-label="Copy commands">
+                <svg class="gm-copy-icon" aria-hidden="true"><use href="#i-copy"/></svg>
+                <svg class="gm-copied-icon" aria-hidden="true"><use href="#i-check"/></svg>
+                <span data-copy-label>Copy</span>
+              </button>
+            </div>
+            <pre class="gm-code-body"><code><span class="c"># 1. Download the installer, read it, then run it</span>
+<span class="p">$</span> curl -sSLO https://google.github.io/agentmesh/install.sh
+<span class="p">$</span> bash install.sh
+
+<span class="c"># 2. Start control plane, router and web console</span>
+<span class="p">$</span> agentmesh-one --data-dir ~/mesh --port 8080 &amp;
+
+<span class="c"># 3. Enroll a node and start it in the background</span>
+<span class="p">$</span> agentmesh-node join http://127.0.0.1:8080 \
+    --bootstrap-token-path ~/mesh/join-token
+<span class="p">$</span> agentmesh-node run --daemonize
+
+<span class="c"># 4. Give your agent the mesh skill</span>
+<span class="p">$</span> agentmesh-node skill install
+<span class="ok">✓ Ready — Console at http://127.0.0.1:8080/console</span></code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2. How it works -->
+    <section class="gm-section" id="how-it-works" aria-labelledby="h-how">
+      <div class="gm-wrap">
+        <div class="gm-head">
+          <p class="gm-eyebrow">How it works</p>
+          <h2 id="h-how">One request through the mesh</h2>
+          <p>Nothing is reachable by default. Nodes dial out over QUIC and TLS 1.3, and every call is checked by service name.</p>
+        </div>
+
+        <div class="gm-flow" data-visual role="img" aria-label="An agent calls its local agentmesh-node, which reaches a remote agentmesh-node through the agentmesh-router; the control plane issues credentials to both nodes and stays off the data path.">
+          <div class="gm-flow-key" aria-hidden="true">
+            <span><i class="gm-key-solid"></i>Encrypted data path</span>
+            <span><i class="gm-key-dash"></i>Credentials, off the data path</span>
+          </div>
+          <div class="gm-flow-cp" aria-hidden="true">
+            <span class="gm-flow-icon gm-c-blue-bg"><svg><use href="#i-key"/></svg></span>
+            <span><b>agentmesh-control-plane</b><small>Signs short-lived Biscuit credentials</small></span>
+          </div>
+          <div class="gm-flow-drops" aria-hidden="true"><i></i><i></i></div>
+          <ol class="gm-flow-row" aria-hidden="true">
+            <li class="gm-flow-node"><span class="gm-flow-icon gm-c-grey-bg"><svg><use href="#i-code"/></svg></span><b>Your agent</b><small>plain HTTP</small></li>
+            <li class="gm-flow-link"><i></i></li>
+            <li class="gm-flow-node gm-flow-strong"><span class="gm-flow-icon gm-c-green-bg"><svg><use href="#i-dns"/></svg></span><b>agentmesh-node</b><small>127.0.0.1:8080</small></li>
+            <li class="gm-flow-link"><i></i></li>
+            <li class="gm-flow-node"><span class="gm-flow-icon gm-c-yellow-bg"><svg><use href="#i-hub"/></svg></span><b>agentmesh-router</b><small>DHT and relay</small></li>
+            <li class="gm-flow-link"><i></i></li>
+            <li class="gm-flow-node gm-flow-strong"><span class="gm-flow-icon gm-c-green-bg"><svg><use href="#i-dns"/></svg></span><b>agentmesh-node</b><small>verifies the call</small></li>
+            <li class="gm-flow-link"><i></i></li>
+            <li class="gm-flow-node"><span class="gm-flow-icon gm-c-red-bg"><svg><use href="#i-plug"/></svg></span><b>mcp://orders-db</b><small>your tool</small></li>
+          </ol>
+        </div>
+
+        <div class="gm-grid-3">
+          <article class="gm-card">
+            <span class="gm-card-icon gm-c-blue-bg"><svg aria-hidden="true"><use href="#i-key"/></svg></span>
+            <h3>Identity and policy</h3>
+            <p class="gm-mono">agentmesh-control-plane</p>
+            <p>Verifies OIDC or bootstrap tokens, compiles Datalog policies, and signs short-lived Biscuit credentials. Off the data path.</p>
+          </article>
+          <article class="gm-card">
+            <span class="gm-card-icon gm-c-yellow-bg"><svg aria-hidden="true"><use href="#i-hub"/></svg></span>
+            <h3>Discovery and relay</h3>
+            <p class="gm-mono">agentmesh-router</p>
+            <p>Runs the Kademlia DHT and relays encrypted streams across NATs and firewalls without seeing plaintext payloads.</p>
+          </article>
+          <article class="gm-card">
+            <span class="gm-card-icon gm-c-green-bg"><svg aria-hidden="true"><use href="#i-dns"/></svg></span>
+            <h3>Local data-plane proxy</h3>
+            <p class="gm-mono">agentmesh-node</p>
+            <p>Runs beside your agent. Publishes and calls <code>mcp://</code>, <code>a2a://</code>, <code>inference://</code> and <code>egress://</code> over HTTP.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. What it is -->
+    <section class="gm-section gm-section-tint" id="what-it-is" aria-labelledby="h-what">
+      <div class="gm-wrap">
+        <div class="gm-head">
+          <p class="gm-eyebrow">What it is</p>
+          <h2 id="h-what">A network of named services</h2>
+          <p>Agent Mesh is built for agent protocols rather than raw IP packets.</p>
+        </div>
+        <div class="gm-grid-3">
+          <article class="gm-card gm-card-flat">
+            <span class="gm-card-icon gm-c-red-bg"><svg aria-hidden="true"><use href="#i-label"/></svg></span>
+            <p class="gm-not">Not a flat L3 VPN</p>
+            <h3>Calls go to service names</h3>
+            <p>No virtual network interfaces or exposed machine ports (<code>--network=none</code>). Peers can only call published service names.</p>
+          </article>
+          <article class="gm-card gm-card-flat">
+            <span class="gm-card-icon gm-c-blue-bg"><svg aria-hidden="true"><use href="#i-cloud"/></svg></span>
+            <p class="gm-not">Not single-cluster only</p>
+            <h3>One overlay for every environment</h3>
+            <p>Connects agents on laptops, isolated sandboxes, VMs and Kubernetes clusters over one peer-to-peer overlay.</p>
+          </article>
+          <article class="gm-card gm-card-flat">
+            <span class="gm-card-icon gm-c-yellow-bg"><svg aria-hidden="true"><use href="#i-plug"/></svg></span>
+            <p class="gm-not">Not a siloed gateway</p>
+            <h3>Plugs into the proxies you run</h3>
+            <p>Integrates with Envoy (<code>ext_proc</code>, <code>ext_authz</code>), Istio and agent gateways through standard HTTP and OAuth token exchange.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- 4. Deployment models -->
+    <section class="gm-section" id="deployment" aria-labelledby="h-deploy">
+      <div class="gm-wrap">
+        <div class="gm-head">
+          <p class="gm-eyebrow">Deployment</p>
+          <h2 id="h-deploy">Four ways to run the node</h2>
+          <p>Pick the footprint that fits your environment. All four speak the same mesh protocol.</p>
+        </div>
+
+        <div class="gm-tabs" role="tablist" aria-label="Deployment models">
+          <button type="button" class="gm-tab" role="tab" id="tab-dep-node" aria-controls="dep-node" aria-selected="true">Local node</button>
+          <button type="button" class="gm-tab" role="tab" id="tab-dep-sandbox" aria-controls="dep-sandbox" aria-selected="false" tabindex="-1">Isolated sandboxes</button>
+          <button type="button" class="gm-tab" role="tab" id="tab-dep-gateway" aria-controls="dep-gateway" aria-selected="false" tabindex="-1">Envoy and gateways</button>
+          <button type="button" class="gm-tab" role="tab" id="tab-dep-sdk" aria-controls="dep-sdk" aria-selected="false" tabindex="-1">Python and JS SDKs</button>
+        </div>
+
+        <div class="gm-panel" id="dep-node" role="tabpanel" aria-labelledby="tab-dep-node">
+          <div class="gm-panel-copy">
+            <p class="gm-mono">01 · Sidecar or CLI</p>
+            <h3>A local daemon with <code>SKILL.md</code></h3>
+            <p>Run <code>agentmesh-node</code> on a laptop, VM or Kubernetes pod. Agents learn how to find and call mesh services through a local <code>SKILL.md</code> or MCP server.</p>
+            <ol class="gm-steps">
+              <li><b>Agent CLI</b><span>reads SKILL.md</span></li>
+              <li><b>agentmesh-node</b><span>127.0.0.1:8080</span></li>
+              <li><b>Remote peer</b><span>QUIC / TLS 1.3</span></li>
+            </ol>
+          </div>
+          <div class="gm-code">
+            <div class="gm-code-head"><span class="gm-code-tab"><svg aria-hidden="true"><use href="#i-code"/></svg>yaml</span><span class="gm-code-title">config.yaml</span></div>
+            <pre class="gm-code-body"><code><span class="k">version:</span> <span class="s">"v1alpha1"</span>
+<span class="k">services:</span>
+  - <span class="k">type:</span> mcp
+    <span class="k">name:</span> orders-db
+    <span class="k">target_url:</span> <span class="s">"http://127.0.0.1:3001/mcp"</span>
+  - <span class="k">type:</span> inference
+    <span class="k">name:</span> local-llm
+    <span class="k">target_url:</span> <span class="s">"http://127.0.0.1:11434"</span></code></pre>
+          </div>
+        </div>
+
+        <div class="gm-panel" id="dep-sandbox" role="tabpanel" aria-labelledby="tab-dep-sandbox" hidden>
+          <div class="gm-panel-copy">
+            <p class="gm-mono">02 · Zero secrets</p>
+            <h3>Sandboxes with no API keys inside</h3>
+            <p>Run untrusted code in a container or microVM with no secrets in memory. The sandbox talks plain HTTP to <code>agentmesh-node</code> outside the boundary, which authenticates and injects credentials on egress.</p>
+            <ol class="gm-steps">
+              <li><b>Sandbox</b><span>0 keys in RAM</span></li>
+              <li><b>Host node</b><span>Biscuit verify</span></li>
+              <li><b>egress:// API</b><span>injects the secret</span></li>
+            </ol>
+          </div>
+          <div class="gm-code">
+            <div class="gm-code-head"><span class="gm-code-tab"><svg aria-hidden="true"><use href="#i-code"/></svg>bash</span><span class="gm-code-title">inside the sandbox</span></div>
+            <pre class="gm-code-body"><code><span class="c"># Route outbound HTTP through the host node</span>
+<span class="p">$</span> export HTTPS_PROXY=http://host.internal:8080
+
+<span class="c"># Call an external API without holding its key</span>
+<span class="p">$</span> curl https://api.github.com/repos/google/agentmesh
+<span class="ok">✓ Egress node verified policy and injected token</span></code></pre>
+          </div>
+        </div>
+
+        <div class="gm-panel" id="dep-gateway" role="tabpanel" aria-labelledby="tab-dep-gateway" hidden>
+          <div class="gm-panel-copy">
+            <p class="gm-mono">03 · Envoy and gateways</p>
+            <h3>Istio and Envoy with <code>ext_proc</code> and <code>ext_authz</code></h3>
+            <p>Plug <code>agentmesh-node</code> into Envoy, Istio and agent gateways. Exchange platform JWTs at <code>/oauth/token</code> (RFC 8693) for task Biscuits and enforce policy on every tool call.</p>
+            <ol class="gm-steps">
+              <li><b>Workload JWT</b><span>OIDC / K8s SA</span></li>
+              <li><b>Envoy or gateway</b><span>ext_authz · ext_proc</span></li>
+              <li><b>Mesh service</b><span>Datalog check</span></li>
+            </ol>
+          </div>
+          <div class="gm-code">
+            <div class="gm-code-head"><span class="gm-code-tab"><svg aria-hidden="true"><use href="#i-code"/></svg>bash</span><span class="gm-code-title">RFC 8693 token exchange</span></div>
+            <pre class="gm-code-body"><code><span class="p">$</span> curl -X POST http://127.0.0.1:8080/oauth/token \
+  -d <span class="s">"grant_type=urn:ietf:params:oauth:grant-type:token-exchange"</span> \
+  -d <span class="s">"subject_token=$WORKLOAD_JWT"</span> \
+  -d <span class="s">"resource=mcp://orders-db"</span>
+<span class="ok">✓ Issued attenuated Biscuit for mcp://orders-db</span></code></pre>
+          </div>
+        </div>
+
+        <div class="gm-panel" id="dep-sdk" role="tabpanel" aria-labelledby="tab-dep-sdk" hidden>
+          <div class="gm-panel-copy">
+            <p class="gm-mono">04 · In-process</p>
+            <h3>Python and TypeScript SDKs</h3>
+            <p>Embed Agent Mesh in your agent harness. Narrow permissions offline with <code>session.attenuate()</code> before you hand work to a sub-agent.</p>
+            <ol class="gm-steps">
+              <li><b>Parent agent</b><span>Block 0 Biscuit</span></li>
+              <li><b>attenuate()</b><span>+ tar_block</span></li>
+              <li><b>Sub-agent</b><span>read-only scope</span></li>
+            </ol>
+          </div>
+          <div class="gm-code">
+            <div class="gm-code-head"><span class="gm-code-tab"><svg aria-hidden="true"><use href="#i-code"/></svg>python</span><span class="gm-code-title">subagent.py</span></div>
+            <pre class="gm-code-body"><code><span class="k">from</span> agentmesh <span class="k">import</span> MeshSession, Rule
+
+sub = session.attenuate([
+    Rule(service=<span class="s">"orders-db"</span>, action=<span class="s">"mcp:call"</span>,
+         resource=<span class="s">"mcp://orders-db/tools/list_orders"</span>)
+]).seal()
+<span class="c"># The sub-agent cannot call delete_order</span></code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 5. Security -->
+    <section class="gm-section gm-section-tint" id="security" aria-labelledby="h-sec">
+      <div class="gm-wrap gm-split">
         <div>
-          <h1 class="landing-title">Agent Mesh</h1>
-          <p class="landing-subtitle">Zero-Trust Agent Network</p>
-        </div>
-      </div>
-
-      <p class="landing-description">
-        Connect agents, tools, and models across <strong>laptops</strong>, <strong>isolated sandboxes</strong>, and <strong>Kubernetes</strong>—without opening ports or sharing API keys.
-      </p>
-
-      <div class="scheme-pills">
-        <span class="scheme-pill"><span class="sp-dot"></span>mcp:// <span class="sp-label">tools</span></span>
-        <span class="scheme-pill"><span class="sp-dot"></span>a2a:// <span class="sp-label">agents</span></span>
-        <span class="scheme-pill"><span class="sp-dot"></span>inference:// <span class="sp-label">models</span></span>
-        <span class="scheme-pill"><span class="sp-dot"></span>egress:// <span class="sp-label">APIs</span></span>
-      </div>
-
-      <div class="landing-actions">
-        <a href="{{ "docs/getting-started/your-own-mesh/" | relURL }}" class="btn-sleek btn-cyan">Get Started</a>
-        <a href="{{ "docs/" | relURL }}" class="btn-sleek btn-dark">Documentation</a>
-        <a href="{{ .Site.Params.github_repo }}" target="_blank" rel="noopener" class="btn-sleek btn-dark">GitHub</a>
-      </div>
-    </div>
-
-    <div class="hero-terminal-col">
-      <div class="terminal-window">
-        <div class="terminal-header">
-          <div class="terminal-buttons">
-            <span class="btn-circle btn-red"></span>
-            <span class="btn-circle btn-yellow"></span>
-            <span class="btn-circle btn-green"></span>
+          <div class="gm-head gm-head-left">
+            <p class="gm-eyebrow">Security</p>
+            <h2 id="h-sec">Biscuit tokens checked at every hop</h2>
+            <p>Credentials are bound to the transport connection and verified locally by every node.</p>
           </div>
-          <span class="terminal-title">bash — run your own mesh</span>
-          <button type="button" class="terminal-copy" data-copy-text="curl -sL https://google.github.io/agentmesh/install.sh | bash&#10;agentmesh-one --data-dir ~/mesh --port 8080 &amp;&#10;agentmesh-node join http://127.0.0.1:8080 --bootstrap-token-path ~/mesh/join-token&#10;agentmesh-node run --daemonize&#10;agentmesh-node skill install">Copy</button>
+          <ul class="gm-points">
+            <li>
+              <span class="gm-card-icon gm-c-blue-bg"><svg aria-hidden="true"><use href="#i-lock"/></svg></span>
+              <div><h3>Stolen tokens stop working</h3><p>Every Biscuit carries the node's Ed25519 PeerID in Block 0, checked against the live QUIC and TLS 1.3 handshake.</p></div>
+            </li>
+            <li>
+              <span class="gm-card-icon gm-c-yellow-bg"><svg aria-hidden="true"><use href="#i-shield"/></svg></span>
+              <div><h3>Least privilege per task</h3><p>Verifiers require the control plane's Block 0 Datalog policy and every appended sub-agent <code>tar_block</code> to pass.</p></div>
+            </li>
+            <li>
+              <span class="gm-card-icon gm-c-green-bg"><svg aria-hidden="true"><use href="#i-key"/></svg></span>
+              <div><h3>Secrets stay at the edge</h3><p>Agents use Biscuits inside the mesh; border nodes mint short-lived OAuth and STS JWTs or inject API keys on egress.</p></div>
+            </li>
+          </ul>
         </div>
-        <div class="terminal-body">
-          <div class="terminal-line"><span class="t-comment"># 1. Install agentmesh-one and agentmesh-node</span></div>
-          <div class="terminal-line"><span class="t-prompt">$</span><span class="t-cmd">curl -sL https://google.github.io/agentmesh/install.sh | bash</span></div>
-          <div class="terminal-line"><span class="t-comment"># 2. Start control plane, router &amp; web console</span></div>
-          <div class="terminal-line"><span class="t-prompt">$</span><span class="t-cmd">agentmesh-one --data-dir ~/mesh --port 8080 &amp;</span></div>
-          <div class="terminal-line"><span class="t-comment"># 3. Enroll a node and start it in the background</span></div>
-          <div class="terminal-line"><span class="t-prompt">$</span><span class="t-cmd">agentmesh-node join http://127.0.0.1:8080 \</span></div>
-          <div class="terminal-line"><span class="t-output">    --bootstrap-token-path ~/mesh/join-token</span></div>
-          <div class="terminal-line"><span class="t-prompt">$</span><span class="t-cmd">agentmesh-node run --daemonize</span></div>
-          <div class="terminal-line"><span class="t-comment"># 4. Give your agent the mesh skill</span></div>
-          <div class="terminal-line"><span class="t-prompt">$</span><span class="t-cmd">agentmesh-node skill install</span></div>
-          <div class="terminal-line"><span class="t-success">✓ Ready — Console at http://127.0.0.1:8080/console</span></div>
-        </div>
-      </div>
-    </div>
-  </div>
 
-  <!-- 2. HOW IT WORKS (VISUAL ARCHITECTURE) -->
-  <section class="am-section" id="how-it-works">
-    <div class="am-section-head">
-      <span class="am-tag">Architecture</span>
-      <h2>How a Request Travels the Mesh</h2>
-      <p>Nothing is reachable by default. Nodes dial outbound over QUIC/TLS 1.3 and verify every call by service name.</p>
-    </div>
-
-    <div class="am-diagram-frame">
-      <img src="{{ "images/agent-mesh-flow.svg" | relURL }}" alt="Agent Mesh request flow across nodes, router, and control plane">
-    </div>
-
-    <div class="am-grid-3">
-      <div class="am-card">
-        <span class="am-card-badge">agentmesh-control-plane</span>
-        <h3>Identity &amp; Policy</h3>
-        <p>Verifies OIDC or bootstrap tokens, compiles Datalog policies, and signs short-lived Biscuit credentials. Off the data path.</p>
-      </div>
-      <div class="am-card">
-        <span class="am-card-badge badge-yellow">agentmesh-router</span>
-        <h3>Discovery &amp; Relay</h3>
-        <p>Runs the Kademlia DHT and relays encrypted streams across NATs and firewalls without seeing plaintext payloads.</p>
-      </div>
-      <div class="am-card">
-        <span class="am-card-badge">agentmesh-node</span>
-        <h3>Local Data-Plane Proxy</h3>
-        <p>Runs beside your agent. Publishes and calls <code>mcp://</code>, <code>a2a://</code>, <code>inference://</code>, and <code>egress://</code> over HTTP.</p>
-      </div>
-    </div>
-  </section>
-
-  <!-- 3. WHAT IT IS vs WHAT IT IS NOT -->
-  <section class="am-section" id="what-it-is">
-    <div class="am-section-head">
-      <span class="am-tag">Mental Model</span>
-      <h2>What Agent Mesh Is — And What It Isn't</h2>
-      <p>Purpose-built for agent protocols rather than raw IP packets.</p>
-    </div>
-
-    <div class="am-grid-3">
-      <div class="am-card am-card-warn">
-        <span class="am-card-badge badge-red">NOT A FLAT L3 VPN</span>
-        <h3>Named Services, Not Open IPs</h3>
-        <p>No virtual network interfaces or exposed machine ports (<code>--network=none</code>). Peers can only invoke published service names.</p>
-      </div>
-      <div class="am-card">
-        <span class="am-card-badge">NOT SINGLE-CLUSTER ONLY</span>
-        <h3>Spans Every Environment</h3>
-        <p>Connects agents on laptops, isolated sandboxes, VMs, and <strong>Kubernetes</strong> clusters over one peer-to-peer overlay.</p>
-      </div>
-      <div class="am-card">
-        <span class="am-card-badge badge-yellow">NOT A SILOED GATEWAY</span>
-        <h3>Plugs Into Your Proxies</h3>
-        <p>Integrates with <strong>Envoy</strong> (<code>ext_proc</code>, <code>ext_authz</code>), <strong>Istio</strong>, and <strong>agent gateways</strong> via standard HTTP and OAuth token exchange.</p>
-      </div>
-    </div>
-  </section>
-
-  <!-- 4. DEPLOYMENT MODELS (4 INTERACTIVE TABS) -->
-  <section class="am-section" id="deployment">
-    <div class="am-section-head">
-      <span class="am-tag">Deployment Models</span>
-      <h2>Four Ways to Run It</h2>
-      <p>Pick the footprint that matches your environment—all four speak the same mesh protocol.</p>
-    </div>
-
-    <div class="am-tabs" role="tablist">
-      <button type="button" class="am-tab-btn active" data-tab="dep-node" id="tab-dep-node" role="tab" aria-selected="true" aria-controls="dep-node">
-        <span class="t-num">01 · SIDECAR / CLI</span>
-        <span class="t-name">Local Node &amp; SKILL.md</span>
-      </button>
-      <button type="button" class="am-tab-btn" data-tab="dep-sandbox" id="tab-dep-sandbox" role="tab" aria-selected="false" aria-controls="dep-sandbox">
-        <span class="t-num">02 · ZERO SECRETS</span>
-        <span class="t-name">Isolated Sandboxes</span>
-      </button>
-      <button type="button" class="am-tab-btn" data-tab="dep-gateway" id="tab-dep-gateway" role="tab" aria-selected="false" aria-controls="dep-gateway">
-        <span class="t-num">03 · ENVOY &amp; GATEWAYS</span>
-        <span class="t-name">ext_proc &amp; ext_authz</span>
-      </button>
-      <button type="button" class="am-tab-btn" data-tab="dep-sdk" id="tab-dep-sdk" role="tab" aria-selected="false" aria-controls="dep-sdk">
-        <span class="t-num">04 · IN-PROCESS</span>
-        <span class="t-name">Python &amp; JS SDKs</span>
-      </button>
-    </div>
-
-    <!-- Tab 1: Local Node -->
-    <div class="am-tab-panel active" id="dep-node" role="tabpanel" aria-labelledby="tab-dep-node">
-      <div>
-        <h3>Sidecar or Local Daemon with <code>SKILL.md</code></h3>
-        <p>Run <code>agentmesh-node</code> on a laptop, VM, or <strong>Kubernetes</strong> pod. Agents learn how to discover and call mesh services automatically via a local <code>SKILL.md</code> or MCP server.</p>
-        <div class="am-flow">
-          <div class="am-flow-node">
-            <span class="fn-title">Agent CLI</span>
-            <span class="fn-sub">reads SKILL.md</span>
+        <div class="gm-token" data-visual aria-label="Structure of a task-scoped Biscuit token" role="img">
+          <div class="gm-token-head"><span class="gm-mono">biscuit</span><span class="gm-token-state"><i></i>verified</span></div>
+          <div class="gm-block gm-block-0">
+            <p class="gm-block-tag">Block 0 · authority</p>
+            <pre><code>peer_id("12D3KooW…")
+right("orders-db", "mcp:call")
+right("local-llm", "inference")</code></pre>
           </div>
-          <span class="am-flow-arrow">→</span>
-          <div class="am-flow-node node-cyan">
-            <span class="fn-title">agentmesh-node</span>
-            <span class="fn-sub">127.0.0.1:8080</span>
+          <div class="gm-block">
+            <p class="gm-block-tag">Block 1 · tar_block</p>
+            <pre><code>service  orders-db
+action   mcp:call
+resource mcp://orders-db/tools/list_orders</code></pre>
           </div>
-          <span class="am-flow-arrow">→</span>
-          <div class="am-flow-node node-yellow">
-            <span class="fn-title">Remote Peer</span>
-            <span class="fn-sub">QUIC / TLS 1.3</span>
+          <div class="gm-token-check">
+            <span><svg aria-hidden="true"><use href="#i-check"/></svg>list_orders</span>
+            <span class="gm-deny"><svg aria-hidden="true"><use href="#i-close"/></svg>delete_order</span>
           </div>
         </div>
       </div>
-      <div class="terminal-window">
-        <div class="terminal-header">
-          <div class="terminal-buttons"><span class="btn-circle btn-red"></span><span class="btn-circle btn-yellow"></span><span class="btn-circle btn-green"></span></div>
-          <span class="terminal-title">config.yaml — publish local services</span>
-        </div>
-        <div class="terminal-body">
-          <div class="terminal-line"><span class="t-prompt">version:</span> <span class="t-cmd">"v1alpha1"</span></div>
-          <div class="terminal-line"><span class="t-prompt">services:</span></div>
-          <div class="terminal-line"><span class="t-cmd">  - type: mcp</span></div>
-          <div class="terminal-line"><span class="t-output">    name: orders-db</span></div>
-          <div class="terminal-line"><span class="t-output">    target_url: "http://127.0.0.1:3001/mcp"</span></div>
-          <div class="terminal-line"><span class="t-cmd">  - type: inference</span></div>
-          <div class="terminal-line"><span class="t-output">    name: local-llm</span></div>
-          <div class="terminal-line"><span class="t-output">    target_url: "http://127.0.0.1:11434"</span></div>
-        </div>
-      </div>
-    </div>
+    </section>
 
-    <!-- Tab 2: Sandboxes -->
-    <div class="am-tab-panel" id="dep-sandbox" role="tabpanel" aria-labelledby="tab-dep-sandbox">
-      <div>
-        <h3>Isolated Sandboxes with Zero API Keys</h3>
-        <p>Run untrusted code inside a container or microVM with <code>0</code> secrets in memory. The sandbox talks plain HTTP to <code>agentmesh-node</code> outside the boundary, which authenticates and injects credentials on egress.</p>
-        <div class="am-flow">
-          <div class="am-flow-node">
-            <span class="fn-title">Sandbox</span>
-            <span class="fn-sub">0 keys in RAM</span>
-          </div>
-          <span class="am-flow-arrow">→</span>
-          <div class="am-flow-node node-cyan">
-            <span class="fn-title">Host Node</span>
-            <span class="fn-sub">Biscuit verify</span>
-          </div>
-          <span class="am-flow-arrow">→</span>
-          <div class="am-flow-node node-yellow">
-            <span class="fn-title">egress:// API</span>
-            <span class="fn-sub">injects secret</span>
-          </div>
+    <!-- 6. Demos -->
+    <section class="gm-section" id="demos" aria-labelledby="h-demos">
+      <div class="gm-wrap">
+        <div class="gm-head">
+          <p class="gm-eyebrow">Demos</p>
+          <h2 id="h-demos">Recorded walkthroughs</h2>
+          <p>Watch the mesh run, then follow the same steps in the guides.</p>
+        </div>
+        <div class="gm-grid-3">
+          <article class="gm-video">
+            <header><h3>Sandboxed agents with zero keys</h3><a href="{{ "docs/preview/sandboxed-agents/" | relURL }}">Read the guide<svg aria-hidden="true"><use href="#i-arrow"/></svg></a></header>
+            <video controls preload="metadata" src="{{ "demo-sandboxed-agent.mp4" | relURL }}" aria-label="Sandboxed agents demo"></video>
+          </article>
+          <article class="gm-video">
+            <header><h3>Policy and task attenuation</h3><a href="{{ "docs/use-cases/multi-tier-guardrails/" | relURL }}">Read the guide<svg aria-hidden="true"><use href="#i-arrow"/></svg></a></header>
+            <video controls preload="metadata" src="{{ "demo-multi-tier-guardrails.mp4" | relURL }}" aria-label="Multi-tier guardrails demo"></video>
+          </article>
+          <article class="gm-video">
+            <header><h3>Warm agent pools across nodes</h3><a href="{{ "docs/use-cases/" | relURL }}">See use cases<svg aria-hidden="true"><use href="#i-arrow"/></svg></a></header>
+            <video controls preload="metadata" src="{{ "demo-warm-agent-pool.mp4" | relURL }}" aria-label="Warm agent pool demo"></video>
+          </article>
         </div>
       </div>
-      <div class="terminal-window">
-        <div class="terminal-header">
-          <div class="terminal-buttons"><span class="btn-circle btn-red"></span><span class="btn-circle btn-yellow"></span><span class="btn-circle btn-green"></span></div>
-          <span class="terminal-title">inside isolated sandbox</span>
-        </div>
-        <div class="terminal-body">
-          <div class="terminal-line"><span class="t-comment"># Route outbound HTTP through the host node</span></div>
-          <div class="terminal-line"><span class="t-prompt">$</span><span class="t-cmd">export HTTPS_PROXY=http://host.internal:8080</span></div>
-          <div class="terminal-line"><span class="t-comment"># Call external API without holding API keys</span></div>
-          <div class="terminal-line"><span class="t-prompt">$</span><span class="t-cmd">curl https://api.github.com/repos/google/agentmesh</span></div>
-          <div class="terminal-line"><span class="t-success">✓ Egress node verified policy &amp; injected token</span></div>
-        </div>
-      </div>
-    </div>
+    </section>
 
-    <!-- Tab 3: Gateways & Envoy -->
-    <div class="am-tab-panel" id="dep-gateway" role="tabpanel" aria-labelledby="tab-dep-gateway">
-      <div>
-        <h3>Gateways, Istio &amp; Envoy (<code>ext_proc</code> / <code>ext_authz</code>)</h3>
-        <p>Plug <code>agentmesh-node</code> into <strong>Envoy</strong>, <strong>Istio</strong>, and <strong>agent gateways</strong>. Exchange platform JWTs at <code>/oauth/token</code> (RFC 8693) into task Biscuits and enforce policy on every tool call.</p>
-        <div class="am-flow">
-          <div class="am-flow-node">
-            <span class="fn-title">Workload JWT</span>
-            <span class="fn-sub">OIDC / K8s SA</span>
+    <!-- 7. Close and documentation -->
+    <section class="gm-section gm-close" aria-labelledby="h-close">
+      <div class="gm-wrap">
+        <div class="gm-close-band">
+          <div>
+            <h2 id="h-close">Your own mesh on one laptop</h2>
+            <p><code>agentmesh-one</code> runs the control plane, router and web console in a single process.</p>
           </div>
-          <span class="am-flow-arrow">→</span>
-          <div class="am-flow-node node-cyan">
-            <span class="fn-title">Envoy / Gateway</span>
-            <span class="fn-sub">ext_authz · ext_proc</span>
-          </div>
-          <span class="am-flow-arrow">→</span>
-          <div class="am-flow-node node-yellow">
-            <span class="fn-title">Mesh Service</span>
-            <span class="fn-sub">Datalog check</span>
-          </div>
+          <a href="{{ "docs/getting-started/your-own-mesh/" | relURL }}" class="gm-btn gm-btn-filled">Start your own mesh</a>
+        </div>
+        <div class="gm-grid-4">
+          <a href="{{ "docs/getting-started/" | relURL }}" class="gm-doc">
+            <span class="gm-card-icon gm-c-blue-bg"><svg aria-hidden="true"><use href="#i-play"/></svg></span>
+            <h3>Getting started</h3>
+            <p>Install the CLI, run <code>agentmesh-one</code> locally and connect your first nodes.</p>
+          </a>
+          <a href="{{ "docs/concepts/" | relURL }}" class="gm-doc">
+            <span class="gm-card-icon gm-c-red-bg"><svg aria-hidden="true"><use href="#i-book"/></svg></span>
+            <h3>Core concepts</h3>
+            <p>How identity, Biscuits, Datalog policies and peer-to-peer routing work.</p>
+          </a>
+          <a href="{{ "docs/guides/" | relURL }}" class="gm-doc">
+            <span class="gm-card-icon gm-c-yellow-bg"><svg aria-hidden="true"><use href="#i-cloud"/></svg></span>
+            <h3>Operator guides</h3>
+            <p>Deploy on Kubernetes, expose services and configure egress.</p>
+          </a>
+          <a href="{{ "docs/reference/" | relURL }}" class="gm-doc">
+            <span class="gm-card-icon gm-c-green-bg"><svg aria-hidden="true"><use href="#i-code"/></svg></span>
+            <h3>CLI and API reference</h3>
+            <p>Flags, HTTP endpoints, the protobuf schema and the Python and JS SDKs.</p>
+          </a>
         </div>
       </div>
-      <div class="terminal-window">
-        <div class="terminal-header">
-          <div class="terminal-buttons"><span class="btn-circle btn-red"></span><span class="btn-circle btn-yellow"></span><span class="btn-circle btn-green"></span></div>
-          <span class="terminal-title">RFC 8693 token exchange</span>
-        </div>
-        <div class="terminal-body">
-          <div class="terminal-line"><span class="t-prompt">$</span><span class="t-cmd">curl -X POST http://127.0.0.1:8080/oauth/token \</span></div>
-          <div class="terminal-line"><span class="t-output">  -d "grant_type=urn:ietf:params:oauth:grant-type:\</span></div>
-          <div class="terminal-line"><span class="t-output">token-exchange" \</span></div>
-          <div class="terminal-line"><span class="t-output">  -d "subject_token=$WORKLOAD_JWT" \</span></div>
-          <div class="terminal-line"><span class="t-output">  -d "resource=mcp://orders-db"</span></div>
-          <div class="terminal-line"><span class="t-success">✓ Issued attenuated Biscuit for mcp://orders-db</span></div>
-        </div>
-      </div>
-    </div>
+    </section>
+  </main>
 
-    <!-- Tab 4: Native SDKs -->
-    <div class="am-tab-panel" id="dep-sdk" role="tabpanel" aria-labelledby="tab-dep-sdk">
-      <div>
-        <h3>In-Process Python &amp; TypeScript SDKs</h3>
-        <p>Embed Agent Mesh directly in your agent harness. Narrow permissions offline in microseconds with <code>session.attenuate()</code> before delegating to a sub-agent.</p>
-        <div class="am-flow">
-          <div class="am-flow-node">
-            <span class="fn-title">Parent Agent</span>
-            <span class="fn-sub">Block 0 Biscuit</span>
-          </div>
-          <span class="am-flow-arrow">→</span>
-          <div class="am-flow-node node-cyan">
-            <span class="fn-title">attenuate()</span>
-            <span class="fn-sub">+ tar_block</span>
-          </div>
-          <span class="am-flow-arrow">→</span>
-          <div class="am-flow-node node-yellow">
-            <span class="fn-title">Sub-Agent</span>
-            <span class="fn-sub">read-only scope</span>
-          </div>
-        </div>
-      </div>
-      <div class="terminal-window">
-        <div class="terminal-header">
-          <div class="terminal-buttons"><span class="btn-circle btn-red"></span><span class="btn-circle btn-yellow"></span><span class="btn-circle btn-green"></span></div>
-          <span class="terminal-title">subagent.py — offline attenuation</span>
-        </div>
-        <div class="terminal-body">
-          <div class="terminal-line"><span class="t-prompt">from</span> <span class="t-cmd">agentmesh</span> <span class="t-prompt">import</span> <span class="t-cmd">MeshSession, Rule</span></div>
-          <div class="terminal-line"><span class="t-cmd">sub = session.attenuate([</span></div>
-          <div class="terminal-line"><span class="t-output">    Rule(service="orders-db", action="mcp:call",</span></div>
-          <div class="terminal-line"><span class="t-output">         resource="mcp://orders-db/tools/list_orders")</span></div>
-          <div class="terminal-line"><span class="t-cmd">]).seal()</span></div>
-          <div class="terminal-line"><span class="t-success"># Sub-agent cannot call delete_order</span></div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- 5. SECURITY POSTURE (3 COMPACT CARDS) -->
-  <section class="am-section" id="security">
-    <div class="am-section-head">
-      <span class="am-tag">Security Posture</span>
-      <h2>Zero Trust Without the Boilerplate</h2>
-      <p>Cryptographic tokens bound to the transport connection and verified locally at every hop.</p>
-    </div>
-
-    <div class="am-grid-3">
-      <div class="am-card">
-        <span class="am-card-badge">01 · CHANNEL BINDING</span>
-        <h3>Stolen Tokens Are Useless</h3>
-        <p>Every Biscuit embeds the node's <code>Ed25519 PeerID</code> in <code>Block 0</code>, verified against the live <code>QUIC / TLS 1.3</code> handshake.</p>
-      </div>
-      <div class="am-card">
-        <span class="am-card-badge badge-yellow">02 · DATALOG + TAR_BLOCK</span>
-        <h3>Per-Task Least Privilege</h3>
-        <p>Verifiers require both the control plane's <code>Block 0</code> Datalog policy and every appended sub-agent <code>tar_block</code> to pass.</p>
-      </div>
-      <div class="am-card">
-        <span class="am-card-badge">03 · BORDER BROKERING</span>
-        <h3>Secrets Stay at the Edge</h3>
-        <p>Agents use Biscuits inside the mesh; border nodes mint short-lived OAuth / STS JWTs or inject API keys on egress.</p>
-      </div>
-    </div>
-  </section>
-
-  <!-- 6. LIVE DEMOS & DOCS -->
-  <section class="am-section" id="demos">
-    <div class="am-section-head">
-      <span class="am-tag">See It In Action</span>
-      <h2>Walkthroughs &amp; Documentation</h2>
-      <p>Watch Agent Mesh running live or jump straight into the guides.</p>
-    </div>
-
-    <div class="am-grid-3" style="margin-bottom: 2.5rem;">
-      <div class="am-video-card">
-        <video controls preload="metadata" src="{{ "demo-sandboxed-agent.mp4" | relURL }}"></video>
-        <div class="am-vc-caption">
-          <span>Sandboxed Agents (Zero Keys)</span>
-          <a href="{{ "docs/preview/sandboxed-agents/" | relURL }}">Docs →</a>
-        </div>
-      </div>
-      <div class="am-video-card">
-        <video controls preload="metadata" src="{{ "demo-multi-tier-guardrails.mp4" | relURL }}"></video>
-        <div class="am-vc-caption">
-          <span>Policy &amp; Task Attenuation</span>
-          <a href="{{ "docs/use-cases/multi-tier-guardrails/" | relURL }}">Docs →</a>
-        </div>
-      </div>
-      <div class="am-video-card">
-        <video controls preload="metadata" src="{{ "demo-warm-agent-pool.mp4" | relURL }}"></video>
-        <div class="am-vc-caption">
-          <span>Warm Agent Pools Across Nodes</span>
-          <a href="{{ "docs/use-cases/" | relURL }}">Docs →</a>
-        </div>
-      </div>
-    </div>
-
-    <div class="am-grid-4">
-      <a href="{{ "docs/getting-started/" | relURL }}" class="am-doc-link">
-        <div class="dl-title">Getting Started <span>→</span></div>
-        <p>Install the CLI, run <code>agentmesh-one</code> locally, and connect your first nodes.</p>
+  <footer class="gm-footer">
+    <div class="gm-wrap gm-footer-inner">
+      <a href="{{ "" | relURL }}" class="gm-brand">
+        <img src="{{ "favicon.png" | relURL }}" alt="" width="28" height="28">
+        <span>Agent Mesh</span>
       </a>
-      <a href="{{ "docs/concepts/" | relURL }}" class="am-doc-link">
-        <div class="dl-title">Core Concepts <span>→</span></div>
-        <p>Learn how identity, Biscuits, Datalog policies, and P2P routing work.</p>
-      </a>
-      <a href="{{ "docs/guides/" | relURL }}" class="am-doc-link">
-        <div class="dl-title">Operator Guides <span>→</span></div>
-        <p>Deploy on Kubernetes, expose services, and configure egress.</p>
-      </a>
-      <a href="{{ "docs/reference/" | relURL }}" class="am-doc-link">
-        <div class="dl-title">CLI &amp; API Reference <span>→</span></div>
-        <p>Flags, HTTP endpoints, protobuf schema, and Python/JS SDKs.</p>
-      </a>
+      <nav aria-label="Footer">
+        <a href="{{ "docs/" | relURL }}">Documentation</a>
+        <a href="{{ "docs/getting-started/quickstart/" | relURL }}">Quickstart</a>
+        <a href="{{ "docs/privacy/" | relURL }}">Privacy</a>
+        <a href="{{ .Site.Params.github_repo }}" target="_blank" rel="noopener">GitHub</a>
+      </nav>
+      <p class="gm-footer-note">Apache 2.0 licensed</p>
     </div>
-  </section>
-
-  <footer class="am-footer">
-    Agent Mesh · Apache 2.0 ·
-    <a href="{{ "docs/" | relURL }}">Documentation</a> ·
-    <a href="{{ "docs/getting-started/quickstart/" | relURL }}">Quickstart</a> ·
-    <a href="{{ .Site.Params.github_repo }}" target="_blank" rel="noopener">GitHub</a>
   </footer>
 
   <script>
     (function () {
-      // Deployment tabs switcher
-      var buttons = document.querySelectorAll('.am-tab-btn');
-      var panels = document.querySelectorAll('.am-tab-panel');
-      buttons.forEach(function (btn) {
-        btn.addEventListener('click', function () {
-          var target = btn.getAttribute('data-tab');
-          buttons.forEach(function (b) {
-            b.classList.remove('active');
-            b.setAttribute('aria-selected', 'false');
-          });
-          panels.forEach(function (p) { p.classList.remove('active'); });
-          btn.classList.add('active');
-          btn.setAttribute('aria-selected', 'true');
-          var el = document.getElementById(target);
-          if (el) el.classList.add('active');
+      var root = document.documentElement;
+
+      // Colour mode: shares the docs' td-color-theme setting.
+      var themeBtn = document.querySelector('[data-gm-theme]');
+      function syncThemeLabel() {
+        var dark = root.getAttribute('data-bs-theme') === 'dark';
+        themeBtn.setAttribute('aria-label', dark ? 'Switch to light theme' : 'Switch to dark theme');
+      }
+      if (themeBtn) {
+        syncThemeLabel();
+        themeBtn.addEventListener('click', function () {
+          var next = root.getAttribute('data-bs-theme') === 'dark' ? 'light' : 'dark';
+          root.setAttribute('data-bs-theme', next);
+          try { localStorage.setItem('td-color-theme', next); } catch (e) {}
+          syncThemeLabel();
+        });
+      }
+
+      // Phone menu.
+      var bar = document.querySelector('[data-gm-bar]');
+      var menuBtn = document.querySelector('[data-gm-menu]');
+      function setMenu(open) {
+        bar.classList.toggle('is-open', open);
+        menuBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        menuBtn.setAttribute('aria-label', open ? 'Close menu' : 'Open menu');
+        document.body.classList.toggle('gm-locked', open);
+      }
+      if (menuBtn && bar) {
+        menuBtn.addEventListener('click', function () { setMenu(!bar.classList.contains('is-open')); });
+        bar.querySelectorAll('.gm-nav a').forEach(function (a) {
+          a.addEventListener('click', function () { setMenu(false); });
+        });
+        document.addEventListener('keydown', function (e) {
+          if (e.key === 'Escape' && bar.classList.contains('is-open')) { setMenu(false); menuBtn.focus(); }
+        });
+      }
+
+      // Raised app bar once the page scrolls.
+      function onScroll() { bar.classList.toggle('is-raised', window.scrollY > 8); }
+      window.addEventListener('scroll', onScroll, { passive: true });
+      onScroll();
+
+      // Deployment tabs (click and arrow keys).
+      var tabs = Array.prototype.slice.call(document.querySelectorAll('.gm-tab'));
+      function selectTab(tab, focus) {
+        tabs.forEach(function (t) {
+          var on = t === tab;
+          t.setAttribute('aria-selected', on ? 'true' : 'false');
+          t.tabIndex = on ? 0 : -1;
+          var panel = document.getElementById(t.getAttribute('aria-controls'));
+          if (panel) panel.hidden = !on;
+        });
+        if (focus) tab.focus();
+      }
+      tabs.forEach(function (tab, i) {
+        tab.addEventListener('click', function () { selectTab(tab, false); });
+        tab.addEventListener('keydown', function (e) {
+          var j = null;
+          if (e.key === 'ArrowRight') j = (i + 1) % tabs.length;
+          if (e.key === 'ArrowLeft') j = (i - 1 + tabs.length) % tabs.length;
+          if (e.key === 'Home') j = 0;
+          if (e.key === 'End') j = tabs.length - 1;
+          if (j !== null) { e.preventDefault(); selectTab(tabs[j], true); }
         });
       });
 
-      // Terminal copy button
-      var copyBtn = document.querySelector('.terminal-copy');
+      // Copy the quickstart commands.
+      var copyBtn = document.querySelector('.gm-code-copy');
       if (copyBtn && navigator.clipboard) {
+        var label = copyBtn.querySelector('[data-copy-label]');
         copyBtn.addEventListener('click', function () {
-          var text = copyBtn.getAttribute('data-copy-text');
-          navigator.clipboard.writeText(text).then(function () {
-            var orig = copyBtn.textContent;
-            copyBtn.textContent = 'Copied!';
-            setTimeout(function () { copyBtn.textContent = orig; }, 1600);
+          navigator.clipboard.writeText(copyBtn.getAttribute('data-copy-text')).then(function () {
+            copyBtn.classList.add('is-copied');
+            label.textContent = 'Copied';
+            setTimeout(function () { copyBtn.classList.remove('is-copied'); label.textContent = 'Copy'; }, 1600);
           });
         });
       }
