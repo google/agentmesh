@@ -18,10 +18,12 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/eclipse-biscuit/biscuit-go/v2"
 	"github.com/eclipse-biscuit/biscuit-go/v2/parser"
 	"github.com/google/agentmesh/api"
+	"github.com/google/agentmesh/internal/containment"
 	"gopkg.in/yaml.v2"
 )
 
@@ -36,6 +38,9 @@ type NodeConfigComplete struct {
 	// means no floor, so a caller's requirement — or the absence of one —
 	// stands on its own, as it always has.
 	EgressRequireLabels map[string]string
+
+	// SecuritySignals holds parsed containment webhook configuration.
+	SecuritySignals *containment.Config
 }
 
 // LoadNodeConfig loads the node configuration from the specified path.
@@ -102,6 +107,47 @@ func CompleteNodeConfig(config api.NodeConfig) (*NodeConfigComplete, error) {
 			return nil, fmt.Errorf("invalid egress.require_labels: %w", err)
 		}
 		complete.EgressRequireLabels = config.Egress.RequireLabels
+	}
+
+	if config.SecuritySignals.Enabled || len(config.SecuritySignals.Endpoints) > 0 {
+		sigCfg := &containment.Config{
+			Enabled:       config.SecuritySignals.Enabled,
+			QueueCapacity: config.SecuritySignals.QueueCapacity,
+		}
+		if config.SecuritySignals.CoalescingWindow != "" {
+			win, err := time.ParseDuration(config.SecuritySignals.CoalescingWindow)
+			if err != nil {
+				return nil, fmt.Errorf("invalid security_signals.coalescing_window: %w", err)
+			}
+			sigCfg.CoalescingWindow = win
+		}
+		for i, ep := range config.SecuritySignals.Endpoints {
+			if ep.URL == "" {
+				return nil, fmt.Errorf("security_signals.endpoints[%d]: missing url", i)
+			}
+			target := strings.TrimSpace(ep.URL)
+			if !strings.HasPrefix(target, "unix:") && !strings.HasPrefix(target, "http://") && !strings.HasPrefix(target, "https://") {
+				return nil, fmt.Errorf("security_signals.endpoints[%d]: invalid url scheme %q (must be unix:, http://, or https://)", i, target)
+			}
+			wep := containment.EndpointConfig{
+				URL:            target,
+				HMACSecretPath: ep.HMACSecretPath,
+				CACertPath:     ep.CACertPath,
+				ClientCertPath: ep.ClientCertPath,
+				ClientKeyPath:  ep.ClientKeyPath,
+				MaxRetries:     ep.MaxRetries,
+				EventTypes:     ep.EventTypes,
+			}
+			if ep.Timeout != "" {
+				timeout, err := time.ParseDuration(ep.Timeout)
+				if err != nil {
+					return nil, fmt.Errorf("security_signals.endpoints[%d]: invalid timeout: %w", i, err)
+				}
+				wep.Timeout = timeout
+			}
+			sigCfg.Endpoints = append(sigCfg.Endpoints, wep)
+		}
+		complete.SecuritySignals = sigCfg
 	}
 
 	for i, svc := range config.Services {

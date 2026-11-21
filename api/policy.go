@@ -52,8 +52,29 @@ type NodeConfig struct {
 	// Labels is what this node is, attested at enrollment; Egress is what it
 	// demands of the peers it talks to. Adjacent because they are read
 	// together and mean opposite directions.
-	Labels map[string]string `yaml:"labels,omitempty"`
-	Egress Egress            `yaml:"egress"`
+	Labels          map[string]string         `yaml:"labels,omitempty"`
+	Egress          Egress                    `yaml:"egress"`
+	SecuritySignals SecuritySignalsConfigYAML `yaml:"security_signals,omitempty"`
+}
+
+// SecuritySignalsConfigYAML holds YAML configuration for out-of-band security containment webhooks.
+type SecuritySignalsConfigYAML struct {
+	Enabled          bool                        `yaml:"enabled"`
+	QueueCapacity    int                         `yaml:"queue_capacity,omitempty"`
+	CoalescingWindow string                      `yaml:"coalescing_window,omitempty"`
+	Endpoints        []WebhookEndpointConfigYAML `yaml:"endpoints,omitempty"`
+}
+
+// WebhookEndpointConfigYAML holds YAML configuration for an individual webhook endpoint.
+type WebhookEndpointConfigYAML struct {
+	URL            string   `yaml:"url"`
+	HMACSecretPath string   `yaml:"hmac_secret_path,omitempty"`
+	CACertPath     string   `yaml:"ca_cert_path,omitempty"`
+	ClientCertPath string   `yaml:"client_cert_path,omitempty"`
+	ClientKeyPath  string   `yaml:"client_key_path,omitempty"`
+	Timeout        string   `yaml:"timeout,omitempty"`
+	MaxRetries     uint32   `yaml:"max_retries,omitempty"`
+	EventTypes     []string `yaml:"event_types,omitempty"`
 }
 
 // NodeConfigVersionV1Alpha1 is the only node config schema this build understands.
