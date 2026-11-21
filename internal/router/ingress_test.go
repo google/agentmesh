@@ -82,6 +82,27 @@ func TestIngressOptionsValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "empty host IngressAddr rejected without TLS or opt-in",
+			mutate: func(o *Options) {
+				o.IngressAddr = ":8080"
+			},
+			wantErr: true,
+		},
+		{
+			name: "ipv6 wildcard IngressAddr rejected without TLS or opt-in",
+			mutate: func(o *Options) {
+				o.IngressAddr = "[::]:8080"
+			},
+			wantErr: true,
+		},
+		{
+			name: "ipv6 loopback IngressAddr allowed without TLS",
+			mutate: func(o *Options) {
+				o.IngressAddr = "[::1]:0"
+			},
+			wantErr: false,
+		},
+		{
 			name: "non-loopback IngressAddr allowed behind TLS proxy with AllowInsecureIngressHTTP",
 			mutate: func(o *Options) {
 				o.IngressAddr = "0.0.0.0:8080"
@@ -119,6 +140,20 @@ func TestIngressOptionsValidate(t *testing.T) {
 			mutate: func(o *Options) {
 				o.IngressURL = "http://bananas.sam-mesh.dev/ingress"
 				o.AllowInsecureIngressHTTP = true
+			},
+			wantErr: false,
+		},
+		{
+			name: "ipv6 wildcard http IngressURL rejected without AllowInsecureIngressHTTP",
+			mutate: func(o *Options) {
+				o.IngressURL = "http://[::]:8080/ingress"
+			},
+			wantErr: true,
+		},
+		{
+			name: "ipv6 loopback http IngressURL allowed without AllowInsecureIngressHTTP",
+			mutate: func(o *Options) {
+				o.IngressURL = "http://[::1]/ingress"
 			},
 			wantErr: false,
 		},
