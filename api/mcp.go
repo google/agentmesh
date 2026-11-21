@@ -23,6 +23,17 @@ import (
 	"strings"
 )
 
+// JSON-RPC error codes AgentMesh itself returns on an MCP stream, as opposed
+// to errors from the MCP backend it forwards. JSON-RPC 2.0 reserves -32768 to
+// -32000 for the protocol, so these are outside that range.
+const (
+	// JSONRPCCodeUnauthorized answers a request the caller's credential does not
+	// authorize: the caller reached the provider and was identified, but the task
+	// in its biscuit does not allow this method or tool. The same request under
+	// the same task is denied again.
+	JSONRPCCodeUnauthorized = 1001
+)
+
 // DefaultMaxMCPBodyInspectBytes is the default maximum HTTP request body size
 // buffered when inspecting an MCP JSON-RPC 2.0 payload for tool-level policy
 // evaluation (4 MiB).

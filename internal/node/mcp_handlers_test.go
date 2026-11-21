@@ -34,6 +34,7 @@ import (
 	"github.com/google/agentmesh/internal/identity"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -755,8 +756,8 @@ func TestCallMCPTool_ToolCallIsSentOnce(t *testing.T) {
 }
 
 // A provider whose task check denies a tool outside the caller's task answers
-// tools/call itself. That answer goes back once, and the same task still
-// reaches the tool it allows.
+// tools/call itself, with api.JSONRPCCodeUnauthorized. That answer goes back
+// once, and the same task still reaches the tool it allows.
 func TestCallMCPTool_TaskDeniedToolIsNotRetried(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -808,6 +809,13 @@ func TestCallMCPTool_TaskDeniedToolIsNotRetried(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "retries") {
 		t.Fatalf("CallMCPTool(delete_repo) = %v, want one answer with no retry", err)
+	}
+	var rpcErr *jsonrpc.Error
+	if !errors.As(err, &rpcErr) || rpcErr.Code != api.JSONRPCCodeUnauthorized {
+		t.Fatalf("CallMCPTool(delete_repo) = %v, want JSON-RPC code %d", err, api.JSONRPCCodeUnauthorized)
+	}
+	if !strings.Contains(rpcErr.Message, "does not allow it") {
+		t.Fatalf("denial message = %q, want it to say the task does not allow the call", rpcErr.Message)
 	}
 
 	if _, err := nodeA.CallMCPTool(WithCallerBiscuit(ctx, reviewOnly), nodeB.Host.ID(), "mcp://code-reviewer/review_pr", map[string]any{}, nil); err != nil {
