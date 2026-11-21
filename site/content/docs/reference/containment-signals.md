@@ -117,7 +117,7 @@ sliding window.
 | `peer_id` | `string` | Remote libp2p peer ID string. |
 | `remote_multiaddr` | `string` | Remote multiaddress (e.g. `/ip4/198.51.100.42/tcp/4001`). |
 | `protocol_id` | `string` | Libp2p protocol ID requested (e.g. `/agentmesh/auth`, `/libp2p-http`). |
-| `coalesced_count` | `uint32` | Number of refusal occurrences coalesced in this delivery window ($ \ge 1 $). |
+| `coalesced_count` | `uint32` | Number of refusal occurrences coalesced in this delivery window (>= 1). |
 | `first_seen_time` | `google.protobuf.Timestamp` | Timestamp of the first observed rejection in this window. |
 | `event_time` | `google.protobuf.Timestamp` | Timestamp of the most recent rejection. |
 
@@ -292,3 +292,5 @@ The dispatcher exports Prometheus counters, gauges, and histograms under the `ag
 | `agentmesh_containment_events_coalesced_total` | Counter | `signal_type` | Total number of repetitive events coalesced within sliding windows. |
 | `agentmesh_containment_delivery_duration_seconds` | Histogram | `signal_type` | Webhook HTTP delivery duration in seconds. |
 | `agentmesh_containment_queue_depth` | Gauge | — | Current depth of the containment webhook ring buffer queue. |
+| `agentmesh_containment_coalescer_entries` | Gauge | — | Current number of active deduplication entries held by the containment coalescer. |
+| `agentmesh_containment_coalescer_overflow_total` | Counter | — | Total containment signals that bypassed coalescing because the active entry cap was reached. |
