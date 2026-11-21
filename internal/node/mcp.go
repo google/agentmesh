@@ -199,8 +199,41 @@ func NewMCPHandler(node *AgentMeshNode) http.Handler {
 // requiredLabels, when non-empty, fail-closed verifies the peer's control-plane-attested
 // labels (see checkPeerLabels) before the tool is invoked; nil means no caller
 // requirement, though the operator's egress floor, if configured, is still enforced.
+//
+// Reaching the peer is retried (see connectMCPSessionWithRetry); tools/call is
+// sent once. After it is sent the provider may have run the tool, so whatever
+// the error, only the caller knows whether running it again is safe.
 func (n *AgentMeshNode) CallMCPTool(ctx context.Context, targetPeer peer.ID, toolName string, params any, requiredLabels map[string]string) (*mcp.CallToolResult, error) {
-	var res *mcp.CallToolResult
+	targetService, originalToolName, err := api.SplitToolName(toolName)
+	if err != nil {
+		return nil, err
+	}
+
+	session, cleanup, err := n.connectMCPSessionWithRetry(ctx, targetPeer, targetService, requiredLabels)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+
+	// We don't need to marshall the params, the SDK takes care of it
+	// Passing pre-marshaled []byte triggers encoding/json's base64 which gets rejected
+	callParams := &mcp.CallToolParams{
+		Name:      originalToolName,
+		Arguments: params,
+	}
+
+	res, err := session.CallTool(ctx, callParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call tool %s: %w", toolName, err)
+	}
+
+	return res, nil
+}
+
+// connectMCPSessionWithRetry calls ConnectMCPSession up to three times, with
+// backoff, for failures to reach the peer: dial, relay and handshake errors.
+// Nothing has been sent to the MCP backend yet, so a retry cannot repeat work.
+func (n *AgentMeshNode) connectMCPSessionWithRetry(ctx context.Context, targetPeer peer.ID, targetService string, requiredLabels map[string]string) (*mcp.ClientSession, func(), error) {
 	var err error
 	maxRetries := 3
 	backoff := 1 * time.Second
@@ -209,39 +242,43 @@ func (n *AgentMeshNode) CallMCPTool(ctx context.Context, targetPeer peer.ID, too
 	n.preparePeerAddrs(ctx, targetPeer)
 
 	for i := 0; i < maxRetries; i++ {
-		res, err = n.callMCPToolOnce(ctx, targetPeer, toolName, params, requiredLabels)
-		if err == nil {
-			return res, nil
+		session, cleanup, connErr := n.ConnectMCPSession(ctx, targetPeer, targetService, requiredLabels)
+		if connErr == nil {
+			return session, cleanup, nil
 		}
+		err = connErr
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "context deadline exceeded") {
-			logger.Warnf("[MCP] Tool call failed with timeout or cancellation, not retrying: %v", err)
-			return nil, err
+			logger.Warnf("[MCP] Connecting to %s failed with timeout or cancellation, not retrying: %v", targetPeer, err)
+			return nil, nil, err
 		}
 		// A denial is an answer, not a failure to reach anyone. Retrying it
 		// just delays the same reply and knocks on the remote peer three times
 		// for one call. That holds for the remote peer refusing the caller
 		// and for the caller refusing a provider not granted the service.
 		if errors.Is(err, ErrAuthRejected) || errors.Is(err, ErrProviderNotGranted) {
-			logger.Warnf("[MCP] Tool call denied, not retrying: %v", err)
-			return nil, err
+			logger.Warnf("[MCP] Connecting to %s denied, not retrying: %v", targetPeer, err)
+			return nil, nil, err
 		}
 		// An authorizer that stopped at its facts or iterations limit stops
 		// there again on a retry; only its time limit depends on load.
 		if stopped, transient := authorizerLimit(err); stopped && !transient {
-			logger.Warnf("[MCP] Tool call stopped at an authorizer limit, not retrying: %v", err)
-			return nil, err
+			logger.Warnf("[MCP] Connecting to %s stopped at an authorizer limit, not retrying: %v", targetPeer, err)
+			return nil, nil, err
 		}
-		logger.Warnf("[MCP] Tool call failed, retrying in %v: %v", backoff, err)
+		if i == maxRetries-1 {
+			break
+		}
+		logger.Warnf("[MCP] Connecting to %s failed, retrying in %v: %v", targetPeer, backoff, err)
 		timer := time.NewTimer(backoff)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return nil, fmt.Errorf("context canceled during retry: %w", ctx.Err())
+			return nil, nil, fmt.Errorf("context canceled during retry: %w", ctx.Err())
 		case <-timer.C:
 		}
 		backoff *= 2
 	}
-	return nil, fmt.Errorf("failed after %d retries: %w", maxRetries, err)
+	return nil, nil, fmt.Errorf("failed after %d retries: %w", maxRetries, err)
 }
 
 // ErrAuthRejected marks a service-level authorization denial from a remote peer,
@@ -374,33 +411,6 @@ func (n *AgentMeshNode) ConnectMCPSession(ctx context.Context, targetPeer peer.I
 	}
 
 	return session, fullCleanup, nil
-}
-
-func (n *AgentMeshNode) callMCPToolOnce(ctx context.Context, targetPeer peer.ID, toolName string, params any, requiredLabels map[string]string) (*mcp.CallToolResult, error) {
-	targetService, originalToolName, err := api.SplitToolName(toolName)
-	if err != nil {
-		return nil, err
-	}
-
-	session, cleanup, err := n.ConnectMCPSession(ctx, targetPeer, targetService, requiredLabels)
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
-
-	// We don't need to marshall the params, the SDK takes care of it
-	// Passing pre-marshaled []byte triggers encoding/json's base64 which gets rejected
-	callParams := &mcp.CallToolParams{
-		Name:      originalToolName,
-		Arguments: params,
-	}
-
-	res, err := session.CallTool(ctx, callParams)
-	if err != nil {
-		return nil, fmt.Errorf("failed to call tool %s: %w", toolName, err)
-	}
-
-	return res, nil
 }
 
 // fetchRemoteServiceCatalog calls the remote peer's list_local_services
