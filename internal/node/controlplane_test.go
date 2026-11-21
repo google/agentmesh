@@ -51,8 +51,8 @@ func TestMergeTrustedKeys(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("expected 2 keys, got %d", len(got))
 	}
-	if !got[0].Key.Equal(keyA) || !got[0].ReceivedAt.Equal(earlier) {
-		t.Errorf("known key must keep its ReceivedAt: got %+v", got[0])
+	if !got[0].Key.Equal(keyA) || !got[0].ReceivedAt.Equal(now) {
+		t.Errorf("a key the control plane still lists must get the sync time: got %+v", got[0])
 	}
 	if !got[1].Key.Equal(keyB) || !got[1].ReceivedAt.Equal(now) {
 		t.Errorf("new key must get the sync time: got %+v", got[1])
