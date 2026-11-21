@@ -358,6 +358,17 @@ func (m *MCPService) HandleStreamPassThrough(s network.Stream, reqCtx RequestCon
 	}
 }
 
+// taskDenied answers a request the caller's task does not allow, with
+// api.JSONRPCCodeUnauthorized. A calling model sees only the message (the MCP
+// go-sdk builds its error from it), so the message says what was refused, that
+// nothing reached the service, and that the same call is refused again.
+func taskDenied(id jsonrpc.ID, what string, err error) *jsonrpc.Response {
+	return &jsonrpc.Response{ID: id, Error: &jsonrpc.Error{
+		Code:    api.JSONRPCCodeUnauthorized,
+		Message: fmt.Sprintf("task authorization denied %s: %v. The task this call runs under does not allow it, so it was not sent to the service; the same call under this task is denied again", what, err),
+	}}
+}
+
 // authorizeMCPRequest evaluates reqCtx.TaskRules against an inbound JSON-RPC
 // request on an MCP stream. Returns a JSON-RPC error response when denied, or
 // nil when allowed.
@@ -374,7 +385,7 @@ func (m *MCPService) authorizeMCPRequest(req *jsonrpc.Request, reqCtx RequestCon
 			AllowMCPStreamInit: true,
 		}, time.Now()); err != nil {
 			logger.Warnf("[MCPService] %s: TAR denied %s from %s: %v", svcName, req.Method, reqCtx.PeerID, err)
-			return &jsonrpc.Response{ID: req.ID, Error: &jsonrpc.Error{Code: jsonrpc.CodeInvalidRequest, Message: fmt.Sprintf("task authorization denied %s: %v", req.Method, err)}}
+			return taskDenied(req.ID, req.Method, err)
 		}
 		return nil
 	case "tools/call":
@@ -390,7 +401,7 @@ func (m *MCPService) authorizeMCPRequest(req *jsonrpc.Request, reqCtx RequestCon
 			MCPTool:     params.Name,
 		}, time.Now()); err != nil {
 			logger.Warnf("[MCPService] %s: TAR denied tools/call %q from %s: %v", svcName, params.Name, reqCtx.PeerID, err)
-			return &jsonrpc.Response{ID: req.ID, Error: &jsonrpc.Error{Code: jsonrpc.CodeInvalidRequest, Message: fmt.Sprintf("task authorization denied tool %q: %v", params.Name, err)}}
+			return taskDenied(req.ID, fmt.Sprintf("tool %q", params.Name), err)
 		}
 		return nil
 	default:
@@ -399,7 +410,7 @@ func (m *MCPService) authorizeMCPRequest(req *jsonrpc.Request, reqCtx RequestCon
 			ServiceName: svcName,
 		}, time.Now()); err != nil {
 			logger.Warnf("[MCPService] %s: TAR denied %s from %s: %v", svcName, req.Method, reqCtx.PeerID, err)
-			return &jsonrpc.Response{ID: req.ID, Error: &jsonrpc.Error{Code: jsonrpc.CodeInvalidRequest, Message: fmt.Sprintf("task authorization denied %s: %v", req.Method, err)}}
+			return taskDenied(req.ID, req.Method, err)
 		}
 		return nil
 	}

@@ -145,7 +145,7 @@ Using that narrowed Task Biscuit:
    `Order #1042: status=SHIPPED, item='Mechanical Keyboard Pro', total=$129.00, customer=alice@acme.com`
 2. If a prompt injection inside the order notes tricks the agent into calling `issue_refund(order_id="1042", amount_dollars=5000)` using the **same** Task Biscuit, the node's authorizer blocks the tool call mid-flight and leaves the SQLite `refunds` table untouched (`COUNT(*) = 0`):
    ```text
-   task authorization denied tool "issue_refund": tar_block[1] ("oauth-task") denied request to mcp://orders-db
+   task authorization denied tool "issue_refund": tar_block[1] ("oauth-task") denied request to mcp://orders-db. The task this call runs under does not allow it, so it was not sent to the service; the same call under this task is denied again
    ```
 
 ---
