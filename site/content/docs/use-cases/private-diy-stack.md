@@ -176,7 +176,7 @@ Act 3 proves that an LLM or compromised harness cannot bypass enterprise guardra
 --> [3d. Per-Task Sealed Biscuit (tar_block) — Blocking Prompt-Injected Wire Transfers]
     Minting a sealed Task Biscuit via RFC 8693 POST /oauth/token narrowed to read-only tools:
       1. Allowed read tool (lookup_invoice)          -> Invoice INV-2026-089: vendor=Acme Robotics GmbH (ACME-01), sku=SKU-GPU-H200, qty=4, amount=$48,500.00, status=PENDING_APPROVAL
-      2. Prompt-injected tool (execute_wire_transfer) -> failed after 3 retries: failed to call tool mcp://erp-db/execute_wire_transfer: calling "tools/call": task authorization denied tool "execute_wire_transfer": tar_block[1] ("oauth-task") denied request to mcp://erp-db
+      2. Prompt-injected tool (execute_wire_transfer) -> failed to call tool mcp://erp-db/execute_wire_transfer: calling "tools/call": task authorization denied tool "execute_wire_transfer": tar_block[1] ("oauth-task") denied request to mcp://erp-db
       3. SQLite wire_transfers table row count        -> 0 (database untouched!)
 ```
 

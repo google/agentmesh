@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -684,6 +685,133 @@ func TestCallMCPTool_ProviderNotGrantedIsNotRetried(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "retries") {
 		t.Fatalf("CallMCPTool over the facts limit = %v, want one refusal with no retry", err)
+	}
+}
+
+// tools/call is sent once. Here the backend runs the tool and the connection
+// drops before the reply comes back; the error goes to the caller, and the tool
+// is not run a second time.
+func TestCallMCPTool_ToolCallIsSentOnce(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	nodeA, cleanupA := startBareNode(t, ctx)
+	defer cleanupA()
+	nodeB, cleanupB := startBareNode(t, ctx)
+	defer cleanupB()
+
+	if err := nodeA.Host.Connect(ctx, peer.AddrInfo{ID: nodeB.Host.ID(), Addrs: nodeB.Host.Addrs()}); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	_, rootPriv := enrollUnderRoot(t, nodeA, nodeB)
+	nodeBIdentity, err := identity.MintBootstrapBiscuitToken(rootPriv, nodeB.Host.ID(), api.RoleNode, time.Now().Add(time.Hour), publishEverything, nil)
+	if err != nil {
+		t.Fatalf("mint nodeB identity: %v", err)
+	}
+	nodeB.SetIdentityCache(nodeBIdentity)
+
+	var calls atomic.Int32
+	fake := newFakeMCPHandler(t, []*mcp.Tool{
+		{Name: "send_payment", Description: "Send a payment", InputSchema: map[string]any{"type": "object"}},
+	})
+	hostedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+			return
+		}
+		if strings.Contains(string(body), `"tools/call"`) {
+			calls.Add(1)
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		r.Body = io.NopCloser(strings.NewReader(string(body)))
+		fake.ServeHTTP(w, r)
+	}))
+	defer hostedSrv.Close()
+	if err := nodeB.RegisterService(ctx, &api.RegisterServiceRequest{
+		Service: &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_MCP, Name: "payments"},
+		Backend: &api.RegisterServiceRequest_TargetUrl{TargetUrl: hostedSrv.URL},
+	}); err != nil {
+		t.Fatalf("RegisterService: %v", err)
+	}
+	defer func() { _ = nodeB.UnregisterService(ctx, "payments") }()
+
+	_, err = nodeA.CallMCPTool(ctx, nodeB.Host.ID(), "mcp://payments/send_payment", map[string]any{"amount": 10}, nil)
+	if err == nil {
+		t.Fatal("CallMCPTool with the reply lost = nil error, want an error")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("backend received tools/call %d times, want 1", got)
+	}
+	if strings.Contains(err.Error(), "retries") {
+		t.Fatalf("CallMCPTool with the reply lost = %v, want one attempt with no retry", err)
+	}
+}
+
+// A provider whose task check denies a tool outside the caller's task answers
+// tools/call itself. That answer goes back once, and the same task still
+// reaches the tool it allows.
+func TestCallMCPTool_TaskDeniedToolIsNotRetried(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	nodeA, cleanupA := startBareNode(t, ctx)
+	defer cleanupA()
+	nodeB, cleanupB := startBareNode(t, ctx)
+	defer cleanupB()
+
+	if err := nodeA.Host.Connect(ctx, peer.AddrInfo{ID: nodeB.Host.ID(), Addrs: nodeB.Host.Addrs()}); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	_, rootPriv := enrollUnderRoot(t, nodeA, nodeB)
+	nodeBIdentity, err := identity.MintBootstrapBiscuitToken(rootPriv, nodeB.Host.ID(), api.RoleNode, time.Now().Add(time.Hour), publishEverything, nil)
+	if err != nil {
+		t.Fatalf("mint nodeB identity: %v", err)
+	}
+	nodeB.SetIdentityCache(nodeBIdentity)
+
+	hostedSrv := httptest.NewServer(newFakeMCPHandler(t, []*mcp.Tool{
+		{Name: "review_pr", Description: "Run a code review", InputSchema: map[string]any{"type": "object"}},
+		{Name: "delete_repo", Description: "Delete a repository", InputSchema: map[string]any{"type": "object"}},
+	}))
+	defer hostedSrv.Close()
+	if err := nodeB.RegisterService(ctx, &api.RegisterServiceRequest{
+		Service: &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_MCP, Name: "code-reviewer"},
+		Backend: &api.RegisterServiceRequest_TargetUrl{TargetUrl: hostedSrv.URL},
+	}); err != nil {
+		t.Fatalf("RegisterService: %v", err)
+	}
+	defer func() { _ = nodeB.UnregisterService(ctx, "code-reviewer") }()
+
+	base, err := nodeA.Store.LoadIdentity()
+	if err != nil {
+		t.Fatalf("load nodeA identity: %v", err)
+	}
+	tar, err := api.BuildTARFromOAuthParams("oauth-task", `{"name":"review-only","rules":[{"allowed_services":["mcp://code-reviewer"],"operation":{"allowed_tools":["review_pr"]}}]}`, nil, "", nil)
+	if err != nil {
+		t.Fatalf("build task rule: %v", err)
+	}
+	reviewOnly, err := identity.AttenuateBiscuit(base, tar)
+	if err != nil {
+		t.Fatalf("attenuate: %v", err)
+	}
+
+	_, err = nodeA.CallMCPTool(WithCallerBiscuit(ctx, reviewOnly), nodeB.Host.ID(), "mcp://code-reviewer/delete_repo", map[string]any{}, nil)
+	if err == nil || !strings.Contains(err.Error(), `task authorization denied tool "delete_repo"`) {
+		t.Fatalf("CallMCPTool(delete_repo) = %v, want a task authorization denial", err)
+	}
+	if strings.Contains(err.Error(), "retries") {
+		t.Fatalf("CallMCPTool(delete_repo) = %v, want one answer with no retry", err)
+	}
+
+	if _, err := nodeA.CallMCPTool(WithCallerBiscuit(ctx, reviewOnly), nodeB.Host.ID(), "mcp://code-reviewer/review_pr", map[string]any{}, nil); err != nil {
+		t.Fatalf("CallMCPTool(review_pr) within the task = %v, want success", err)
 	}
 }
 
