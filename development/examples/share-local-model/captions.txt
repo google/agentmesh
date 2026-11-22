@@ -1,0 +1,12 @@
+Agent Mesh connects AI agents, tools and models by service name. Nothing is reachable until a policy allows it. In this demo, node B asks to use a model that node A serves.
+Step 1/10 · The mesh policy. Members may publish models, but may not call them. Deny by default.
+Step 2/10 · One command starts the control plane, a router and the web console. The admin token is read from a file, so it is never printed.
+Step 3/10 · The operator mints one single-use enrollment token per node. The tokens are written to files, not to the screen.
+Step 4/10 · Node A publishes its local Ollama model as the service laptop-llm. Ollama stays on 127.0.0.1. Node A's pane shows every authorization decision.
+Step 5/10 · Node B joins with its own identity. It offers the agents on its machine an OpenAI-compatible API and an MCP server.
+Step 6/10 · Node B asks for the model. Node A checks node B's credential against the policy and refuses the call: DENY.
+Step 7/10 · The operator grants one service, by name. No restart, no new credentials. Both nodes load the new policy within seconds.
+Step 8/10 · The same request now reaches the model on node A over an authenticated peer-to-peer link: ALLOW.
+Step 9/10 · An AI agent uses the mesh through node B's MCP server. Antigravity CLI finds the model and the node that serves it.
+Step 10/10 · A second agent, OpenCode, uses the same MCP server. Its project config allows the agentmesh tools and nothing else.
+Agent Mesh: an identity per node, policy on service names, deny by default.   github.com/google/agentmesh   ·   google.github.io/agentmesh

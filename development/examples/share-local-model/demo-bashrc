@@ -1,0 +1,40 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Shell for every pane of the recording. layout.sh starts it as:
+#   env DEMO_HOME=<dir> DEMO_HOST=<role> bash --rcfile demo-bashrc
+# Every Agent Mesh command in the video is typed as shown; nothing here wraps them.
+
+KIT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# AGENTMESH_BIN and AGENTS_RC, written by record.sh.
+# shellcheck source=/dev/null
+source "$KIT/paths.env"
+export PATH="$AGENTMESH_BIN:$PATH"
+export URL="http://127.0.0.1:9000"
+
+# The demo home is the home of these shells, so the prompt reads ~ and the
+# files the video uses are right there.
+export HOME="${DEMO_HOME:?DEMO_HOME is not set}"
+export HISTFILE="$HOME/.bash_history"
+export PS1="\[\e[1;32m\]\u@${DEMO_HOST:-demo}\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\\$ "
+unset PROMPT_COMMAND
+
+# Optional: wrappers that make antigravity and opencode callable (see SCRIPT.md).
+if [[ -n "${AGENTS_RC:-}" && -r "$AGENTS_RC" ]]; then
+  # shellcheck source=/dev/null
+  source "$AGENTS_RC"
+fi
+
+cd ~ || return
+clear
