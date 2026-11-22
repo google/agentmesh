@@ -1,0 +1,20 @@
+{
+  "roles": [
+    {
+      "name": "mesh-admin",
+      "allowed_services": ["*"],
+      "allowed_targets": ["*"]
+    },
+    {
+      "name": "mesh:role:router",
+      "allowed_services": ["*"],
+      "allowed_targets": ["*"]
+    },
+    {
+      "name": "mesh:role:node",
+      "allowed_services": ["system://mesh.catalog"],
+      "allowed_targets": ["*"],
+      "allowed_publish": ["inference://*"]
+    }
+  ]
+}

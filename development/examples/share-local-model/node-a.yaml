@@ -1,0 +1,6 @@
+version: "v1alpha1"
+services:
+  - type: inference
+    name: laptop-llm
+    description: "Ollama on my laptop"
+    target_url: "http://127.0.0.1:11434"
