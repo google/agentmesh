@@ -1,0 +1,69 @@
+suite: gateway
+templates:
+  - templates/gateway.yaml
+release:
+  name: agentmesh-webapp
+tests:
+  - it: disabled by default renders nothing
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: enabling it requires gateway.className
+    set:
+      gateway.enabled: true
+    asserts:
+      - failedTemplate:
+          errorPattern: gateway.className is required when gateway.enabled is true
+
+  - it: serves the web app at / when no path is set
+    set:
+      gateway.enabled: true
+      gateway.className: x
+    documentSelector:
+      path: kind
+      value: HTTPRoute
+    asserts:
+      - lengthEqual:
+          path: spec.rules
+          count: 1
+      - equal:
+          path: spec.rules[0].matches[0].path
+          value: { type: PathPrefix, value: / }
+      - notExists:
+          path: spec.rules[0].filters
+      - equal:
+          path: spec.rules[0].backendRefs[0]
+          value: { name: agentmesh-webapp, port: 8082 }
+
+  - it: a path redirects its bare prefix and strips it before the web app
+    set:
+      gateway.enabled: true
+      gateway.className: x
+      gateway.path: /node
+      gateway.hostnames: [mesh.example.com]
+    documentSelector:
+      path: kind
+      value: HTTPRoute
+    asserts:
+      - lengthEqual:
+          path: spec.rules
+          count: 2
+      - equal:
+          path: spec.hostnames
+          value: [mesh.example.com]
+      - equal:
+          path: spec.rules[0].matches[0].path
+          value: { type: Exact, value: /node }
+      - equal:
+          path: spec.rules[0].filters[0].requestRedirect.path.replaceFullPath
+          value: /node/
+      - equal:
+          path: spec.rules[1].matches[0].path
+          value: { type: PathPrefix, value: /node/ }
+      - equal:
+          path: spec.rules[1].filters[0].urlRewrite.path
+          value: { type: ReplacePrefixMatch, replacePrefixMatch: / }
+      - equal:
+          path: spec.rules[1].backendRefs[0]
+          value: { name: agentmesh-webapp, port: 8082 }

@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// The pieces the browser SDK test stands up around Chromium: agentmesh-one from
-// bin/, a TLS-terminating edge in front of it that routes by name the way
+// The pieces the browser tests stand up around Chromium: agentmesh-one from
+// bin/, agentmesh-webapp from bin/ on an origin of its own, a TLS-terminating edge in front of it that routes by name the way
 // `agentmesh-one --tunnel` puts one there, a static server for the page, and the
-// Node example programs from sdk/js as the other members, and agentmesh-router
-// from bin/ as a second router that a page reaches over WebTransport.
+// Node example programs from sdk/js as the other members, agentmesh-router
+// from bin/ as a second router that a page reaches over WebTransport, and the
+// WebMCP local relay that gives a page's tools to an agent.
 
 const { spawn, spawnSync } = require('node:child_process');
 const dgram = require('node:dgram');
@@ -33,12 +34,19 @@ const SDK_JS = path.join(REPO_ROOT, 'sdk', 'js');
 const PAGE_DIR = path.join(SDK_JS, 'build', 'browser-example');
 
 /** Why the test cannot run here, or '' when everything is in place. */
-function missing() {
+function missing({ app = false } = {}) {
   if (!fs.existsSync(path.join(REPO_ROOT, 'bin', 'agentmesh-one'))) {
     return 'bin/agentmesh-one is not built (make build)';
   }
   if (!fs.existsSync(path.join(REPO_ROOT, 'bin', 'agentmesh-router'))) {
     return 'bin/agentmesh-router is not built (make build)';
+  }
+  if (!fs.existsSync(path.join(REPO_ROOT, 'bin', 'agentmesh-webapp'))) {
+    return 'bin/agentmesh-webapp is not built (make build)';
+  }
+  if (app) {
+    const built = ['index.js', 'agentmesh-relay.mjs'].every((name) => fs.existsSync(path.join(REPO_ROOT, 'internal', 'webapp', 'public', 'sdk', name)));
+    return built ? '' : 'the app bundle is not built (make app)';
   }
   if (!fs.existsSync(path.join(PAGE_DIR, 'index.html')) || !fs.existsSync(path.join(SDK_JS, 'build', 'examples', 'a2a-call.js'))) {
     return 'the sdk/js browser example is not built (tests/ui/run.sh builds it)';
@@ -54,6 +62,15 @@ function freePort() {
       srv.close(() => resolve(port));
     });
     srv.on('error', reject);
+  });
+}
+
+// The page under test connects to the first relay that answers from 9333 up, so a real relay there would capture it.
+function assertRelayPortFree() {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.once('error', () => reject(new Error('port 9333 is in use, perhaps by a WebMCP relay; stop it before this test')));
+    srv.listen(9333, '127.0.0.1', () => srv.close(resolve));
   });
 }
 
@@ -83,15 +100,32 @@ async function waitFor(url, what, tries = 100) {
   throw new Error(`timed out waiting for ${what} at ${url}`);
 }
 
-/** Runs bin/agentmesh-one on a free loopback port; externalUrl is what it advertises. */
-async function startSamOne({ externalUrl } = {}) {
+/** Runs bin/agentmesh-webapp on a free loopback port: a page origin apart from every mesh it joins. */
+async function startWebapp() {
   const port = await freePort();
+  const proc = spawn(path.join(REPO_ROOT, 'bin', 'agentmesh-webapp'), ['--bind-addr', `127.0.0.1:${port}`], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let output = '';
+  proc.stdout.on('data', (d) => (output += d));
+  proc.stderr.on('data', (d) => (output += d));
+  const url = `http://127.0.0.1:${port}/`;
+  try {
+    await waitFor(url, 'agentmesh-webapp');
+  } catch (err) {
+    proc.kill();
+    throw new Error(`${err.message}\n${output}`);
+  }
+  return { url, stop: () => proc.kill() };
+}
+
+/** Runs bin/agentmesh-one on port, or a free loopback port; externalUrl is what it advertises, and args and env go to it as given. */
+async function startSamOne({ externalUrl, port, args: extra = [], env = {} } = {}) {
+  port ??= await freePort();
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentmesh-one-ui-'));
-  const args = ['--bind-address', '127.0.0.1', '--port', String(port), '--data-dir', dataDir, '--log-level', 'warn'];
+  const args = ['--bind-address', '127.0.0.1', '--port', String(port), '--data-dir', dataDir, '--log-level', 'warn', ...extra];
   if (externalUrl) {
     args.push('--external-url', externalUrl);
   }
-  const proc = spawn(path.join(REPO_ROOT, 'bin', 'agentmesh-one'), args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  const proc = spawn(path.join(REPO_ROOT, 'bin', 'agentmesh-one'), args, { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...env } });
   let output = '';
   proc.stdout.on('data', (d) => (output += d));
   proc.stderr.on('data', (d) => (output += d));
@@ -103,16 +137,23 @@ async function startSamOne({ externalUrl } = {}) {
     throw new Error(`${err.message}\n${output}`);
   }
   return {
+    port,
     localUrl,
     dataDir,
     publicUrl: externalUrl ?? localUrl,
     joinToken: fs.readFileSync(path.join(dataDir, 'join-token'), 'utf8').trim(),
+    // agentmesh-one persists a token in the data dir only when AGENTMESH_ADMIN_TOKEN is unset or blank; tests/ui/run.sh sets it.
+    get adminToken() {
+      return (env.AGENTMESH_ADMIN_TOKEN ?? process.env.AGENTMESH_ADMIN_TOKEN ?? '').trim() || fs.readFileSync(path.join(dataDir, 'admin-token'), 'utf8').trim();
+    },
     get output() {
       return output;
     },
     stop() {
+      const exited = proc.exitCode !== null || proc.signalCode !== null ? Promise.resolve() : new Promise((resolve) => proc.once('exit', resolve));
       proc.kill();
       fs.rmSync(dataDir, { recursive: true, force: true });
+      return exited;
     },
   };
 }
@@ -285,6 +326,29 @@ function startExampleAgent(name, env, ready = /accepting a2a:\/\/agent as (\S+)/
   });
 }
 
+/**
+ * Starts a relay for pages of origin, connected to an MCP client as an agent would be: the paired relay
+ * the app serves, run from cli as agentName with its keys under configHome, or with plain the unpaired upstream relay.
+ */
+async function startAgentRelay(origin, { agentName = 'UI Test Agent', configHome, plain = false, cli = path.join(REPO_ROOT, 'internal', 'webapp', 'public', 'sdk', 'agentmesh-relay.mjs') } = {}) {
+  const sdkRequire = require('node:module').createRequire(path.join(SDK_JS, 'package.json'));
+  const { Client } = sdkRequire('@modelcontextprotocol/sdk/client/index.js');
+  const { StdioClientTransport } = sdkRequire('@modelcontextprotocol/sdk/client/stdio.js');
+  const client = new Client({ name: 'ui-test-agent', version: '1' });
+  const transport = plain
+    ? new StdioClientTransport({ command: path.join(SDK_JS, 'node_modules', '.bin', 'webmcp-local-relay'), args: ['--widget-origin', origin], stderr: 'pipe' })
+    : new StdioClientTransport({
+        command: process.execPath,
+        args: [cli, '--widget-origin', origin, '--agent-name', agentName],
+        env: { ...process.env, XDG_CONFIG_HOME: configHome },
+        stderr: 'pipe',
+      });
+  let log = '';
+  transport.stderr?.on('data', (d) => (log += d));
+  await client.connect(transport);
+  return { client, stop: () => client.close(), get output() { return log; } };
+}
+
 /** The environment the Node examples take to join agentmesh-one at publicUrl. */
 function exampleEnv({ publicUrl, joinToken, caFile }, stateName) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `sam-${stateName}-`));
@@ -297,4 +361,4 @@ function exampleEnv({ publicUrl, joinToken, caFile }, stateName) {
   };
 }
 
-module.exports = { PAGE_DIR, missing, freePort, startSamOne, startWebTransportRouter, selfSignedCert, startTLSEdge, serveStatic, runExample, startExampleAgent, exampleEnv };
+module.exports = { PAGE_DIR, missing, freePort, assertRelayPortFree, startSamOne, startWebapp, startWebTransportRouter, selfSignedCert, startTLSEdge, serveStatic, runExample, startExampleAgent, startAgentRelay, exampleEnv };

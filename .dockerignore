@@ -36,6 +36,7 @@ dist/
 coverage.*
 mobile/agentmesh-node-app/build/
 sdk/js/build/
+internal/webapp/public/sdk/
 site/public/
 site/resources/
 rootfs.ext4

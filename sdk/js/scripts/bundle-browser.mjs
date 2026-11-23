@@ -20,9 +20,9 @@
 // the file beside the bundle and instantiates it. Bundling dist/index.js
 // this way also proves that nothing in the browser graph reaches for Node.
 //
-//   node scripts/bundle-browser.mjs [entry] [outdir]
+//   node scripts/bundle-browser.mjs [entry] [outdir] [--minify] [--no-sourcemap]
 //
-// Defaults: dist/index.js into build/browser.
+// Defaults: dist/index.js into build/browser, unminified, with a source map.
 
 import * as esbuild from "esbuild";
 import { readFile } from "node:fs/promises";
@@ -30,7 +30,9 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const [entry = join(here, "..", "dist", "index.js"), outdir = join(here, "..", "build", "browser")] = process.argv.slice(2);
+const args = process.argv.slice(2);
+const flags = new Set(args.filter((a) => a.startsWith("--")));
+const [entry = join(here, "..", "dist", "index.js"), outdir = join(here, "..", "build", "browser")] = args.filter((a) => !a.startsWith("--"));
 
 /** import * as wasm from "./x.wasm" as WebAssembly ESM integration would resolve it. */
 const wasmModules = {
@@ -74,7 +76,8 @@ const result = await esbuild.build({
   outdir,
   entryNames: "[name]",
   assetNames: "[name]",
-  sourcemap: true,
+  sourcemap: !flags.has("--no-sourcemap"),
+  minify: flags.has("--minify"),
   plugins: [wasmModules],
   metafile: true,
   logLevel: "warning",

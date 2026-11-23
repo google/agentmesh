@@ -1,0 +1,20 @@
+suite: deployment
+templates:
+  - templates/deployment.yaml
+release:
+  name: agentmesh-webapp
+tests:
+  - it: runs as the image's numeric nonroot uid
+    asserts:
+      - equal:
+          path: spec.template.spec.securityContext.runAsUser
+          value: 65532
+
+  - it: probes the page at /, where the web app serves it
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value: ["--bind-addr=:8082"]

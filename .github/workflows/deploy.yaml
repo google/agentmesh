@@ -143,6 +143,29 @@ jobs:
         tags: ${{ steps.meta-console.outputs.tags }}
         labels: ${{ steps.meta-console.outputs.labels }}
 
+    - name: Extract metadata for agentmesh-webapp
+      id: meta-webapp
+      uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+      with:
+        images: ${{ env.REGISTRY }}/google/agentmesh-webapp
+        tags: |
+          type=ref,event=branch
+          type=ref,event=tag
+          type=raw,value=${{ github.sha }}
+          type=raw,value=latest,enable={{is_default_branch}}
+          type=raw,value=stable,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+    - name: Build and push agentmesh-webapp image
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      with:
+        context: .
+        file: Dockerfile.agentmesh-webapp
+        build-args: VERSION=${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+        platforms: ${{ github.ref_type == 'tag' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+        push: true
+        tags: ${{ steps.meta-webapp.outputs.tags }}
+        labels: ${{ steps.meta-webapp.outputs.labels }}
+
     - name: Extract metadata for agentmesh-one
       id: meta-agentmesh-one
       uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
@@ -404,6 +427,7 @@ jobs:
           envsubst '${ENV_NAME} ${NAMESPACE} ${GCP_PROJECT_ID} ${CLUSTER_NAME} ${CLUSTER_REGION} ${IMAGE_TAG} ${NODE_RETENTION}' < .github/k8s/agentmesh-control-plane-template.yaml | kubectl apply -f -
           envsubst '${ENV_NAME} ${NAMESPACE} ${GCP_PROJECT_ID} ${CLUSTER_NAME} ${CLUSTER_REGION} ${IMAGE_TAG} ${ROUTER_REPLICAS} ${ROUTER_HIGH_WATERMARK}' < .github/k8s/agentmesh-router-template.yaml | kubectl apply -f -
           envsubst '${ENV_NAME} ${NAMESPACE} ${GCP_PROJECT_ID} ${CLUSTER_NAME} ${CLUSTER_REGION} ${IMAGE_TAG}' < .github/k8s/agentmesh-console-template.yaml | kubectl apply -f -
+          envsubst '${ENV_NAME} ${NAMESPACE} ${IMAGE_TAG}' < .github/k8s/agentmesh-webapp-template.yaml | kubectl apply -f -
           envsubst '${ENV_NAME} ${NAMESPACE} ${GCP_PROJECT_ID}' < .github/k8s/dns-sync-cronjob-template.yaml | kubectl apply -f -
           # Managed Prometheus ships with GKE; a cluster without it should not block the mesh rollout.
           if kubectl get crd podmonitorings.monitoring.googleapis.com >/dev/null 2>&1; then
@@ -464,6 +488,12 @@ jobs:
           kubectl rollout status deployment/agentmesh-console-${ENV_NAME} -n ${NAMESPACE} --timeout=120s || {
             echo "Console Deployment failed!"
             print_rollout_diagnostics "${NAMESPACE}" "deployment/agentmesh-console-${ENV_NAME}" "app=agentmesh-console-${ENV_NAME}"
+            exit 1
+          }
+
+          kubectl rollout status deployment/agentmesh-webapp-${ENV_NAME} -n ${NAMESPACE} --timeout=120s || {
+            echo "Web app Deployment failed!"
+            print_rollout_diagnostics "${NAMESPACE}" "deployment/agentmesh-webapp-${ENV_NAME}" "app=agentmesh-webapp-${ENV_NAME}"
             exit 1
           }
 

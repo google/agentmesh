@@ -53,6 +53,18 @@ export class CredentialRetiredError extends Error {
 }
 
 /**
+ * The state directory holds no enrolled member: no identity, or an identity
+ * whose credential was never saved or was forgotten. enroll() with a token
+ * is the way out.
+ */
+export class NotEnrolledError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NotEnrolledError";
+  }
+}
+
+/**
  * The saved credential with the control plane's current keys adopted, or
  * undefined when the control plane vouches for none of the keys it trusts. A
  * control plane that cannot be reached, or answers in a way that is not a
@@ -200,8 +212,8 @@ export class AgentMesh {
    * under a key that retired while the member was off cannot be verified or
    * refreshed, so the member enrolls again with the token given, or throws
    * CredentialRetiredError without one. Otherwise exactly one of
-   * bootstrapToken, bootstrapTokenPath, jwt or jwtPath must be given. Delete
-   * the state directory to enroll afresh, for instance with other labels.
+   * bootstrapToken, bootstrapTokenPath, jwt or jwtPath must be given.
+   * forget() without keepIdentity to enroll afresh, for instance with other labels.
    */
   static async enroll(options: EnrollOptions): Promise<AgentMesh> {
     const state = options.stateDir !== undefined ? openState(options.stateDir) : undefined;
@@ -279,7 +291,8 @@ export class AgentMesh {
   /**
    * Resumes a member from a state directory written by an earlier enroll(),
    * for a process that must never hold an enrollment token. The control
-   * plane URL comes from the saved credential.
+   * plane URL comes from the saved credential. Throws NotEnrolledError when
+   * there is nothing to resume.
    */
   static async load(
     options: Omit<AgentMeshOptions, "controlPlaneUrl"> & {
@@ -291,11 +304,11 @@ export class AgentMesh {
     const state = openState(options.stateDir);
     const identity = options.identity ?? (await loadIdentity(state));
     if (!identity) {
-      throw new Error(`no identity in ${options.stateDir}; enroll first`);
+      throw new NotEnrolledError(`no identity in ${options.stateDir}; enroll first`);
     }
     const credential = await loadCredential(state);
     if (credential === undefined) {
-      throw new Error(`no credential in ${options.stateDir}; enroll first`);
+      throw new NotEnrolledError(`no credential in ${options.stateDir}; enroll first`);
     }
     return new AgentMesh(
       identity,
@@ -307,9 +320,22 @@ export class AgentMesh {
   }
 
   /**
+   * Deletes the credential enroll() saved in stateDir, and the identity key too
+   * unless keepIdentity. Local only; close the sessions joined from this state
+   * first, because a session saves its credential when it refreshes.
+   */
+  static async forget(stateDir: string, options: { keepIdentity?: boolean } = {}): Promise<void> {
+    const state = openState(stateDir);
+    await state.remove(CREDENTIAL_FILE);
+    if (options.keepIdentity !== true) {
+      await state.remove(IDENTITY_FILE);
+    }
+  }
+
+  /**
    * Trades the current biscuit for a fresh one and persists it. The control
    * plane redeems only the last biscuit it issued, so a lost refresh result
-   * means re-enrolling; persisting before returning keeps that rare.
+   * means re-enrolling; persisting as soon as /refresh answers, before /keys, keeps that rare.
    * Concurrent calls wait for each other. A refresh whose signal has
    * aborted by the time its turn comes does not start.
    */
@@ -347,19 +373,16 @@ export class AgentMesh {
       biscuit: this.#credential.biscuit,
       ...(jwt !== undefined ? { jwt } : {}),
     });
+    // Saved before /keys: the old biscuit is spent, so a process that stops in between must already hold the new one.
+    this.#credential = withCredentialMethods({ ...this.#credential, biscuit: result.biscuit, expiration: result.expiration });
+    await this.save();
     let controlPlaneKeys = this.#credential.controlPlaneKeys;
     try {
       controlPlaneKeys = await this.controlPlane.keys(controlPlaneKeys);
     } catch {
       // Keep the previous set; a failed /keys sync must not cost the new biscuit.
     }
-    this.#credential = withCredentialMethods({
-      ...this.#credential,
-      biscuit: result.biscuit,
-      expiration: result.expiration,
-      controlPlaneKeys,
-      issuedUnderKeys: controlPlaneKeys,
-    });
+    this.#credential = withCredentialMethods({ ...this.#credential, controlPlaneKeys, issuedUnderKeys: controlPlaneKeys });
     await this.save();
     return this.#credential;
   }

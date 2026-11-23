@@ -1,8 +1,9 @@
 version: 2
 project_name: agentmesh
 # Deliberately not released: agentmesh-bench (a measurement instrument for people
-# working on the mesh, built from the repo, not something operators install)
-# and chaos-agent (a Python dev tool).
+# working on the mesh, built from the repo, not something operators install),
+# chaos-agent (a Python dev tool) and agentmesh-webapp (an image and a Helm
+# chart only).
 builds:
   - id: agentmesh-node
     main: ./cmd/agentmesh-node

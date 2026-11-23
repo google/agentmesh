@@ -151,17 +151,22 @@ the caller's credential must also satisfy.
 
 ## Packaging
 
-The same three programs ship in several forms:
+The programs ship in several forms:
 
 - **Binaries** for Linux, macOS and Windows, from the releases page or the
   install script.
 - **Container images**: `ghcr.io/google/agentmesh-control-plane`,
-  `agentmesh-router`, `agentmesh-node`, `agentmesh-console` and `agentmesh-one`.
-- **`agentmesh-one`**, a single binary that runs the control plane, a router and
-  the console in one process on one port, for laptops, Cloud Run and small
+  `agentmesh-router`, `agentmesh-node`, `agentmesh-console`, `agentmesh-webapp`
+  and `agentmesh-one`.
+- **`agentmesh-one`**, a single binary that runs the control plane, a router
+  and the console in one process on one port, for laptops, Cloud Run and small
   meshes.
 - **Helm charts**: `agentmesh` deploys the control plane, router, console and
   PostgreSQL. `agentmesh-node` deploys a node beside a service container.
+  `agentmesh-webapp` deploys the web app.
 
 The web console (`agentmesh-console`) is a separate program that talks to the
-control plane's admin API. It is not required to run a mesh.
+control plane's admin API. It is not required to run a mesh. The web app
+(`agentmesh-webapp`) is a separate program too. It serves the page that puts a
+browser on a mesh, and it is tied to no mesh: the person using the page enters
+the control plane's address.

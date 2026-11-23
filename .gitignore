@@ -42,6 +42,9 @@ dist/
 /agentmesh-box
 /agentmesh-router
 /agentmesh-console
+/agentmesh-webapp
+
+/internal/webapp/public/sdk/
 
 # Playwright console UI tests
 node_modules/
