@@ -14,6 +14,7 @@
 
 import base64
 import json
+import shutil
 import stat
 import threading
 import time
@@ -55,8 +56,9 @@ class FakeControlPlane:
         self.refresh_delay = refresh_delay
         self.last_biscuit = b""
         self.last_refresh_jwt = ""
-        # What /keys serves and signs with; a test rotates by replacing it.
+        # What /keys serves and signs with; a test rotates by replacing it. on_keys runs when /keys is asked.
         self.keys = [CP_KEY]
+        self.on_keys = None
         self._lock = threading.Lock()
 
     def _issue(self, biscuit):
@@ -101,6 +103,8 @@ class FakeControlPlane:
                 biscuit = self._issue(token_bytes)
             return 200, pb.TokenRefreshResponse(biscuit_token=biscuit, expire_time=_ts_s(int(time.time()) + 7200)).SerializeToString()
         if (method, path) == ("GET", "/keys"):
+            if self.on_keys is not None:
+                self.on_keys()
             return (200, self._signed_keys().SerializeToString()) if self.keys_ok else (500, b"boom")
         return 404, f"no route for {method} {path}".encode()
 
@@ -209,6 +213,23 @@ def test_enroll_without_state_dir_keeps_enrollment_key_when_keys_fails():
     mesh.save()
     mesh.refresh()
     assert mesh.credential.biscuit == b"biscuit-2"
+
+
+def test_refresh_saves_the_new_biscuit_before_it_asks_for_keys(tmp_path):
+    """The control plane spends the old biscuit when it answers /refresh, so a
+    process stopped before the save could never refresh again."""
+    cp = FakeControlPlane(strict_refresh=True)
+    state = tmp_path / "state"
+    stopped = tmp_path / "stopped"
+    mesh = AgentMesh.enroll("http://127.0.0.1:1", bootstrap_token="sbt_secret", state_dir=state, transport=cp.transport)
+    # What a process stopped while /keys is asked leaves on disk.
+    cp.on_keys = lambda: shutil.copytree(state, stopped)
+    mesh.refresh()
+    cp.on_keys = None
+
+    restarted = AgentMesh.load(stopped, transport=cp.transport)
+    restarted.refresh()
+    assert restarted.credential.biscuit == b"biscuit-3"
 
 
 def test_concurrent_refreshes_run_one_after_the_other(tmp_path):

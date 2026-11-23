@@ -49,7 +49,9 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: tests/ui/package-lock.json
+          cache-dependency-path: |
+            tests/ui/package-lock.json
+            sdk/js/package-lock.json
 
       - name: Run console UI smoke test
         run: make ui-test

@@ -1,0 +1,30 @@
+# The web app embeds the SDK bundle; JavaScript and wasm are the same on every platform.
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392 AS sdk-bundle
+WORKDIR /src/sdk/js
+COPY sdk/js/package.json sdk/js/package-lock.json sdk/js/.npmrc ./
+RUN npm ci --no-fund --no-audit
+COPY sdk/js/ ./
+RUN npm run build && npm run bundle:app
+
+FROM --platform=$BUILDPLATFORM golang:1.27.4@sha256:205c7636d74e0ffbe3d007162df7d74f859f5a8c8322dfb9f907977686c126cf AS builder
+
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+
+COPY . .
+COPY --from=sdk-bundle /src/internal/webapp/public/sdk/ internal/webapp/public/sdk/
+ARG VERSION=devel
+ARG TARGETOS=linux
+ARG TARGETARCH
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -buildvcs=false -ldflags="-X github.com/google/agentmesh/internal/version.Version=${VERSION}" -o /bin/agentmesh-webapp ./cmd/agentmesh-webapp
+
+FROM gcr.io/distroless/static:nonroot@sha256:8ce6dd87e9823c5b48dcfb2c8604714ccb351ce59607327bcc4957448da279b5
+
+COPY --from=builder --chown=nonroot:nonroot /bin/agentmesh-webapp /usr/local/bin/agentmesh-webapp
+
+USER nonroot:nonroot
+EXPOSE 8082
+ENTRYPOINT ["/usr/local/bin/agentmesh-webapp"]

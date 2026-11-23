@@ -234,6 +234,12 @@ not put them on a command line. `labels` are attested at enrollment;
 `join({ egressRequireLabels })` is the floor every peer the session calls must
 attest, all of it, held for the session.
 
+`AgentMesh.forget(stateDir, { keepIdentity })` deletes the saved credential,
+and the identity too unless `keepIdentity` is set, so the next `enroll` spends
+its token instead of resuming. Close the sessions joined from that state
+first. `AgentMesh.load({ stateDir })` resumes without a token and throws
+`NotEnrolledError` when there is nothing to resume.
+
 A plaintext `http://` control plane is accepted only on loopback. Pass
 `allowInsecure: true` for a network you trust.
 

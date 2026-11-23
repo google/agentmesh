@@ -244,6 +244,7 @@ export class MeshSession {
   /** The addresses of the record last announced under this member's peer key. */
   #announced: string[] = [];
   #syncing: Promise<ControlPlaneSync> | undefined;
+  #refreshing: Promise<void> | undefined;
   #keepingRelay: Promise<void> | undefined;
   #keepRelayPending = false;
   readonly #heldRouterIds: Set<string>;
@@ -984,9 +985,12 @@ export class MeshSession {
    * never sees leaves it refusing relay circuits to this member once the
    * old one lapses, with every connection still open.
    */
-  async #refreshCredential(): Promise<void> {
-    await this.mesh.refresh();
-    await this.#readmitRouters();
+  #refreshCredential(): Promise<void> {
+    this.#refreshing = (async () => {
+      await this.mesh.refresh();
+      await this.#readmitRouters();
+    })();
+    return this.#refreshing;
   }
 
   /**
@@ -1261,6 +1265,9 @@ export class MeshSession {
     if (!this.#isTaskView) {
       await this.node.stop();
     }
+    // A refresh or pull in flight saves the credential when it lands; once
+    // close() returns, nothing this session started writes the state again.
+    await Promise.allSettled([this.#refreshing, this.#syncing]);
   }
 }
 

@@ -17,6 +17,8 @@ you find.
   identity, and how an agent serves.
 - [Agent Mesh Connect](mobile/): the Android and iOS app that turns a phone into a
   node.
+- [Agent Mesh Connect web app](webapp/): the page `agentmesh-webapp` serves,
+  which puts a browser on a mesh and lets a local agent use it.
 
 Everything outside this section (the node, the routers, the control plane,
 identity, policy and the deployment guides) is the stable core.

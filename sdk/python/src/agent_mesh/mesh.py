@@ -246,7 +246,7 @@ class AgentMesh:
     def refresh(self) -> MeshCredential:
         """Trades the current biscuit for a fresh one and persists it. The control
         plane redeems only the last biscuit it issued, so a lost refresh result
-        means re-enrolling; persisting before returning keeps that rare."""
+        means re-enrolling; persisting as soon as /refresh answers, before /keys, keeps that rare."""
         with self._lock:
             fresh_jwt: Optional[str] = None
             if self._jwt_source is not None:
@@ -257,18 +257,15 @@ class AgentMesh:
                 except Exception:  # noqa: BLE001 - fall back to session-only refresh if token source is unavailable
                     pass
             result = self.control_plane.refresh(self.identity, self._credential.biscuit, jwt=fresh_jwt)
+            # Saved before /keys: the old biscuit is spent, so a process that stops in between must already hold the new one.
+            self._credential = replace(self._credential, biscuit=result.biscuit, expiration=result.expiration)
+            self.save()
             control_plane_keys = self._credential.control_plane_keys
             try:
                 control_plane_keys = self.control_plane.keys(control_plane_keys)
             except Exception:  # noqa: BLE001 - a failed /keys sync must not cost the new biscuit
                 pass
-            self._credential = replace(
-                self._credential,
-                biscuit=result.biscuit,
-                expiration=result.expiration,
-                control_plane_keys=control_plane_keys,
-                issued_under_keys=list(control_plane_keys),
-            )
+            self._credential = replace(self._credential, control_plane_keys=control_plane_keys, issued_under_keys=list(control_plane_keys))
             self.save()
             return self._credential
 

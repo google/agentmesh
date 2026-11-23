@@ -49,6 +49,10 @@ export function openState(location: string): StateStore {
       const tx = (await open()).transaction(STORE, "readwrite");
       await request(tx.objectStore(STORE).put(new Uint8Array(data), name));
     },
+    async remove(name) {
+      const tx = (await open()).transaction(STORE, "readwrite");
+      await request(tx.objectStore(STORE).delete(name));
+    },
   };
 }
 

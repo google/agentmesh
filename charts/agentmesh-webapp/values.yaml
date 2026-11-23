@@ -1,0 +1,51 @@
+image:
+  repository: agentmesh-webapp
+  tag: local
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podSecurityContext:
+  runAsNonRoot: true
+  # The Dockerfile says "USER nonroot" by name; runAsNonRoot needs the numeric uid.
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+
+service:
+  type: ClusterIP
+  port: 8082
+  nodePort: null
+
+# A Gateway in front of the web app. Browsers refuse the page's cryptography on
+# plain http to any host but localhost, so other devices need an https listener.
+gateway:
+  enabled: false
+  # Required when enabled. No default: the GatewayClass is provider-specific, e.g.
+  # cloud-provider-kind in kind, gke-l7-global-external-managed on GKE.
+  className: ""
+  # External prefix the web app is served under, e.g. /node. Empty serves it at /.
+  path: ""
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+    allowedRoutes:
+      namespaces:
+        from: Same
+  hostnames: []
+  addresses: []
+  annotations: {}

@@ -22,4 +22,6 @@ export interface StateStore {
   read(name: string): Promise<Uint8Array | undefined>;
   /** Writes the bytes under a name so that a reader sees the old or the new value, never a mix. */
   write(name: string, data: Uint8Array): Promise<void>;
+  /** Deletes the bytes under a name; deleting a name never written is not an error. */
+  remove(name: string): Promise<void>;
 }

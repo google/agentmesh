@@ -15,7 +15,7 @@
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { timestampFromMs } from "@bufbuild/protobuf/wkt";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { cp as copyDir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -32,7 +32,7 @@ import {
   TokenRefreshResponseSchema,
 } from "./gen/agentmesh_pb.ts";
 import { Identity } from "./identity.ts";
-import { AgentMesh, CredentialRetiredError } from "./mesh.ts";
+import { AgentMesh, CredentialRetiredError, NotEnrolledError } from "./mesh.ts";
 
 const cpKey = Identity.generate();
 const text = (s: string) => new TextEncoder().encode(s);
@@ -45,9 +45,9 @@ function proto(bytes: Uint8Array): Response {
 function fakeControlPlane(
   keysOk = true,
   opts: { strictRefresh?: boolean; refreshDelayMs?: number; rejectNextRefresh?: boolean } = {},
-): { fetch: typeof fetch; issued: number; lastRefreshJwt: string; keys: Identity[]; keysOk: boolean } {
-  // keys is what /keys serves and signs with; a test rotates by replacing it.
-  const state = { issued: 0, lastRefreshJwt: "", keys: [cpKey], keysOk };
+): { fetch: typeof fetch; issued: number; lastRefreshJwt: string; keys: Identity[]; keysOk: boolean; onKeys: (() => Promise<void>) | undefined } {
+  // keys is what /keys serves and signs with; a test rotates by replacing it. onKeys runs when /keys is asked.
+  const state = { issued: 0, lastRefreshJwt: "", keys: [cpKey], keysOk, onKeys: undefined as (() => Promise<void>) | undefined };
   const current = () => (state.keys[state.keys.length - 1] as Identity).publicKeyRaw;
   const signedKeys = () => {
     const unsigned = create(KeysResponseSchema, { publicKeys: state.keys.map((k) => k.publicKeyRaw), signTime: timestampFromMs(Date.now()) });
@@ -117,6 +117,7 @@ function fakeControlPlane(
         );
       }
       case "GET /keys":
+        await state.onKeys?.();
         return state.keysOk ? proto(toBinary(KeysResponseSchema, signedKeys())) : new Response("boom", { status: 500 });
       default:
         return new Response(`no route for ${req.method} ${path}`, { status: 404 });
@@ -142,8 +143,34 @@ function fakeControlPlane(
     set keysOk(ok: boolean) {
       state.keysOk = ok;
     },
+    get onKeys() {
+      return state.onKeys;
+    },
+    set onKeys(hook: (() => Promise<void>) | undefined) {
+      state.onKeys = hook;
+    },
   };
 }
+
+test("refresh saves the new biscuit before it asks for /keys, so a process stopped in between can still refresh", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentmesh-sdk-"));
+  try {
+    const cp = fakeControlPlane(true, { strictRefresh: true });
+    const stateDir = join(dir, "state");
+    const stopped = join(dir, "stopped");
+    const mesh = await AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", stateDir, bootstrapToken: "sbt_secret", fetch: cp.fetch });
+    // What a process stopped while /keys is asked leaves on disk.
+    cp.onKeys = () => copyDir(stateDir, stopped, { recursive: true });
+    await mesh.refresh();
+    cp.onKeys = undefined;
+
+    const restarted = await AgentMesh.load({ stateDir: stopped, fetch: cp.fetch });
+    await restarted.refresh();
+    assert.deepEqual(restarted.credential.biscuit, text("biscuit-3"));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("enroll persists identity and credential, load resumes them, refresh rotates", async () => {
   const dir = await mkdtemp(join(tmpdir(), "agentmesh-sdk-"));
@@ -248,9 +275,46 @@ test("enroll resumes only a credential the control plane still vouches for", asy
 test("load needs both the identity and the credential", async () => {
   const dir = await mkdtemp(join(tmpdir(), "agentmesh-sdk-"));
   try {
-    await assert.rejects(AgentMesh.load({ stateDir: dir }), /no identity/);
+    await assert.rejects(AgentMesh.load({ stateDir: dir }), (err: Error) => err instanceof NotEnrolledError && /no identity/.test(err.message));
     await writeFile(join(dir, "identity.key"), Identity.generate().toLibp2pPrivateKey());
-    await assert.rejects(AgentMesh.load({ stateDir: dir }), /no credential/);
+    await assert.rejects(AgentMesh.load({ stateDir: dir }), (err: Error) => err.name === "NotEnrolledError" && /no credential/.test(err.message));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("forget keeps the identity when asked, so the next enroll presents the same peer", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentmesh-sdk-"));
+  try {
+    const cp = fakeControlPlane();
+    const stateDir = join(dir, "state");
+    const mesh = await AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", stateDir, bootstrapToken: "sbt_secret", fetch: cp.fetch });
+
+    await AgentMesh.forget(stateDir, { keepIdentity: true });
+    await assert.rejects(AgentMesh.load({ stateDir }), NotEnrolledError);
+    await assert.rejects(AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", stateDir, fetch: cp.fetch }), /no credential to resume/);
+    const again = await AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", stateDir, bootstrapToken: "sbt_secret", fetch: cp.fetch });
+    assert.equal(again.peerId, mesh.peerId);
+    assert.equal(cp.issued, 2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("forget without keepIdentity removes both; forgetting an empty state directory is not an error", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentmesh-sdk-"));
+  try {
+    const cp = fakeControlPlane();
+    const stateDir = join(dir, "state");
+    await AgentMesh.forget(stateDir);
+    const mesh = await AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", stateDir, bootstrapToken: "sbt_secret", fetch: cp.fetch });
+
+    await AgentMesh.forget(stateDir);
+    await assert.rejects(AgentMesh.load({ stateDir }), /no identity/);
+    await assert.rejects(stat(join(stateDir, "identity.key")), { code: "ENOENT" });
+    await assert.rejects(stat(join(stateDir, "credential.json")), { code: "ENOENT" });
+    const fresh = await AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", stateDir, bootstrapToken: "sbt_secret", fetch: cp.fetch });
+    assert.notEqual(fresh.peerId, mesh.peerId);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

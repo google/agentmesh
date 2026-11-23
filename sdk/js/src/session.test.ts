@@ -547,6 +547,78 @@ test("a member announces where it is reached under its peer key and withdraws it
   }
 });
 
+test("close waits for a pull in flight, so nothing saves the state after it", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "agentmesh-session-"));
+  const base = fakeControlPlane([routerAddr]);
+  let infoCalls = 0;
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  let pullStarted!: () => void;
+  const pulling = new Promise<void>((resolve) => (pullStarted = resolve));
+  // The first /info is join's own pull; the second is the session's, held until released.
+  const gated: typeof fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    if (new URL(new Request(input, init).url).pathname === "/info" && ++infoCalls === 2) {
+      pullStarted();
+      await released;
+    }
+    return base(input, init);
+  }) as typeof fetch;
+  try {
+    const mesh = await AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", bootstrapToken: "sbt", stateDir, fetch: gated });
+    const session = await mesh.join({ refreshLeadMs: 0, reserveRelay: false, controlPlaneSyncIntervalMs: 10 });
+    await pulling;
+    let closed = false;
+    const closing = session.close().then(() => (closed = true));
+    await Promise.race([closing, new Promise((resolve) => setTimeout(resolve, 200))]);
+    assert.equal(closed, false, "close() returned while the pull it started was still going to save");
+    release();
+    await closing;
+
+    await AgentMesh.forget(stateDir);
+    await assert.rejects(AgentMesh.load({ stateDir }), /no identity/);
+  } finally {
+    release();
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("close waits for a credential refresh in flight, so nothing saves the state after it", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "agentmesh-session-"));
+  const base = fakeControlPlane([routerAddr]);
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  let refreshStarted!: () => void;
+  const refreshing = new Promise<void>((resolve) => (refreshStarted = resolve));
+  const gated: typeof fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const req = new Request(input, init);
+    if (req.method === "POST" && new URL(req.url).pathname === "/refresh") {
+      const { peerId } = fromBinary(TokenRefreshRequestSchema, new Uint8Array(await req.arrayBuffer()));
+      refreshStarted();
+      await released;
+      return proto(toBinary(TokenRefreshResponseSchema, create(TokenRefreshResponseSchema, { biscuitToken: mint(peerId, ROLE_NODE), expireTime: timestampFromMs(Date.now() + 7200_000) })));
+    }
+    return base(input, init);
+  }) as typeof fetch;
+  try {
+    const mesh = await AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", bootstrapToken: "sbt", stateDir, fetch: gated });
+    // A lead longer than the credential's hour makes the first refresh due at once.
+    const session = await mesh.join({ refreshLeadMs: 2 * 3600_000, reserveRelay: false, controlPlaneSyncIntervalMs: 600_000 });
+    await refreshing;
+    let closed = false;
+    const closing = session.close().then(() => (closed = true));
+    await Promise.race([closing, new Promise((resolve) => setTimeout(resolve, 200))]);
+    assert.equal(closed, false, "close() returned while the refresh it started was still going to save");
+    release();
+    await closing;
+
+    await AgentMesh.forget(stateDir);
+    await assert.rejects(AgentMesh.load({ stateDir }), /no identity/);
+  } finally {
+    release();
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
 test("a resumed member adopts a rotated key before admitting routers", async () => {
   // The control plane rotated its signing key while this member was not
   // running: the routers already hold credentials under the new key, and

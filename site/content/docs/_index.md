@@ -45,7 +45,7 @@ Two rules apply to every mesh:
 - [Use cases](use-cases/) are worked examples of things built on top of
   the mesh.
 - [Preview](preview/) covers features that work today but whose interfaces
-  may still change: sandboxed agents and the mobile app.
+  may still change: sandboxed agents, the mobile app and the web app.
 - [Contributing](contributing/) covers building, testing and changing Agent Mesh
   itself.
 

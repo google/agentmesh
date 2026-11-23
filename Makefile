@@ -32,7 +32,14 @@ build:
 	go build -v -ldflags "$(VERSION_LDFLAGS)" -o "$(OUT_DIR)/mcp-client" ./cmd/mcp-client
 	go build -v -ldflags "$(VERSION_LDFLAGS)" -o "$(OUT_DIR)/agentmesh-bench" ./cmd/agentmesh-bench
 	go build -v -ldflags "$(VERSION_LDFLAGS)" -o "$(OUT_DIR)/agentmesh-console" ./cmd/agentmesh-console
+	go build -v -ldflags "$(VERSION_LDFLAGS)" -o "$(OUT_DIR)/agentmesh-webapp" ./cmd/agentmesh-webapp
 
+# The binaries plus the web app agentmesh-webapp embeds, which needs Node.js 22 and npm.
+# build runs in the recipe, not as a prerequisite, so make -j cannot embed before the bundle exists.
+.PHONY: all
+all:
+	$(MAKE) app
+	$(MAKE) build
 
 .PHONY: mobile-ffi-host mobile-ffi-android mobile-ffi-android-x86_64 mobile-ffi-ios mobile-ffi mobile-app-apk mobile-app-apk-emulator mobile-app-bundle
 mobile-ffi-host:
@@ -187,8 +194,26 @@ sdk-docs:
 sdk-test: sdk-js sdk-python
 	go test ./tests/integration -run TestNativeSDK -count=1 -v
 
+# The SDK bundle the web app imports; the next go build of agentmesh-webapp embeds it.
+# The relay is the recipe's last output, so a failed relay build leaves the bundle out of date.
+APP_SDK_BUNDLE := internal/webapp/public/sdk/agentmesh-relay.mjs
+
+.PHONY: app app-test
+app: $(APP_SDK_BUNDLE)
+
+$(APP_SDK_BUNDLE): sdk/js/node_modules/.package-lock.json sdk/js/package.json sdk/js/scripts/bundle-browser.mjs \
+		$(shell find sdk/js/src sdk/js/webapp -name '*.ts' ! -name '*.test.ts') sdk/js/webapp/index.mjs
+	cd sdk/js && npm run build && npm run bundle:app
+
+sdk/js/node_modules/.package-lock.json: sdk/js/package-lock.json
+	cd sdk/js && npm ci --no-fund --no-audit
+
+app-test:
+	node --test internal/webapp/model.test.mjs
+
 .PHONY: ui-test
-ui-test: build
+ui-test: app-test
+	$(MAKE) all
 	chmod +x ./tests/ui/run.sh
 	./tests/ui/run.sh $(if $(WHAT),--grep "$(WHAT)")
 
@@ -235,7 +260,7 @@ helm-lint:
 			exit 1; \
 		fi; \
 	fi; \
-	$$HELM_BIN lint ./charts/agentmesh && $$HELM_BIN lint ./charts/agentmesh-node --set controlPlaneUrl=http://required-for-lint:8080
+	$$HELM_BIN lint ./charts/agentmesh && $$HELM_BIN lint ./charts/agentmesh-node --set controlPlaneUrl=http://required-for-lint:8080 && $$HELM_BIN lint ./charts/agentmesh-webapp
 
 # render the chart to bin/chart/ for inspection; pass extra flags via ARGS, e.g. ARGS="--set gateway.enabled=true"
 .PHONY: helm-template
@@ -250,7 +275,7 @@ lint: fmt helm-lint
 .PHONY: helm-test
 helm-test:
 	@helm plugin list 2>/dev/null | grep -q '^unittest' || helm plugin install https://github.com/helm-unittest/helm-unittest --version 0.8.2
-	helm unittest charts/agentmesh charts/agentmesh-node
+	helm unittest charts/agentmesh charts/agentmesh-node charts/agentmesh-webapp
 
 .PHONY: verify
 verify:
@@ -281,6 +306,9 @@ docker-build-e2e-runtime:
 docker-build-agentmesh-console:
 	docker build --load --build-arg VERSION="$(VERSION)" -t agentmesh-console:local -f Dockerfile.agentmesh-console .
 
-docker-build: docker-build-control-plane docker-build-router docker-build-node docker-build-one docker-build-mock-oidc docker-build-e2e-runtime docker-build-agentmesh-console
+docker-build-agentmesh-webapp:
+	docker build --load --build-arg VERSION="$(VERSION)" -t agentmesh-webapp:local -f Dockerfile.agentmesh-webapp .
 
-.PHONY: docker-build-control-plane docker-build-router docker-build-node docker-build-one docker-build-mock-oidc docker-build-e2e-runtime docker-build-agentmesh-console docker-build
+docker-build: docker-build-control-plane docker-build-router docker-build-node docker-build-one docker-build-mock-oidc docker-build-e2e-runtime docker-build-agentmesh-console docker-build-agentmesh-webapp
+
+.PHONY: docker-build-control-plane docker-build-router docker-build-node docker-build-one docker-build-mock-oidc docker-build-e2e-runtime docker-build-agentmesh-console docker-build-agentmesh-webapp docker-build

@@ -16,6 +16,10 @@ data:
     web:
       # Serve plain HTTP locally; the GKE Ingress handles HTTPS termination
       http: 0.0.0.0:5556
+      # The web app at /node/ reads discovery and trades its sign-in code from the browser.
+      allowedOrigins:
+      - 'https://bananas.sam-mesh.dev'
+      - 'https://hub.sam-mesh.dev'
       
     oauth2:
       grantTypes:
@@ -54,6 +58,8 @@ data:
       - 'http://localhost/callback'
       - 'https://bananas.sam-mesh.dev/console/auth/callback'
       - 'https://hub.sam-mesh.dev/console/auth/callback'
+      - 'https://bananas.sam-mesh.dev/node/'
+      - 'https://hub.sam-mesh.dev/node/'
       - 'https://auth.sam-mesh.dev/device/callback'
       - 'urn:ietf:wg:oauth:2.0:oob'
       - '/device/callback'

@@ -1,0 +1,83 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentmesh-webapp-${ENV_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  ports:
+    - port: 8082
+      targetPort: 8082
+      protocol: TCP
+      name: http
+  selector:
+    app: agentmesh-webapp-${ENV_NAME}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentmesh-webapp-${ENV_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agentmesh-webapp-${ENV_NAME}
+  template:
+    metadata:
+      labels:
+        app: agentmesh-webapp-${ENV_NAME}
+    spec:
+      containers:
+      - name: agentmesh-webapp
+        image: ghcr.io/google/agentmesh-webapp:${IMAGE_TAG}
+        imagePullPolicy: IfNotPresent
+        args:
+        - "--bind-addr=:8082"
+        ports:
+        - containerPort: 8082
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8082
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+---
+# The page needs no host of its own: it shares the testnet's Gateway, host and
+# certificate under /node/, and the prefix is stripped before the web app sees it.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: agentmesh-webapp-route-${ENV_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  parentRefs:
+  - name: sam-control-plane-gateway-${ENV_NAME}
+  hostnames:
+  - "${ENV_NAME}.sam-mesh.dev"
+  rules:
+  - matches:
+    - path:
+        type: Exact
+        value: /node
+    filters:
+    - type: RequestRedirect
+      requestRedirect:
+        path:
+          type: ReplaceFullPath
+          replaceFullPath: /node/
+        statusCode: 302
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /node/
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /
+    backendRefs:
+    - name: agentmesh-webapp-${ENV_NAME}
+      port: 8082

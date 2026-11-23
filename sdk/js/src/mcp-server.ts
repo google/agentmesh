@@ -164,21 +164,29 @@ async function fanOut<P extends Peer, R>(peers: P[], signal: AbortSignal, fn: (p
   return results;
 }
 
-/** The same five caller tools as agentmesh-node; an SDK member hosts no services. */
-export function createMeshMCPServer(ready: Session | Promise<Session>, version: string): McpServer {
-  const server = new McpServer({ name: "agentmesh", version }, { instructions:
-    "Use find_remote_tools, then describe_remote_tool to learn the input schema, then call_remote_tool. " +
-    "Calls use this SDK member's identity and mesh policy. This stdio server exposes no local HTTP proxy, inference endpoint or hosted services.",
-  });
+/** One caller tool: what an MCP client lists, and what a call runs. */
+export interface MeshTool {
+  name: string;
+  description: string;
+  inputSchema: z.ZodRawShape;
+  run(args: Record<string, unknown>, extra: { signal: AbortSignal }): Promise<CallToolResult>;
+}
 
-  server.registerTool("get_mesh_info", { description: "Get information about the mesh network", inputSchema: {} }, async (_args, extra) => {
+/** The same five caller tools as agentmesh-node; an SDK member hosts no services. */
+export function meshTools(ready: Session | Promise<Session>): MeshTool[] {
+  const list: MeshTool[] = [];
+  const add = <S extends z.ZodRawShape>(name: string, config: { description: string; inputSchema: S }, run: (args: z.infer<z.ZodObject<S>>, extra: { signal: AbortSignal }) => Promise<CallToolResult>) => {
+    list.push({ name, ...config, run: run as MeshTool["run"] });
+  };
+
+  add("get_mesh_info", { description: "Get information about the mesh network", inputSchema: {} }, async (_args, extra) => {
     const signal = AbortSignal.any([extra.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]);
     const s = await withSignal(ready, signal);
     const routers = s.routers.filter((r) => s.isHeldRouter(r.peerId)).map((r) => r.peerId).sort();
     return text({ peer_id: s.peerId, connected_peers: s.node.getPeers().map((p) => p.toString()).sort(), attached_routers: routers, router_peer_id: routers[0] ?? "" });
   });
 
-  server.registerTool("discover_remote_services", {
+  add("discover_remote_services", {
     description: "Discover remote services by type and optional name. Returns peer_id, srv_name and srv_description. This SDK member has no local_proxy_url; inference and A2A services require an SDK client or an agentmesh-node HTTP proxy.",
     inputSchema: {
       type: z.string().describe("Required. One of: mcp, inference, a2a."),
@@ -217,7 +225,7 @@ export function createMeshMCPServer(ready: Session | Promise<Session>, version: 
     return text(rows.slice(offset, offset + limit));
   });
 
-  server.registerTool("find_remote_tools", {
+  add("find_remote_tools", {
     description: "Discover MCP tools available on hosted services across the mesh. Optionally narrow by peer_id, service_name, or exact tool_name. intent is accepted but ignored, as in agentmesh-node.",
     inputSchema: {
       intent: z.string().optional().describe("Natural-language description of what the caller is looking for. Reserved for future semantic ranking; currently accepted but ignored."),
@@ -273,7 +281,7 @@ export function createMeshMCPServer(ready: Session | Promise<Session>, version: 
     return text(rows.filter((row) => !args.tool_name || !row.error).sort((a, b) => a.peer_id.localeCompare(b.peer_id) || (a.tool_name ?? "").localeCompare(b.tool_name ?? "")));
   });
 
-  server.registerTool("describe_remote_tool", {
+  add("describe_remote_tool", {
     description: "Return the description, input schema, and output schema for a specific MCP tool on a specific peer.",
     inputSchema: {
       peer_id: z.string().describe("Peer ID of the node hosting the server. Required."),
@@ -287,7 +295,7 @@ export function createMeshMCPServer(ready: Session | Promise<Session>, version: 
     return text({ peer_id: peer, tool_name: args.tool_name, description: tool.description ?? "", input_schema: tool.inputSchema, ...(tool.outputSchema ? { output_schema: tool.outputSchema } : {}) });
   });
 
-  server.registerTool("call_remote_tool", {
+  add("call_remote_tool", {
     description: "Call an MCP tool on a remote agent",
     inputSchema: {
       peer_id: z.string().describe("The Peer ID of the target agent"),
@@ -302,5 +310,16 @@ export function createMeshMCPServer(ready: Session | Promise<Session>, version: 
     return call(s, peer, target.service, target.tool, args.arguments ?? {}, { signal: open, requiredLabels: requiredLabels(args.required_labels ?? "") },
       { signal: extra.signal, timeout: CALL_TIMEOUT_MS, resetTimeoutOnProgress: true });
   });
+  return list;
+}
+
+export function createMeshMCPServer(ready: Session | Promise<Session>, version: string): McpServer {
+  const server = new McpServer({ name: "agentmesh", version }, { instructions:
+    "Use find_remote_tools, then describe_remote_tool to learn the input schema, then call_remote_tool. " +
+    "Calls use this SDK member's identity and mesh policy. This stdio server exposes no local HTTP proxy, inference endpoint or hosted services.",
+  });
+  for (const tool of meshTools(ready)) {
+    server.registerTool(tool.name, { description: tool.description, inputSchema: tool.inputSchema }, (args, extra) => tool.run(args, extra));
+  }
   return server;
 }
