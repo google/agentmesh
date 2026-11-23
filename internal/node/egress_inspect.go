@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -595,11 +596,40 @@ func (s *EgressService) callModelArmorAPI(ctx context.Context, cfg *api.ModelArm
 		return false, "", fmt.Errorf("model armor %s returned %d: %s", method, resp.StatusCode, strings.TrimSpace(string(respBytes)))
 	}
 
+	blocked, replacement, err = evaluateModelArmorResponse(respBytes)
+	if err != nil {
+		return false, "", err
+	}
+	_ = callerCtx
+	return blocked, replacement, nil
+}
+
+// evaluateModelArmorResponse parses a Model Armor SanitizationResult JSON body
+// and decides whether the request/response must be blocked or rewritten with an
+// SDP de-identification replacement. It fails closed whenever MATCH_FOUND is
+// returned and any non-SDP filter did not explicitly report NO_MATCH_FOUND.
+func evaluateModelArmorResponse(respBytes []byte) (blocked bool, replacement string, err error) {
 	var result struct {
 		SanitizationResult struct {
-			FilterMatchState string `json:"filterMatchState"`
-			FilterResults    map[string]struct {
-				SdpFilterResult *struct {
+			FilterMatchState string                     `json:"filterMatchState"`
+			FilterResults    map[string]json.RawMessage `json:"filterResults"`
+		} `json:"sanitizationResult"`
+	}
+	if err := json.Unmarshal(respBytes, &result); err != nil {
+		return false, "", fmt.Errorf("invalid Model Armor response JSON: %w", err)
+	}
+
+	nonDeidentifyMatch := len(result.SanitizationResult.FilterResults) == 0
+	for filterName, rawEntry := range result.SanitizationResult.FilterResults {
+		var entry map[string]json.RawMessage
+		if err := json.Unmarshal(rawEntry, &entry); err != nil || len(entry) == 0 {
+			logger.Warnw("Model Armor filter result malformed; failing closed", "filter", filterName, "error", err)
+			nonDeidentifyMatch = true
+			continue
+		}
+		for subKey, subRaw := range entry {
+			if subKey == "sdpFilterResult" {
+				var sdp struct {
 					DeidentifyResult *struct {
 						MatchState string `json:"matchState"`
 						Data       struct {
@@ -609,31 +639,50 @@ func (s *EgressService) callModelArmorAPI(ctx context.Context, cfg *api.ModelArm
 					InspectResult *struct {
 						MatchState string `json:"matchState"`
 					} `json:"inspectResult"`
-				} `json:"sdpFilterResult"`
-			} `json:"filterResults"`
-		} `json:"sanitizationResult"`
-	}
-	if err := json.Unmarshal(respBytes, &result); err != nil {
-		return false, "", fmt.Errorf("invalid Model Armor response JSON: %w", err)
-	}
+				}
+				if err := json.Unmarshal(subRaw, &sdp); err != nil {
+					logger.Warnw("Model Armor SDP filter result malformed; failing closed", "filter", filterName, "error", err)
+					nonDeidentifyMatch = true
+					continue
+				}
+				if sdp.InspectResult != nil && !strings.EqualFold(sdp.InspectResult.MatchState, "NO_MATCH_FOUND") && sdp.InspectResult.MatchState != "" {
+					nonDeidentifyMatch = true
+				}
+				if sdp.DeidentifyResult != nil {
+					if deid := sdp.DeidentifyResult.Data.Text; deid != "" {
+						replacement = deid
+					} else if strings.EqualFold(sdp.DeidentifyResult.MatchState, "MATCH_FOUND") {
+						nonDeidentifyMatch = true
+					}
+				} else if sdp.InspectResult == nil {
+					nonDeidentifyMatch = true
+				}
+				continue
+			}
 
-	for _, fr := range result.SanitizationResult.FilterResults {
-		if fr.SdpFilterResult != nil && fr.SdpFilterResult.DeidentifyResult != nil {
-			if deid := fr.SdpFilterResult.DeidentifyResult.Data.Text; deid != "" {
-				replacement = deid
+			// Any non-SDP filter (pi_and_jailbreak, rai, csam, malicious_uris,
+			// or future filter types) must explicitly report NO_MATCH_FOUND to
+			// permit an SDP-only de-identification pass-through.
+			var filterState struct {
+				MatchState string `json:"matchState"`
+			}
+			if err := json.Unmarshal(subRaw, &filterState); err != nil {
+				logger.Warnw("Model Armor non-SDP filter result malformed; failing closed", "filter", filterName, "sub_filter", subKey, "error", err)
+				nonDeidentifyMatch = true
+				continue
+			}
+			if !strings.EqualFold(filterState.MatchState, "NO_MATCH_FOUND") {
+				nonDeidentifyMatch = true
 			}
 		}
 	}
 
 	if strings.EqualFold(result.SanitizationResult.FilterMatchState, "MATCH_FOUND") {
-		// If the only match was an SDP de-identification transform that produced
-		// a sanitized replacement text, allow the request with the de-identified text.
-		if replacement != "" && len(result.SanitizationResult.FilterResults) == 1 {
+		if replacement != "" && !nonDeidentifyMatch {
 			return false, replacement, nil
 		}
 		return true, "", nil
 	}
-	_ = callerCtx
 	return false, replacement, nil
 }
 
@@ -698,69 +747,313 @@ func (s *EgressService) resolveModelArmorEndpoint(ctx context.Context, template 
 	return baseURL + "/v1/" + strings.TrimLeft(tmpl, "/"), authHdr, nil
 }
 
-func extractInspectableText(body []byte) string {
-	var doc map[string]any
-	if err := json.Unmarshal(body, &doc); err != nil {
-		return strings.TrimSpace(string(body))
+const maxInspectableJSONDepth = 64
+
+// inspectableSlot references one non-empty text field inside a decoded JSON
+// LLM payload so extraction and in-place SDP replacement walk the exact same
+// fields in the same deterministic order.
+type inspectableSlot struct {
+	text  string
+	write func(string)
+}
+
+func appendMapStringSlot(slots *[]inspectableSlot, m map[string]any, key string) {
+	if s, ok := m[key].(string); ok && s != "" {
+		*slots = append(*slots, inspectableSlot{
+			text:  s,
+			write: func(next string) { m[key] = next },
+		})
 	}
-	// 1. OpenAI chat completions: messages[].content or choices[].message.content
-	if msgs, ok := doc["messages"].([]any); ok {
-		var sb strings.Builder
-		for _, m := range msgs {
-			if mm, ok := m.(map[string]any); ok {
-				if c, ok := mm["content"].(string); ok && c != "" {
-					if sb.Len() > 0 {
-						sb.WriteByte('\n')
-					}
-					sb.WriteString(c)
+}
+
+func collectJSONStringLeaves(slots *[]inspectableSlot, v any, write func(string), depth int) {
+	if v == nil {
+		return
+	}
+	if depth >= maxInspectableJSONDepth {
+		if raw, err := json.Marshal(v); err == nil && len(raw) > 0 {
+			// Preserve deep payloads for inspection; nil write causes SDP replacement to fail closed.
+			*slots = append(*slots, inspectableSlot{text: string(raw)})
+		}
+		return
+	}
+	switch val := v.(type) {
+	case string:
+		if val != "" {
+			*slots = append(*slots, inspectableSlot{text: val, write: write})
+		}
+	case []any:
+		for i, elem := range val {
+			idx := i
+			collectJSONStringLeaves(slots, elem, func(next string) { val[idx] = next }, depth+1)
+		}
+	case map[string]any:
+		keys := make([]string, 0, len(val))
+		for k := range val {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+		for _, k := range keys {
+			key := k
+			collectJSONStringLeaves(slots, val[key], func(next string) { val[key] = next }, depth+1)
+		}
+	}
+}
+
+func collectContentParts(slots *[]inspectableSlot, v any, write func(string), depth int) {
+	if v == nil {
+		return
+	}
+	if depth >= maxInspectableJSONDepth {
+		if raw, err := json.Marshal(v); err == nil && len(raw) > 0 {
+			*slots = append(*slots, inspectableSlot{text: string(raw)})
+		}
+		return
+	}
+	switch val := v.(type) {
+	case string:
+		if val != "" {
+			*slots = append(*slots, inspectableSlot{text: val, write: write})
+		}
+	case []any:
+		for i, item := range val {
+			idx := i
+			switch part := item.(type) {
+			case string:
+				if part != "" {
+					*slots = append(*slots, inspectableSlot{
+						text:  part,
+						write: func(next string) { val[idx] = next },
+					})
+				}
+			case map[string]any:
+				collectPartObject(slots, part, depth+1)
+			}
+		}
+	case map[string]any:
+		collectPartObject(slots, val, depth+1)
+	}
+}
+
+func collectPartObject(slots *[]inspectableSlot, pm map[string]any, depth int) {
+	appendMapStringSlot(slots, pm, "text")
+	appendMapStringSlot(slots, pm, "thinking")
+	appendMapStringSlot(slots, pm, "refusal")
+	appendMapStringSlot(slots, pm, "arguments")
+	if c, ok := pm["content"]; ok {
+		collectContentParts(slots, c, func(next string) { pm["content"] = next }, depth+1)
+	}
+	if in, ok := pm["input"]; ok {
+		collectJSONStringLeaves(slots, in, func(next string) { pm["input"] = next }, depth+1)
+	}
+	if out, ok := pm["output"]; ok {
+		collectContentParts(slots, out, func(next string) { pm["output"] = next }, depth+1)
+	}
+	if sum, ok := pm["summary"]; ok {
+		collectContentParts(slots, sum, func(next string) { pm["summary"] = next }, depth+1)
+	}
+	if src, ok := pm["source"].(map[string]any); ok {
+		if t, _ := src["type"].(string); t == "text" {
+			appendMapStringSlot(slots, src, "data")
+		}
+	}
+}
+
+func collectToolCalls(slots *[]inspectableSlot, mm map[string]any) {
+	if calls, ok := mm["tool_calls"].([]any); ok {
+		for _, tc := range calls {
+			if tcm, ok := tc.(map[string]any); ok {
+				if fn, ok := tcm["function"].(map[string]any); ok {
+					appendMapStringSlot(slots, fn, "arguments")
 				}
 			}
 		}
-		if sb.Len() > 0 {
-			return sb.String()
+	}
+	if fc, ok := mm["function_call"].(map[string]any); ok {
+		appendMapStringSlot(slots, fc, "arguments")
+	}
+}
+
+func collectMessageObject(slots *[]inspectableSlot, mm map[string]any) {
+	if c, ok := mm["content"]; ok {
+		collectContentParts(slots, c, func(next string) { mm["content"] = next }, 0)
+	}
+	appendMapStringSlot(slots, mm, "refusal")
+	collectToolCalls(slots, mm)
+}
+
+func collectGeminiContent(slots *[]inspectableSlot, container map[string]any) {
+	if contentObj, ok := container["content"].(map[string]any); ok {
+		container = contentObj
+	}
+	parts, ok := container["parts"].([]any)
+	if !ok {
+		return
+	}
+	for _, p := range parts {
+		pm, ok := p.(map[string]any)
+		if !ok {
+			continue
+		}
+		appendMapStringSlot(slots, pm, "text")
+		for _, fcKey := range []string{"functionCall", "function_call"} {
+			if fc, ok := pm[fcKey].(map[string]any); ok {
+				if args, ok := fc["args"]; ok {
+					collectJSONStringLeaves(slots, args, func(next string) { fc["args"] = next }, 0)
+				}
+			}
+		}
+		for _, frKey := range []string{"functionResponse", "function_response"} {
+			if fr, ok := pm[frKey].(map[string]any); ok {
+				if resp, ok := fr["response"]; ok {
+					collectJSONStringLeaves(slots, resp, func(next string) { fr["response"] = next }, 0)
+				}
+			}
 		}
 	}
+}
+
+func collectInspectableSlots(doc map[string]any) []inspectableSlot {
+	var slots []inspectableSlot
+
+	// 1. Top-level system / instruction fields (Anthropic, OpenAI Responses, Gemini).
+	if sys, ok := doc["system"]; ok {
+		collectContentParts(&slots, sys, func(next string) { doc["system"] = next }, 0)
+	}
+	appendMapStringSlot(&slots, doc, "instructions")
+	for _, sysKey := range []string{"systemInstruction", "system_instruction"} {
+		switch sysVal := doc[sysKey].(type) {
+		case string:
+			appendMapStringSlot(&slots, doc, sysKey)
+		case map[string]any:
+			collectGeminiContent(&slots, sysVal)
+		}
+	}
+
+	// 2. OpenAI / Anthropic messages[].
+	if msgs, ok := doc["messages"].([]any); ok {
+		for _, m := range msgs {
+			if mm, ok := m.(map[string]any); ok {
+				collectMessageObject(&slots, mm)
+			}
+		}
+	}
+
+	// 3. OpenAI Responses API input/output and legacy prompt.
+	if in, ok := doc["input"]; ok {
+		collectContentParts(&slots, in, func(next string) { doc["input"] = next }, 0)
+	}
+	if prompt, ok := doc["prompt"]; ok {
+		collectContentParts(&slots, prompt, func(next string) { doc["prompt"] = next }, 0)
+	}
+	if out, ok := doc["output"]; ok {
+		collectContentParts(&slots, out, func(next string) { doc["output"] = next }, 0)
+	}
+	appendMapStringSlot(&slots, doc, "output_text")
+
+	// 4. OpenAI chat/completion choices[].
 	if choices, ok := doc["choices"].([]any); ok {
-		var sb strings.Builder
 		for _, ch := range choices {
 			if cm, ok := ch.(map[string]any); ok {
 				if msg, ok := cm["message"].(map[string]any); ok {
-					if c, ok := msg["content"].(string); ok && c != "" {
-						sb.WriteString(c)
-					}
+					collectMessageObject(&slots, msg)
 				}
+				if delta, ok := cm["delta"].(map[string]any); ok {
+					collectMessageObject(&slots, delta)
+				}
+				appendMapStringSlot(&slots, cm, "text")
 			}
-		}
-		if sb.Len() > 0 {
-			return sb.String()
 		}
 	}
-	// 2. Gemini generateContent: contents[].parts[].text or candidates[].content.parts[].text
+
+	// 5. Anthropic top-level response content blocks.
+	if content, ok := doc["content"]; ok {
+		collectContentParts(&slots, content, func(next string) { doc["content"] = next }, 0)
+	}
+
+	// 6. Gemini contents[] and candidates[].
 	for _, topKey := range []string{"contents", "candidates"} {
 		if items, ok := doc[topKey].([]any); ok {
-			var sb strings.Builder
 			for _, it := range items {
-				im, ok := it.(map[string]any)
-				if !ok {
-					continue
+				if im, ok := it.(map[string]any); ok {
+					collectGeminiContent(&slots, im)
 				}
-				if contentObj, ok := im["content"].(map[string]any); ok {
-					im = contentObj
-				}
-				if parts, ok := im["parts"].([]any); ok {
-					for _, p := range parts {
-						if pm, ok := p.(map[string]any); ok {
-							if txt, ok := pm["text"].(string); ok && txt != "" {
-								sb.WriteString(txt)
-							}
-						}
-					}
-				}
-			}
-			if sb.Len() > 0 {
-				return sb.String()
 			}
 		}
+	}
+
+	return slots
+}
+
+func extractSSEInspectableText(body []byte) (string, bool) {
+	lines := strings.Split(string(body), "\n")
+	var sb strings.Builder
+	sawData := false
+	for _, rawLine := range lines {
+		line := strings.TrimRight(rawLine, "\r")
+		data, ok := strings.CutPrefix(line, "data:")
+		if !ok {
+			continue
+		}
+		sawData = true
+		data = strings.TrimSpace(data)
+		if data == "" || data == "[DONE]" {
+			continue
+		}
+		var ev map[string]any
+		if err := json.Unmarshal([]byte(data), &ev); err != nil {
+			sb.WriteString(data)
+			continue
+		}
+		var evSlots []inspectableSlot
+		// OpenAI Responses API delta string or Anthropic delta object.
+		if d, ok := ev["delta"]; ok {
+			switch dv := d.(type) {
+			case string:
+				if dv != "" {
+					evSlots = append(evSlots, inspectableSlot{text: dv})
+				}
+			case map[string]any:
+				appendMapStringSlot(&evSlots, dv, "text")
+				appendMapStringSlot(&evSlots, dv, "partial_json")
+				appendMapStringSlot(&evSlots, dv, "thinking")
+			}
+		}
+		if cb, ok := ev["content_block"].(map[string]any); ok {
+			collectPartObject(&evSlots, cb, 0)
+		}
+		evSlots = append(evSlots, collectInspectableSlots(ev)...)
+		for _, sl := range evSlots {
+			sb.WriteString(sl.text)
+		}
+	}
+	if !sawData {
+		return "", false
+	}
+	return strings.TrimSpace(sb.String()), true
+}
+
+func extractInspectableText(body []byte) string {
+	var doc map[string]any
+	if err := json.Unmarshal(body, &doc); err != nil {
+		if sseText, isSSE := extractSSEInspectableText(body); isSSE {
+			if sseText != "" {
+				return sseText
+			}
+			return strings.TrimSpace(string(body))
+		}
+		return strings.TrimSpace(string(body))
+	}
+	slots := collectInspectableSlots(doc)
+	if len(slots) > 0 {
+		var sb strings.Builder
+		for i, sl := range slots {
+			if i > 0 {
+				sb.WriteByte('\n')
+			}
+			sb.WriteString(sl.text)
+		}
+		return sb.String()
 	}
 	return strings.TrimSpace(string(body))
 }
@@ -774,41 +1067,46 @@ func replaceInspectableText(body []byte, original, replacement string) ([]byte, 
 	}
 	var doc map[string]any
 	if err := json.Unmarshal(body, &doc); err != nil {
+		if !bytes.Contains(body, []byte(original)) {
+			return nil, errors.New("failed to map inspection replacement back into non-JSON payload")
+		}
 		return bytes.ReplaceAll(body, []byte(original), []byte(replacement)), nil
 	}
 
-	// If messages[].content were joined by '\n' in extractInspectableText, split back
-	// using each message's original line count; if the line count matches, map each
-	// message back in-place.
-	if msgs, ok := doc["messages"].([]any); ok {
-		var contentMaps []map[string]any
-		var lineCounts []int
-		totalLines := 0
-		for _, m := range msgs {
-			if mm, ok := m.(map[string]any); ok {
-				if c, ok := mm["content"].(string); ok && c != "" {
-					contentMaps = append(contentMaps, mm)
-					lc := strings.Count(c, "\n") + 1
-					lineCounts = append(lineCounts, lc)
-					totalLines += lc
-				}
+	// Walk the exact same inspectable slots that extractInspectableText collected.
+	// When multiple slots were joined by '\n', map lines back using each slot's
+	// original line count; fail closed if the line structure cannot be preserved
+	// or if a modified slot is not writable.
+	if slots := collectInspectableSlots(doc); len(slots) > 0 {
+		if len(slots) == 1 {
+			if slots[0].write == nil {
+				return nil, errors.New("failed to map inspection replacement back into read-only JSON slot")
 			}
-		}
-		if len(contentMaps) == 1 {
-			contentMaps[0]["content"] = replacement
+			slots[0].write(replacement)
 			return json.Marshal(doc)
 		}
-		if len(contentMaps) > 1 {
-			parts := strings.Split(replacement, "\n")
-			if len(parts) == totalLines {
-				offset := 0
-				for i, mm := range contentMaps {
-					lc := lineCounts[i]
-					mm["content"] = strings.Join(parts[offset:offset+lc], "\n")
-					offset += lc
+		lineCounts := make([]int, len(slots))
+		totalLines := 0
+		for i, sl := range slots {
+			lc := strings.Count(sl.text, "\n") + 1
+			lineCounts[i] = lc
+			totalLines += lc
+		}
+		parts := strings.Split(replacement, "\n")
+		if len(parts) == totalLines {
+			offset := 0
+			for i, sl := range slots {
+				lc := lineCounts[i]
+				nextVal := strings.Join(parts[offset:offset+lc], "\n")
+				if nextVal != sl.text {
+					if sl.write == nil {
+						return nil, errors.New("failed to map inspection replacement back into read-only JSON slot")
+					}
+					sl.write(nextVal)
 				}
-				return json.Marshal(doc)
+				offset += lc
 			}
+			return json.Marshal(doc)
 		}
 	}
 
