@@ -659,7 +659,13 @@ async function sendOverStream(conn: Connection, biscuit: Uint8Array, request: Re
     await sendAll(stream, encodeRequestHead(request.method, target, headers));
     await sendAll(stream, body);
     const reader = new ByteReader(streamSource(stream));
-    const head = await readResponseHead(reader);
+    let head = await readResponseHead(reader);
+    while (head.status >= 100 && head.status < 200) {
+      if (head.status === 101) {
+        throw new HTTPParseError("protocol switching is not supported by mesh fetch");
+      }
+      head = await readResponseHead(reader);
+    }
     headersIn = true;
     signal.throwIfAborted();
     const framing = responseBodyFraming(request.method, head);
