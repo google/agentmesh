@@ -28,9 +28,11 @@ works."""
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, AsyncIterator
 
 import httpx
+import trio
 
 from .libp2p_http import MESH_PATH_PREFIX, StreamedResponse, open_http_request
 
@@ -56,11 +58,22 @@ def split_mesh_url(url: httpx.URL) -> tuple[str, str, str]:
 
 
 class _BodyStream(httpx.AsyncByteStream):
-    def __init__(self, response: StreamedResponse) -> None:
+    def __init__(self, response: StreamedResponse, request: httpx.Request) -> None:
         self._response = response
+        self._request = request
+        timeout = request.extensions.get("timeout", {}).get("read")
+        self._read_timeout = math.inf if timeout is None else timeout
 
     async def __aiter__(self) -> AsyncIterator[bytes]:
-        async for chunk in self._response.iter_body():
+        body = self._response.iter_body()
+        while True:
+            try:
+                with trio.fail_after(self._read_timeout):
+                    chunk = await anext(body)
+            except StopAsyncIteration:
+                return
+            except trio.TooSlowError as err:
+                raise httpx.ReadTimeout("timed out reading the mesh response body", request=self._request) from err
             yield chunk
 
     async def aclose(self) -> None:
@@ -92,7 +105,7 @@ class MeshTransport(httpx.AsyncBaseTransport):
             body=body,
             timeout=self._timeout,
         )
-        return httpx.Response(response.status, headers=response.raw_headers, stream=_BodyStream(response), request=request)
+        return httpx.Response(response.status, headers=response.raw_headers, stream=_BodyStream(response, request), request=request)
 
 
 __all__ = ("MESH_PATH_PREFIX", "MeshTransport", "split_mesh_url")
