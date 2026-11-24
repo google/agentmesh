@@ -302,16 +302,16 @@ func normalizeServiceFilter(name string) (string, error) {
 	}
 }
 
-// filterRowsByToolName keeps rows whose namespaced tool name ends in the
-// bare tool name; error rows (no tool listing) are dropped from targeted
-// lookups.
+// filterRowsByToolName matches the complete tool name after the service
+// prefix. Error rows are omitted from targeted lookups.
 func filterRowsByToolName(rows []remoteToolRow, toolName string) []remoteToolRow {
 	var out []remoteToolRow
 	for _, row := range rows {
 		if row.Error != "" {
 			continue
 		}
-		if row.ToolName[strings.LastIndex(row.ToolName, "/")+1:] == toolName {
+		_, name, err := api.SplitToolName(row.ToolName)
+		if err == nil && name == toolName {
 			out = append(out, row)
 		}
 	}
