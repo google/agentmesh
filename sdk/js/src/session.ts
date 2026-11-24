@@ -964,7 +964,11 @@ export class MeshSession {
   async callTool(peer: Peer, targetService: string, tool: string, args: Record<string, unknown> = {}, options: MCPSessionOptions = {}): Promise<ToolCallResult> {
     const mcp = await this.openMCP(peer, targetService, options);
     try {
-      const result = await mcp.client.callTool({ name: tool, arguments: args });
+      const result = await mcp.client.callTool(
+        { name: tool, arguments: args },
+        undefined,
+        options.signal === undefined ? undefined : { signal: options.signal },
+      );
       const content = Array.isArray(result.content) ? (result.content as Array<{ type: string; text?: string }>) : [];
       return {
         isError: result.isError === true,
