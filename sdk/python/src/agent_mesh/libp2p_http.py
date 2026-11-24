@@ -435,12 +435,16 @@ class StreamedResponse:
     headers are in; `iter_body` yields the body as the peer sends it, which is
     what an SSE stream (A2A `message/stream`) needs. Close it when done."""
 
-    def __init__(self, stream: INetStream, conn: h11.Connection, status: int, headers: dict[str, str], peer_id: ID) -> None:
+    def __init__(
+        self, stream: INetStream, conn: h11.Connection, status: int, headers: dict[str, str], peer_id: ID,
+        *, raw_headers: tuple[tuple[bytes, bytes], ...] | None = None,
+    ) -> None:
         self._stream = stream
         self._conn = conn
         self._peer_id = peer_id
         self.status = status
         self.headers = headers
+        self.raw_headers = raw_headers if raw_headers is not None else _encode_headers(headers)
 
     async def iter_body(self) -> AsyncIterator[bytes]:
         while True:
@@ -469,6 +473,7 @@ class _BufferedResponse(StreamedResponse):
     def __init__(self, status: int, headers: dict[str, str], body: bytes) -> None:
         self.status = status
         self.headers = headers
+        self.raw_headers = _encode_headers(headers)
         self._payload = body
 
     async def iter_body(self) -> AsyncIterator[bytes]:
@@ -476,6 +481,10 @@ class _BufferedResponse(StreamedResponse):
 
     async def aclose(self) -> None:
         return None
+
+
+def _encode_headers(headers: Mapping[str, str]) -> tuple[tuple[bytes, bytes], ...]:
+    return tuple((name.encode("latin-1"), value.encode("latin-1")) for name, value in headers.items())
 
 
 async def open_http_request(
@@ -565,7 +574,7 @@ async def _open_http_request(
                     continue
                 if isinstance(event, h11.Response):
                     resp_headers = {k.decode("latin-1"): v.decode("latin-1") for k, v in event.headers}
-                    return StreamedResponse(stream, conn, event.status_code, resp_headers, peer_id)
+                    return StreamedResponse(stream, conn, event.status_code, resp_headers, peer_id, raw_headers=tuple(event.headers))
                 if isinstance(event, h11.InformationalResponse):
                     continue
                 raise ConnectionError(f"peer {peer_id} closed the stream before answering")
