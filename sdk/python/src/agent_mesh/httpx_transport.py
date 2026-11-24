@@ -92,7 +92,7 @@ class MeshTransport(httpx.AsyncBaseTransport):
             body=body,
             timeout=self._timeout,
         )
-        return httpx.Response(response.status, headers=list(response.headers.items()), stream=_BodyStream(response), request=request)
+        return httpx.Response(response.status, headers=response.raw_headers, stream=_BodyStream(response), request=request)
 
 
 __all__ = ("MESH_PATH_PREFIX", "MeshTransport", "split_mesh_url")
