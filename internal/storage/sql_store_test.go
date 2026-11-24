@@ -687,6 +687,53 @@ func TestTimezoneComparison(t *testing.T) {
 	}
 }
 
+func TestDeleteStaleEnrollmentRequestsUsesTokenRetention(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name      string
+		ephemeral bool
+		age       time.Duration
+		resolved  bool
+		want      int64
+	}{
+		{name: "regular past regular cutoff", age: 2 * time.Hour, want: 1},
+		{name: "ephemeral within ephemeral retention", ephemeral: true, age: 2 * time.Hour},
+		{name: "ephemeral past ephemeral cutoff", ephemeral: true, age: 4 * time.Hour, want: 1},
+		{name: "ephemeral exactly at cutoff", ephemeral: true, age: 3 * time.Hour},
+		{name: "ephemeral resolved inside retention", ephemeral: true, age: 2 * time.Hour, resolved: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			t.Cleanup(func() {
+				if err := store.Close(); err != nil {
+					t.Errorf("close store: %v", err)
+				}
+			})
+			ctx := t.Context()
+			if err := store.SaveBootstrapToken(ctx, &BootstrapToken{ID: "token", TokenHash: "hash", Role: "member", CreatedAt: now.Add(-24 * time.Hour), ExpiresAt: now.Add(time.Hour), Ephemeral: tc.ephemeral}); err != nil {
+				t.Fatalf("save token: %v", err)
+			}
+			request := &EnrollmentRequest{ID: "request", PeerID: "peer", TokenID: "token", PublicKey: []byte("key"), CreatedAt: now.Add(-tc.age), Status: api.EnrollmentStatus_ENROLLMENT_STATUS_PENDING}
+			if tc.resolved {
+				request.CreatedAt = now.Add(-24 * time.Hour)
+				resolvedAt := now.Add(-tc.age)
+				request.ResolvedAt = &resolvedAt
+				request.Status = api.EnrollmentStatus_ENROLLMENT_STATUS_APPROVED
+			}
+			if err := store.CreateEnrollmentRequest(ctx, request); err != nil {
+				t.Fatalf("create enrollment request: %v", err)
+			}
+			got, err := store.DeleteStaleEnrollmentRequests(ctx, now.Add(-time.Hour), now.Add(-3*time.Hour))
+			if err != nil {
+				t.Fatalf("DeleteStaleEnrollmentRequests: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("deleted %d enrollment requests, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestBootstrapTokensAndEnrollmentRequestsOps(t *testing.T) {
 	store := newTestStore(t)
 	defer func() { _ = store.Close() }()
