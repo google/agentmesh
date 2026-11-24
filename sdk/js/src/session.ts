@@ -35,7 +35,7 @@ import { canonicalPeerId } from "./identity.ts";
 import { findPeer, findProviders, isServiceType, parseServiceTarget, peerKey, provide, serviceKey, withdraw, type DirectoryRouter } from "./discovery.ts";
 import type { PeerRecord, RouterGoAway, RouterInfo, TaskAuthorizationRuleSchema } from "./gen/agentmesh_pb.ts";
 import { createMeshHost, listenThroughRelay, type MeshHost, type MeshHostOptions, type RelayListener } from "./host.ts";
-import { openMCPSession, requireEgressLabels, type MCPSession, type MCPSessionOptions } from "./mcp.ts";
+import { listMCPTools, openMCPSession, requireEgressLabels, type MCPSession, type MCPSessionOptions } from "./mcp.ts";
 import type { AgentMesh, ControlPlaneSync } from "./mesh.ts";
 import {
   HTTP_HANDLER_OPTIONS,
@@ -953,7 +953,7 @@ export class MeshSession {
   async listTools(peer: Peer, targetService: string, options: MCPSessionOptions = {}): Promise<{ name: string; description?: string }[]> {
     const mcp = await this.openMCP(peer, targetService, options);
     try {
-      const { tools } = await mcp.client.listTools();
+      const tools = await listMCPTools(mcp.client, options.signal);
       return tools.map((t) => (t.description !== undefined ? { name: t.name, description: t.description } : { name: t.name }));
     } finally {
       await mcp.close();
