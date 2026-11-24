@@ -47,6 +47,31 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
+func TestReplaceInspectableTextPreservesJSONNumbers(t *testing.T) {
+	for _, number := range []string{"42", "9007199254740993", "1.0000000000000001", "-9007199254740993"} {
+		t.Run(number, func(t *testing.T) {
+			body := []byte(`{"messages":[{"content":"before"}],"metadata":{"number":` + number + `}}`)
+			replaced, err := replaceInspectableText(body, extractInspectableText(body), "after")
+			if err != nil {
+				t.Fatalf("replaceInspectableText: %v", err)
+			}
+			var output struct {
+				Messages []struct{ Content string }
+				Metadata map[string]json.RawMessage
+			}
+			if err := json.Unmarshal(replaced, &output); err != nil {
+				t.Fatalf("decode replaced JSON: %v", err)
+			}
+			if len(output.Messages) != 1 || output.Messages[0].Content != "after" {
+				t.Fatalf("replaced messages = %v, want one message with content %q", output.Messages, "after")
+			}
+			if got := string(output.Metadata["number"]); got != number {
+				t.Fatalf("metadata number = %s, want %s", got, number)
+			}
+		})
+	}
+}
+
 func TestModelArmorInspection(t *testing.T) {
 	var upstreamCalls atomic.Int32
 	var lastUpstreamBody string
