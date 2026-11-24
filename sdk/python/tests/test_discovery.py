@@ -24,6 +24,7 @@ from libp2p.peer.id import ID
 from libp2p.utils.varint import encode_varint_prefixed, read_varint_prefixed_bytes
 
 from agent_mesh._proto import agentmesh_pb2 as pb
+from agent_mesh import discovery
 from agent_mesh.discovery import DIRECTORY_PROTOCOL, _REQUEST_TIMEOUT, DirectoryError, find_peer, find_providers, peer_key, provide, service_key
 
 SELF = ID.from_base58("12D3KooWJoJPhXqLrGAcVsGSzHMzWrmoHCWoTzVSSiT3JfR7RBVo")
@@ -89,6 +90,31 @@ class _Host:
 
 def _record(peer_id, *addrs):
     return pb.PeerRecord(peer_id=str(peer_id), addrs=[f"{a}/p2p/{peer_id}" for a in addrs])
+
+
+def test_directory_closes_an_opened_stream_when_cancelled(monkeypatch):
+    closed = []
+
+    async def run():
+        with trio.CancelScope() as scope:
+            class Stream:
+                async def write(self, data):
+                    scope.cancel()
+                    await trio.lowlevel.checkpoint()
+
+                async def close(self):
+                    await trio.lowlevel.checkpoint()
+                    closed.append(True)
+
+            async def open_stream(*args):
+                return Stream()
+
+            monkeypatch.setattr(discovery, "open_stream", open_stream)
+            await discovery.request(None, [ROUTER], pb.DirectoryRequest())
+        assert scope.cancelled_caught
+        assert closed == [True]
+
+    trio.run(run)
 
 
 def test_keys_are_the_sha256_multihash_of_the_name():

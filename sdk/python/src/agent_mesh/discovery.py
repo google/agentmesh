@@ -99,7 +99,11 @@ async def _ask(host: IHost, router: ID, req: pb.DirectoryRequest) -> pb.Director
             await stream.write(encode_varint_prefixed(req.SerializeToString()))
             resp = pb.DirectoryResponse.FromString(await read_bounded_varint_prefixed_bytes(stream, MAX_DIRECTORY_MESSAGE_BYTES))
     finally:
-        await stream.close()
+        with trio.move_on_after(1, shield=True):
+            try:
+                await stream.close()
+            except Exception:
+                logger.debug("directory: failed to close stream to router %s", router, exc_info=True)
     if resp.error:
         raise DirectoryError(resp.error)
     return resp
