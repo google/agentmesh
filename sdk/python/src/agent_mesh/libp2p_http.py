@@ -579,7 +579,11 @@ async def _open_http_request(
                     continue
                 raise ConnectionError(f"peer {peer_id} closed the stream before answering")
     except BaseException:
-        await stream.close()
+        with trio.move_on_after(1, shield=True):
+            try:
+                await stream.close()
+            except Exception:
+                logger.debug("failed to close HTTP stream to %s", peer_id, exc_info=True)
         raise
 
 
