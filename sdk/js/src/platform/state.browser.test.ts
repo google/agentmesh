@@ -17,15 +17,16 @@ import { test } from "node:test";
 import { openState } from "./state.browser.ts";
 
 for (const outcome of ["commit", "abort", "abort without a reason"] as const) {
-  test(`browser state write waits for transaction ${outcome}`, async (t) => {
+  test(`browser state write waits for transaction ${outcome}`, { timeout: 5000 }, async (t) => {
     const opened = { result: { transaction: () => transaction }, onsuccess: () => {} };
     const stored = { onsuccess: () => {} };
-    let queued = false;
+    let signalPut!: () => void;
+    const queued = new Promise<void>((resolve) => { signalPut = resolve; });
     const failure = new DOMException("commit failed", "QuotaExceededError");
     const transaction = {
       objectStore: () => ({
         put: () => {
-          queued = true;
+          signalPut();
           return stored;
         },
       }),
@@ -48,8 +49,7 @@ for (const outcome of ["commit", "abort", "abort without a reason"] as const) {
       },
     );
     opened.onsuccess();
-    await Promise.resolve(); // let write queue its put request
-    assert.equal(queued, true);
+    await queued;
     console.log("CONTROL OK");
     stored.onsuccess();
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -67,3 +67,59 @@ for (const outcome of ["commit", "abort", "abort without a reason"] as const) {
     }
   });
 }
+
+test("browser state retries an unsuccessful database open", async (t) => {
+  const failure = new DOMException("database temporarily unavailable", "UnknownError");
+  const data = Uint8Array.of(5);
+  const db = {
+    transaction: () => ({
+      objectStore: () => ({
+        get: () => {
+          const request = { result: data, onsuccess: () => {} };
+          queueMicrotask(() => request.onsuccess());
+          return request;
+        },
+      }),
+    }),
+  };
+  let opens = 0;
+  Object.defineProperty(globalThis, "indexedDB", {
+    configurable: true,
+    value: {
+      open: () => {
+        const request = { result: db, error: failure, onsuccess: () => {}, onerror: () => {} };
+        opens++;
+        const fail = opens === 2;
+        queueMicrotask(() => {
+          if (fail) {
+            request.onerror();
+          } else {
+            request.onsuccess();
+          }
+        });
+        return request;
+      },
+    },
+  });
+  t.after(() => Reflect.deleteProperty(globalThis, "indexedDB"));
+
+  const working = openState("working");
+  assert.deepEqual(await working.read("credential"), data);
+  assert.deepEqual(await working.read("credential"), data);
+  assert.equal(opens, 1);
+  console.log("CONTROL OK");
+
+  const recovering = openState("recovering");
+  await assert.rejects(recovering.read("credential"), failure);
+  const retried = await Promise.allSettled([
+    recovering.read("credential"),
+    recovering.read("credential"),
+  ]);
+  assert.equal(opens, 3, "database open was not retried once");
+  assert.deepEqual(retried, [
+    { status: "fulfilled", value: data },
+    { status: "fulfilled", value: data },
+  ]);
+  assert.deepEqual(await recovering.read("credential"), data);
+  assert.equal(opens, 3);
+});
