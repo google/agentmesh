@@ -380,22 +380,18 @@ func (n *AgentMeshNode) fetchToolsForRemoteService(
 	}
 	defer cleanup()
 
-	listRes, err := session.ListTools(ctx, nil)
-	if err != nil {
-		if serviceNameFilter == "" || connectService == serviceNameFilter {
-			return []remoteToolRow{{
-				PeerID:   targetPeer.String(),
-				ToolName: targetService,
-				Error:    fmt.Sprintf("failed to list tools: %v", err),
-			}}
-		}
-		return nil
-	}
-	if listRes == nil {
-		return nil
-	}
 	var rows []remoteToolRow
-	for _, t := range listRes.Tools {
+	for t, err := range session.Tools(ctx, nil) {
+		if err != nil {
+			if serviceNameFilter == "" || connectService == serviceNameFilter {
+				return []remoteToolRow{{
+					PeerID:   targetPeer.String(),
+					ToolName: targetService,
+					Error:    fmt.Sprintf("failed to list tools: %v", err),
+				}}
+			}
+			return nil
+		}
 		if t == nil {
 			continue
 		}
@@ -496,15 +492,10 @@ func (n *AgentMeshNode) fetchRemoteToolDescription(ctx context.Context, pid peer
 	}
 	defer cleanup()
 
-	listRes, err := session.ListTools(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	if listRes == nil {
-		return nil, fmt.Errorf("list tools response was nil")
-	}
-
-	for _, tool := range listRes.Tools {
+	for tool, err := range session.Tools(ctx, nil) {
+		if err != nil {
+			return nil, err
+		}
 		if tool == nil {
 			continue
 		}

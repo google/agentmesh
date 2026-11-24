@@ -186,7 +186,7 @@ func TestHandleFindRemoteTools_SinglePeer(t *testing.T) {
 		{Name: "review_pr", Description: "Run a code review", InputSchema: map[string]any{"type": "object"}},
 		{Name: "add_comment", Description: "Add a comment", InputSchema: map[string]any{"type": "object"}},
 	}
-	hostedSrv := httptest.NewServer(newFakeMCPHandler(t, tools))
+	hostedSrv := httptest.NewServer(newFakeMCPHandler(t, tools, &mcp.ServerOptions{PageSize: 1}))
 	defer hostedSrv.Close()
 
 	nodeA, cleanupA := startBareNode(t, ctx)
@@ -1063,6 +1063,7 @@ func TestHandleDescribeRemoteTool_RoundTrip(t *testing.T) {
 	enrollUnderRoot(t, nodeA, nodeB)
 
 	tools := []*mcp.Tool{
+		{Name: "add_comment", InputSchema: map[string]any{"type": "object"}},
 		{
 			Name:        "review_pr",
 			Description: "Run a code review",
@@ -1081,7 +1082,7 @@ func TestHandleDescribeRemoteTool_RoundTrip(t *testing.T) {
 			},
 		},
 	}
-	hostedSrv := httptest.NewServer(newFakeMCPHandler(t, tools))
+	hostedSrv := httptest.NewServer(newFakeMCPHandler(t, tools, &mcp.ServerOptions{PageSize: 1}))
 	defer hostedSrv.Close()
 
 	regReq := &api.RegisterServiceRequest{
@@ -1214,9 +1215,13 @@ func TestNewMCPHandler_RegistersDescribeRemoteTool(t *testing.T) {
 
 // newFakeMCPHandler returns an http.Handler serving a tiny MCP server over
 // streamable-http with the given tools registered.
-func newFakeMCPHandler(t *testing.T, tools []*mcp.Tool) http.Handler {
+func newFakeMCPHandler(t *testing.T, tools []*mcp.Tool, opts ...*mcp.ServerOptions) http.Handler {
 	t.Helper()
-	srv := mcp.NewServer(&mcp.Implementation{Name: "fake", Version: "0.0.1"}, nil)
+	var options *mcp.ServerOptions
+	if len(opts) > 0 {
+		options = opts[0]
+	}
+	srv := mcp.NewServer(&mcp.Implementation{Name: "fake", Version: "0.0.1"}, options)
 	for _, tool := range tools {
 		toolCopy := tool
 		srv.AddTool(toolCopy, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
