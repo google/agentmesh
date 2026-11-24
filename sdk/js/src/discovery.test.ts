@@ -68,6 +68,28 @@ function held(router: Libp2p) {
 const found = () => create(DirectoryResponseSchema, { providers: [create(PeerRecordSchema, { peerId: PROVIDER, addrs: [`/ip4/10.0.0.9/tcp/4001/p2p/${PROVIDER}`] })] });
 const nothing = () => create(DirectoryResponseSchema, {});
 
+test("directory cancellation wins over an earlier empty answer", async () => {
+  const key = await serviceKey("mcp", "calculator");
+  const find = create(DirectoryRequestSchema, { request: { case: "findProviders", value: { key, limit: 20 } } });
+  const controller = new AbortController();
+  const reason = new Error("caller stopped looking");
+  const absent = {
+    peerId: "gone",
+    connection() {
+      controller.abort(reason);
+      return undefined;
+    },
+  };
+  answers.set("a", nothing);
+  try {
+    assert.equal((await request([held(routerA)], find)).providers.length, 0);
+    await assert.rejects(request([held(routerA), absent], find, controller.signal), reason);
+    await assert.rejects(request([], find, controller.signal), reason);
+  } finally {
+    answers.delete("a");
+  }
+});
+
 test("a lookup one router answers with nothing is put to the next; an announcement is not", async () => {
   // A router cut off from the routers closest to the key answers from what
   // it can reach; the member holds another that may not be.
