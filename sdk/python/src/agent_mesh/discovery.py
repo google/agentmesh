@@ -153,7 +153,11 @@ async def withdraw(host: IHost, routers: Iterable[ID], key: bytes) -> None:
 
 async def find_providers(host: IHost, routers: Iterable[ID], key: bytes, limit: int = DEFAULT_LIMIT) -> list[DiscoveredProvider]:
     """Who provides key, up to limit, with their addresses; empty when nobody does."""
-    req = pb.DirectoryRequest(find_providers=pb.DirectoryFindProviders(key=key, limit=max(limit, 1)))
+    if not isinstance(limit, int) or not 0 <= limit <= 0xFFFFFFFF:
+        raise ValueError("directory provider limit must be an unsigned 32-bit integer")
+    if limit == 0:
+        return []
+    req = pb.DirectoryRequest(find_providers=pb.DirectoryFindProviders(key=key, limit=limit))
     resp = await request(host, routers, req)
     found: dict[str, DiscoveredProvider] = {}
     self_id = str(host.get_id())
