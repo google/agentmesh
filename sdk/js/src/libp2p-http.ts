@@ -618,6 +618,8 @@ export async function fetchOverStream(conn: Connection, biscuit: Uint8Array, req
 }
 
 async function sendOverStream(conn: Connection, biscuit: Uint8Array, request: Request, options: HTTPStreamOptions): Promise<Response> {
+  options.signal?.throwIfAborted();
+  request.signal.throwIfAborted();
   const { target } = splitMeshURL(new URL(request.url));
   const peerId = conn.remotePeer.toString();
   // One controller ends the exchange: the caller's signal at any time, the
@@ -653,6 +655,7 @@ async function sendOverStream(conn: Connection, biscuit: Uint8Array, request: Re
   headers.set("content-length", String(body.length));
 
   try {
+    signal.throwIfAborted();
     await sendAll(stream, encodeRequestHead(request.method, target, headers));
     await sendAll(stream, body);
     const reader = new ByteReader(streamSource(stream));
