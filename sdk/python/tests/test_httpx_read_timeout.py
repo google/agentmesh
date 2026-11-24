@@ -52,9 +52,11 @@ def test_mesh_transport_applies_httpx_read_timeout_to_body(monkeypatch):
         path = "http://mesh/mesh/peer/a2a/example"
         async with httpx.AsyncClient(transport=MeshTransport(session)) as client:
             assert (await client.get(path, timeout=None)).content == b"firstsecond"
+            request = httpx.Request("GET", path, extensions={"timeout": None})
+            assert (await client.send(request)).content == b"firstsecond"
             with pytest.raises(httpx.ReadTimeout) as caught:
                 await client.get(path, timeout=httpx.Timeout(10, read=1))
             assert str(caught.value.request.url) == path
-        assert closed == [True, True]
+        assert closed == [True, True, True]
 
     trio.run(run, clock=MockClock(autojump_threshold=0))

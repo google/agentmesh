@@ -61,7 +61,8 @@ class _BodyStream(httpx.AsyncByteStream):
     def __init__(self, response: StreamedResponse, request: httpx.Request) -> None:
         self._response = response
         self._request = request
-        timeout = request.extensions.get("timeout", {}).get("read")
+        timeout_options = request.extensions.get("timeout")
+        timeout = timeout_options.get("read") if isinstance(timeout_options, dict) else None
         self._read_timeout = math.inf if timeout is None else timeout
 
     async def __aiter__(self) -> AsyncIterator[bytes]:
