@@ -38,7 +38,10 @@ function openDatabase(name: string): Promise<IDBDatabase> {
 /** The store for a state location: a database named after it. */
 export function openState(location: string): StateStore {
   let db: Promise<IDBDatabase> | undefined;
-  const open = () => (db ??= openDatabase(location));
+  const open = () => (db ??= openDatabase(location).catch((error: unknown) => {
+    db = undefined;
+    throw error;
+  }));
   return {
     async read(name) {
       const tx = (await open()).transaction(STORE, "readonly");
