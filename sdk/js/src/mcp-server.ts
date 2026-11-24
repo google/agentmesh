@@ -22,7 +22,7 @@ import { BASELINE_DATALOG } from "./gen/datalog.ts";
 import { AuthRejectedError } from "./auth.ts";
 import { canonicalPeerId } from "./identity.ts";
 import type { MeshSession, Peer } from "./session.ts";
-import type { MCPSessionOptions } from "./mcp.ts";
+import { listMCPTools, type MCPSessionOptions } from "./mcp.ts";
 
 type Session = Pick<MeshSession, "peerId" | "routers" | "isHeldRouter" | "discover" | "openMCP"> & {
   node: Pick<MeshSession["node"], "getPeers">;
@@ -110,21 +110,7 @@ async function catalog(session: Session, peer: Peer, type: string, signal: Abort
 async function tools(session: Session, peer: Peer, service: string, signal: AbortSignal): Promise<Tool[]> {
   const remote = await session.openMCP(peer, service, { signal });
   try {
-    const result: Tool[] = [];
-    const cursors = new Set<string>();
-    let cursor: string | undefined;
-    do {
-      signal.throwIfAborted();
-      const page = await remote.client.listTools(cursor === undefined ? {} : { cursor }, { signal });
-      result.push(...page.tools);
-      if (result.length > MAX_TOOLS) throw new Error(`provider exceeds ${MAX_TOOLS} tools per service`);
-      cursor = page.nextCursor;
-      if (cursor !== undefined) {
-        if (cursors.has(cursor) || cursors.size >= MAX_TOOLS) throw new Error("provider returned an unbounded tool catalog");
-        cursors.add(cursor);
-      }
-    } while (cursor !== undefined);
-    return result;
+    return await listMCPTools(remote.client, signal, MAX_TOOLS);
   } finally {
     await remote.close();
   }

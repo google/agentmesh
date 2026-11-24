@@ -20,7 +20,7 @@ import type { Connection, Stream } from "@libp2p/interface";
 import { lpStream } from "@libp2p/utils";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { JSONRPCMessageSchema, type JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
+import { JSONRPCMessageSchema, type JSONRPCMessage, type Tool } from "@modelcontextprotocol/sdk/types.js";
 import { AUTH_HANDSHAKE_TIMEOUT_MS, AuthRejectedError, MAX_AUTH_FRAME_BYTES, MCP_PROTOCOL } from "./auth.ts";
 import { BiscuitVerificationError, requirePublish, requireRole, verifyPeerBiscuit, type VerifiedBiscuit } from "./biscuit.ts";
 import { ROLE_NODE } from "./controlplane.ts";
@@ -31,6 +31,32 @@ export const MAX_MCP_MESSAGE_BYTES = 8 * 1024 * 1024;
 
 /** The MCP client the SDK identifies itself as. */
 export const MCP_CLIENT_INFO = { name: "agent-mesh-sdk", version: "0.1.0" };
+
+const MAX_CATALOG_CURSORS = 256;
+
+/** Follow the provider's cursor while bounding the number of requests. */
+export async function listMCPTools(client: Client, signal?: AbortSignal, maxTools = Infinity): Promise<Tool[]> {
+  const tools: Tool[] = [];
+  const cursors = new Set<string>();
+  const options = signal === undefined ? undefined : { signal };
+  let cursor: string | undefined;
+  do {
+    signal?.throwIfAborted();
+    const page = await client.listTools(cursor === undefined ? {} : { cursor }, options);
+    if (tools.length + page.tools.length > maxTools) {
+      throw new Error(`provider exceeds ${maxTools} tools per service`);
+    }
+    for (const tool of page.tools) tools.push(tool);
+    cursor = page.nextCursor;
+    if (cursor !== undefined) {
+      if (cursors.has(cursor) || cursors.size >= MAX_CATALOG_CURSORS) {
+        throw new Error("provider returned an unbounded tool catalog");
+      }
+      cursors.add(cursor);
+    }
+  } while (cursor !== undefined);
+  return tools;
+}
 
 /**
  * A Transport for @modelcontextprotocol/sdk over a libp2p stream that has
