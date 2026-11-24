@@ -47,7 +47,11 @@ export function openState(location: string): StateStore {
     },
     async write(name, data) {
       const tx = (await open()).transaction(STORE, "readwrite");
-      await request(tx.objectStore(STORE).put(new Uint8Array(data), name));
+      await new Promise<void>((resolve, reject) => {
+        tx.oncomplete = () => resolve();
+        tx.onabort = () => reject(tx.error ?? new Error("IndexedDB write transaction aborted"));
+        tx.objectStore(STORE).put(new Uint8Array(data), name);
+      });
     },
     async remove(name) {
       const tx = (await open()).transaction(STORE, "readwrite");
