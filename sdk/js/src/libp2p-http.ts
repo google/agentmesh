@@ -643,18 +643,18 @@ async function sendOverStream(conn: Connection, biscuit: Uint8Array, request: Re
   const abortStream = () => stream.abort(asError(signal.reason));
   signal.addEventListener("abort", abortStream, { once: true });
 
-  const headers = new Headers();
-  request.headers.forEach((value, name) => {
-    if (name !== "host" && name !== "content-length" && name !== "transfer-encoding" && name !== HEADER_MESH_BISCUIT && name !== HEADER_PEER_ID) {
-      headers.set(name, value);
-    }
-  });
-  headers.set("host", peerId);
-  headers.set(HEADER_MESH_BISCUIT, toBase64(biscuit));
-  const body = request.body === null ? new Uint8Array(0) : new Uint8Array(await request.arrayBuffer());
-  headers.set("content-length", String(body.length));
-
   try {
+    signal.throwIfAborted();
+    const headers = new Headers();
+    request.headers.forEach((value, name) => {
+      if (name !== "host" && name !== "content-length" && name !== "transfer-encoding" && name !== HEADER_MESH_BISCUIT && name !== HEADER_PEER_ID) {
+        headers.set(name, value);
+      }
+    });
+    headers.set("host", peerId);
+    headers.set(HEADER_MESH_BISCUIT, toBase64(biscuit));
+    const body = request.body === null ? new Uint8Array(0) : new Uint8Array(await request.arrayBuffer());
+    headers.set("content-length", String(body.length));
     signal.throwIfAborted();
     await sendAll(stream, encodeRequestHead(request.method, target, headers));
     await sendAll(stream, body);
