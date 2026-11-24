@@ -114,6 +114,7 @@ export async function request(routers: DirectoryRouter[], req: DirectoryRequest,
   let asked = 0;
   let empty: DirectoryResponse | undefined;
   for (const router of routers) {
+    signal?.throwIfAborted();
     const conn = router.connection();
     if (conn === undefined) {
       continue;
@@ -122,6 +123,7 @@ export async function request(routers: DirectoryRouter[], req: DirectoryRequest,
     const bounded = signal === undefined ? AbortSignal.timeout(REQUEST_TIMEOUT_MS) : AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]);
     try {
       const resp = await ask(conn, req, bounded);
+      signal?.throwIfAborted();
       if (lookup && resp.providers.length === 0 && resp.peer === undefined) {
         empty = resp;
         continue;
@@ -129,11 +131,10 @@ export async function request(routers: DirectoryRouter[], req: DirectoryRequest,
       return resp;
     } catch (err) {
       failures.push(`${router.peerId}: ${err instanceof Error ? err.message : String(err)}`);
-      if (signal?.aborted === true) {
-        break;
-      }
+      signal?.throwIfAborted();
     }
   }
+  signal?.throwIfAborted();
   if (empty !== undefined) {
     return empty;
   }
