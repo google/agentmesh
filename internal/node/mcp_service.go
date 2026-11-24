@@ -179,12 +179,11 @@ func (m *MCPService) Tools(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("connect to backend of %q: %w", m.info.GetName(), err)
 	}
 	defer func() { _ = session.Close() }()
-	res, err := session.ListTools(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("list tools of %q: %w", m.info.GetName(), err)
-	}
-	names := make([]string, 0, len(res.Tools))
-	for _, t := range res.Tools {
+	names := make([]string, 0)
+	for t, err := range session.Tools(ctx, nil) {
+		if err != nil {
+			return nil, fmt.Errorf("list tools of %q: %w", m.info.GetName(), err)
+		}
 		if t != nil && t.Name != "" {
 			names = append(names, t.Name)
 		}
