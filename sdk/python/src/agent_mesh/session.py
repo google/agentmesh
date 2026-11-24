@@ -32,6 +32,7 @@ from libp2p.pubsub.floodsub import FloodSub
 from libp2p.pubsub.pubsub import Pubsub
 from libp2p.tools.anyio_service import background_trio_service
 from mcp import ClientSession
+from mcp.types import PaginatedRequestParams
 
 from ._proto import circuit_pb2 as circuit
 from ._proto import agentmesh_pb2 as pb
@@ -750,7 +751,19 @@ class MeshSession:
     async def list_tools(self, peer: Peer, target_service: str, **options: Any) -> list[ToolInfo]:
         """Lists the tools a provider serves for a service."""
         async with self.open_mcp(peer, target_service, **options) as (mcp, _):
-            return [ToolInfo(name=t.name, description=t.description) for t in (await mcp.list_tools()).tools]
+            tools: list[ToolInfo] = []
+            cursors: set[str] = set()
+            params = None
+            while True:
+                page = await mcp.list_tools(params=params)
+                tools.extend(ToolInfo(name=tool.name, description=tool.description) for tool in page.tools)
+                cursor = page.next_cursor
+                if cursor is None:
+                    return tools
+                if cursor in cursors or len(cursors) >= 256:
+                    raise RuntimeError("provider returned an unbounded tool catalog")
+                cursors.add(cursor)
+                params = PaginatedRequestParams(cursor=cursor)
 
     async def call_tool(
         self, peer: Peer, target_service: str, tool: str, args: Optional[Mapping[str, Any]] = None, **options: Any
