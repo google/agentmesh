@@ -1033,9 +1033,19 @@ func extractSSEInspectableText(body []byte) (string, bool) {
 	return strings.TrimSpace(sb.String()), true
 }
 
-func extractInspectableText(body []byte) string {
+func decodeInspectableObject(body []byte) (map[string]any, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
 	var doc map[string]any
-	if err := json.Unmarshal(body, &doc); err != nil {
+	if err := decoder.Decode(&doc); err != nil {
+		return nil, false
+	}
+	return doc, decoder.Decode(&json.RawMessage{}) == io.EOF
+}
+
+func extractInspectableText(body []byte) string {
+	doc, ok := decodeInspectableObject(body)
+	if !ok {
 		if sseText, isSSE := extractSSEInspectableText(body); isSSE {
 			if sseText != "" {
 				return sseText
@@ -1065,8 +1075,8 @@ func replaceInspectableText(body []byte, original, replacement string) ([]byte, 
 	if original == "" {
 		return nil, errors.New("cannot replace empty original inspectable text")
 	}
-	var doc map[string]any
-	if err := json.Unmarshal(body, &doc); err != nil {
+	doc, ok := decodeInspectableObject(body)
+	if !ok {
 		if !bytes.Contains(body, []byte(original)) {
 			return nil, errors.New("failed to map inspection replacement back into non-JSON payload")
 		}
