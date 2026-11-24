@@ -319,7 +319,8 @@ func filterRowsByToolName(rows []remoteToolRow, toolName string) []remoteToolRow
 }
 
 // fetchRemoteToolCatalogue gets the remote node's service catalogue,
-// then opens a separate libp2p stream to each MCP service to fetch its tools.
+// then opens a separate libp2p stream to each MCP service that can match the
+// requested filter.
 // serviceNameFilter must already be canonical; see normalizeServiceFilter.
 func (n *AgentMeshNode) fetchRemoteToolCatalogue(ctx context.Context, targetPeer peer.ID, serviceNameFilter string) ([]remoteToolRow, error) {
 	services, err := n.fetchRemoteServiceCatalog(ctx, targetPeer, "MCP")
@@ -338,6 +339,11 @@ func (n *AgentMeshNode) fetchRemoteToolCatalogue(ctx context.Context, targetPeer
 		connectService := targetService
 		if !strings.Contains(connectService, "://") && !strings.Contains(connectService, ":") {
 			connectService = api.MCPServicePrefix + connectService
+		}
+		if serviceNameFilter != "" && connectService != serviceNameFilter &&
+			!strings.HasPrefix(connectService, serviceNameFilter+"/") &&
+			!strings.HasPrefix(serviceNameFilter, connectService+"/") {
+			continue
 		}
 
 		if err := ctx.Err(); err != nil {
