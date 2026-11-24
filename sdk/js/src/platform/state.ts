@@ -15,7 +15,7 @@
 // State on Node: a directory, one file per name, owner-only, written to a
 // temporary name and renamed into place. Where a token file is read from.
 
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { StateStore } from "./types.ts";
 
@@ -34,10 +34,14 @@ export function openState(location: string): StateStore {
     },
     async write(name, data) {
       await mkdir(location, { recursive: true, mode: 0o700 });
-      const path = join(location, name);
-      const tmp = `${path}.tmp`;
-      await writeFile(tmp, data, { mode: 0o600 });
-      await rename(tmp, path);
+      const dir = await mkdtemp(join(location, ".write-"));
+      const tmp = join(dir, "value");
+      try {
+        await writeFile(tmp, data, { mode: 0o600 });
+        await rename(tmp, join(location, name));
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
     },
     async remove(name) {
       await rm(join(location, name), { force: true });
