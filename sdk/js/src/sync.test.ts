@@ -82,6 +82,9 @@ class FakeControlPlane {
   keys: SigningKey[];
   banned: string[] = [];
   refreshes = 0;
+  /** The /policies reads so far, one per pull; the hook may hold an answer. */
+  policyReads = 0;
+  onPolicyRead: ((reads: number) => Promise<void>) | undefined;
   constructor(initial: SigningKey) {
     this.keys = [initial];
   }
@@ -127,6 +130,8 @@ class FakeControlPlane {
         );
       }
       if (req.method === "GET" && path === "/policies") {
+        this.policyReads++;
+        await this.onPolicyRead?.(this.policyReads);
         return proto(toBinary(PolicyConfigGetResponseSchema, create(PolicyConfigGetResponseSchema, { datalogRules: ['granted_publish_all_types(true) <- role("mesh:role:node")'] })));
       }
       if (req.method === "POST" && path === "/refresh") {
@@ -336,6 +341,41 @@ test("a banned peer is hung up on and refused at the gate and the handshake", as
     await session.sync();
   } finally {
     await peer.stop();
+    await session.close();
+  }
+});
+
+test("an event that arrives while a pull is in flight is followed by another pull", async () => {
+  const mesh = await AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", bootstrapToken: "sbt", fetch: cp.fetch });
+  // No jitter, so a triggered pull is due at once; no periodic pull within the test.
+  const session = await mesh.join({ refreshLeadMs: 0, controlPlaneSyncIntervalMs: 3_600_000, controlPlaneSyncJitterMs: 0 });
+  const start = cp.policyReads;
+  let secondPull!: () => void;
+  const pulledAgain = new Promise<void>((resolve) => (secondPull = resolve));
+  // The first triggered pull holds its /policies answer (it has read the
+  // control plane) while a second event triggers. The answer is released
+  // from a timer queued after the second trigger's, so that trigger comes
+  // due while the first pull is still in flight.
+  cp.onPolicyRead = (reads) => {
+    if (reads === start + 2) {
+      secondPull();
+    }
+    if (reads !== start + 1) {
+      return Promise.resolve();
+    }
+    return new Promise<void>((release) => {
+      session.triggerSync();
+      setTimeout(release, 0);
+    });
+  };
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  try {
+    session.triggerSync();
+    await Promise.race([pulledAgain, new Promise<void>((resolve) => (deadline = setTimeout(resolve, 5_000)))]);
+    assert.equal(cp.policyReads, start + 2, "the event that came during the pull was not followed by a pull of its own");
+  } finally {
+    clearTimeout(deadline);
+    cp.onPolicyRead = undefined;
     await session.close();
   }
 });

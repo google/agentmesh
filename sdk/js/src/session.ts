@@ -245,6 +245,8 @@ export class MeshSession {
   #announced: string[] = [];
   #syncing: Promise<ControlPlaneSync> | undefined;
   #refreshing: Promise<void> | undefined;
+  /** A triggered pull is due and its timer has not fired yet. */
+  #syncTriggered = false;
   #keepingRelay: Promise<void> | undefined;
   #keepRelayPending = false;
   readonly #heldRouterIds: Set<string>;
@@ -1068,16 +1070,23 @@ export class MeshSession {
     if (this.#closed) {
       return;
     }
+    this.#syncTriggered = true;
     this.#scheduleSync(Math.floor(Math.random() * (this.#syncJitterMs + 1)));
   }
 
   #scheduleSync(delayMs: number): void {
     clearTimeout(this.#syncTimer);
     this.#syncTimer = setTimeout(() => {
-      this.sync()
+      this.#syncTriggered = false;
+      // A pull in flight may have read the control plane before this one was
+      // asked for, so it is not shared: this one starts when it ends.
+      (this.#syncing ?? Promise.resolve())
+        .catch(() => {})
+        .then(() => (this.#closed ? undefined : this.sync()))
         .catch(() => {})
         .finally(() => {
-          if (!this.#closed && this.#syncIntervalMs > 0) {
+          // A trigger that came in meanwhile keeps its own, earlier timer.
+          if (!this.#closed && this.#syncIntervalMs > 0 && !this.#syncTriggered) {
             // Stretched by up to a tenth so a fleet started together does not pull together.
             this.#scheduleSync(this.#syncIntervalMs + Math.floor(Math.random() * (this.#syncIntervalMs / 10 + 1)));
           }
