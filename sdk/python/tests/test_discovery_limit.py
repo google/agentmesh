@@ -21,7 +21,8 @@ from agent_mesh.discovery import find_providers
 def test_directory_checks_provider_limit_before_contacting_routers():
     async def run():
         assert await find_providers(None, [], b"", limit=0) == []
-        with pytest.raises(ValueError, match="limit"):
-            await find_providers(None, [], b"", limit=-1)
+        for limit in (-1, 0.5, 0xFFFFFFFF + 1):
+            with pytest.raises(ValueError, match="limit"):
+                await find_providers(None, [], b"", limit=limit)
 
     trio.run(run)

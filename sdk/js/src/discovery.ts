@@ -163,6 +163,7 @@ export async function withdraw(routers: DirectoryRouter[], key: Uint8Array, sign
 
 /** Who provides key, up to limit, with their addresses; empty when nobody does. */
 export async function findProviders(routers: DirectoryRouter[], key: Uint8Array, limit = DEFAULT_LIMIT, signal?: AbortSignal): Promise<PeerRecord[]> {
+  signal?.throwIfAborted();
   if (!Number.isInteger(limit) || limit < 0 || limit > 0xffffffff) {
     throw new RangeError("directory provider limit must be an unsigned 32-bit integer");
   }
