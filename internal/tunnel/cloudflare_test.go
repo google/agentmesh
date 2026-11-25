@@ -487,3 +487,15 @@ while :; do sleep 1; done
 		t.Fatalf("URL = %q, want the assigned quick-tunnel URL %q", got, want)
 	}
 }
+
+// A named tunnel needs a hostname: an ExternalURL that trims to nothing is
+// refused before cloudflared is started.
+func TestCloudflareNamedTunnelRefusesAnEmptyExternalURL(t *testing.T) {
+	for _, externalURL := range []string{"", "  ", "/", " // "} {
+		p := &Cloudflare{Binary: filepath.Join(t.TempDir(), "never-started"), Token: "token", ExternalURL: externalURL}
+		_, err := p.Open(context.Background(), "http://127.0.0.1:1")
+		if err == nil || !strings.Contains(err.Error(), "requires ExternalURL") {
+			t.Errorf("Open with ExternalURL %q: err = %v, want the ExternalURL refusal", externalURL, err)
+		}
+	}
+}
