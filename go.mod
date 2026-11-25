@@ -3,7 +3,7 @@ module github.com/google/agentmesh
 go 1.26.6
 
 require (
-	github.com/a2aproject/a2a-go/v2 v2.8.0
+	github.com/a2aproject/a2a-go/v2 v2.9.0
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/dustin/go-humanize v1.1.0
 	github.com/eclipse-biscuit/biscuit-go/v2 v2.2.2
@@ -31,7 +31,7 @@ require (
 	github.com/spf13/pflag v1.1.0
 	go.etcd.io/bbolt v1.5.0
 	go.uber.org/zap v1.28.0
-	golang.org/x/net v0.62.0
+	golang.org/x/net v0.63.0
 	golang.org/x/oauth2 v0.38.0
 	golang.org/x/sys v0.50.0
 	golang.org/x/time v0.16.0
