@@ -15,9 +15,10 @@
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
+import pytest
 import trio
 
-from agent_mesh.session import MeshSession
+from agent_mesh.session import MAX_CATALOG_CURSORS, MeshSession
 
 
 def test_sdk_lists_all_remote_tool_pages():
@@ -53,5 +54,35 @@ def test_sdk_lists_all_remote_tool_pages():
             expected = ["first"] if next_cursor is None else ["first", "second"]
             assert [tool.name for tool in tools] == expected
             assert calls == ([None] if next_cursor is None else [None, "next"])
+
+    trio.run(run)
+
+
+def test_sdk_rejects_a_remote_tool_catalog_that_never_ends():
+    async def run():
+        for name, next_cursor, want_calls in (
+            ("a repeated cursor", lambda n: "loop", 2),
+            ("a new cursor on every page", lambda n: f"page-{n}", MAX_CATALOG_CURSORS + 1),
+        ):
+            calls = []
+            closed = []
+
+            class Client:
+                async def list_tools(self, *, params=None):
+                    calls.append(None if params is None else params.cursor)
+                    return SimpleNamespace(tools=[], next_cursor=next_cursor(len(calls) - 1))
+
+            @asynccontextmanager
+            async def open_mcp(peer, service):
+                try:
+                    yield Client(), None
+                finally:
+                    closed.append(True)
+
+            session = SimpleNamespace(open_mcp=open_mcp)
+            with pytest.raises(RuntimeError, match="unbounded tool catalog"):
+                await MeshSession.list_tools(session, "peer", "mcp://catalog")
+            assert len(calls) == want_calls, f"{name}: {len(calls)} list_tools calls, want {want_calls}"
+            assert closed == [True], f"{name}: sessions closed {closed}, want [True]"
 
     trio.run(run)

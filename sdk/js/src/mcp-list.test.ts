@@ -46,3 +46,32 @@ test("SDK lists all remote tool pages", async () => {
     }
   }
 });
+
+test("SDK rejects a remote tool catalog that never ends", async () => {
+  for (const [name, next, wantCalls] of [
+    ["a repeated cursor", () => "loop", 2],
+    ["a new cursor on every page", (n: number) => `page-${n}`, 257],
+  ] as const) {
+    let calls = 0;
+    let closed = 0;
+    const session = {
+      async openMCP() {
+        return {
+          client: {
+            async listTools() {
+              return { tools: [], nextCursor: next(calls++) };
+            },
+          },
+          async close() { closed++; },
+        };
+      },
+    } as unknown as MeshSession;
+    await assert.rejects(
+      MeshSession.prototype.listTools.call(session, "peer", "mcp://catalog"),
+      /provider returned an unbounded tool catalog/,
+      name,
+    );
+    assert.equal(calls, wantCalls, `${name}: listTools calls`);
+    assert.equal(closed, 1, `${name}: sessions closed`);
+  }
+});

@@ -91,6 +91,9 @@ RESERVATION_RENEW_LEAD = 2 * 60.0
 RESERVATION_CHECK_INTERVAL = 30.0
 # agentmesh-node's --control-plane-sync-interval default.
 DEFAULT_POLICY_SYNC = 15 * 60.0
+# Pages of one provider's tool catalog list_tools follows before it calls the
+# catalog unbounded, matching the JavaScript SDK's MAX_CATALOG_CURSORS.
+MAX_CATALOG_CURSORS = 256
 # agentmesh-node's --control-plane-sync-interval default, and its 2s first pull.
 DEFAULT_CONTROL_PLANE_SYNC = 15 * 60.0
 FIRST_CONTROL_PLANE_SYNC = 2.0
@@ -760,7 +763,7 @@ class MeshSession:
                 cursor = page.next_cursor
                 if cursor is None:
                     return tools
-                if cursor in cursors or len(cursors) >= 256:
+                if cursor in cursors or len(cursors) >= MAX_CATALOG_CURSORS:
                     raise RuntimeError("provider returned an unbounded tool catalog")
                 cursors.add(cursor)
                 params = PaginatedRequestParams(cursor=cursor)
