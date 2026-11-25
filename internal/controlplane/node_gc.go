@@ -184,12 +184,20 @@ func (s *Server) pruneCatalog(now time.Time) {
 	}
 	dropped := 0
 	s.catalogMu.Lock()
-	for peerID := range snap {
-		if _, ok := keep[peerID]; !ok {
-			delete(s.catalog, peerID)
-			logger.Debugw("Dropped service report of a node no longer admitted", "peer_id", peerID)
-			dropped++
+	for peerID, seen := range snap {
+		if _, ok := keep[peerID]; ok {
+			continue
 		}
+		// A report written since the snapshot came from a node admitted
+		// when it reported, after the list was read: it is not this
+		// sweep's to drop.
+		if cur, ok := s.catalog[peerID]; ok && !cur.ReportedAt.Equal(seen.ReportedAt) {
+			logger.Debugw("Kept service report written during the sweep", "peer_id", peerID)
+			continue
+		}
+		delete(s.catalog, peerID)
+		logger.Debugw("Dropped service report of a node no longer admitted", "peer_id", peerID)
+		dropped++
 	}
 	remaining := len(s.catalog)
 	s.catalogMu.Unlock()
