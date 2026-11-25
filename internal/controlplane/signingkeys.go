@@ -15,6 +15,7 @@
 package controlplane
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/ed25519"
@@ -81,7 +82,9 @@ func loadOperatorSigningKeys(path string) (*operatorSigningKeys, error) {
 func parseOperatorSigningKeys(path string, data []byte) (*operatorSigningKeys, error) {
 	var err error
 	keys := &operatorSigningKeys{}
+	decoded := 0
 	for block, rest := pem.Decode(data); block != nil; block, rest = pem.Decode(rest) {
+		decoded++
 		var parsed any
 		switch block.Type {
 		case "PRIVATE KEY":
@@ -105,6 +108,14 @@ func parseOperatorSigningKeys(path string, data []byte) (*operatorSigningKeys, e
 		default:
 			return nil, fmt.Errorf("signing keys %s: unsupported key type %T (want Ed25519 or P-256)", path, parsed)
 		}
+	}
+	// pem.Decode skips a block whose body does not decode, or whose BEGIN
+	// or END line is damaged, and returns the next one: a damaged first key
+	// would leave the next key signing. Every block the file marks must
+	// decode.
+	begun, ended := bytes.Count(data, []byte("-----BEGIN ")), bytes.Count(data, []byte("-----END "))
+	if marked := max(begun, ended); marked != decoded {
+		return nil, fmt.Errorf("signing keys %s: %d of %d PEM blocks do not decode (damaged or truncated)", path, marked-decoded, marked)
 	}
 	// Owning the keys means owning both: a file with one kind would leave
 	// the other generated per store and no longer rotated by anyone.
@@ -150,13 +161,12 @@ func reconcileEd25519Keyring(ctx context.Context, store storage.Store, keys []ed
 	if err := store.SetKeyring(ctx, current, verifying, gracePeriod); err != nil {
 		return fmt.Errorf("set signing keys: %w", err)
 	}
-	logKeyringChange("ed25519", keyPairFingerprints(before), func() []string {
-		after, err := store.GetAllValidKeys(ctx)
-		if err != nil {
-			return nil
-		}
-		return keyPairFingerprints(after)
-	}(), keyFingerprint(current.Public))
+	after, err := store.GetAllValidKeys(ctx)
+	if err != nil {
+		logKeyringUnread("ed25519", keyFingerprint(current.Public), err)
+		return nil
+	}
+	logKeyringChange("ed25519", keyPairFingerprints(before), keyPairFingerprints(after), keyFingerprint(current.Public))
 	return nil
 }
 
@@ -197,13 +207,12 @@ func reconcileES256Keyring(ctx context.Context, store storage.Store, keys []*ecd
 	if err := store.SetOIDCKeyring(ctx, current, verifying, gracePeriod); err != nil {
 		return fmt.Errorf("set ES256 keys: %w", err)
 	}
-	logKeyringChange("es256", oidcKids(before), func() []string {
-		after, err := store.GetAllValidOIDCKeys(ctx)
-		if err != nil {
-			return nil
-		}
-		return oidcKids(after)
-	}(), current.Kid)
+	after, err := store.GetAllValidOIDCKeys(ctx)
+	if err != nil {
+		logKeyringUnread("es256", current.Kid, err)
+		return nil
+	}
+	logKeyringChange("es256", oidcKids(before), oidcKids(after), current.Kid)
 	return nil
 }
 
@@ -232,6 +241,12 @@ func logKeyringChange(algorithm string, before, after []string, signing string) 
 		return
 	}
 	logger.Infow("Operator signing keys installed", "algorithm", algorithm, "signing", signing, "valid_before", before, "valid_after", after)
+}
+
+// logKeyringUnread says that the keys were installed but the keyring could
+// not be read back, instead of reporting a keyring it did not read.
+func logKeyringUnread(algorithm, signing string, err error) {
+	logger.Warnw("Operator signing keys installed; the keyring could not be read back to log the valid keys", "algorithm", algorithm, "signing", signing, "error", err)
 }
 
 // installOperatorSigningKeys reconciles both keyrings from keys and reports
