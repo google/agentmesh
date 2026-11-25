@@ -103,7 +103,8 @@ func (c *Cloudflare) Name() string { return "cloudflare" }
 
 // Open implements Provider.
 func (c *Cloudflare) Open(ctx context.Context, target string) (Tunnel, error) {
-	if c.Token != "" && strings.TrimSpace(c.ExternalURL) == "" {
+	namedURL := strings.TrimRight(strings.TrimSpace(c.ExternalURL), "/")
+	if c.Token != "" && namedURL == "" {
 		return nil, fmt.Errorf("cloudflare named tunnel requires ExternalURL (--external-url)")
 	}
 	binary, err := c.resolveBinary(ctx)
@@ -137,7 +138,7 @@ func (c *Cloudflare) Open(ctx context.Context, target string) (Tunnel, error) {
 	}
 	t := &process{cancel: cancel, done: make(chan struct{})}
 	if c.Token != "" {
-		t.namedURL = strings.TrimRight(strings.TrimSpace(c.ExternalURL), "/")
+		t.namedURL = namedURL
 	}
 	urlCh := make(chan string, 1)
 	go t.scan(pr, urlCh)
