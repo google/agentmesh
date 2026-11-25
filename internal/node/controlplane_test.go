@@ -35,35 +35,6 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func TestMergeTrustedKeys(t *testing.T) {
-	now := time.Now()
-	earlier := now.Add(-2 * time.Hour)
-	keyA, _, _ := ed25519.GenerateKey(nil)
-	keyB, _, _ := ed25519.GenerateKey(nil)
-	keyC, _, _ := ed25519.GenerateKey(nil)
-
-	existing := []TrustedKey{
-		{Key: keyA, ReceivedAt: earlier},
-		{Key: keyC, ReceivedAt: earlier}, // expired at the CP: absent from /keys
-	}
-	got := mergeTrustedKeys(existing, []ed25519.PublicKey{keyA, keyB}, now)
-
-	if len(got) != 2 {
-		t.Fatalf("expected 2 keys, got %d", len(got))
-	}
-	if !got[0].Key.Equal(keyA) || !got[0].ReceivedAt.Equal(now) {
-		t.Errorf("a key the control plane still lists must get the sync time: got %+v", got[0])
-	}
-	if !got[1].Key.Equal(keyB) || !got[1].ReceivedAt.Equal(now) {
-		t.Errorf("new key must get the sync time: got %+v", got[1])
-	}
-	for _, tk := range got {
-		if tk.Key.Equal(keyC) {
-			t.Error("key expired at the control plane must be dropped")
-		}
-	}
-}
-
 // mustGenerateKey is an ed25519 key pair or a failed test.
 func mustGenerateKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
@@ -150,6 +121,29 @@ func TestSyncTrustedKeys(t *testing.T) {
 		}
 		if n.identityPredatesRotation() {
 			t.Error("a node without an identity has nothing to refresh")
+		}
+	})
+
+	// The node got the current key at enrollment and the retiring key from a
+	// later sync. While /keys lists both, pruning must keep both, whatever
+	// the time since the node first saw each (#916). A key that /keys no
+	// longer lists is dropped at the sync.
+	t.Run("a key /keys still lists outlives the grace period", func(t *testing.T) {
+		expiredPub, _ := mustGenerateKey(t)
+		srv := keysServer(t, []ed25519.PublicKey{retiredPub, currentPub}, []ed25519.PrivateKey{retiredPriv, currentPriv})
+		defer srv.Close()
+		n := newNode(t)
+		enrolled := time.Now().Add(-25 * time.Hour)
+		n.trustedKeys = []TrustedKey{{Key: currentPub, ReceivedAt: enrolled}, {Key: expiredPub, ReceivedAt: enrolled}}
+		if err := n.syncTrustedKeys(context.Background(), srv.URL); err != nil {
+			t.Fatalf("syncTrustedKeys: %v", err)
+		}
+		if containsTrustedKey(n.trustedKeys, expiredPub) {
+			t.Error("a key /keys does not list stayed in the trust set")
+		}
+		got := pruneTrustedKeys(n.trustedKeys, time.Now(), 24*time.Hour)
+		if len(got) != 2 || !containsTrustedKey(got, retiredPub) || !containsTrustedKey(got, currentPub) {
+			t.Errorf("pruning kept %d keys, want the retired and the current key that /keys lists", len(got))
 		}
 	})
 

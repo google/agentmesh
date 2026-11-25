@@ -2844,8 +2844,10 @@ export type TrustedSigningKey = Message<"agentmesh.v1.TrustedSigningKey"> & {
   publicKey: Uint8Array;
 
   /**
-   * When the member first learned the key. A key rotated out is dropped a
-   * grace period after this; unset means unknown and is read as now.
+   * When the control plane last vouched for the key: the last /keys answer
+   * that listed it, or the enrollment or rotation event that announced it. A
+   * member that prunes drops a key a grace period after this, unless no key
+   * has a later time; unset means unknown and is read as now.
    *
    * @generated from field: google.protobuf.Timestamp receive_time = 2;
    */

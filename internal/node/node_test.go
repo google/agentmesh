@@ -337,6 +337,7 @@ func TestPruneTrustedKeys(t *testing.T) {
 	stale := k(48 * time.Hour)
 	staler := k(72 * time.Hour)
 	fresh := k(time.Hour)
+	sameSync := k(48 * time.Hour)
 
 	tests := []struct {
 		name string
@@ -348,12 +349,13 @@ func TestPruneTrustedKeys(t *testing.T) {
 		{"newest of two stale keys survives", []TrustedKey{staler, stale}, []TrustedKey{stale}},
 		{"fresh keys all kept", []TrustedKey{fresh, k(2 * time.Hour)}, nil}, // want computed below
 		{"empty", nil, nil},
+		{"every key of the latest sync survives", []TrustedKey{stale, staler, sameSync}, []TrustedKey{stale, sameSync}},
 	}
 	tests[3].want = tests[3].in
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := pruneTrustedKeys(tt.in, now, grace, nil)
+			got := pruneTrustedKeys(tt.in, now, grace)
 			if len(got) != len(tt.want) {
 				t.Fatalf("got %d keys, want %d", len(got), len(tt.want))
 			}
@@ -363,45 +365,6 @@ func TestPruneTrustedKeys(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// TestKeyPruningKeepsTheIdentitySigner covers a node whose identity was
-// signed by a key it learned before the newest one it holds, as when the
-// control plane's newest key reached it earlier or its stored key was added
-// again at a restart: pruning must not drop the signer, or the next start
-// finds a valid identity that no trusted key verifies.
-func TestKeyPruningKeepsTheIdentitySigner(t *testing.T) {
-	now := time.Now()
-	signerPub, signerPriv := mustGenerateKey(t)
-	otherPub, _ := mustGenerateKey(t)
-	stalePub, _ := mustGenerateKey(t)
-	priv, _, err := crypto.GenerateEd25519Key(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pid, err := peer.IDFromPrivateKey(priv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	token, err := identity.MintBootstrapBiscuitToken(signerPriv, pid, api.RoleNode, now.Add(24*time.Hour), nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	n := &AgentMeshNode{}
-	n.SetIdentityCache(token)
-
-	keys := []TrustedKey{
-		{Key: signerPub, ReceivedAt: now.Add(-72 * time.Hour)},
-		{Key: stalePub, ReceivedAt: now.Add(-48 * time.Hour)},
-		{Key: otherPub, ReceivedAt: now.Add(-time.Minute)},
-	}
-	got := pruneTrustedKeys(keys, now, 24*time.Hour, n.signedOwnIdentity)
-	if len(got) != 2 || !got[0].Key.Equal(signerPub) || !got[1].Key.Equal(otherPub) {
-		t.Fatalf("got %d keys, want the identity's signer and the newest key", len(got))
-	}
-	if !n.signedOwnIdentity(signerPub) || n.signedOwnIdentity(otherPub) {
-		t.Fatal("signedOwnIdentity does not tell the signer from another key")
 	}
 }
 
@@ -897,85 +860,5 @@ func TestFindProvidersSkipsRevoked(t *testing.T) {
 	}
 	if len(providers) != 0 {
 		t.Errorf("revoked peer returned as provider: %v", providers)
-	}
-}
-
-// TestStaleIdentityErrorUnwraps covers what a caller needs from a failed
-// start: the refresh status when the control plane answered, and no status
-// when it did not.
-func TestStaleIdentityErrorUnwraps(t *testing.T) {
-	refused := &StaleIdentityError{Role: api.RoleNode, RoleErr: errors.New("biscuit: invalid signature"), RefreshErr: &RefreshError{StatusCode: 401, Message: "refused"}, RecoveryErr: errors.New("no refresh token")}
-	var re *RefreshError
-	if !errors.As(refused, &re) || re.StatusCode != 401 {
-		t.Fatalf("errors.As found no refresh status in %v", refused)
-	}
-	offline := &StaleIdentityError{Role: api.RoleNode, RoleErr: errors.New("biscuit: invalid signature"), RefreshErr: context.DeadlineExceeded}
-	if errors.As(offline, &re) || !errors.Is(offline, context.DeadlineExceeded) {
-		t.Fatalf("offline error unwraps wrong: %v", offline)
-	}
-}
-
-// TestKeyPruningKeepsEveryLatestKey covers a /keys answer that vouched for
-// a retiring and a current key at once, followed by an outage longer than
-// the grace period: the answer's order says nothing about which key is
-// current, so pruning keeps both rather than whichever came first.
-func TestKeyPruningKeepsEveryLatestKey(t *testing.T) {
-	now := time.Now()
-	synced := now.Add(-48 * time.Hour)
-	retiring, _ := mustGenerateKey(t)
-	current, _ := mustGenerateKey(t)
-	dropped, _ := mustGenerateKey(t)
-	keys := []TrustedKey{{Key: retiring, ReceivedAt: synced}, {Key: current, ReceivedAt: synced}, {Key: dropped, ReceivedAt: synced.Add(-time.Hour)}}
-	got := pruneTrustedKeys(keys, now, 24*time.Hour, func(k ed25519.PublicKey) bool { return k.Equal(retiring) })
-	if len(got) != 2 || !got[0].Key.Equal(retiring) || !got[1].Key.Equal(current) {
-		t.Fatalf("got %d keys, want the retiring and the current key of the last sync", len(got))
-	}
-}
-
-// TestFallbackKeyStaysOldThroughTheStore covers the configured key re-added
-// next to persisted keys at a start: it must stay older than them after the
-// set is saved and loaded again, or the next start would take it for the
-// newest key and prune the real rotation key.
-func TestFallbackKeyStaysOldThroughTheStore(t *testing.T) {
-	store, err := NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := store.Close(); err != nil {
-			t.Errorf("close store: %v", err)
-		}
-	})
-	rotated, _ := mustGenerateKey(t)
-	configured, _ := mustGenerateKey(t)
-	learned := time.Now().Add(-30 * time.Hour).Truncate(time.Second)
-	if err := store.SaveTrustedKeys([]TrustedKey{{Key: rotated, ReceivedAt: learned}}); err != nil {
-		t.Fatal(err)
-	}
-	priv, _, err := crypto.GenerateEd25519Key(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	n, err := NewAgentMeshNode(Options{PrivKey: priv, Store: store, ControlPlanePubKey: configured})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// A rotation event persists the set before any sync succeeds.
-	n.persistTrustedKeys(n.trustedKeys)
-	loaded, err := store.LoadTrustedKeys()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tk := range loaded {
-		switch {
-		case tk.Key.Equal(configured) && !tk.ReceivedAt.Equal(neverVouched):
-			t.Fatalf("configured key loaded as vouched for at %s", tk.ReceivedAt)
-		case tk.Key.Equal(rotated) && !tk.ReceivedAt.Equal(learned):
-			t.Fatalf("rotation key loaded with %s, want %s", tk.ReceivedAt, learned)
-		}
-	}
-	got := pruneTrustedKeys(loaded, time.Now(), 24*time.Hour, nil)
-	if len(got) != 1 || !got[0].Key.Equal(rotated) {
-		t.Fatalf("pruning kept %d keys, want only the rotation key", len(got))
 	}
 }

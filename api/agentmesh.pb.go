@@ -5583,8 +5583,10 @@ type TrustedSigningKey struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Raw ed25519 public key.
 	PublicKey []byte `protobuf:"bytes,1,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
-	// When the member first learned the key. A key rotated out is dropped a
-	// grace period after this; unset means unknown and is read as now.
+	// When the control plane last vouched for the key: the last /keys answer
+	// that listed it, or the enrollment or rotation event that announced it. A
+	// member that prunes drops a key a grace period after this, unless no key
+	// has a later time; unset means unknown and is read as now.
 	ReceiveTime   *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=receive_time,json=receiveTime,proto3" json:"receive_time,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
