@@ -123,7 +123,7 @@ explains how to enroll.
 | `--backend-probe-timeout` | `2s` | How long an MCP or A2A backend may take to answer before the node declines to advertise it. Raise it for subprocesses that start slowly. |
 | `--secrets-dir` | `/etc/agentmesh/secrets` | Directory holding the credentials that the control plane's [egress destinations](../policy/#egress-destinations) name, one file per credential name. The platform puts the files there; the node reads a file on every request to the destination. |
 | `--control-plane-sync-interval` | `15m` | How often signing keys, the ban set, router addresses and the mesh policy are pulled from the control plane. Keep it well below the control plane's `--key-grace-period`; raise it on large meshes. |
-| `--key-grace-period` | `24h` | How long a rotated-out control plane key is still accepted for verifying peers. |
+| `--key-grace-period` | `24h` | How long the node keeps a control plane key after the control plane last confirmed it in a `/keys` answer or a rotation event. The keys of the latest confirmation always stay. A key that `/keys` no longer lists is removed at the next sync. |
 | `--monitor-bootstrap` | `2m` | Delay before the router-connection monitor starts. |
 | `--monitor-interval` | `1m` | How often the monitor checks that a router is connected. |
 | `--autorelay-min-interval`, `--autorelay-boot-delay`, `--autorelay-backoff` | `30s`, `0s`, `3s` | libp2p AutoRelay tuning. |

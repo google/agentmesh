@@ -126,38 +126,6 @@ type TrustedKey struct {
 	ReceivedAt time.Time
 }
 
-// neverVouched is the ReceivedAt of a key the control plane has not vouched
-// for in this trust set's lifetime: older than any real one, and, unlike the
-// zero time, kept as it is through the store, which reads a missing time as
-// now.
-var neverVouched = time.Unix(0, 0).UTC()
-
-// StaleIdentityError is Start's error when the stored identity fails the
-// role check against every trusted key and neither recovery renewed it. It
-// unwraps to the role check's error and to both recovery errors, so a caller
-// can tell a control plane that refused the identity (a *RefreshError with
-// its status) from one that never answered.
-type StaleIdentityError struct {
-	Role        string
-	RoleErr     error
-	RefreshErr  error
-	RecoveryErr error
-}
-
-func (e *StaleIdentityError) Error() string {
-	return fmt.Sprintf("loaded identity fails role requirement %q (autonomous refresh: %v; refresh-token recovery: %v): %v", e.Role, e.RefreshErr, e.RecoveryErr, e.RoleErr)
-}
-
-func (e *StaleIdentityError) Unwrap() []error {
-	var errs []error
-	for _, err := range []error{e.RoleErr, e.RefreshErr, e.RecoveryErr} {
-		if err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errs
-}
-
 type nodeRelayACL struct {
 	node *AgentMeshNode
 }
@@ -518,15 +486,7 @@ func NewAgentMeshNode(cfg Options) (*AgentMeshNode, error) {
 		}
 	}
 	if len(cfg.ControlPlanePubKey) > 0 && !containsTrustedKey(trustedKeys, cfg.ControlPlanePubKey) {
-		// The configured key is only as fresh as the enrollment or /info
-		// answer that stored it. Next to persisted keys it must not count as
-		// just vouched for, or it would outrank the control plane's newer
-		// keys when pruning picks the newest; alone, it is all there is.
-		vouched := neverVouched
-		if len(trustedKeys) == 0 {
-			vouched = time.Now()
-		}
-		trustedKeys = append(trustedKeys, TrustedKey{Key: cfg.ControlPlanePubKey, ReceivedAt: vouched})
+		trustedKeys = append(trustedKeys, TrustedKey{Key: cfg.ControlPlanePubKey, ReceivedAt: time.Now()})
 	}
 
 	node := &AgentMeshNode{
@@ -622,7 +582,7 @@ func (n *AgentMeshNode) Start(ctx context.Context) error {
 				} else {
 					logger.Warnf("Autonomous refresh refused (%v); attempting recovery via stored refresh token", refreshErr)
 					if recErr := n.ReEnrollWithRefreshToken(ctx); recErr != nil {
-						return &StaleIdentityError{Role: n.config.RequiredRole, RoleErr: roleErr, RefreshErr: refreshErr, RecoveryErr: recErr}
+						return fmt.Errorf("loaded identity fails role requirement %q (autonomous refresh: %v; refresh-token recovery: %v): %w", n.config.RequiredRole, refreshErr, recErr, roleErr)
 					}
 					logger.Info("Identity recovered via refresh-token re-enrollment.")
 				}
@@ -2022,20 +1982,13 @@ func (n *AgentMeshNode) handleKeyRotationEvent(event *api.MeshEvent) {
 	n.triggerControlPlaneSync()
 }
 
-// pruneTrustedKeys drops keys the control plane has not vouched for within
-// gracePeriod, as when it stopped listing them or the node could not reach
-// it, but always keeps the most recently vouched-for ones: the current
-// signing key has no successor until a rotation event arrives, so ageing it
-// out would empty the trust set and leave the node unable to verify any peer
-// or router. A /keys answer vouches for all its keys at once and says
-// nothing about which is current, so every key with the latest time is kept,
-// never one of them by its place in the list. It also keeps every key keep reports, which is the key that
-// signed the node's own identity: the control plane lists all its valid keys
-// alike, so the newest vouched-for key need not be the one a refresh signed
-// with, and dropping that one after a long time offline leaves a valid
-// identity that fails the check at the next start, when only the control
-// plane can renew it.
-func pruneTrustedKeys(keys []TrustedKey, now time.Time, gracePeriod time.Duration, keep func(ed25519.PublicKey) bool) []TrustedKey {
+// pruneTrustedKeys drops the keys the control plane last vouched for more
+// than gracePeriod ago, but always keeps the ones with the latest time: a
+// node that cannot reach the control plane must not age out its whole trust
+// set and lose the means to verify any peer or router. A /keys answer vouches
+// for all its keys at once and its order does not say which is current, so
+// the latest time keeps all of them, not the first one in the list.
+func pruneTrustedKeys(keys []TrustedKey, now time.Time, gracePeriod time.Duration) []TrustedKey {
 	if len(keys) == 0 {
 		return keys
 	}
@@ -2047,25 +2000,11 @@ func pruneTrustedKeys(keys []TrustedKey, now time.Time, gracePeriod time.Duratio
 	}
 	var active []TrustedKey
 	for _, tk := range keys {
-		if tk.ReceivedAt.Equal(latest) || now.Sub(tk.ReceivedAt) <= gracePeriod || (keep != nil && keep(tk.Key)) {
+		if tk.ReceivedAt.Equal(latest) || now.Sub(tk.ReceivedAt) <= gracePeriod {
 			active = append(active, tk)
 		}
 	}
 	return active
-}
-
-// signedOwnIdentity reports whether key signed the node's current identity.
-func (n *AgentMeshNode) signedOwnIdentity(key ed25519.PublicKey) bool {
-	token := n.GetIdentity()
-	if len(token) == 0 {
-		return false
-	}
-	b, err := biscuit.Unmarshal(token)
-	if err != nil {
-		return false
-	}
-	_, err = b.Authorizer(key)
-	return err == nil
 }
 
 func (n *AgentMeshNode) startKeyPruning(ctx context.Context, gracePeriod time.Duration) {
@@ -2080,11 +2019,17 @@ func (n *AgentMeshNode) startKeyPruning(ctx context.Context, gracePeriod time.Du
 			case <-ticker.C:
 				logger.Info("[KeyPruning] Pruning expired keys...")
 				n.keysMu.Lock()
-				pruned := pruneTrustedKeys(n.trustedKeys, time.Now(), gracePeriod, n.signedOwnIdentity)
-				changed := len(pruned) != len(n.trustedKeys)
+				before := n.trustedKeys
+				pruned := pruneTrustedKeys(before, time.Now(), gracePeriod)
+				changed := len(pruned) != len(before)
 				n.trustedKeys = pruned
 				snapshot := append([]TrustedKey(nil), pruned...)
 				n.keysMu.Unlock()
+				for _, tk := range before {
+					if !containsTrustedKey(pruned, tk.Key) {
+						logger.Infow("[KeyPruning] dropped control plane key", "key", fmt.Sprintf("%x", tk.Key), "last_vouched", tk.ReceivedAt.UTC().Format(time.RFC3339), "grace_period", gracePeriod.String())
+					}
+				}
 				if changed {
 					n.persistTrustedKeys(snapshot)
 				}

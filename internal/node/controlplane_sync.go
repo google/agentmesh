@@ -139,13 +139,20 @@ func (n *AgentMeshNode) syncTrustedKeys(ctx context.Context, controlPlaneURL str
 	if len(keys) == 0 {
 		return errors.New("/keys returned no keys")
 	}
-	merged := mergeTrustedKeys(existing, keys, time.Now())
+	// The answer lists every key the control plane still accepts, so it
+	// vouches for each of them now: pruning ages a key from the last answer
+	// that listed it, not from the first time the node saw it.
+	now := time.Now()
+	synced := make([]TrustedKey, 0, len(keys))
+	for _, key := range keys {
+		synced = append(synced, TrustedKey{Key: key, ReceivedAt: now})
+	}
 	n.keysMu.Lock()
-	n.trustedKeys = merged
-	snapshot := append([]TrustedKey(nil), merged...)
+	n.trustedKeys = synced
+	snapshot := append([]TrustedKey(nil), synced...)
 	n.keysMu.Unlock()
 	n.persistTrustedKeys(snapshot)
-	logger.Debugf("Synced %d valid control plane keys", len(merged))
+	logger.Debugf("Synced %d valid control plane keys", len(synced))
 	return nil
 }
 

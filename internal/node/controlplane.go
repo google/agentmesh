@@ -85,19 +85,6 @@ func FetchControlPlaneInfo(ctx context.Context, controlPlaneURL string) (*api.Co
 	return controlPlaneClient(controlPlaneURL).FetchInfo(ctx)
 }
 
-// mergeTrustedKeys replaces the stored trust set with the authoritative set
-// from /keys. The control plane lists every key that is still valid, its
-// current key and any in their rotation grace period, so each listed key's
-// ReceivedAt becomes now: local pruning then ages a key from the last time
-// the control plane vouched for it, and never drops one it still lists.
-func mergeTrustedKeys(existing []TrustedKey, fetched []ed25519.PublicKey, now time.Time) []TrustedKey {
-	merged := make([]TrustedKey, 0, len(fetched))
-	for _, key := range fetched {
-		merged = append(merged, TrustedKey{Key: key, ReceivedAt: now})
-	}
-	return merged
-}
-
 func publicKeysOf(keys []TrustedKey) []ed25519.PublicKey {
 	out := make([]ed25519.PublicKey, 0, len(keys))
 	for _, tk := range keys {
