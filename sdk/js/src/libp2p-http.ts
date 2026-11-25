@@ -74,6 +74,12 @@ const MAX_AGENT_CARD_BYTES = 1 << 20;
 /** Largest request body the ingress reads whole for a handler or url target. */
 export const MAX_INGRESS_BODY_BYTES = 8 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 60_000;
+/**
+ * Informational (1xx) heads a mesh fetch reads before the final response.
+ * A server sends a 100 Continue, a 103 Early Hints, a few 102 Processing;
+ * a peer that keeps sending them never answers and is cut off.
+ */
+const MAX_INFORMATIONAL_RESPONSES = 10;
 
 /** A fetch-style handler in this process. */
 export type HTTPHandler = (request: Request, caller: VerifiedBiscuit) => Promise<Response> | Response;
@@ -660,9 +666,12 @@ async function sendOverStream(conn: Connection, biscuit: Uint8Array, request: Re
     await sendAll(stream, body);
     const reader = new ByteReader(streamSource(stream));
     let head = await readResponseHead(reader);
-    while (head.status >= 100 && head.status < 200) {
+    for (let informational = 0; head.status >= 100 && head.status < 200; informational++) {
       if (head.status === 101) {
         throw new HTTPParseError("protocol switching is not supported by mesh fetch");
+      }
+      if (informational === MAX_INFORMATIONAL_RESPONSES) {
+        throw new HTTPParseError(`peer sent more than ${MAX_INFORMATIONAL_RESPONSES} informational responses`);
       }
       head = await readResponseHead(reader);
     }
