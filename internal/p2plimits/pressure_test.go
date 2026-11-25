@@ -90,3 +90,30 @@ func TestStreamPressureNamesAQUICConnectionNearItsLimit(t *testing.T) {
 		t.Errorf("peers remembered after an interval of quiet = %d, want 0", n)
 	}
 }
+
+// A transport other than QUIC and TCP (the router listens on WebSocket,
+// WebTransport and WebRTC) falls back to 0 once its last connection is
+// gone, instead of keeping the closed connection's count.
+func TestStreamPressureClearsATransportWithNoConnectionLeft(t *testing.T) {
+	busiest := prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "test_busiest"}, []string{"transport"})
+	p := ObserveStreamPressure(func() []network.Conn { return nil }, busiest, nil)
+	transports := []string{"websocket", "webtransport", "webrtc-direct"}
+
+	var loads []connLoad
+	for _, transport := range transports {
+		loads = append(loads, connLoad{peer: test.RandPeerIDFatal(t), transport: transport, streams: 7})
+	}
+	p.observe(loads)
+	for _, transport := range transports {
+		if got := gaugeValue(t, busiest.WithLabelValues(transport)); got != 7 {
+			t.Errorf("busiest %s with one connection of 7 streams = %v, want 7", transport, got)
+		}
+	}
+
+	p.observe(nil)
+	for _, transport := range transports {
+		if got := gaugeValue(t, busiest.WithLabelValues(transport)); got != 0 {
+			t.Errorf("busiest %s after its last connection closed = %v, want 0", transport, got)
+		}
+	}
+}

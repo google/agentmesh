@@ -57,6 +57,8 @@ type StreamPressure struct {
 	mu        sync.Mutex
 	lastLogAt map[peer.ID]time.Time
 	now       func() time.Time
+	// reported are the transports busiest has a value for.
+	reported map[string]bool
 }
 
 // connLoad is what the sampler reads off a connection.
@@ -72,7 +74,7 @@ func ObserveStreamPressure(conns func() []network.Conn, busiest *prometheus.Gaug
 	if warnf == nil {
 		warnf = func(string, ...any) {}
 	}
-	return &StreamPressure{conns: conns, busiest: busiest, warnf: warnf, lastLogAt: map[peer.ID]time.Time{}, now: time.Now}
+	return &StreamPressure{conns: conns, busiest: busiest, warnf: warnf, lastLogAt: map[peer.ID]time.Time{}, now: time.Now, reported: map[string]bool{}}
 }
 
 // SetClock replaces the clock the log limiter reads; for tests.
@@ -106,6 +108,12 @@ func (p *StreamPressure) observe(loads []connLoad) {
 	// Relayed connections are streams on a transport connection already
 	// counted; they carry one stream each and have no limit of their own.
 	busiest := map[string]int{TransportQUIC: 0, "tcp": 0}
+	p.mu.Lock()
+	// A transport reported before falls back to 0 when its last connection
+	// is gone, rather than keep the closed connection's count.
+	for transport := range p.reported {
+		busiest[transport] = 0
+	}
 	for _, l := range loads {
 		if l.transport == "p2p-circuit" {
 			continue
@@ -115,12 +123,12 @@ func (p *StreamPressure) observe(loads []connLoad) {
 		}
 	}
 	for transport, n := range busiest {
+		p.reported[transport] = true
 		p.busiest.WithLabelValues(transport).Set(float64(n))
 	}
 
 	threshold := StreamPressureWarnAt
 	now := p.now()
-	p.mu.Lock()
 	for k, t := range p.lastLogAt {
 		if now.Sub(t) >= RefusalLogInterval {
 			delete(p.lastLogAt, k)
