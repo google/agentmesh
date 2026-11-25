@@ -140,6 +140,40 @@ func TestLoadOperatorSigningKeys(t *testing.T) {
 		}
 	})
 
+	// pem.Decode skips a block whose body does not decode and returns the
+	// next one; the file must be refused, not loaded with the next key
+	// signing in place of the damaged one.
+	t.Run("damaged block is refused", func(t *testing.T) {
+		damaged := pemPKCS8(t, edA)
+		damaged[strings.IndexByte(string(damaged), '\n')+5] = '*'
+		keys, err := loadOperatorSigningKeys(writeKeyFile(t, damaged, pemPKCS8(t, edB), pemPKCS8(t, ecA)))
+		if err == nil {
+			t.Fatalf("loadOperatorSigningKeys loaded %d Ed25519 key(s) from a file whose first block is damaged, want a refusal", len(keys.ed25519))
+		}
+		if !strings.Contains(err.Error(), "do not decode") {
+			t.Fatalf("err = %v, want a refusal naming the blocks that do not decode", err)
+		}
+	})
+
+	t.Run("damaged BEGIN line is refused", func(t *testing.T) {
+		damaged := pemPKCS8(t, edA)[1:] // "----BEGIN PRIVATE KEY-----"
+		keys, err := loadOperatorSigningKeys(writeKeyFile(t, damaged, pemPKCS8(t, edB), pemPKCS8(t, ecA)))
+		if err == nil {
+			t.Fatalf("loadOperatorSigningKeys loaded %d Ed25519 key(s) from a file whose first BEGIN line is damaged, want a refusal", len(keys.ed25519))
+		}
+		if !strings.Contains(err.Error(), "do not decode") {
+			t.Fatalf("err = %v, want a refusal naming the blocks that do not decode", err)
+		}
+	})
+
+	t.Run("truncated block is refused", func(t *testing.T) {
+		whole := pemPKCS8(t, edB)
+		_, err := loadOperatorSigningKeys(writeKeyFile(t, pemPKCS8(t, edA), pemPKCS8(t, ecA), whole[:len(whole)/2]))
+		if err == nil || !strings.Contains(err.Error(), "do not decode") {
+			t.Fatalf("err = %v, want a refusal naming the blocks that do not decode", err)
+		}
+	})
+
 	t.Run("empty file is refused", func(t *testing.T) {
 		_, err := loadOperatorSigningKeys(writeKeyFile(t, []byte("not pem at all\n")))
 		if err == nil || !strings.Contains(err.Error(), "no Ed25519 key") {
