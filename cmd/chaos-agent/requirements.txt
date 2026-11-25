@@ -1,4 +1,4 @@
-openai>=3.52.0,<4
+openai>=3.55.0,<4
 # Pinned to a major version: 1.x spells the transport streamablehttp_client and
 # 2.x spells it streamable_http_client, so an unpinned floor silently changes
 # the API underneath a sandbox image.
@@ -6,4 +6,4 @@ mcp>=2.3.0,<3
 # LangChain 1.x replaced AgentExecutor with create_agent, which is what the
 # agent is written against; 0.x no longer receives security fixes.
 langchain>=1.5.0,<2
-langchain-openai>=1.8.0,<2
+langchain-openai>=1.8.1,<2
