@@ -135,7 +135,10 @@ func (c *Cloudflare) Open(ctx context.Context, target string) (Tunnel, error) {
 		cancel()
 		return nil, fmt.Errorf("failed to start cloudflared: %w", err)
 	}
-	t := &process{cancel: cancel, done: make(chan struct{}), namedURL: strings.TrimRight(strings.TrimSpace(c.ExternalURL), "/")}
+	t := &process{cancel: cancel, done: make(chan struct{})}
+	if c.Token != "" {
+		t.namedURL = strings.TrimRight(strings.TrimSpace(c.ExternalURL), "/")
+	}
 	urlCh := make(chan string, 1)
 	go t.scan(pr, urlCh)
 	go func() {
@@ -308,10 +311,13 @@ func (p *process) Close() error {
 }
 
 // finish records the exit and releases Done; an exit caused by Close is
-// not an error.
+// not an error, any other exit is, even with status 0.
 func (p *process) finish(err error) {
 	p.mu.Lock()
-	if !p.closed && err != nil {
+	if !p.closed {
+		if err == nil {
+			err = errors.New("exit status 0")
+		}
 		p.err = err
 	}
 	p.mu.Unlock()

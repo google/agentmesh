@@ -181,6 +181,39 @@ func TestCloudflareOpenReportsEarlyExit(t *testing.T) {
 	}
 }
 
+// A connector that stops on its own reports why even when its exit status
+// is 0: only Close leaves Err nil, and the caller logs the outage only when
+// Err is set.
+func TestCloudflareReportsUnrequestedCleanExit(t *testing.T) {
+	bin := stubCloudflared(t, `echo "INF starting" >&2; exit 0`)
+	_, err := (&Cloudflare{Binary: bin, Timeout: 5 * time.Second}).Open(context.Background(), "http://127.0.0.1:1")
+	if err == nil || strings.Contains(err.Error(), "%!") {
+		t.Errorf("Open error = %v, want an early-exit error with a reason", err)
+	}
+
+	gate := filepath.Join(t.TempDir(), "exit")
+	bin = stubCloudflared(t, `echo "INF |  https://installed-quick-1234.trycloudflare.com  |" >&2
+while [ ! -e "`+gate+`" ]; do sleep 0.01; done
+exit 0
+`)
+	tun, err := (&Cloudflare{Binary: bin, Timeout: 5 * time.Second, LookupHost: resolved}).Open(context.Background(), "http://127.0.0.1:1")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = tun.Close() })
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-tun.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("Done not closed after the connector exited")
+	}
+	if tun.Err() == nil {
+		t.Fatal("Err = nil after the connector exited without Close, want an error")
+	}
+}
+
 func TestCloudflareOpenTimesOutWithoutURL(t *testing.T) {
 	bin := stubCloudflared(t, `trap 'exit 0' TERM; while :; do sleep 1; done`)
 	p := &Cloudflare{Binary: bin, Timeout: 200 * time.Millisecond}
@@ -432,5 +465,25 @@ func TestLookup(t *testing.T) {
 	}
 	if _, err := Lookup("ngrok"); err == nil || !strings.Contains(err.Error(), "available: cloudflare") {
 		t.Fatalf("Lookup unknown = %v", err)
+	}
+}
+
+// ExternalURL names the hostname of a named tunnel; without a Token the
+// connector runs a quick tunnel, and the URL published is the one it was
+// assigned, not ExternalURL.
+func TestCloudflareQuickTunnelIgnoresExternalURL(t *testing.T) {
+	bin := stubCloudflared(t, `echo "INF |  https://quick-ext-1234.trycloudflare.com  |" >&2
+echo "INF Registered tunnel connection connIndex=0 location=ams01 protocol=quic" >&2
+trap 'exit 0' TERM
+while :; do sleep 1; done
+`)
+	p := &Cloudflare{Binary: bin, Timeout: 5 * time.Second, LookupHost: resolved, ExternalURL: "https://mesh.example.com"}
+	tun, err := p.Open(context.Background(), "http://127.0.0.1:1")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = tun.Close() })
+	if got, want := tun.URL(), "https://quick-ext-1234.trycloudflare.com"; got != want {
+		t.Fatalf("URL = %q, want the assigned quick-tunnel URL %q", got, want)
 	}
 }

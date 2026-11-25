@@ -189,6 +189,12 @@ func main() {
 			if tun != nil {
 				go func() {
 					<-tun.Done()
+					// The connector shares the terminal's process group, so the
+					// signal that stops this process stops it too: an exit during
+					// shutdown is expected, not a lost tunnel.
+					if cmd.Context().Err() != nil {
+						return
+					}
 					if err := tun.Err(); err != nil {
 						logger.Errorf("Tunnel %s closed: %v; remote devices can no longer reach %s", tunnelProvider, err, tun.URL())
 					}
