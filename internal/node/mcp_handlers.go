@@ -389,6 +389,7 @@ func (n *AgentMeshNode) fetchToolsForRemoteService(
 	var rows []remoteToolRow
 	for t, err := range session.Tools(ctx, nil) {
 		if err != nil {
+			logger.Debugf("Failed to list tools for service %s on peer %s: %v", targetService, targetPeer, err)
 			if serviceNameFilter == "" || connectService == serviceNameFilter {
 				return []remoteToolRow{{
 					PeerID:   targetPeer.String(),
