@@ -21,4 +21,11 @@ test("directory validates the provider limit before contacting routers", async (
   assert.deepEqual(await findProviders([], key, 0), []);
   await assert.rejects(findProviders([], key, -1), RangeError);
   await assert.rejects(findProviders([], key, 0.5), RangeError);
+  await assert.rejects(findProviders([], key, 0xffffffff + 1), RangeError);
+  await assert.rejects(findProviders([], key, Number.NaN), RangeError);
+});
+
+test("directory rejects an already aborted provider lookup", async () => {
+  const reason = new Error("caller gave up");
+  await assert.rejects(findProviders([], new Uint8Array(), 0, AbortSignal.abort(reason)), reason);
 });
