@@ -300,3 +300,66 @@ func TestGCExpiredNodesDefaultsRetention(t *testing.T) {
 		t.Fatalf("after a sweep with the default retention got %+v, want only recent", nodes)
 	}
 }
+
+// listHookStore runs afterList once, after ListNodes has read the table and
+// before its caller sees the result.
+type listHookStore struct {
+	storage.Store
+	afterList func()
+}
+
+func (s *listHookStore) ListNodes(ctx context.Context, filter storage.NodeFilter) ([]storage.EnrolledNode, error) {
+	nodes, err := s.Store.ListNodes(ctx, filter)
+	if hook := s.afterList; hook != nil {
+		s.afterList = nil
+		hook()
+	}
+	return nodes, err
+}
+
+// A node whose session lapsed enrolls again and reports its services while
+// the sweep is between listing the admitted nodes and pruning: its new
+// report belongs to an admitted node and must survive the sweep, which only
+// forgets the reports it saw before it listed.
+func TestPruneCatalogKeepsAReportWrittenDuringTheSweep(t *testing.T) {
+	base := newMetricsTestStore(t)
+	store := &listHookStore{Store: base}
+	ctx := context.Background()
+	now := time.Now()
+	enroll := func(id string, expiresAt time.Time) {
+		t.Helper()
+		if err := base.EnrollNode(ctx, &storage.EnrolledNode{
+			PeerID: id, PublicKey: []byte("pub"), Biscuit: []byte("b"), Role: api.RoleNode,
+			EnrollmentType: "OIDC", EnrolledAt: now.Add(-time.Hour), ExpiresAt: expiresAt,
+		}); err != nil {
+			t.Fatalf("enroll %s: %v", id, err)
+		}
+	}
+	enroll("lapsed", now.Add(-time.Minute))
+
+	srv, err := NewServer(Options{DriverName: "sqlite", DataSourceName: "unused", OIDCIssuer: "https://issuer"}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = srv.Close() }()
+	srv.catalog["lapsed"] = nodeCatalogEntry{ReportedAt: now.Add(-time.Hour)}
+	srv.catalog["gone"] = nodeCatalogEntry{ReportedAt: now.Add(-time.Hour)}
+
+	fresh := now.Add(time.Second)
+	store.afterList = func() {
+		enroll("lapsed", now.Add(time.Hour))
+		srv.catalogMu.Lock()
+		srv.catalog["lapsed"] = nodeCatalogEntry{ReportedAt: fresh}
+		srv.catalogMu.Unlock()
+	}
+
+	srv.pruneCatalog(now)
+
+	snap := srv.catalogSnapshot()
+	if entry, ok := snap["lapsed"]; !ok || !entry.ReportedAt.Equal(fresh) {
+		t.Fatalf("report of the re-admitted node after the sweep: present=%v reported_at=%s, want the report written at %s", ok, entry.ReportedAt, fresh)
+	}
+	if _, ok := snap["gone"]; ok {
+		t.Fatal("the sweep kept the report of a node that is not enrolled")
+	}
+}
