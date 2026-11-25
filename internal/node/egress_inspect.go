@@ -1040,7 +1040,8 @@ func decodeInspectableObject(body []byte) (map[string]any, bool) {
 	if err := decoder.Decode(&doc); err != nil {
 		return nil, false
 	}
-	return doc, decoder.Decode(&json.RawMessage{}) == io.EOF
+	_, err := decoder.Token()
+	return doc, err == io.EOF
 }
 
 func extractInspectableText(body []byte) string {

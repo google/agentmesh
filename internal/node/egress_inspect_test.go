@@ -45,6 +45,28 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
+func TestDecodeInspectableObjectRejectsTrailingData(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"object", `{"a":1}`, true},
+		{"trailing whitespace", "{\"a\":1} \n\t", true},
+		{"second value", `{"a":1}{"b":2}`, false},
+		{"trailing scalar", `{"a":1} 2`, false},
+		{"stray delimiter", `{"a":1}}`, false},
+		{"trailing garbage", `{"a":1}x`, false},
+		{"not an object", `[1]`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, got := decodeInspectableObject([]byte(tc.body)); got != tc.want {
+				t.Fatalf("decodeInspectableObject(%q) ok = %v, want %v", tc.body, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestReplaceInspectableTextPreservesJSONNumbers(t *testing.T) {
 	for _, number := range []string{"42", "9007199254740993", "1.0000000000000001", "-9007199254740993"} {
 		t.Run(number, func(t *testing.T) {
