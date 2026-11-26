@@ -48,13 +48,18 @@ export class BanSet {
     return [...this.#bannedAt.keys()].sort();
   }
 
-  /** Records a ban; returns false when the ban was already known. */
+  /**
+   * Records a ban; returns false when the peer was already in the set. The
+   * set then keeps the later of the stored time and atMs: a ban time never
+   * moves back. A second event for a peer can be a new ban, because the
+   * control plane publishes no event when it lifts one.
+   */
   add(peerId: string, atMs: number): boolean {
-    if (this.#bannedAt.has(peerId)) {
-      return false;
+    const known = this.#bannedAt.get(peerId);
+    if (known === undefined || atMs > known) {
+      this.#bannedAt.set(peerId, atMs);
     }
-    this.#bannedAt.set(peerId, atMs);
-    return true;
+    return known === undefined;
   }
 
   /**

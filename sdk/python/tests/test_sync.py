@@ -160,6 +160,27 @@ def test_ban_learned_after_the_answer_was_requested_survives_an_answer_that_omit
     assert not bans.add("A", 1)
 
 
+def test_ban_repeated_after_the_answer_was_requested_survives_an_answer_that_omits_it():
+    bans = BanSet()
+    t0 = 1_800_000_000.0
+    t1 = t0 + 1
+    assert bans.add("X", int(t0 * 1000))
+    # The ban was lifted, which publishes no event, and set again after t1's request went out.
+    assert not bans.add("X", int(t1 * 1000) + 500)
+    assert bans.reconcile([], t1) == ([], [])
+    assert bans.peers() == ["X"]
+
+
+def test_repeated_ban_with_an_earlier_time_does_not_move_the_ban_time_back():
+    bans = BanSet()
+    t0 = 1_800_000_000.0
+    t1 = t0 + 1
+    assert bans.add("X", int(t1 * 1000) + 500)
+    assert not bans.add("X", int(t0 * 1000))
+    assert bans.reconcile([], t1) == ([], [])
+    assert bans.peers() == ["X"]
+
+
 def test_mesh_event_verifies_only_under_a_trusted_key_and_only_when_fresh():
     key = SigningKey()
 

@@ -196,6 +196,27 @@ test("a ban learned after the answer was requested survives an answer that omits
   assert.ok(!bans.add("A", 1), "an existing ban is not re-added");
 });
 
+test("a ban repeated after the answer was requested survives an answer that omits it", () => {
+  const bans = new BanSet();
+  const t0 = new Date("2026-09-24T10:00:00Z");
+  const t1 = new Date(t0.getTime() + 1000);
+  assert.ok(bans.add("X", t0.getTime()));
+  // The ban was lifted, which publishes no event, and set again after t1's request went out.
+  assert.ok(!bans.add("X", t1.getTime() + 500), "a repeated ban is not a new ban");
+  assert.deepEqual(bans.reconcile([], t1), { banned: [], unbanned: [] });
+  assert.deepEqual(bans.peers(), ["X"]);
+});
+
+test("a repeated ban with an earlier time does not move the ban time back", () => {
+  const bans = new BanSet();
+  const t0 = new Date("2026-09-24T10:00:00Z");
+  const t1 = new Date(t0.getTime() + 1000);
+  assert.ok(bans.add("X", t1.getTime() + 500));
+  assert.ok(!bans.add("X", t0.getTime()), "a repeated ban is not a new ban");
+  assert.deepEqual(bans.reconcile([], t1), { banned: [], unbanned: [] });
+  assert.deepEqual(bans.peers(), ["X"]);
+});
+
 test("a mesh event verifies only under a trusted key and only when fresh", () => {
   const key = new SigningKey();
   const sign = (event: ReturnType<typeof create<typeof MeshEventSchema>>) => {
