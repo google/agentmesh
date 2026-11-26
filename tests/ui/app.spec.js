@@ -109,6 +109,8 @@ for (const topology of topologies) {
       await expect(page.locator('#copy-id')).toHaveAccessibleName('Copied');
       expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(peer);
       await expect(page.locator('#stat-routers')).toHaveText('1');
+      // The router is counted once, under Routers, not again as a peer.
+      await expect(page.locator('#stat-peers')).toHaveText('0');
       await expect(page.locator('#mesh-host')).toHaveText(new URL(samOne.publicUrl).host);
 
       // The address follows the saved credential, even when the page never saved it.

@@ -19,6 +19,7 @@
 import type { Connection, Stream } from "@libp2p/interface";
 import { lpStream } from "@libp2p/utils";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/cfworker";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { JSONRPCMessageSchema, type JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { AUTH_HANDSHAKE_TIMEOUT_MS, AuthRejectedError, MAX_AUTH_FRAME_BYTES, MCP_PROTOCOL } from "./auth.ts";
@@ -188,7 +189,8 @@ export async function openMCPSession(
   }
 
   const transport = new StreamTransport(stream);
-  const client = new Client(MCP_CLIENT_INFO);
+  // The default validator, ajv, compiles schemas with new Function, which a page without unsafe-eval in its CSP refuses.
+  const client = new Client(MCP_CLIENT_INFO, { jsonSchemaValidator: new CfWorkerJsonSchemaValidator() });
   await client.connect(transport, { signal });
   return {
     client,

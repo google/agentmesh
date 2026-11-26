@@ -40,7 +40,7 @@
     "examples": "tsc -p tsconfig.examples.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "pretest": "tsc -p tsconfig.test.json && tsc -p tsconfig.webapp-test.json",
-    "test": "node --test 'build/**/*.test.js'",
+    "test": "node --disallow-code-generation-from-strings --test 'build/**/*.test.js'",
     "bundle:browser": "node scripts/bundle-browser.mjs",
     "bundle:app": "node scripts/bundle-browser.mjs webapp/index.mjs ../../internal/webapp/public/sdk --minify --no-sourcemap && npm run bundle:app-agent",
     "bundle:app-agent": "esbuild @w3c/webmcp-polyfill/auto --bundle --format=esm --minify --outfile=../../internal/webapp/public/sdk/webmcp-polyfill.js && cp node_modules/@mcp-b/webmcp-local-relay/dist/browser/widget.js ../../internal/webapp/public/sdk/webmcp-relay.js && npm run bundle:app-relay",
@@ -49,6 +49,7 @@
   "dependencies": {
     "@biscuit-auth/biscuit-wasm": "^0.6.0",
     "@bufbuild/protobuf": "^2.16.0",
+    "@cfworker/json-schema": "^4.1.6",
     "@chainsafe/libp2p-noise": "^17.0.0",
     "@chainsafe/libp2p-yamux": "^8.0.1",
     "@libp2p/circuit-relay-v2": "^4.2.13",

@@ -377,9 +377,15 @@ async function forget(keepIdentity, send) {
   }
 }
 
-/** @returns {import("./model.js").Stats} */
+/**
+ * Peers are the members this page has a connection open to, the routers left out. Routers stays the SDK's
+ * admitted set, which drops a router only after its redials: ROUTER_LOSS_GRACE_MS is timed on that.
+ * @returns {import("./model.js").Stats}
+ */
 function statsOf(joined) {
-  return { peers: joined.node.getPeers().length, routers: joined.routers.length, expires: joined.mesh.credential.expiration };
+  const routerIds = new Set(joined.routers.map((r) => r.peerId));
+  const members = joined.node.getPeers().filter((id) => !routerIds.has(id.toString())).length;
+  return { peers: members, routers: joined.routers.length, expires: joined.mesh.credential.expiration };
 }
 
 function wait(ms, signal) {
