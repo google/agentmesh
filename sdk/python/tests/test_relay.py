@@ -40,17 +40,22 @@ def test_a_circuit_the_far_end_never_speaks_on_ends_at_the_dial_timeout(monkeypa
     ConnectionError, and the relay sees the circuit let go."""
     monkeypatch.setattr(relay_module, "DIAL_TIMEOUT", 0.5, raising=False)
     released = trio.Event()
+    released_at = 0.0
 
     async def accept_and_stall(stream):
+        nonlocal released_at
         req = circuit.HopMessage.FromString(await read_varint_prefixed_bytes(stream))
         assert req.type == circuit.HopMessage.CONNECT
         assert ID(req.peer.id) == TARGET
         await stream.write(encode_varint_prefixed(circuit.HopMessage(type=circuit.HopMessage.STATUS, status=circuit.OK).SerializeToString()))
-        # Nothing comes from the far end; the caller's reset ends this read.
+        # Drain the caller's outbound handshake bytes without answering; only
+        # the caller's reset/close after DIAL_TIMEOUT ends this loop.
         try:
-            await stream.read(1)
+            while await stream.read(4096):
+                pass
         except Exception:  # noqa: BLE001 - the reset is the outcome looked for
             pass
+        released_at = trio.current_time()
         released.set()
 
     async def main():
@@ -65,6 +70,7 @@ def test_a_circuit_the_far_end_never_speaks_on_ends_at_the_dial_timeout(monkeypa
             assert 0.5 <= trio.current_time() - started < 3
             with trio.fail_after(3):
                 await released.wait()
+            assert released_at - started >= 0.5
             assert TARGET not in client.get_connected_peers()
 
     trio.run(main)
