@@ -25,11 +25,11 @@ esac
 # Get latest release version via GitHub redirect (avoids api.github.com rate limits)
 echo "Fetching latest release information..."
 VERSION=$(curl -fsSL -o /dev/null -w "%{url_effective}" "https://github.com/${REPO}/releases/latest" | sed 's|.*/||' || true)
-if [ -z "$VERSION" ] || [ "$VERSION" = "releases" ]; then
+if [ -z "$VERSION" ] || [ "$VERSION" = "releases" ] || [ "$VERSION" = "latest" ]; then
     VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=1" | grep '"tag_name":' | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/' || true)
 fi
 
-if [ -z "$VERSION" ] || [ "$VERSION" = "releases" ]; then
+if [ -z "$VERSION" ] || [ "$VERSION" = "releases" ] || [ "$VERSION" = "latest" ]; then
     echo "Error: Could not find the latest release."
     exit 1
 fi
