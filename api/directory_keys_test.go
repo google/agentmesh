@@ -17,9 +17,11 @@ package api
 import (
 	"bytes"
 	"encoding/hex"
+	"strings"
 	"testing"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/multiformats/go-multiaddr"
 )
 
 // The keys are the sha256 multihash of a fixed name, so a record a member
@@ -66,6 +68,38 @@ func TestDirectoryKeys(t *testing.T) {
 		if err := ValidateDirectoryKey(bad); err == nil {
 			t.Errorf("key %x accepted", bad)
 		}
+	}
+}
+
+// DirectoryMaxAddrBytes holds the longest addresses a libp2p host
+// announces: a circuit relay address, with both peer IDs, through a router
+// that has a DNS name of the maximum length.
+func TestDirectoryMaxAddrBytesHoldsRealAddresses(t *testing.T) {
+	const (
+		router   = "12D3KooWA4Xop1JaT3MHxwYMkCepYsv4iPVopMXwCz5iHYdBfeSB"
+		member   = "12D3KooWNT6DHUiBT3881d46esEcB6RzCuN9a74pdK8Gx2jXb8ww"
+		certhash = "uEiDDq4_xNyDorZBH3TlGazyJdOWSwvo4PUo5YHFMrvDE8g"
+	)
+	label := strings.Repeat("a", 63)
+	name := strings.Join([]string{label, label, label, label[:61]}, ".")
+	if len(name) != 253 {
+		t.Fatalf("the DNS name is %d bytes, want 253", len(name))
+	}
+	relayed := "/p2p/" + router + "/p2p-circuit/p2p/" + member
+	for desc, addr := range map[string]string{
+		"TLS and WebSocket":                "/dns4/" + name + "/tcp/65535/tls/ws" + relayed,
+		"TLS with an SNI and WebSocket":    "/dns4/" + name + "/tcp/65535/tls/sni/" + name + "/ws" + relayed,
+		"WebTransport with two certhashes": "/dns6/" + name + "/udp/65535/quic-v1/webtransport/certhash/" + certhash + "/certhash/" + certhash + relayed,
+	} {
+		t.Run(desc, func(t *testing.T) {
+			ma, err := multiaddr.NewMultiaddr(addr)
+			if err != nil {
+				t.Fatalf("NewMultiaddr(%s): %v", addr, err)
+			}
+			if got := len(ma.String()); got > DirectoryMaxAddrBytes {
+				t.Errorf("the address is %d bytes, want at most DirectoryMaxAddrBytes = %d", got, DirectoryMaxAddrBytes)
+			}
+		})
 	}
 }
 

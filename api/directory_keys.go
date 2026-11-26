@@ -36,6 +36,16 @@ const DirectoryKeyBytes = 34
 // DirectoryMaxAddrs bounds the addresses one record carries.
 const DirectoryMaxAddrs = 32
 
+// DirectoryMaxAddrBytes bounds the text of one address in a record. The
+// count includes the "/p2p/<provider>" suffix that the address has in an
+// answer. The longest address a libp2p host announces is a circuit relay
+// address through a router that has a DNS name of 253 bytes. With both peer
+// IDs it is 530 bytes over WebTransport, which has two certhashes, and 660
+// bytes over TLS when the address repeats the name as its SNI. 1024 is one
+// and a half times the longest. DirectoryMaxAddrs addresses of this length
+// are 32 KiB, half of the 64 KiB frame of the directory protocol.
+const DirectoryMaxAddrBytes = 1024
+
 // directoryKey is the sha256 multihash of a name: the two-byte multihash
 // header (sha2-256, 32 bytes) and the digest. go-libp2p-kad-dht keys
 // provider records by this multihash, so a record a member announces here

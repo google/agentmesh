@@ -17,7 +17,10 @@ package router
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,9 +28,11 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	kb "github.com/libp2p/go-libp2p-kbucket"
+	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-msgio"
+	"github.com/multiformats/go-multiaddr"
 	dto "github.com/prometheus/client_model/go"
 	"google.golang.org/protobuf/proto"
 
@@ -260,6 +265,7 @@ func TestDirectoryRefusesWhatAMemberMayNotAnnounce(t *testing.T) {
 		"a service key naming no service":       provide(key, ""),
 		"a peer key naming a service":           provide(api.PeerKey(member.ID()), "mcp://calculator"),
 		"another peer's key":                    provide(api.PeerKey(stranger.ID()), ""),
+		"an address longer than the bound":      provide(key, "mcp://calculator", "/ip4/10.0.0.1/tcp/4001/tls/http/http-path/"+strings.Repeat("a", api.DirectoryMaxAddrBytes)),
 		"a lookup of such a key":                findProviders([]byte("calculator")),
 		"a peer id that is not one":             findPeer(peer.ID("nobody")),
 	} {
@@ -312,6 +318,275 @@ func TestDirectoryPlacementNamesTheProvider(t *testing.T) {
 
 func withdraw(key []byte) *api.DirectoryRequest {
 	return &api.DirectoryRequest{Request: &api.DirectoryRequest_Withdraw{Withdraw: &api.DirectoryWithdraw{Key: key}}}
+}
+
+// newPeerID is the ID of a new Ed25519 key, the kind a member has.
+func newPeerID(t *testing.T) peer.ID {
+	t.Helper()
+	_, pub, err := crypto.GenerateEd25519Key(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateEd25519Key: %v", err)
+	}
+	id, err := peer.IDFromPublicKey(pub)
+	if err != nil {
+		t.Fatalf("IDFromPublicKey: %v", err)
+	}
+	return id
+}
+
+// recordAddrBase starts an address that a test makes as long as it needs.
+const recordAddrBase = "/ip4/203.0.113.7/tcp/443/tls/http/http-path/"
+
+// addrOfBytes is address i of a record: n bytes, with no peer suffix.
+func addrOfBytes(i, n int) string {
+	return fmt.Sprintf("%s%02d%s", recordAddrBase, i, strings.Repeat("a", n-len(recordAddrBase)-2))
+}
+
+// An address of a record is at most api.DirectoryMaxAddrBytes with the
+// provider's peer suffix, whether the member sent the suffix or not. An
+// address at the bound is still accepted in the form an answer carries,
+// which is the form a peer router reads.
+func TestRecordAddrsBoundsAnAddress(t *testing.T) {
+	provider := newPeerID(t)
+	suffix := "/p2p/" + provider.String()
+	atBound := addrOfBytes(0, api.DirectoryMaxAddrBytes-len(suffix))
+	aboveBound := addrOfBytes(0, api.DirectoryMaxAddrBytes-len(suffix)+1)
+	for name, tc := range map[string]struct {
+		addr    string
+		wantErr bool
+	}{
+		"at the bound, sent without the suffix":   {addr: atBound},
+		"at the bound, sent with the suffix":      {addr: atBound + suffix},
+		"one byte above, sent without the suffix": {addr: aboveBound, wantErr: true},
+		"one byte above, sent with the suffix":    {addr: aboveBound + suffix, wantErr: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			addrs, err := recordAddrs(provider, []string{tc.addr})
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("recordAddrs accepted an address of %d bytes with its suffix, want a refusal above %d", len(aboveBound+suffix), api.DirectoryMaxAddrBytes)
+				}
+				if strings.Contains(err.Error(), recordAddrBase) {
+					t.Errorf("the refusal repeats the address, want its length only: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("recordAddrs refused an address of %d bytes with its suffix, want it accepted up to %d: %v", len(atBound+suffix), api.DirectoryMaxAddrBytes, err)
+			}
+			rendered := peerRecord(peer.AddrInfo{ID: provider, Addrs: addrs}).GetAddrs()
+			if _, err := recordAddrs(provider, rendered); err != nil {
+				t.Errorf("recordAddrs refused the address as an answer carries it, %d bytes: %v", len(rendered[0]), err)
+			}
+		})
+	}
+}
+
+// providerWith is a new provider with n addresses. Each address has
+// addrBytes with the peer suffix that an answer adds.
+func providerWith(t *testing.T, n, addrBytes int) peer.AddrInfo {
+	t.Helper()
+	info := peer.AddrInfo{ID: newPeerID(t)}
+	for i := range n {
+		addr, err := multiaddr.NewMultiaddr(addrOfBytes(i, addrBytes-len("/p2p/"+info.ID.String())))
+		if err != nil {
+			t.Fatalf("NewMultiaddr: %v", err)
+		}
+		info.Addrs = append(info.Addrs, addr)
+	}
+	return info
+}
+
+// oversizeAddrBytes makes a record of api.DirectoryMaxAddrs addresses
+// larger than the frame, as the record of GHSA-gw5v-gc33-3wg6 was.
+const oversizeAddrBytes = 2100
+
+func recordsOmitted(t *testing.T) float64 {
+	t.Helper()
+	var m dto.Metric
+	if err := directoryRecordsOmittedTotal.Write(&m); err != nil {
+		t.Fatal(err)
+	}
+	return m.GetCounter().GetValue()
+}
+
+// fitRecords gives each record an even share of the frame, then gives the
+// room that is left to the larger records, the smallest first. The answer
+// fits the frame, a large record does not take the room of a small one,
+// and the records keep their order.
+func TestFitRecordsSharesTheFrame(t *testing.T) {
+	type shape struct{ addrs, addrBytes, allowBytes int }
+	small := shape{addrs: 2, addrBytes: 128}
+	quarter := shape{addrs: api.DirectoryMaxAddrs / 4, addrBytes: api.DirectoryMaxAddrBytes}
+	half := shape{addrs: api.DirectoryMaxAddrs / 2, addrBytes: api.DirectoryMaxAddrBytes}
+	threeQuarters := shape{addrs: 3 * api.DirectoryMaxAddrs / 4, addrBytes: api.DirectoryMaxAddrBytes}
+	full := shape{addrs: api.DirectoryMaxAddrs, addrBytes: api.DirectoryMaxAddrBytes}
+	oversize := shape{addrs: api.DirectoryMaxAddrs, addrBytes: oversizeAddrBytes}
+	// The ingress of a record counts as its addresses do.
+	oversizeIngress := shape{addrs: 2, addrBytes: 128, allowBytes: directoryMaxMessage}
+	for name, tc := range map[string]struct {
+		shapes []shape
+		want   []int // the positions of the records kept
+	}{
+		"every record fits":                          {shapes: []shape{small, full, small}, want: []int{0, 1, 2}},
+		"a record larger than the frame":             {shapes: []shape{oversize, small, small}, want: []int{1, 2}},
+		"an ingress larger than the frame":           {shapes: []shape{small, oversizeIngress, small}, want: []int{0, 2}},
+		"full records ahead of small ones":           {shapes: []shape{full, full, small, small}, want: []int{0, 2, 3}},
+		"the room left goes to the smallest records": {shapes: []shape{full, half, threeQuarters, quarter, small, small, small, small}, want: []int{1, 2, 3, 4, 5, 6, 7}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			records := make([]*api.PeerRecord, len(tc.shapes))
+			var wantOmitted []int
+			for i, s := range tc.shapes {
+				records[i] = peerRecord(providerWith(t, s.addrs, s.addrBytes))
+				if s.allowBytes > 0 {
+					records[i].Ingress = &api.ServiceIngress{Allow: []string{"email:" + strings.Repeat("a", s.allowBytes)}}
+				}
+				if !slices.Contains(tc.want, i) {
+					wantOmitted = append(wantOmitted, i)
+				}
+			}
+			positions := func(recs []*api.PeerRecord) []int {
+				var out []int
+				for _, rec := range recs {
+					out = append(out, slices.Index(records, rec))
+				}
+				return out
+			}
+
+			kept, omitted := fitRecords(records, directoryMaxMessage)
+			if got := positions(kept); !slices.Equal(got, tc.want) {
+				t.Errorf("fitRecords kept the records at %v, want %v", got, tc.want)
+			}
+			if got := positions(omitted); !slices.Equal(got, wantOmitted) {
+				t.Errorf("fitRecords left out the records at %v, want %v", got, wantOmitted)
+			}
+			data, err := proto.Marshal(&api.DirectoryResponse{Providers: kept})
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			if len(data) > directoryMaxMessage {
+				t.Errorf("the answer is %d bytes, want at most %d", len(data), directoryMaxMessage)
+			}
+		})
+	}
+}
+
+// A router answers a lookup in a frame that the reader accepts, whatever
+// records it holds. It leaves out and counts a record that does not fit,
+// and the other providers are found. In GHSA-gw5v-gc33-3wg6 one record
+// under a service type key made every lookup of that type fail.
+func TestDirectoryAnswerFitsTheFrame(t *testing.T) {
+	a := newDirectoryRouter(t)
+	asker := attach(t, a)
+	put := func(key []byte, info peer.AddrInfo) {
+		a.records.put(key, info.ID, info.Addrs, time.Now())
+	}
+
+	t.Run("a record larger than the frame among small ones", func(t *testing.T) {
+		key, err := api.ServiceKey(api.ServiceType_SERVICE_TYPE_MCP, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		large := providerWith(t, api.DirectoryMaxAddrs, oversizeAddrBytes)
+		put(key, large)
+		for range 5 {
+			put(key, providerWith(t, 2, 128))
+		}
+		var want []string
+		for _, info := range held(a, key) {
+			if info.ID != large.ID {
+				want = append(want, info.ID.String())
+			}
+		}
+
+		before := recordsOmitted(t)
+		resp := ask(t, asker, a.Host.ID(), findProviders(key))
+		if resp.GetError() != "" {
+			t.Fatalf("find_providers failed: %s", resp.GetError())
+		}
+		var got []string
+		for _, rec := range resp.GetProviders() {
+			got = append(got, rec.GetPeerId())
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("providers = %v, want the small records in the order the router holds them: %v", got, want)
+		}
+		if got := recordsOmitted(t); got != before+1 {
+			t.Errorf("records left out counted = %v, want %v", got, before+1)
+		}
+	})
+
+	t.Run("as many records of the maximum size as a lookup returns", func(t *testing.T) {
+		key, err := api.ServiceKey(api.ServiceType_SERVICE_TYPE_INFERENCE, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range directoryMaxLimit {
+			put(key, providerWith(t, api.DirectoryMaxAddrs, api.DirectoryMaxAddrBytes))
+		}
+		req := findProviders(key)
+		req.GetFindProviders().Limit = directoryMaxLimit
+
+		before := recordsOmitted(t)
+		resp := ask(t, asker, a.Host.ID(), req)
+		found := len(resp.GetProviders())
+		if resp.GetError() != "" || found == 0 {
+			t.Fatalf("find_providers found %d providers with error %q, want at least one", found, resp.GetError())
+		}
+		if got, want := recordsOmitted(t), before+float64(directoryMaxLimit-found); got != want {
+			t.Errorf("records left out counted = %v, want %v: %d of %d were found", got, want, found, directoryMaxLimit)
+		}
+	})
+
+	t.Run("find_peer of a held member whose addresses do not fit", func(t *testing.T) {
+		member := attach(t, a)
+		a.Host.Peerstore().AddAddrs(member.ID(), providerWith(t, api.DirectoryMaxAddrs, oversizeAddrBytes).Addrs, time.Hour)
+
+		before := recordsOmitted(t)
+		resp := ask(t, asker, a.Host.ID(), findPeer(member.ID()))
+		if resp.GetError() != "" || resp.GetPeer() != nil {
+			t.Fatalf("find_peer answered peer %s with error %q, want no peer: its record is larger than the frame", resp.GetPeer().GetPeerId(), resp.GetError())
+		}
+		if got := recordsOmitted(t); got != before+1 {
+			t.Errorf("records left out counted = %v, want %v", got, before+1)
+		}
+	})
+}
+
+// A lookup merges the addresses that several routers hold for one
+// provider. The merge stops at api.DirectoryMaxAddrs, the most a provide
+// accepts, and reports how many addresses it left out.
+func TestMergeAddrsStopsAtTheRecordBound(t *testing.T) {
+	addrs := func(from, to int) []multiaddr.Multiaddr {
+		var out []multiaddr.Multiaddr
+		for i := from; i < to; i++ {
+			a, err := multiaddr.NewMultiaddr(fmt.Sprintf("/ip4/10.0.0.%d/tcp/4001", i))
+			if err != nil {
+				t.Fatalf("NewMultiaddr: %v", err)
+			}
+			out = append(out, a)
+		}
+		return out
+	}
+	for name, tc := range map[string]struct {
+		have, more  []multiaddr.Multiaddr
+		want        []multiaddr.Multiaddr
+		wantOmitted int
+	}{
+		"the addresses the record lacks are added": {have: addrs(0, 2), more: addrs(1, 4), want: addrs(0, 4)},
+		"a full record takes no more":              {have: addrs(0, api.DirectoryMaxAddrs-2), more: addrs(api.DirectoryMaxAddrs-4, api.DirectoryMaxAddrs+3), want: addrs(0, api.DirectoryMaxAddrs), wantOmitted: 3},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, omitted := mergeAddrs(tc.have, tc.more)
+			if !slices.EqualFunc(got, tc.want, func(a, b multiaddr.Multiaddr) bool { return a.Equal(b) }) {
+				t.Errorf("mergeAddrs = %v, want %v", got, tc.want)
+			}
+			if omitted != tc.wantOmitted {
+				t.Errorf("mergeAddrs left out %d addresses, want %d", omitted, tc.wantOmitted)
+			}
+		})
+	}
 }
 
 // A member that stops a service withdraws its record: it is gone from the
