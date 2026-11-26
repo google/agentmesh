@@ -67,8 +67,8 @@ and cannot hold a key. On one computer, `http://127.0.0.1` works for both.
 
    Expect: a dialog that names the mesh's address. Tap **Join**.
 
-   Expect: the dashboard shows **Node is Running**, the **Node ID** and the
-   number of **Routers** that hold a relay slot for the browser.
+   Expect: the dashboard shows **Node is Running**, the **Node ID** and, under
+   **Connections**, at least one router.
 
 A link of the form `<page address>#server=<mesh address>&token=<token>` joins
 the same way. The values travel after the `#`, which browsers never send to a
@@ -93,11 +93,13 @@ The tabs appear once the browser has enrolled.
 
 | Tab | What it shows |
 | --- | --- |
-| **Dashboard** | **Node is Running** or **Node is Stopped**, the mesh's address, **Connected Peers**, **Routers**, the **Node ID**, and **Start** and **Stop**. **Unenroll / Clear Identity** is at the bottom. |
+| **Dashboard** | **Node is Running** or **Node is Stopped**, the mesh's address, **Connections**, the **Node ID**, and **Start** and **Stop**. **Unenroll / Clear Identity** is at the bottom. |
 | **Config** | **Device**: the labels this browser enrolled with, whether the browser keeps the storage, and until when the current credential is valid. On a computer, **Local agent** connects an agent on that computer. The version is at the bottom. |
 
-**Routers** counts the routers that hold a relay slot for the browser,
-because peers reach it through them.
+**Connections** counts what the browser is connected to now: **Routers**,
+the routers it joined through or passed through to reach a member, and
+**Peers**, the other members it talks to. A member the browser has not talked to recently is not
+counted, so **Peers** is often 0. The console shows every member of the mesh.
 
 The node runs only while the page is open. The app remembers whether you left
 it running. If you did, it rejoins on its own the next time it opens, with the

@@ -456,6 +456,94 @@ test("a member on one router reaches a member on another", async () => {
   }
 });
 
+test("a peer no path reaches is reported with the reason each path failed", async () => {
+  // The member holds two routers, as by default, and neither relays to the
+  // offline peer. The directory then lists only an address this member has
+  // no transport for, and a third listed router refuses the member. Each
+  // reason must reach the caller, not only the last one.
+  const offline = "12D3KooWA4Xop1JaT3MHxwYMkCepYsv4iPVopMXwCz5iHYdBfeSB";
+  const routerB = await createLibp2p({
+    addresses: { listen: ["/ip4/127.0.0.1/tcp/0"] },
+    transports: [tcp()],
+    connectionEncrypters: [tls()],
+    streamMuxers: [yamux()],
+    services: { identify: identify(), relay: circuitRelayServer() },
+  });
+  const strict = await createLibp2p({
+    addresses: { listen: ["/ip4/127.0.0.1/tcp/0"] },
+    transports: [tcp()],
+    connectionEncrypters: [tls()],
+    streamMuxers: [yamux()],
+    services: { identify: identify() },
+  });
+  const directory = (stream: Parameters<Parameters<Libp2p["handle"]>[1]>[0]) => {
+    void (async () => {
+      const lp = lpStream(stream, { maxDataLength: 64 * 1024 });
+      const req = fromBinary(DirectoryRequestSchema, (await lp.read()).subarray());
+      const resp = create(DirectoryResponseSchema, {});
+      if (req.request.case === "findPeer") {
+        resp.peer = create(PeerRecordSchema, { peerId: offline, addrs: [`/ip4/127.0.0.1/udp/9/quic-v1/p2p/${offline}`] });
+      }
+      await lp.write(toBinary(DirectoryResponseSchema, resp));
+      await stream.close();
+    })();
+  };
+  try {
+    const routerBBiscuit = mint(routerB.peerId.toString(), ROLE_ROUTER);
+    await routerB.handle(AUTH_PROTOCOL, authStreamHandler({ ownBiscuit: () => routerBBiscuit, trustedKeys: () => [cpKey] }));
+    const otherKey = new wasm.KeyPair(wasm.SignatureAlgorithm.Ed25519);
+    const other = new Uint8Array(Buffer.from(otherKey.getPublicKey().toString().replace(/^ed25519\//, ""), "hex"));
+    await strict.handle(AUTH_PROTOCOL, authStreamHandler({ ownBiscuit: () => routerBiscuit, trustedKeys: () => [other] }));
+    await router.handle(DIRECTORY_PROTOCOL, directory);
+    await routerB.handle(DIRECTORY_PROTOCOL, directory);
+    const routerBAddr = (routerB.getMultiaddrs()[0] as ReturnType<typeof multiaddr>).toString();
+    const strictAddr = (strict.getMultiaddrs()[0] as ReturnType<typeof multiaddr>).toString();
+
+    const mesh = await AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", bootstrapToken: "sbt", fetch: fakeControlPlane([routerAddr, routerBAddr, strictAddr]) });
+    const session = await mesh.join({ refreshLeadMs: 0, routerAddresses: [routerAddr, routerBAddr], reserveRelay: false });
+    try {
+      assert.equal(session.routers.length, 2);
+      await assert.rejects(session.connect(offline, AbortSignal.timeout(10_000)), (err: Error) => {
+        assert.match(err.message, new RegExp(`cannot reach ${offline}`));
+        assert.equal(err.message.match(/NO_RESERVATION/g)?.length, 2, `each held router's answer is kept: ${err.message}`);
+        assert.match(err.message, /no valid addresses/, "the directory path's failure is reported too");
+        assert.match(err.message, new RegExp(`${strictAddr}: admit: `), "the router that refused the member is reported too");
+        return true;
+      });
+    } finally {
+      await session.close();
+    }
+  } finally {
+    await router.unhandle(DIRECTORY_PROTOCOL);
+    await strict.stop();
+    await routerB.stop();
+  }
+});
+
+test("a directory that fails the lookup is reported with the relay's answer", async () => {
+  const offline = "12D3KooWA4Xop1JaT3MHxwYMkCepYsv4iPVopMXwCz5iHYdBfeSB";
+  await router.handle(DIRECTORY_PROTOCOL, (stream) => {
+    void (async () => {
+      const lp = lpStream(stream, { maxDataLength: 64 * 1024 });
+      await lp.read();
+      await lp.write(toBinary(DirectoryResponseSchema, create(DirectoryResponseSchema, { error: "directory unavailable" })));
+      await stream.close();
+    })();
+  });
+  const mesh = await AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", bootstrapToken: "sbt", fetch: fakeControlPlane([routerAddr]) });
+  const session = await mesh.join({ refreshLeadMs: 0, routerAddresses: [routerAddr], reserveRelay: false });
+  try {
+    await assert.rejects(session.connect(offline, AbortSignal.timeout(10_000)), (err: Error) => {
+      assert.match(err.message, /NO_RESERVATION/);
+      assert.match(err.message, /directory lookup: .*directory unavailable/);
+      return true;
+    });
+  } finally {
+    await session.close();
+    await router.unhandle(DIRECTORY_PROTOCOL);
+  }
+});
+
 test("discovery asks a held router over the directory protocol and connects to no other", async () => {
   // A member keeps no DHT: a lookup is one request to a router it holds,
   // which answers from the routers' directory. A second listed router is

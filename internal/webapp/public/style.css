@@ -250,6 +250,7 @@ section:not([hidden]) { animation: rise 0.28s cubic-bezier(0.2, 0.8, 0.2, 1); }
 
 /* Stats, Node ID and the danger zone */
 .stats { display: grid; grid-template-columns: 1fr 1fr; padding: 0; }
+.stats h3 { grid-column: 1 / -1; padding: 16px 18px 0; font-size: 13px; font-weight: 500; color: var(--text-2); letter-spacing: 0; }
 .stat { display: flex; flex-direction: column; gap: 6px; padding: 16px 18px 18px; }
 .stat + .stat { border-left: 1px solid var(--hairline); }
 .stat-head { display: flex; align-items: center; gap: 8px; color: var(--text-2); font-size: 13px; font-weight: 500; }
@@ -428,6 +429,7 @@ dialog .note { margin-top: 14px; font-size: 13px; color: var(--text-3); }
   .node-title { font-size: 32px; }
   .details { gap: 16px; }
   .stat { padding: 22px 24px 24px; gap: 10px; }
+  .stats h3 { padding: 22px 24px 0; }
   .stat-value { font-size: 36px; }
   .node-id, .danger-zone { padding: 22px 24px; }
   #node-id { font-size: 15px; }

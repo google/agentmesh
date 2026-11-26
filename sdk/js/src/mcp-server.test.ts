@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { peerIdFromString } from "@libp2p/peer-id";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/cfworker";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { CallToolRequestSchema, CallToolResultSchema, ListToolsRequestSchema, type Tool } from "@modelcontextprotocol/sdk/types.js";
@@ -71,7 +72,7 @@ async function fixture(t: TestContext, mode = "normal") {
         return { content: [{ type: "text", text: "3" }, { type: "image", data: "AA==", mimeType: "image/png" }], structuredContent: { answer: 3 }, isError: mode === "error" };
       });
       const [a, b] = InMemoryTransport.createLinkedPair();
-      const client = new Client({ name: "fixture-client", version: "1" });
+      const client = new Client({ name: "fixture-client", version: "1" }, { jsonSchemaValidator: new CfWorkerJsonSchemaValidator() });
       await remote.connect(a);
       await client.connect(b);
       return {
@@ -82,7 +83,7 @@ async function fixture(t: TestContext, mode = "normal") {
   };
   const server = createMeshMCPServer(session, "1");
   const [a, b] = InMemoryTransport.createLinkedPair();
-  const client = new Client({ name: "test", version: "1" });
+  const client = new Client({ name: "test", version: "1" }, { jsonSchemaValidator: new CfWorkerJsonSchemaValidator() });
   await server.connect(a);
   await client.connect(b);
   t.after(async () => { await client.close(); await server.close(); assert.equal(closed, opened, "every remote session closes"); });

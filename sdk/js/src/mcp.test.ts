@@ -107,7 +107,11 @@ async function serveMCP(stream: Stream, connection: Connection): Promise<void> {
   if (type === "") {
     server.tool("list_local_services", async () => ({ content: [{ type: "text", text: JSON.stringify([{ type: "mcp", name: "calc" }]) }] }));
   } else {
-    server.tool("add", { a: z.number(), b: z.number() }, async ({ a, b }) => ({ content: [{ type: "text", text: String(a + b) }] }));
+    // An output schema makes the client compile a validator, which must not need eval (the web app's CSP has no unsafe-eval).
+    server.registerTool("add", { inputSchema: { a: z.number(), b: z.number() }, outputSchema: { sum: z.number() } }, async ({ a, b }) => ({
+      content: [{ type: "text", text: String(a + b) }],
+      structuredContent: { sum: a + b },
+    }));
   }
   await server.connect(new StreamTransport(stream));
 }
@@ -155,6 +159,7 @@ test("a tool is listed and called over the mesh stream, and the provider is veri
     assert.deepEqual(tools.map((t) => t.name), ["add"]);
     const result = await mcp.client.callTool({ name: "add", arguments: { a: 2, b: 3 } });
     assert.deepEqual(result.content, [{ type: "text", text: "5" }]);
+    assert.deepEqual(result.structuredContent, { sum: 5 });
   } finally {
     await mcp.close();
   }

@@ -779,7 +779,9 @@ export class MeshSession {
       if (peerId === undefined || (typeof peer === "string" && peer.startsWith("/")) || isMultiaddr(peer) || signal?.aborted === true) {
         throw err;
       }
-      for (const more of [() => this.#routedAddresses(peerId, signal), () => this.#unjoinedRouterAddresses(peerId, signal)]) {
+      // Each path's reason is kept, as in the Python SDK: a later path's error alone hides why the peer itself did not answer.
+      const failures = [`${addrs.join(" ")}: ${errorText(err)}`];
+      for (const more of [() => this.#routedAddresses(peerId, failures, signal), () => this.#unjoinedRouterAddresses(peerId, failures, signal)]) {
         const routed = await more();
         if (routed.length === 0) {
           continue;
@@ -787,10 +789,10 @@ export class MeshSession {
         try {
           return await this.node.dial(routed, options);
         } catch (routedErr) {
-          err = routedErr;
+          failures.push(`${routed.join(" ")}: ${errorText(routedErr)}`);
         }
       }
-      throw err;
+      throw new Error(`cannot reach ${peerId}:\n  ${failures.join("\n  ")}`);
     }
   }
 
@@ -800,7 +802,7 @@ export class MeshSession {
    * is the one the credential carries, refreshed by every control plane
    * pull, so a router that came up after join is tried too.
    */
-  async #unjoinedRouterAddresses(peerId: string, signal?: AbortSignal): Promise<Multiaddr[]> {
+  async #unjoinedRouterAddresses(peerId: string, failures: string[], signal?: AbortSignal): Promise<Multiaddr[]> {
     const out: Multiaddr[] = [];
     for (const text of this.mesh.credential.routerAddresses) {
       let addr: Multiaddr;
@@ -815,8 +817,8 @@ export class MeshSession {
       }
       try {
         out.push((await this.#admitRouter(addr, signal)).addr.encapsulate(`/p2p-circuit/p2p/${peerId}`));
-      } catch {
-        continue;
+      } catch (err) {
+        failures.push(`${addr}: admit: ${errorText(err)}`);
       }
     }
     return out;
@@ -828,12 +830,13 @@ export class MeshSession {
    * for a source it authenticated, so a router met this way is dialed and
    * passed the handshake first, and joins the admitted set.
    */
-  async #routedAddresses(peerId: string, signal?: AbortSignal): Promise<Multiaddr[]> {
+  async #routedAddresses(peerId: string, failures: string[], signal?: AbortSignal): Promise<Multiaddr[]> {
     const lookup = signal ?? AbortSignal.timeout(PEER_ROUTING_TIMEOUT_MS);
     let found: PeerRecord | undefined;
     try {
       found = await findPeer(this.#directoryRouters(), peerId, lookup);
-    } catch {
+    } catch (err) {
+      failures.push(`directory lookup: ${errorText(err)}`);
       return [];
     }
     if (found === undefined) {
@@ -855,7 +858,8 @@ export class MeshSession {
       if (!this.routers.some((r) => r.peerId === relay)) {
         try {
           await this.#admitRouter(relayAddr, signal);
-        } catch {
+        } catch (err) {
+          failures.push(`${relayAddr}: admit: ${errorText(err)}`);
           continue;
         }
       }
@@ -1529,7 +1533,11 @@ export async function joinMesh(mesh: AgentMesh, options: JoinOptions = {}, timeo
   }
 }
 
+// libp2p fails a dial to several addresses with one AggregateError whose message names none of the reasons.
 function errorText(err: unknown): string {
+  if (err instanceof AggregateError) {
+    return err.errors.map(errorText).join("; ");
+  }
   return err instanceof Error ? err.message : String(err);
 }
 
