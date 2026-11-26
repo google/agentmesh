@@ -145,8 +145,17 @@ def stop_stream_handler(host: IHost) -> Callable[[INetStream], object]:
         circuit_addr = multiaddr.Multiaddr(f"/p2p/{relay_peer_id}/p2p-circuit/p2p/{source}")
         raw = RawConnection(stream=stream, initiator=False, connection_type=ConnectionType.RELAYED, addresses=[circuit_addr])
         try:
+            # py-libp2p >=0.8.3 closes any inbound stream when its handler
+            # returns unless _keep_open is set (the same hook its own
+            # circuit_v2 STOP handler uses). Hand ownership of the stream to
+            # the upgraded connection only once upgrade succeeds.
             await host.upgrade_inbound_connection(raw, circuit_addr)
+            setattr(stream, "_keep_open", True)
         except Exception as err:  # noqa: BLE001 - the relay's peer failed the upgrade; nothing of ours is affected
             logger.warning("relayed connection from %s via %s failed to upgrade: %s", source, relay_peer_id, err)
+            try:
+                await stream.close()
+            except Exception:  # noqa: BLE001 - already closed by upgrade failure
+                pass
 
     return handle

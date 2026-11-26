@@ -28,7 +28,7 @@ from agent_mesh import relay as relay_module
 from agent_mesh._proto import circuit_pb2 as circuit
 from agent_mesh.host import create_mesh_host
 from agent_mesh.identity import Identity
-from agent_mesh.relay import HOP_PROTOCOL, dial_through_relay
+from agent_mesh.relay import HOP_PROTOCOL, dial_through_relay, stop_stream_handler
 
 TARGET = ID.from_base58("12D3KooWG1pA6goegCncqwbZLSr8pnjUZ6JMAAe6SmnHTgUNCk88")
 
@@ -72,5 +72,71 @@ def test_a_circuit_the_far_end_never_speaks_on_ends_at_the_dial_timeout(monkeypa
                 await released.wait()
             assert released_at - started >= 0.5
             assert TARGET not in client.get_connected_peers()
+
+    trio.run(main)
+
+
+def test_stop_stream_handler_marks_upgraded_stream_keep_open():
+    """stop_stream_handler hands the STOP stream off to upgrade_inbound_connection
+    and returns. py-libp2p >=0.8.3 closes any inbound stream on handler return
+    unless _keep_open is True, so a successful upgrade must mark the stream
+    _keep_open while a failed upgrade must leave it unmarked and close it."""
+
+    class _FakeMuxedConn:
+        peer_id = ID.from_base58("12D3KooWG1pA6goegCncqwbZLSr8pnjUZ6JMAAe6SmnHTgUNCk88")
+
+    class _FakeStream:
+        def __init__(self, incoming: bytes) -> None:
+            self.muxed_conn = _FakeMuxedConn()
+            self._buf = bytearray(incoming)
+            self.written = bytearray()
+            self.closed = False
+
+        async def read(self, n: int = -1) -> bytes:
+            if not self._buf:
+                return b""
+            if n < 0 or n >= len(self._buf):
+                out = bytes(self._buf)
+                self._buf.clear()
+                return out
+            out = bytes(self._buf[:n])
+            del self._buf[:n]
+            return out
+
+        async def write(self, data: bytes) -> None:
+            self.written.extend(data)
+
+        async def close(self) -> None:
+            self.closed = True
+
+    class _FakeHost:
+        def __init__(self, *, fail_upgrade: bool = False) -> None:
+            self.fail_upgrade = fail_upgrade
+            self.upgraded: list[tuple[object, object]] = []
+
+        async def upgrade_inbound_connection(self, raw_conn, maddr):
+            if self.fail_upgrade:
+                raise RuntimeError("boom")
+            self.upgraded.append((raw_conn, maddr))
+            return object()
+
+    connect_bytes = encode_varint_prefixed(
+        circuit.StopMessage(type=circuit.StopMessage.CONNECT, peer=circuit.Peer(id=TARGET.to_bytes())).SerializeToString()
+    )
+
+    async def main():
+        ok_stream = _FakeStream(connect_bytes)
+        ok_host = _FakeHost()
+        await stop_stream_handler(ok_host)(ok_stream)
+        assert len(ok_host.upgraded) == 1
+        assert getattr(ok_stream, "_keep_open", False) is True
+        assert ok_stream.closed is False
+
+        fail_stream = _FakeStream(connect_bytes)
+        fail_host = _FakeHost(fail_upgrade=True)
+        await stop_stream_handler(fail_host)(fail_stream)
+        assert fail_host.upgraded == []
+        assert getattr(fail_stream, "_keep_open", False) is False
+        assert fail_stream.closed is True
 
     trio.run(main)
