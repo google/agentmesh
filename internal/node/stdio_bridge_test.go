@@ -65,6 +65,13 @@ func (s *syncBuffer) lines() []string {
 	return strings.Split(text, "\n")
 }
 
+// text returns every byte the backend's stdin received.
+func (s *syncBuffer) text() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
 // waitFor polls cond until it holds; fails the test after 2s.
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
@@ -118,6 +125,70 @@ func TestStdioBridge_ServeHTTP_POSTNotificationReturnsAccepted(t *testing.T) {
 	}
 	if got := stdinBuf.lines(); len(got) != 1 || got[0] != body {
 		t.Fatalf("stdin got %q, want [%q]", got, body)
+	}
+}
+
+// hiddenCall is a complete tools/call. The tests below send it as the params
+// value of another message, on a line of its own. JSON allows a line break
+// between two tokens, so an enforcement point reads the outer message only. A
+// reader that takes one message per line, as a stdio MCP server does, reads
+// hiddenCall as a message that no enforcement point checked.
+const hiddenCall = `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"drop_table","arguments":{}}}`
+
+// GHSA-g9hr-vm84-pjjr: the bridge wrote the body of a message with no id to
+// the backend as it came. The backend must get one line for one message.
+func TestStdioBridge_ServeHTTP_NotificationIsWrittenAsOneLine(t *testing.T) {
+	const want = `{"jsonrpc":"2.0","method":"notifications/cancelled","params":` + hiddenCall + "}\n"
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{
+			name: "line feeds",
+			body: "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":\n" + hiddenCall + "\n}",
+		},
+		{
+			// A reader in universal newlines mode, as the Python MCP SDK
+			// uses on stdin, also ends a line at a carriage return.
+			name: "carriage returns",
+			body: "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":\r" + hiddenCall + "\r}",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, stdoutWriter, stdinBuf := newPipeBridge()
+			defer func() { _ = stdoutWriter.Close() }()
+
+			rec := httptest.NewRecorder()
+			b.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.body)))
+
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+			}
+			if got := stdinBuf.text(); got != want {
+				t.Fatalf("backend stdin got %q, want the one line %q", got, want)
+			}
+		})
+	}
+}
+
+// A call takes another path to the backend's stdin than a message with no id.
+// It must write one line for one message too.
+func TestStdioBridge_ServeHTTP_CallIsWrittenAsOneLine(t *testing.T) {
+	b, stdoutWriter, stdinBuf := newPipeBridge()
+	defer func() { _ = stdoutWriter.Close() }()
+
+	rec, done := post(b, "{\"jsonrpc\":\"2.0\",\"id\":\"c\",\"method\":\"tools/list\",\"params\":\n"+hiddenCall+"\n}")
+	bridgeID := bridgeIDOf(t, stdinBuf, 1)
+	// The bridge writes the members in the order of their names, under its own id.
+	want := `{"id":` + bridgeID + `,"jsonrpc":"2.0","method":"tools/list","params":` + hiddenCall + "}\n"
+	if got := stdinBuf.text(); got != want {
+		t.Fatalf("backend stdin got %q, want the one line %q", got, want)
+	}
+
+	_, _ = stdoutWriter.Write([]byte(`{"jsonrpc":"2.0","id":` + bridgeID + `,"result":{"tools":[]}}` + "\n"))
+	await(t, done)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s, want %d", rec.Code, rec.Body.String(), http.StatusOK)
 	}
 }
 

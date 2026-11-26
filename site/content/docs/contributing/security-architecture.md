@@ -294,7 +294,10 @@ case (`"METHOD"`, which a case-insensitive JSON parser reads as `method`),
 names no tool and no handshake method. A rule with `allowed_tools` then denies
 the request on HTTP. On a `/mesh/mcp` stream, the node answers such a
 `tools/call` under a task-scoped credential with JSON-RPC `-32602` (invalid
-params) and does not send it to the backend.
+params) and does not send it to the backend. A command-backed MCP service
+reads one message for each line of its standard input, so the node removes
+the line breaks between the JSON tokens of a message before it writes the
+message there.
 
 #### One authorizer assembly for every PEP
 
