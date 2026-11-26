@@ -50,11 +50,14 @@ class BanSet:
         return sorted(self._banned_at)
 
     def add(self, peer_id: str, at_ms: int) -> bool:
-        """Records a ban; returns False when the ban was already known."""
-        if peer_id in self._banned_at:
-            return False
-        self._banned_at[peer_id] = at_ms
-        return True
+        """Records a ban; returns False when the peer was already in the set.
+        The set then keeps the later of the stored time and at_ms: a ban time
+        never moves back. A second event for a peer can be a new ban, because
+        the control plane publishes no event when it lifts one."""
+        known = self._banned_at.get(peer_id)
+        if known is None or at_ms > known:
+            self._banned_at[peer_id] = at_ms
+        return known is None
 
     def reconcile(self, banned_peer_ids: Sequence[str], fetched_at: float) -> tuple[list[str], list[str]]:
         """Makes the set match the control plane's ban set as of fetched_at
