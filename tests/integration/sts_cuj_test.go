@@ -619,14 +619,14 @@ egress:
 			t.Fatalf("GET /repos/acme/private/secret with taskBiscuit: %d, want 403", got)
 		}
 
-		// 5. Outbound Border STS JWT Minting at the PEP node for egress://api.github.com:
+		// 5. Outbound Border STS JWT Minting at the PEP node for egress://api.github.com.
+		//    The request names no audience: the control plane takes it from the egress policy.
 		stsForm := url.Values{}
 		stsForm.Set("grant_type", api.GrantTypeTokenExchange)
 		stsForm.Set("subject_token", taskBiscuit)
 		stsForm.Set("subject_token_type", api.TokenTypeBiscuit)
 		stsForm.Set("requested_token_type", api.TokenTypeJWT)
 		stsForm.Add("resource", "egress://api.github.com")
-		stsForm.Set("audience", "https://sts.googleapis.com")
 		stsResp, err := client.PostForm("http://"+pepAPI+"/oauth/token", stsForm)
 		if err != nil {
 			t.Fatalf("POST /oauth/token (border JWT): %v", err)
