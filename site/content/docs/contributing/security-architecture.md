@@ -316,7 +316,10 @@ or control-plane caller); `MeshPolicy` says what the PEP adds (its own
 `target_fact()`s, local attenuation, the synced mesh rules). The assembly
 always adds `BaselineTargetCheck`, the baseline policies and rules, and
 `expiration()`, so a PEP cannot leave one out, and an absent field means "not
-present" (fails closed), never "unrestricted". `MeshRequest.TaskRequest()`
+present" (fails closed), never "unrestricted". After the authorizer passes,
+the assembly also compares `expiration()` with the current time in Go,
+because Datalog stores a date as unsigned seconds and reads an expiration
+before 1970 as a far future date. `MeshRequest.TaskRequest()`
 derives the `TaskAuthorizationRule` context from the same value. A rule
 added to one path therefore reaches every path; the only intended
 differences are the inputs a path does not have (no connection peer on an

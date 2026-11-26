@@ -15,6 +15,8 @@
 package identity
 
 import (
+	"time"
+
 	"github.com/eclipse-biscuit/biscuit-go/v2"
 	"github.com/google/agentmesh/api"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -90,7 +92,9 @@ type MeshPolicy struct {
 // every enforcement point uses and runs it. The authorizer must already be
 // built on the credential under the key that verified it; the caller
 // checks revocation, bans and the authority-block binding before, and
-// evaluates TaskAuthorizationRules (req.TaskRequest) after.
+// evaluates TaskAuthorizationRules (req.TaskRequest) after. It also refuses a
+// credential whose expiration() fact is missing or not after the current
+// time, which the Datalog check alone does not guarantee.
 func AuthorizeMeshRequest(authorizer biscuit.Authorizer, req MeshRequest, pol MeshPolicy) error {
 	authorizer.AddFact(biscuit.Fact{Predicate: biscuit.Predicate{
 		Name: api.FactService,
@@ -157,7 +161,11 @@ func AuthorizeMeshRequest(authorizer biscuit.Authorizer, req MeshRequest, pol Me
 		authorizer.AddRule(r)
 	}
 
-	return authorizer.Authorize()
+	if err := authorizer.Authorize(); err != nil {
+		return err
+	}
+	// The Datalog check admits an expiration before 1970, so check it in Go.
+	return requireUnexpired(authorizer, time.Now())
 }
 
 // TaskRequest is req as TaskAuthorizationRule evaluation sees it, so the

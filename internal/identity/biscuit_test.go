@@ -583,6 +583,41 @@ func TestVerifyAndExtractPeerID_MultipleTrustedKeys(t *testing.T) {
 	}
 }
 
+// beforeEpoch is an expiration before 1970, like the one that
+// GHSA-qg99-6frq-2h5m put into a Biscuit.
+var beforeEpoch = time.Date(1734, time.August, 16, 0, 0, 0, 0, time.UTC)
+
+// Datalog stores a date as unsigned seconds since the Unix epoch. An earlier
+// expiration reads as a far future date and the token does not lapse, so the
+// mint refuses it. An expiration in the recent past is a valid date and stays
+// mintable: other tests and the refresh flow need expired tokens.
+func TestMintRefusesExpirationAtOrBeforeEpoch(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := newTestPeer(t)
+
+	for _, tc := range []struct {
+		name    string
+		expiry  time.Time
+		wantErr bool
+	}{
+		{name: "one hour from now", expiry: time.Now().Add(time.Hour)},
+		{name: "two seconds ago", expiry: time.Now().Add(-2 * time.Second)},
+		{name: "the Unix epoch", expiry: time.Unix(0, 0), wantErr: true},
+		{name: "before 1970", expiry: beforeEpoch, wantErr: true},
+		{name: "unset", expiry: time.Time{}, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := MintDelegatedBiscuitToken(priv, jwt.MapClaims{"sub": "alice"}, actor, tc.expiry, nil, nil, nil, false)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("MintDelegatedBiscuitToken(expiration %s) error = %v, wantErr %v", tc.expiry.UTC().Format(time.RFC3339), err, tc.wantErr)
+			}
+		})
+	}
+}
+
 // TestExtractPeerIDExpiry pins that adding the expiration check still rejects an
 // expired token even though neither variant adds a policy, i.e. that a failed
 // check outranks ErrNoMatchingPolicy.
@@ -615,6 +650,23 @@ func TestExtractPeerIDExpiry(t *testing.T) {
 	}
 	if _, err := VerifyAndExtractPeerID(trustedKeys, expired, testTimeout); err == nil {
 		t.Error("expired token accepted by the expiry-enforcing variant")
+	}
+
+	// Datalog reads an expiration before 1970 as a far future date, so the
+	// Datalog check passes. The expiry-enforcing variant must check in Go.
+	builder := biscuit.NewBuilder(priv)
+	mustAddAuthorityFact(t, builder, api.FactNode, biscuit.String(dummyPeer.String()))
+	mustAddAuthorityFact(t, builder, api.FactExpiration, biscuit.Date(beforeEpoch))
+	token, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeEpochToken, err := token.Serialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyAndExtractPeerID(trustedKeys, beforeEpochToken, testTimeout); err == nil {
+		t.Errorf("token with expiration %s accepted by the expiry-enforcing variant", beforeEpoch.Format(time.RFC3339))
 	}
 
 	// The refresh flow depends on the exempt variant staying permissive.
@@ -767,6 +819,10 @@ func TestVerifyBiscuitAndGetExpiry(t *testing.T) {
 	}
 	if _, err := VerifyBiscuitAndGetExpiry(mint(), peerID, keys, testTimeout); err == nil {
 		t.Error("token without an expiration admitted")
+	}
+	// The earliest expiration binds also when it is the zero time.Time.
+	if _, err := VerifyBiscuitAndGetExpiry(mint(time.Time{}, soon), peerID, keys, testTimeout); err == nil {
+		t.Error("token with an unset expiration and a valid one admitted")
 	}
 	if _, err := VerifyBiscuitAndGetExpiry(mint(soon), newTestPeer(t), keys, testTimeout); err == nil {
 		t.Error("token bound to another peer admitted")
