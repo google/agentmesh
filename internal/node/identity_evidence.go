@@ -103,7 +103,7 @@ func (n *AgentMeshNode) stillTrustsKey(selected trustedKeySnapshot) bool {
 
 func requireIdentityEvidenceTransport(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !fromLocalSocket(r) && (r.TLS == nil || len(r.TLS.VerifiedChains) == 0) {
+		if !fromTrustedTransport(r) {
 			writeEvidenceError(w, http.StatusForbidden, "Strong transport required")
 			return
 		}

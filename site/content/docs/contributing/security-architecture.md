@@ -409,8 +409,8 @@ as a standard OIDC issuer:
 
 #### Gateway integration (`agentmesh-node`)
 
-`agentmesh-node` exposes three standard gateway interfaces on its HTTP listener
-(`--bind-addr`):
+`agentmesh-node` exposes three standard gateway interfaces on its local API
+listeners (`--bind-addr` and `--socket-path`):
 
 1. Envoy `ext_authz` (`/ext_authz` and
    `/envoy.service.auth.v3.Authorization/Check`) evaluates standing Datalog
@@ -420,12 +420,18 @@ as a standard OIDC issuer:
    `agentmesh-node` exchanges at the control plane into a delegated Biscuit. On `OK`
    it returns `X-Mesh-Biscuit`, `X-Mesh-Principal`, `X-Mesh-Roles`,
    `X-Mesh-Task-Id` and, for `egress://` targets with a credential broker, the
-   brokered upstream `Authorization` header.
+   brokered upstream `Authorization` header. An application on the same host
+   can send the same check, so the node returns the upstream credential only
+   when the transport authenticates the caller as the gateway: the Unix
+   socket, or TLS with a verified client certificate (`--tls-ca`). On any
+   other transport the node refuses the check with `403` and logs a warning.
+   The API token is not sufficient, because applications hold it.
 2. Envoy `ext_proc` (`/envoy.service.ext_proc.v3.ExternalProcessor/Process`)
    inspects buffered JSON-RPC request bodies so `operation.allowed_tools` on
    MCP `tools/call` is enforced before injecting the upstream credential. The
    tool comes from the body only: a client can set any request header, so no
-   header names the tool on `ext_authz` or `ext_proc`.
+   header names the tool on `ext_authz` or `ext_proc`. The transport rule of
+   `ext_authz` applies to the header mutations of `ext_proc` too.
 3. RFC 8693 Token Exchange (`POST /oauth/token`) and MCP OAuth 2.1 accept
    `grant_type=urn:ietf:params:oauth:grant-type:token-exchange` with a JWT or
    Biscuit `subject_token` and optional `TaskAuthorizationRule` (in `options`,

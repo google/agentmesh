@@ -164,15 +164,18 @@ interfaces:
    control plane into a delegated Biscuit. On `OK` it returns `X-Mesh-Biscuit`,
    `X-Mesh-Principal`, `X-Mesh-Roles`, `X-Mesh-Task-Id` and, for `egress://`
    targets with a credential broker, the brokered `Authorization` header. The
-   MCP tool name is in the request body, so `ext_authz` enforces
-   `operation.allowed_tools` only when its filter sends the body
-   (`with_request_body`); without it, the node refuses a `POST` to an MCP
-   service from a credential that has `operation.allowed_tools`.
+   node returns that header only to a gateway that reaches it over the Unix
+   socket or with a verified client certificate. The MCP tool name is in the
+   request body, so `ext_authz` enforces `operation.allowed_tools` only when
+   its filter sends the body (`with_request_body`); without it, the node
+   refuses a `POST` to an MCP service from a credential that has
+   `operation.allowed_tools`.
 2. **Envoy `ext_proc` (`envoy.service.ext_proc.v3.ExternalProcessor`):** the
    body-aware counterpart to `ext_authz`. Because MCP tool names travel inside
    the JSON-RPC request body (`params.name`), `ext_proc` inspects the buffered
    body to enforce `operation.allowed_tools` and injects the brokered
-   credential only after the payload passes inspection.
+   credential only after the payload passes inspection, on the same
+   transport condition.
 3. **RFC 8693 Token Exchange (`POST /oauth/token`) & OAuth 2.1:** accepts
    `grant_type=urn:ietf:params:oauth:grant-type:token-exchange` with a JWT or
    Biscuit `subject_token` and optional `TaskAuthorizationRule` (in `options`,

@@ -32,6 +32,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -250,6 +251,158 @@ func TestGatewayServer_ExtAuthzHTTPAndGRPC(t *testing.T) {
 	if v2Resp.GetStatus().GetCode() != int32(codes.OK) {
 		t.Fatalf("v2 Check status = %d, want 0", v2Resp.GetStatus().GetCode())
 	}
+}
+
+// The evaluator returns an upstream credential only to a caller that the
+// transport authenticates as the gateway (GHSA-2g97-3v45-p9f4). Each entry
+// point must hand it that fact from the connection of the request.
+func TestGatewayServer_TrustedTransport(t *testing.T) {
+	const seenHeader = "X-Test-Trusted-Transport"
+	eval := func(_ context.Context, in CheckInput) CheckResult {
+		return CheckResult{
+			Allowed:         true,
+			HTTPStatus:      http.StatusOK,
+			ResponseHeaders: map[string]string{seenHeader: strconv.FormatBool(in.TrustedTransport)},
+		}
+	}
+	seenIn := func(headers []*corev3.HeaderValueOption) string {
+		for _, h := range headers {
+			if h.GetHeader().GetKey() == seenHeader {
+				return h.GetHeader().GetValue() + string(h.GetHeader().GetRawValue())
+			}
+		}
+		return ""
+	}
+	verifiedClientCert := func(r *http.Request) bool {
+		return r.TLS != nil && len(r.TLS.VerifiedChains) > 0
+	}
+
+	gw := NewGatewayServer(eval)
+	gw.TrustedTransport = verifiedClientCert
+	plainAddr := startH2CGatewayTestServer(t, gw)
+
+	serverCert, caPEM, _ := generateTestCerts(t)
+	caPool := x509.NewCertPool()
+	if !caPool.AppendCertsFromPEM(caPEM) {
+		t.Fatalf("failed to parse the test CA certificate")
+	}
+	mux := http.NewServeMux()
+	gw.RegisterRoutes(mux)
+	mtlsServer := httptest.NewUnstartedServer(mux)
+	mtlsServer.EnableHTTP2 = true
+	mtlsServer.TLS = &tls.Config{
+		Certificates: []tls.Certificate{serverCert},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    caPool,
+	}
+	mtlsServer.StartTLS()
+	t.Cleanup(mtlsServer.Close)
+	clientTLS := &tls.Config{RootCAs: caPool, Certificates: []tls.Certificate{serverCert}}
+
+	transports := []struct {
+		name       string
+		addr       string
+		baseURL    string
+		httpClient *http.Client
+		grpcCreds  credentials.TransportCredentials
+		want       string
+	}{
+		{
+			name:       "plain TCP",
+			addr:       plainAddr,
+			baseURL:    "http://" + plainAddr,
+			httpClient: &http.Client{},
+			grpcCreds:  insecure.NewCredentials(),
+			want:       "false",
+		},
+		{
+			name:       "verified client certificate",
+			addr:       mtlsServer.Listener.Addr().String(),
+			baseURL:    mtlsServer.URL,
+			httpClient: &http.Client{Transport: &http.Transport{TLSClientConfig: clientTLS, ForceAttemptHTTP2: true}},
+			grpcCreds:  credentials.NewTLS(clientTLS),
+			want:       "true",
+		},
+	}
+	entryPoints := []struct {
+		name string
+		seen func(ctx context.Context, httpClient *http.Client, baseURL string, conn *grpc.ClientConn) (string, error)
+	}{
+		{"HTTP ext_authz", func(ctx context.Context, httpClient *http.Client, baseURL string, _ *grpc.ClientConn) (string, error) {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/ext_authz/", nil)
+			if err != nil {
+				return "", err
+			}
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				return "", err
+			}
+			_ = resp.Body.Close()
+			return resp.Header.Get(seenHeader), nil
+		}},
+		{"gRPC Check v3", func(ctx context.Context, _ *http.Client, _ string, conn *grpc.ClientConn) (string, error) {
+			resp, err := authv3.NewAuthorizationClient(conn).Check(ctx, &authv3.CheckRequest{})
+			if err != nil {
+				return "", err
+			}
+			return seenIn(resp.GetOkResponse().GetHeaders()), nil
+		}},
+		{"gRPC Check v2", func(ctx context.Context, _ *http.Client, _ string, conn *grpc.ClientConn) (string, error) {
+			var resp authv3.CheckResponse
+			if err := conn.Invoke(ctx, ExtAuthzV2MethodPath, &authv3.CheckRequest{}, &resp); err != nil {
+				return "", err
+			}
+			return seenIn(resp.GetOkResponse().GetHeaders()), nil
+		}},
+		{"gRPC ext_proc", func(ctx context.Context, _ *http.Client, _ string, conn *grpc.ClientConn) (string, error) {
+			stream, err := extprocv3.NewExternalProcessorClient(conn).Process(ctx)
+			if err != nil {
+				return "", err
+			}
+			if err := stream.Send(&extprocv3.ProcessingRequest{
+				Request: &extprocv3.ProcessingRequest_RequestHeaders{
+					RequestHeaders: &extprocv3.HttpHeaders{EndOfStream: true},
+				},
+			}); err != nil {
+				return "", err
+			}
+			resp, err := stream.Recv()
+			if err != nil {
+				return "", err
+			}
+			return seenIn(resp.GetRequestHeaders().GetResponse().GetHeaderMutation().GetSetHeaders()), nil
+		}},
+	}
+	for _, tr := range transports {
+		conn, err := grpc.NewClient("passthrough:///"+tr.addr, grpc.WithTransportCredentials(tr.grpcCreds))
+		if err != nil {
+			t.Fatalf("grpc.NewClient over %s: %v", tr.name, err)
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		for _, ep := range entryPoints {
+			t.Run(tr.name+"/"+ep.name, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				got, err := ep.seen(ctx, tr.httpClient, tr.baseURL, conn)
+				if err != nil {
+					t.Fatalf("%s over %s: %v", ep.name, tr.name, err)
+				}
+				if got != tr.want {
+					t.Errorf("the evaluator saw TrustedTransport = %q, want %q", got, tr.want)
+				}
+			})
+		}
+	}
+
+	t.Run("no transport is trusted when the server has no rule", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/ext_authz/", nil)
+		req.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{{}}}}
+		rec := httptest.NewRecorder()
+		NewGatewayServer(eval).HandleExtAuthzHTTP(rec, req)
+		if got := rec.Header().Get(seenHeader); got != "false" {
+			t.Errorf("the evaluator saw TrustedTransport = %q, want %q", got, "false")
+		}
+	})
 }
 
 func TestGatewayServer_ExtProcProcess(t *testing.T) {

@@ -630,43 +630,71 @@ func TestGatewayExtProcServer(t *testing.T) {
 	}
 	_ = stream2.CloseSend()
 
-	// 3. Egress route via ext_proc injects brokered Authorization header.
-	stream3, err := epClient.Process(context.Background())
+	// 3. Egress route via ext_proc on the node's own listeners. The header
+	// mutations carry the brokered Authorization header, so the node answers
+	// the Unix socket and refuses plain TCP.
+	socketPath := filepath.Join(t.TempDir(), "node.sock")
+	sidecar, err := StartSidecarServer(node, "127.0.0.1:0", socketPath, "api-token", "", "", "")
 	if err != nil {
-		t.Fatalf("Process 3: %v", err)
+		t.Fatalf("StartSidecarServer: %v", err)
 	}
-	_ = stream3.Send(&extprocv3.ProcessingRequest{
-		Request: &extprocv3.ProcessingRequest_RequestHeaders{
-			RequestHeaders: &extprocv3.HttpHeaders{
-				EndOfStream: true,
-				Headers: &corev3.HeaderMap{
-					Headers: []*corev3.HeaderValue{
-						{Key: ":method", Value: "POST"},
-						{Key: ":path", Value: "/mesh/egress/api.github.com/repos/google/agentmesh"},
-						{Key: "authorization", Value: "Bearer " + b64Biscuit},
+	t.Cleanup(func() { _ = sidecar.Close() })
+
+	for _, tc := range []struct {
+		name       string
+		target     string
+		wantAuth   string
+		wantStatus typev3.StatusCode
+	}{
+		{name: "plain TCP", target: node.BoundHTTPAddr, wantStatus: typev3.StatusCode_Forbidden},
+		{name: "Unix socket", target: "unix:" + socketPath, wantAuth: "Bearer gateway-injected-github-token"},
+	} {
+		t.Run("egress route over "+tc.name, func(t *testing.T) {
+			conn, err := grpc.NewClient(tc.target, grpc.WithTransportCredentials(insecure.NewCredentials()))
+			if err != nil {
+				t.Fatalf("grpc.NewClient: %v", err)
+			}
+			defer func() { _ = conn.Close() }()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			stream, err := extprocv3.NewExternalProcessorClient(conn).Process(ctx)
+			if err != nil {
+				t.Fatalf("Process: %v", err)
+			}
+			if err := stream.Send(&extprocv3.ProcessingRequest{
+				Request: &extprocv3.ProcessingRequest_RequestHeaders{
+					RequestHeaders: &extprocv3.HttpHeaders{
+						EndOfStream: true,
+						Headers: &corev3.HeaderMap{
+							Headers: []*corev3.HeaderValue{
+								{Key: ":method", Value: "POST"},
+								{Key: ":path", Value: "/mesh/egress/api.github.com/repos/google/agentmesh"},
+								{Key: "authorization", Value: "Bearer " + b64Biscuit},
+							},
+						},
 					},
 				},
-			},
-		},
-	})
-	resp3Hdr, err := stream3.Recv()
-	if err != nil {
-		t.Fatalf("Recv RequestHeaders 3: %v", err)
+			}); err != nil {
+				t.Fatalf("Send RequestHeaders: %v", err)
+			}
+			resp, err := stream.Recv()
+			if err != nil {
+				t.Fatalf("Recv RequestHeaders: %v", err)
+			}
+			var gotAuth string
+			for _, h := range resp.GetRequestHeaders().GetResponse().GetHeaderMutation().GetSetHeaders() {
+				if strings.EqualFold(h.GetHeader().GetKey(), "Authorization") {
+					gotAuth = h.GetHeader().GetValue() + string(h.GetHeader().GetRawValue())
+				}
+			}
+			if gotAuth != tc.wantAuth {
+				t.Errorf("Authorization in the header mutations = %q, want %q", gotAuth, tc.wantAuth)
+			}
+			if got := resp.GetImmediateResponse().GetStatus().GetCode(); got != tc.wantStatus {
+				t.Errorf("immediate response status = %v, want %v (answer %+v)", got, tc.wantStatus, resp)
+			}
+		})
 	}
-	foundAuth := false
-	for _, h := range resp3Hdr.GetRequestHeaders().GetResponse().GetHeaderMutation().GetSetHeaders() {
-		val := h.GetHeader().GetValue()
-		if val == "" {
-			val = string(h.GetHeader().GetRawValue())
-		}
-		if strings.EqualFold(h.GetHeader().GetKey(), "Authorization") && val == "Bearer gateway-injected-github-token" {
-			foundAuth = true
-		}
-	}
-	if !foundAuth {
-		t.Fatalf("expected brokered Authorization header in ext_proc response, got %+v", resp3Hdr)
-	}
-	_ = stream3.CloseSend()
 }
 
 func TestBoundedResponseRecorderOverflow(t *testing.T) {

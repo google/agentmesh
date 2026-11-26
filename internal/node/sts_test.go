@@ -19,6 +19,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -26,6 +28,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -809,6 +813,105 @@ func TestExtAuthzHTTPAndGRPC(t *testing.T) {
 		if got := codes.Code(grpcResp.GetStatus().GetCode()); got != tc.wantCode {
 			t.Fatalf("%s: gRPC CheckResponse status code %v, want %v", tc.name, got, tc.wantCode)
 		}
+	}
+}
+
+// An application on the same host can reach the ext_authz routes. Only a
+// caller that the transport authenticates as the gateway gets the upstream
+// credential of an egress destination (GHSA-2g97-3v45-p9f4).
+func TestExtAuthzUpstreamCredentialNeedsTrustedTransport(t *testing.T) {
+	const secret = "ghp_secret_of_the_node"
+	secrets := t.TempDir()
+	if err := os.WriteFile(filepath.Join(secrets, "github-ro"), []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatalf("write the credential file: %v", err)
+	}
+
+	plainTCP := func(r *http.Request) *http.Request { return r }
+	unixSocket := func(r *http.Request) *http.Request {
+		return r.WithContext(context.WithValue(r.Context(), localSocketContextKey{}, true))
+	}
+	tlsWith := func(state tls.ConnectionState) func(*http.Request) *http.Request {
+		return func(r *http.Request) *http.Request {
+			r.TLS = &state
+			return r
+		}
+	}
+	tlsNoClientCert := tlsWith(tls.ConnectionState{})
+	verifiedClientCert := tlsWith(tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{{}}}})
+
+	tests := []struct {
+		name       string
+		credential string
+		target     string
+		tool       string
+		transport  func(*http.Request) *http.Request
+		wantStatus int
+		wantAuth   string
+	}{
+		{name: "plain TCP", credential: "github-ro", target: "egress://api.github.com", transport: plainTCP, wantStatus: http.StatusForbidden},
+		{name: "TLS without a client certificate", credential: "github-ro", target: "egress://api.github.com", transport: tlsNoClientCert, wantStatus: http.StatusForbidden},
+		{name: "Unix socket", credential: "github-ro", target: "egress://api.github.com", transport: unixSocket, wantStatus: http.StatusOK, wantAuth: "Bearer " + secret},
+		{name: "verified client certificate", credential: "github-ro", target: "egress://api.github.com", transport: verifiedClientCert, wantStatus: http.StatusOK, wantAuth: "Bearer " + secret},
+		{name: "plain TCP, destination without a credential", target: "egress://api.github.com", transport: plainTCP, wantStatus: http.StatusOK},
+		{name: "plain TCP, MCP service", credential: "github-ro", target: "mcp://github", tool: "get_pr", transport: plainTCP, wantStatus: http.StatusOK},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newSTSNodeHarness(t)
+			h.node.services = NewServiceRegistry(&fakeDHT{}, 0)
+			svc, err := newEgressServiceForNode(h.node, &api.EgressDestination{
+				Name:       "api.github.com",
+				TargetUrl:  "https://api.github.com",
+				Credential: tc.credential,
+			}, secrets)
+			if err != nil {
+				t.Fatalf("newEgressServiceForNode: %v", err)
+			}
+			t.Cleanup(func() { _ = svc.Teardown() })
+			if err := h.node.services.Register(context.Background(), svc); err != nil {
+				t.Fatalf("Register egress: %v", err)
+			}
+			task, err := identity.AttenuateBiscuit(h.nodeBiscuit, &api.TaskAuthorizationRule{
+				Name: "read-acme-repos",
+				Rules: []*api.TaskRule{
+					{
+						AllowedServices: []string{"egress://api.github.com"},
+						Operation:       &api.TaskOperation{AllowedMethods: []string{"GET"}, AllowedPaths: []string{"/repos/acme/*"}},
+					},
+					{
+						AllowedServices: []string{"mcp://github"},
+						Operation:       &api.TaskOperation{AllowedTools: []string{"get_pr"}},
+					},
+				},
+			})
+			if err != nil {
+				t.Fatalf("AttenuateBiscuit: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodGet, "/ext_authz/repos/acme/x", nil)
+			if tc.tool != "" {
+				// The body names the tool of an MCP call.
+				body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + tc.tool + `"}}`
+				req = httptest.NewRequest(http.MethodPost, "/ext_authz/repos/acme/x", strings.NewReader(body))
+			}
+			req.Header.Set(api.HeaderMeshTargetService, tc.target)
+			req.Header.Set(api.HeaderMeshBiscuit, base64.StdEncoding.EncodeToString(task))
+			rec := httptest.NewRecorder()
+			handleExtAuthzHTTP(h.node, rec, tc.transport(req))
+
+			if rec.Code != tc.wantStatus {
+				t.Errorf("status = %d, want %d (body %q)", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if got := rec.Header().Get("Authorization"); got != tc.wantAuth {
+				t.Errorf("Authorization in the answer = %q, want %q", got, tc.wantAuth)
+			}
+			if strings.Contains(rec.Body.String(), secret) {
+				t.Errorf("body %q carries the upstream credential", rec.Body.String())
+			}
+			if tc.wantStatus == http.StatusForbidden && !strings.Contains(rec.Body.String(), "Unix socket") {
+				t.Errorf("body = %q, want it to name the Unix socket and the client certificate", rec.Body.String())
+			}
+		})
 	}
 }
 

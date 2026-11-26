@@ -161,6 +161,8 @@ Decision Point and Token Service:
   `TaskAuthorizationRule` chain (including MCP tool names in JSON-RPC bodies
   via `ext_proc`), and for `egress://` targets injects the brokered upstream
   credential into `Authorization` before the gateway forwards the request.
+  The node returns that credential only to a gateway that reaches it over the
+  Unix socket or with a verified client certificate.
 - **RFC 8693 backend token exchange (`POST /oauth/token`):**
   `agentgateway`'s built-in RFC 8693 token exchange policy can point directly
   at `http://agentmesh-node:8080/oauth/token` to exchange workload JWTs or narrow

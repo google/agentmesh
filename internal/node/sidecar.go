@@ -308,6 +308,13 @@ func fromLocalSocket(r *http.Request) bool {
 	return authorized
 }
 
+// fromTrustedTransport reports whether the transport authenticates the caller:
+// the node's Unix socket, or TLS with a verified client certificate. The API
+// token does not count, because applications hold it.
+func fromTrustedTransport(r *http.Request) bool {
+	return fromLocalSocket(r) || (r.TLS != nil && len(r.TLS.VerifiedChains) > 0)
+}
+
 // StartUnauthSidecarServer serves the enrollment-only API of a node that has no
 // identity yet, on a TCP address, on a Unix socket, or on both.
 func StartUnauthSidecarServer(controlPlaneURL, addr, socketPath, certFile, keyFile string) (*http.Server, error) {

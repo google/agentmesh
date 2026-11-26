@@ -64,6 +64,10 @@ type CheckInput struct {
 	// any request header, so no header names the tool.
 	MCPTool            string
 	AllowMCPStreamInit bool
+	// TrustedTransport reports that the check arrived on a transport that
+	// authenticates the caller as the gateway. The Evaluator returns an
+	// upstream credential only when it is set.
+	TrustedTransport bool
 }
 
 // CheckResult represents the policy decision and header mutations returned by
@@ -86,6 +90,12 @@ type GatewayServer struct {
 
 	eval       Evaluator
 	grpcServer *grpc.Server
+
+	// TrustedTransport reports whether a request arrived on a transport that
+	// authenticates the caller as the gateway. Each entry point passes the
+	// answer to the Evaluator in CheckInput.TrustedTransport. Set it before
+	// the server handles requests. Nil trusts no transport.
+	TrustedTransport func(*http.Request) bool
 }
 
 // NewGatewayServer constructs a GatewayServer backed by a google.golang.org/grpc
@@ -113,6 +123,19 @@ func (s *GatewayServer) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(ExtProcMethodPath, s.ServeGRPC)
 }
 
+type trustedTransportKey struct{}
+
+func (s *GatewayServer) trustedTransport(r *http.Request) bool {
+	return s.TrustedTransport != nil && s.TrustedTransport(r)
+}
+
+// trustedTransportFromContext reads the transport fact that ServeGRPC stored.
+// A context that did not pass through ServeGRPC is not trusted.
+func trustedTransportFromContext(ctx context.Context) bool {
+	trusted, _ := ctx.Value(trustedTransportKey{}).(bool)
+	return trusted
+}
+
 // ServeGRPC dispatches an incoming HTTP/2 gRPC request to the underlying
 // google.golang.org/grpc server, normalizing Envoy v2 ext_authz paths to v3.
 func (s *GatewayServer) ServeGRPC(w http.ResponseWriter, r *http.Request) {
@@ -120,6 +143,9 @@ func (s *GatewayServer) ServeGRPC(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// grpc.Server.ServeHTTP derives the context of Check and Process from the
+	// request context, so the transport fact travels in it.
+	r = r.WithContext(context.WithValue(r.Context(), trustedTransportKey{}, s.trustedTransport(r)))
 	if r.URL.Path == ExtAuthzV2MethodPath {
 		r2 := new(http.Request)
 		*r2 = *r
@@ -174,6 +200,7 @@ func (s *GatewayServer) HandleExtAuthzHTTP(w http.ResponseWriter, r *http.Reques
 		Body:               bodyBytes,
 		MCPTool:            mcpTool,
 		AllowMCPStreamInit: allowInit,
+		TrustedTransport:   s.trustedTransport(r),
 	})
 	if !res.Allowed {
 		status := res.HTTPStatus
@@ -212,6 +239,7 @@ func (s *GatewayServer) Check(ctx context.Context, req *authv3.CheckRequest) (*a
 		Body:               body,
 		MCPTool:            mcpTool,
 		AllowMCPStreamInit: allowInit,
+		TrustedTransport:   trustedTransportFromContext(ctx),
 	})
 	if res.Allowed {
 		var hdrs []*corev3.HeaderValueOption
@@ -408,6 +436,7 @@ func (s *GatewayServer) evaluateExtProcDecision(ctx context.Context, method, pat
 		Headers:            headers,
 		MCPTool:            mcpTool,
 		AllowMCPStreamInit: allowMCPStreamInit,
+		TrustedTransport:   trustedTransportFromContext(ctx),
 	})
 	if !res.Allowed {
 		status := typev3.StatusCode_Forbidden
