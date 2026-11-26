@@ -139,13 +139,14 @@ On the local API listeners, `agentmesh-node` serves:
   `X-Mesh-Labels`, `X-Mesh-Actor-Node`, `X-Mesh-Origin: mesh-gateway`, and, when the token is
   task-attenuated, `X-Mesh-Task` (the last `TaskAuthorizationRule` as protojson)
   and `X-Mesh-Task-Id`. For an `egress://` target with a configured credential
-  broker it also carries the brokered `Authorization` header for the upstream.
+  broker it also carries the brokered `Authorization` header for the upstream,
+  but only to a gateway on a trusted transport (see below).
 - **Envoy gRPC `envoy.service.ext_proc.v3.ExternalProcessor/Process`**: the
   body-aware gateway processor. It inspects JSON-RPC bodies on MCP `tools/call`
   requests to enforce `operation.allowed_tools` in `TaskAuthorizationRule`
   blocks, strips spoofed inbound `X-Mesh-*` and `X-Peer-Id` headers via
   `remove_headers`, stamps the verified provenance headers above, and injects
-  the upstream credential.
+  the upstream credential on the same condition.
 
 Inbound mesh streams (`/libp2p-http`) and external router ingress
 (`/mesh/ingress/1.0.0`) stamp the same verified `X-Mesh-Principal`,
@@ -164,6 +165,21 @@ header; the node ignores an `X-Mesh-Mcp-Tool` header. To enforce
   Without a body the node cannot see the tool, so it refuses a `POST` to an
   MCP service from a credential that has `operation.allowed_tools`. A `GET`
   or a `DELETE` carries no call and is decided for the service alone.
+
+These endpoints do not require the node's API token, so an application on the
+same host can call them too. The node returns the upstream credential only
+when the transport authenticates the caller as the gateway:
+
+- the Unix socket (`--socket-path`), or
+- the TCP listener with TLS and a verified client certificate (`--tls-cert`,
+  `--tls-key` and `--tls-ca`).
+
+On any other transport the node refuses a check that would return the
+upstream credential. It answers `403` and logs a warning with the target. It
+does not allow the request without the credential. The API token does not
+change this, because applications hold it. Checks that return no upstream
+credential (`mcp://`, `inference://`, `a2a://`, or an `egress://` destination
+with no credential) work on every transport.
 
 ## MCP tools
 

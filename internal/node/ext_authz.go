@@ -31,6 +31,11 @@ import (
 const (
 	// ExtProcMethodPath is the gRPC HTTP/2 path for Envoy ExternalProcessor.Process.
 	ExtProcMethodPath = envoy.ExtProcMethodPath
+
+	// upstreamCredentialTransportRule is the reason of a refused check: the
+	// answer would carry the credential of an egress destination, and the
+	// transport does not authenticate the caller as the gateway.
+	upstreamCredentialTransportRule = "the upstream credential is returned only over the Unix socket (--socket-path) or to a verified client certificate (--tls-ca)"
 )
 
 type extAuthzCheckInput = envoy.CheckInput
@@ -39,9 +44,11 @@ type extAuthzCheckResult = envoy.CheckResult
 // newNodeEnvoyGateway creates an Envoy ext_authz + ext_proc GatewayServer backed
 // by this node's Biscuit PDP and credential broker.
 func newNodeEnvoyGateway(node *AgentMeshNode) *envoy.GatewayServer {
-	return envoy.NewGatewayServer(func(ctx context.Context, in envoy.CheckInput) envoy.CheckResult {
+	gw := envoy.NewGatewayServer(func(ctx context.Context, in envoy.CheckInput) envoy.CheckResult {
 		return evaluateExtAuthz(ctx, node, in)
 	})
+	gw.TrustedTransport = fromTrustedTransport
+	return gw
 }
 
 func handleExtAuthzHTTP(node *AgentMeshNode, w http.ResponseWriter, r *http.Request) {
@@ -182,6 +189,16 @@ func evaluateExtAuthz(ctx context.Context, node *AgentMeshNode, in extAuthzCheck
 	if after, ok := strings.CutPrefix(target, api.EgressServicePrefix); ok && node.services != nil {
 		if svc, ok := node.services.GetTyped(api.ServiceType_SERVICE_TYPE_EGRESS, after); ok {
 			if es, ok := svc.(*EgressService); ok && es.exchanger != nil {
+				// An application on the same host can send this check too.
+				// Only the transport tells it from the gateway.
+				if !in.TrustedTransport {
+					logger.Warnf("[ExtAuthz] Check for %s by %s refused: %s", target, claims.Principal(), upstreamCredentialTransportRule)
+					return extAuthzCheckResult{
+						Allowed:    false,
+						HTTPStatus: http.StatusForbidden,
+						Message:    "Forbidden: " + upstreamCredentialTransportRule,
+					}
+				}
 				authHdr, _, bErr := es.resolveAuthorization(WithCallerBiscuit(ctx, rawBiscuit))
 				if bErr != nil {
 					return extAuthzCheckResult{

@@ -237,9 +237,19 @@ egress:
 	}
 	pepCfg := writeNodeConfig(t, pepDir, nil, svcDecl{Type: "mcp", Name: "github", TargetURL: mcpBackend.URL})
 	pepToken := "test-token"
+	// The ext_proc gateway below reaches the pep node over its Unix socket:
+	// the node returns the upstream credential only there or to a verified
+	// client certificate. t.TempDir is too long for a socket path.
+	socketDir, err := os.MkdirTemp("", "agentmesh-sts-")
+	if err != nil {
+		t.Fatalf("create short socket directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	pepSocket := filepath.Join(socketDir, "pep.sock")
 	pep := launchNode(t, nodeBin, os.Environ(), pepDir, "run",
 		"--control-plane", controlPlane,
 		"--data-dir", pepDir,
+		"--socket-path", pepSocket,
 		"--api-token-path", tokenPath(t, pepToken),
 		"--jwt", mintToken(map[string]any{"sub": "pep-user", "roles": []string{api.RoleNode}}),
 		"--listen", "/ip4/127.0.0.1/udp/0/quic-v1",
@@ -656,7 +666,7 @@ egress:
 	})
 
 	t.Run("Gateway ext_proc over h2c datapath on live agentmesh-node (egress credential injection and MCP tools/call across mesh)", func(t *testing.T) {
-		cc, err := grpc.NewClient("passthrough:///"+pepAPI, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		cc, err := grpc.NewClient("unix:"+pepSocket, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if err != nil {
 			t.Fatalf("grpc.NewClient: %v", err)
 		}
@@ -665,7 +675,7 @@ egress:
 		mcpBackendCalls.Store(0)
 
 		// Envoy-compatible Gateway proxy that runs the ExternalProcessor/Process gRPC stream
-		// against pepAPI (including ModeOverride BUFFERED body inspection and HeaderMutation)
+		// against the pep node's Unix socket (including ModeOverride BUFFERED body inspection and HeaderMutation)
 		// before forwarding to the target backend or mesh dataplane.
 		gatewayProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var bodyBytes []byte
