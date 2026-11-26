@@ -1020,34 +1020,42 @@ func (s *Server) HandleSTSToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Read the egress policy once. The served_by check, the audience and the
+	// Biscuit authorization below must decide on the same data, and none of
+	// them can decide without it.
+	destHost := api.NormalizeMeshHost(strings.TrimPrefix(strings.TrimSpace(req.Destination), api.EgressServicePrefix))
+	egressList, err := s.store.GetEgressDestinations(r.Context())
+	if err != nil && !errors.Is(err, storage.ErrNotFound) {
+		logger.Errorw("STS token refused: egress policy not read", "actor_node", nodeRecord.PeerID, "destination", req.Destination, "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
 	// Verify that if the destination is configured in PolicyConfig.egress with
 	// served_by constraints, the calling agentmesh-node is authorized to serve it.
-	destHost := api.NormalizeMeshHost(strings.TrimPrefix(strings.TrimSpace(req.Destination), api.EgressServicePrefix))
-	if egressList, err := s.store.GetEgressDestinations(r.Context()); err == nil {
-		for _, d := range egressList {
-			if d != nil && d.GetName() == destHost {
-				if len(d.GetServedBy()) > 0 {
-					callingRoles := s.nodeRoles(r.Context(), nodeRecord)
-					if !api.EgressServedBy(d, callingRoles, nodeRecord.Labels) {
-						reason := fmt.Sprintf("calling node %s is not in served_by for egress://%s", nodeRecord.PeerID, destHost)
-						logSTSDenyBeforeBiscuit(nodeRecord.PeerID, &req, reason)
-						http.Error(w, reason, http.StatusForbidden)
-						return
-					}
+	for _, d := range egressList {
+		if d != nil && d.GetName() == destHost {
+			if len(d.GetServedBy()) > 0 {
+				callingRoles := s.nodeRoles(r.Context(), nodeRecord)
+				if !api.EgressServedBy(d, callingRoles, nodeRecord.Labels) {
+					reason := fmt.Sprintf("calling node %s is not in served_by for egress://%s", nodeRecord.PeerID, destHost)
+					logSTSDenyBeforeBiscuit(nodeRecord.PeerID, &req, reason)
+					http.Error(w, reason, http.StatusForbidden)
+					return
 				}
-				break
 			}
+			break
 		}
 	}
 
-	audience, audErr := s.resolveEgressAudience(r.Context(), req.Destination, req.Audience)
+	audience, audErr := resolveEgressAudience(egressList, destHost, req.Audience)
 	if audErr != nil {
 		logSTSDenyBeforeBiscuit(nodeRecord.PeerID, &req, audErr.Error())
 		http.Error(w, audErr.Error(), http.StatusForbidden)
 		return
 	}
 
-	claims, status, err := s.authorizeBiscuitForEgress(r.Context(), req.Biscuit, req.Destination)
+	claims, status, err := s.authorizeBiscuitForEgress(r.Context(), req.Biscuit, req.Destination, egressList)
 	if err != nil {
 		clientPeerID := ""
 		if claims != nil {
@@ -1165,33 +1173,44 @@ func logSTSDenyBeforeBiscuit(actorNode string, req *api.STSTokenRequest, reason 
 	)
 }
 
-func (s *Server) resolveEgressAudience(ctx context.Context, destination, reqAudience string) (string, error) {
-	destHost := api.NormalizeMeshHost(strings.TrimPrefix(strings.TrimSpace(destination), api.EgressServicePrefix))
-	reqAud := strings.TrimSpace(reqAudience)
-	if egressList, err := s.store.GetEgressDestinations(ctx); err == nil {
-		for _, d := range egressList {
-			if d != nil && d.GetName() == destHost {
-				if fed := d.GetBroker().GetOidcFederation(); fed != nil && strings.TrimSpace(fed.GetAudience()) != "" {
-					policyAud := strings.TrimSpace(fed.GetAudience())
-					if reqAud != "" && reqAud != policyAud {
-						return "", fmt.Errorf("requested audience %q does not match policy audience for egress://%s", reqAud, destHost)
-					}
-					return policyAud, nil
-				}
-				if aws := d.GetBroker().GetAwsAssumeRole(); aws != nil && strings.TrimSpace(aws.GetRoleArn()) != "" {
-					if reqAud != "" && reqAud != "sts.amazonaws.com" {
-						return "", fmt.Errorf("requested audience %q does not match AWS STS audience \"sts.amazonaws.com\" for egress://%s", reqAud, destHost)
-					}
-					return "sts.amazonaws.com", nil
-				}
-				break
+// pinnedEgressAudience returns the audience that the broker of d pins, or ""
+// when d has no broker that takes a border JWT.
+func pinnedEgressAudience(d *api.EgressDestination) string {
+	if aud := strings.TrimSpace(d.GetBroker().GetOidcFederation().GetAudience()); aud != "" {
+		return aud
+	}
+	if strings.TrimSpace(d.GetBroker().GetAwsAssumeRole().GetRoleArn()) != "" {
+		return "sts.amazonaws.com"
+	}
+	return ""
+}
+
+// resolveEgressAudience returns the aud claim of a border JWT for destHost.
+// The audience comes from the egress policy alone: the audience that the
+// broker of the destination pins, else the default https://<destHost>. The
+// calling node cannot choose it: a requested audience must equal that value.
+// The default is refused when the policy pins the same value for another
+// destination, so a grant on one name cannot yield the audience of another.
+func resolveEgressAudience(egress []*api.EgressDestination, destHost, reqAudience string) (string, error) {
+	policyAud := ""
+	for _, d := range egress {
+		if d != nil && d.GetName() == destHost {
+			policyAud = pinnedEgressAudience(d)
+			break
+		}
+	}
+	if policyAud == "" {
+		policyAud = "https://" + destHost
+		for _, d := range egress {
+			if d != nil && pinnedEgressAudience(d) == policyAud {
+				return "", fmt.Errorf("default audience %q for egress://%s is the audience that the policy pins for egress://%s", policyAud, destHost, d.GetName())
 			}
 		}
 	}
-	if reqAud != "" {
-		return reqAud, nil
+	if reqAud := strings.TrimSpace(reqAudience); reqAud != "" && reqAud != policyAud {
+		return "", fmt.Errorf("requested audience %q does not match policy audience for egress://%s", reqAud, destHost)
 	}
-	return "https://" + destHost, nil
+	return policyAud, nil
 }
 
 var stsDestinationRules = []biscuit.Rule{
@@ -1212,10 +1231,11 @@ func mustParseSTSRule(s string) biscuit.Rule {
 }
 
 // authorizeBiscuitForEgress verifies the caller's Biscuit and its tar_block chain
-// against egress://<destination>. Once the Biscuit has verified, it returns the
-// claims even when it refuses the request, so the caller's Border Crossing line
-// can name the origin peer the Biscuit is bound to.
-func (s *Server) authorizeBiscuitForEgress(ctx context.Context, rawBiscuit []byte, destination string) (*identity.VerifiedBiscuitClaims, int, error) {
+// against egress://<destination>, with egressDests as the egress policy. Once
+// the Biscuit has verified, it returns the claims even when it refuses the
+// request, so the caller's Border Crossing line can name the origin peer the
+// Biscuit is bound to.
+func (s *Server) authorizeBiscuitForEgress(ctx context.Context, rawBiscuit []byte, destination string, egressDests []*api.EgressDestination) (*identity.VerifiedBiscuitClaims, int, error) {
 	trustedKeys, err := s.store.GetAllValidPublicKeys(ctx)
 	if err != nil {
 		return nil, http.StatusInternalServerError, fmt.Errorf("failed to load signing keys: %w", err)
@@ -1245,10 +1265,6 @@ func (s *Server) authorizeBiscuitForEgress(ctx context.Context, rawBiscuit []byt
 	roles, bindings, err := s.store.GetMeshPolicy(ctx)
 	if err != nil && err != storage.ErrNotFound {
 		return claims, http.StatusInternalServerError, fmt.Errorf("failed to load mesh policy: %w", err)
-	}
-	egressDests, err := s.store.GetEgressDestinations(ctx)
-	if err != nil && err != storage.ErrNotFound {
-		return claims, http.StatusInternalServerError, fmt.Errorf("failed to load egress destinations: %w", err)
 	}
 	policyRules, _ := api.BuildPolicyRules(roles, bindings)
 	policyRules = append(policyRules, api.BuildEgressServingRules(egressDests)...)

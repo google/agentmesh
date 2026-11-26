@@ -25,13 +25,16 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -290,7 +293,16 @@ func TestOIDCIssuerJWKSAndSTSToken(t *testing.T) {
 		{Role: api.RoleNode, Members: []string{api.SystemAuthenticated}},
 		{Role: "analyst", Members: []string{"user:alice-sub"}},
 	}
-	if err := store.SavePolicyDocument(ctx, roles, bindings, nil); err != nil {
+	// The aud claim comes from the egress policy: the broker pins the audience
+	// that the /sts/token requests below name.
+	const wifAudience = "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/agentmesh/providers/cp"
+	egress := []*api.EgressDestination{{
+		Name: "bigquery.googleapis.com",
+		Broker: &api.CredentialBroker{Kind: &api.CredentialBroker_OidcFederation{
+			OidcFederation: &api.OIDCFederation{TokenEndpoint: "https://sts.googleapis.com/v1/token", Audience: wifAudience},
+		}},
+	}}
+	if err := store.SavePolicyDocument(ctx, roles, bindings, egress); err != nil {
 		t.Fatalf("SavePolicyDocument: %v", err)
 	}
 
@@ -353,7 +365,7 @@ func TestOIDCIssuerJWKSAndSTSToken(t *testing.T) {
 	stsReq := &api.STSTokenRequest{
 		Biscuit:            exResp.BiscuitToken,
 		Destination:        "bigquery.googleapis.com",
-		Audience:           "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/agentmesh/providers/cp",
+		Audience:           wifAudience,
 		ChallengeUnixMs:    stsTs,
 		ChallengeSignature: stsSig,
 	}
@@ -735,7 +747,7 @@ func TestOAuth21AuthorizationCodePKCEAndTokenExchange(t *testing.T) {
 	if inspected.NodePeerID != nodePeerID.String() {
 		t.Fatalf("expected InspectVerifiedBiscuit to canonicalize NodePeerID to %q, got %q", nodePeerID.String(), inspected.NodePeerID)
 	}
-	if _, status, err := srv.authorizeBiscuitForEgress(ctx, nonCanonicalBiscuit, "bigquery.googleapis.com"); err == nil || status != http.StatusForbidden || !strings.Contains(err.Error(), "is banned") {
+	if _, status, err := srv.authorizeBiscuitForEgress(ctx, nonCanonicalBiscuit, "bigquery.googleapis.com", nil); err == nil || status != http.StatusForbidden || !strings.Contains(err.Error(), "is banned") {
 		t.Fatalf("expected authorizeBiscuitForEgress to reject banned CIDv1 peer ID with 403 'is banned', got status=%d err=%v", status, err)
 	}
 }
@@ -1030,7 +1042,16 @@ func TestSTSTokenBorderCrossingNamesTheOriginPeer(t *testing.T) {
 	bindings := []*api.PolicyBinding{
 		{Role: api.RoleNode, Members: []string{api.SystemAuthenticated}},
 	}
-	if err := store.SavePolicyDocument(context.Background(), roles, bindings, nil); err != nil {
+	// The aud claim comes from the egress policy: the broker pins the audience
+	// that the allowed request below names.
+	const wifAudience = "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/agentmesh/providers/cp"
+	egress := []*api.EgressDestination{{
+		Name: "bigquery.googleapis.com",
+		Broker: &api.CredentialBroker{Kind: &api.CredentialBroker_OidcFederation{
+			OidcFederation: &api.OIDCFederation{TokenEndpoint: "https://sts.googleapis.com/v1/token", Audience: wifAudience},
+		}},
+	}}
+	if err := store.SavePolicyDocument(context.Background(), roles, bindings, egress); err != nil {
 		t.Fatalf("SavePolicyDocument: %v", err)
 	}
 
@@ -1104,7 +1125,7 @@ func TestSTSTokenBorderCrossingNamesTheOriginPeer(t *testing.T) {
 		return resp.StatusCode
 	}
 
-	if status := postSTS("bigquery.googleapis.com", "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/agentmesh/providers/cp"); status != http.StatusOK {
+	if status := postSTS("bigquery.googleapis.com", wifAudience); status != http.StatusOK {
 		t.Fatalf("POST /sts/token for bigquery.googleapis.com returned %d, want 200", status)
 	}
 	if status := postSTS("api.github.com", "https://api.github.com"); status != http.StatusForbidden {
@@ -1266,6 +1287,12 @@ func TestSTSTokenBorderCrossingDeniesBeforeBiscuit(t *testing.T) {
 			audience:    "https://evil.example.com",
 			reason:      `requested audience "https://evil.example.com" does not match policy audience for egress://` + audienceDest,
 		},
+		{
+			name:        "audience, destination with no broker",
+			destination: "api.example.com",
+			audience:    policyAud,
+			reason:      `requested audience "` + policyAud + `" does not match policy audience for egress://api.example.com`,
+		},
 	}
 	for _, tc := range cases {
 		if status := postSTS(tc.destination, tc.audience); status != http.StatusForbidden {
@@ -1299,5 +1326,230 @@ func TestSTSTokenBorderCrossingDeniesBeforeBiscuit(t *testing.T) {
 	case entry := <-crossings:
 		t.Fatalf("got an extra Border Crossing line %v, want exactly one per refusal", entry)
 	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// postSTSToken calls POST /sts/token as the node that holds priv and cred, with
+// cred as the caller's Biscuit. It returns the status and, for a 200, the aud
+// claim of the minted JWT.
+func postSTSToken(t *testing.T, baseURL string, priv crypto.PrivKey, id peer.ID, cred []byte, destination, audience string) (int, string) {
+	t.Helper()
+	ts := time.Now().UnixMilli()
+	sig, err := priv.Sign(api.STSTokenChallenge(id.String(), ts))
+	if err != nil {
+		t.Fatalf("sign the STS challenge: %v", err)
+	}
+	reqBytes, err := proto.Marshal(&api.STSTokenRequest{
+		Biscuit:            cred,
+		Destination:        destination,
+		Audience:           audience,
+		ChallengeUnixMs:    ts,
+		ChallengeSignature: sig,
+	})
+	if err != nil {
+		t.Fatalf("marshal STSTokenRequest: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/sts/token", bytes.NewReader(reqBytes))
+	if err != nil {
+		t.Fatalf("build POST /sts/token: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/x-protobuf")
+	req.Header.Set("Authorization", "Bearer "+base64.StdEncoding.EncodeToString(cred))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /sts/token for %s: %v", destination, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read the /sts/token response for %s: %v", destination, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return resp.StatusCode, ""
+	}
+	var out api.STSTokenResponse
+	if err := proto.Unmarshal(body, &out); err != nil {
+		t.Fatalf("unmarshal STSTokenResponse: %v", err)
+	}
+	var claims jwt.MapClaims
+	if _, _, err := jwt.NewParser().ParseUnverified(out.GetJwt(), &claims); err != nil {
+		t.Fatalf("parse the minted JWT: %v", err)
+	}
+	aud, ok := claims["aud"].(string)
+	if !ok {
+		t.Fatalf("minted JWT aud = %v, want one string", claims["aud"])
+	}
+	return resp.StatusCode, aud
+}
+
+// TestSTSTokenAudienceComesFromPolicy checks that the aud claim of a border
+// JWT is the audience the egress policy gives the destination, and that a
+// node cannot ask for another one. Before the fix, a node that might reach a
+// destination with no broker received a JWT with the audience that the broker
+// of another destination pins, although served_by of that destination
+// excluded the node.
+func TestSTSTokenAudienceComesFromPolicy(t *testing.T) {
+	const (
+		// No egress entry, so no broker and no pinned audience.
+		openDest = "api.example.com"
+		// Served by the gateway alone. Its broker pins pinnedAud.
+		pinnedDest = "storage.googleapis.com"
+		pinnedAud  = "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/agentmesh/providers/cp"
+		// No egress entry. Its default audience is the one vaultDest pins.
+		shadowDest = "internal.example.com"
+		vaultDest  = "vault.example.com"
+	)
+	issuer, mintOIDC := startCustomMockOIDC(t)
+	srv, store, baseURL := setupTestServer(t, issuer)
+	t.Cleanup(func() { _ = srv.Close() })
+
+	ctx := context.Background()
+	nodeRole := &api.PolicyRole{Name: api.RoleNode, AllowedServices: []string{"egress://*"}, AllowedTargets: []string{"*"}}
+	nodeBinding := &api.PolicyBinding{Role: api.RoleNode, Members: []string{api.SystemAuthenticated}}
+	if err := store.SavePolicyDocument(ctx, []*api.PolicyRole{nodeRole}, []*api.PolicyBinding{nodeBinding}, nil); err != nil {
+		t.Fatalf("SavePolicyDocument: %v", err)
+	}
+	gatewayPriv, gatewayID, gatewayBiscuit, _ := enrollTestNodeForSTS(t, baseURL, mintOIDC)
+	otherPriv, otherID, otherBiscuit, _ := enrollTestNodeForSTS(t, baseURL, mintOIDC)
+
+	federation := func(audience string) *api.CredentialBroker {
+		return &api.CredentialBroker{Kind: &api.CredentialBroker_OidcFederation{
+			OidcFederation: &api.OIDCFederation{TokenEndpoint: "https://sts.googleapis.com/v1/token", Audience: audience},
+		}}
+	}
+	if err := store.SavePolicyDocument(ctx,
+		[]*api.PolicyRole{nodeRole, {Name: "egress-gateway", AllowedServices: []string{"egress://*"}, AllowedTargets: []string{"*"}}},
+		[]*api.PolicyBinding{nodeBinding, {Role: "egress-gateway", Members: []string{"node:" + gatewayID.String()}}},
+		[]*api.EgressDestination{
+			{Name: pinnedDest, ServedBy: []string{"egress-gateway"}, Broker: federation(pinnedAud)},
+			{Name: vaultDest, ServedBy: []string{"egress-gateway"}, Broker: federation("https://" + shadowDest)},
+		},
+	); err != nil {
+		t.Fatalf("SavePolicyDocument: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name        string
+		gateway     bool // the gateway node calls, else a node outside served_by
+		destination string
+		audience    string
+		wantStatus  int
+		wantAud     string
+	}{
+		{name: "no broker, the audience another destination pins", destination: openDest, audience: pinnedAud, wantStatus: http.StatusForbidden},
+		{name: "no broker, an arbitrary audience", destination: openDest, audience: "https://evil.example.com", wantStatus: http.StatusForbidden},
+		{name: "no broker, no audience", destination: openDest, wantStatus: http.StatusOK, wantAud: "https://" + openDest},
+		{name: "no broker, the default audience", destination: openDest, audience: "https://" + openDest, wantStatus: http.StatusOK, wantAud: "https://" + openDest},
+		{name: "broker, its pinned audience", gateway: true, destination: pinnedDest, audience: pinnedAud, wantStatus: http.StatusOK, wantAud: pinnedAud},
+		{name: "broker, no audience", gateway: true, destination: pinnedDest, wantStatus: http.StatusOK, wantAud: pinnedAud},
+		{name: "broker, another audience", gateway: true, destination: pinnedDest, audience: "https://" + pinnedDest, wantStatus: http.StatusForbidden},
+		{name: "no broker, the default is the audience another destination pins", destination: shadowDest, wantStatus: http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			priv, id, cred := otherPriv, otherID, otherBiscuit
+			if tc.gateway {
+				priv, id, cred = gatewayPriv, gatewayID, gatewayBiscuit
+			}
+			status, aud := postSTSToken(t, baseURL, priv, id, cred, tc.destination, tc.audience)
+			if status != tc.wantStatus {
+				t.Fatalf("POST /sts/token for %s with audience %q returned %d (aud %q), want %d", tc.destination, tc.audience, status, aud, tc.wantStatus)
+			}
+			if aud != tc.wantAud {
+				t.Errorf("POST /sts/token for %s with audience %q minted aud %q, want %q", tc.destination, tc.audience, aud, tc.wantAud)
+			}
+		})
+	}
+}
+
+// failingEgressStore is a store whose next reads of the egress policy fail,
+// the way a database that stopped answering looks to the control plane.
+type failingEgressStore struct {
+	storage.Store
+	failNext atomic.Int32
+}
+
+func (f *failingEgressStore) GetEgressDestinations(ctx context.Context) ([]*api.EgressDestination, error) {
+	if f.failNext.Add(-1) >= 0 {
+		return nil, errors.New("store: connection refused")
+	}
+	return f.Store.GetEgressDestinations(ctx)
+}
+
+// TestSTSTokenRefusesWhenEgressPolicyReadFails checks that /sts/token mints
+// nothing when it cannot read the egress policy. Before the fix, a failed read
+// skipped the served_by check and the audience check, and a later read that
+// succeeded let the request through.
+func TestSTSTokenRefusesWhenEgressPolicyReadFails(t *testing.T) {
+	const destination = "s3.amazonaws.com"
+	issuer, mintOIDC := startCustomMockOIDC(t)
+	dbPath := filepath.Join(t.TempDir(), "control-plane.db")
+	sqlStore, err := storage.NewSQLStore("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLStore: %v", err)
+	}
+	store := &failingEgressStore{Store: sqlStore}
+	srv, err := NewServer(Options{
+		ListenAddr: "127.0.0.1:0", DriverName: "sqlite", DataSourceName: dbPath,
+		OIDCIssuer: issuer, AllowedAudiences: []string{"agentmesh-audience"},
+		InsecureSkipTLSVerify: true, BiscuitTimeout: 10 * time.Second,
+	}, store)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start the control plane: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = srv.Close()
+		_ = sqlStore.Close()
+	})
+	baseURL := "http://" + srv.listener.Addr().String()
+
+	ctx := context.Background()
+	nodeRole := &api.PolicyRole{Name: api.RoleNode, AllowedServices: []string{"egress://" + destination}, AllowedTargets: []string{"*"}}
+	nodeBinding := &api.PolicyBinding{Role: api.RoleNode, Members: []string{api.SystemAuthenticated}}
+	if err := store.SavePolicyDocument(ctx, []*api.PolicyRole{nodeRole}, []*api.PolicyBinding{nodeBinding}, nil); err != nil {
+		t.Fatalf("SavePolicyDocument: %v", err)
+	}
+	gatewayPriv, gatewayID, gatewayBiscuit, _ := enrollTestNodeForSTS(t, baseURL, mintOIDC)
+	otherPriv, otherID, otherBiscuit, _ := enrollTestNodeForSTS(t, baseURL, mintOIDC)
+	if err := store.SavePolicyDocument(ctx,
+		[]*api.PolicyRole{nodeRole, {Name: "egress-gateway", AllowedServices: []string{"egress://" + destination}, AllowedTargets: []string{"*"}}},
+		[]*api.PolicyBinding{nodeBinding, {Role: "egress-gateway", Members: []string{"node:" + gatewayID.String()}}},
+		[]*api.EgressDestination{{
+			Name:     destination,
+			ServedBy: []string{"egress-gateway"},
+			Broker: &api.CredentialBroker{Kind: &api.CredentialBroker_AwsAssumeRole{
+				AwsAssumeRole: &api.AWSAssumeRole{RoleArn: "arn:aws:iam::123456789012:role/agentmesh-s3"},
+			}},
+		}},
+	); err != nil {
+		t.Fatalf("SavePolicyDocument: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		gateway  bool // the gateway node calls, else a node outside served_by
+		audience string
+		failures int32
+		want     int
+	}{
+		{name: "gateway, the store answers", gateway: true, want: http.StatusOK},
+		{name: "outside served_by, the store answers", want: http.StatusForbidden},
+		{name: "outside served_by, the first read fails", failures: 1, want: http.StatusInternalServerError},
+		{name: "gateway, foreign audience, two reads fail", gateway: true, audience: "https://evil.example.com", failures: 2, want: http.StatusInternalServerError},
+		{name: "gateway, every read fails", gateway: true, failures: 1000, want: http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			priv, id, cred := otherPriv, otherID, otherBiscuit
+			if tc.gateway {
+				priv, id, cred = gatewayPriv, gatewayID, gatewayBiscuit
+			}
+			store.failNext.Store(tc.failures)
+			status, aud := postSTSToken(t, baseURL, priv, id, cred, destination, tc.audience)
+			if status != tc.want {
+				t.Fatalf("POST /sts/token with %d failing reads of the egress policy returned %d (aud %q), want %d", tc.failures, status, aud, tc.want)
+			}
+		})
 	}
 }

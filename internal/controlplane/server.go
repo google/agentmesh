@@ -2074,16 +2074,24 @@ func nodeRoles(nodeRecord *storage.EnrolledNode, bindings []*api.PolicyBinding) 
 	return roles, nil
 }
 
+// nodeRoles is the role set of the node from the stored bindings. When it
+// cannot resolve the custom roles it logs the cause and returns the enrolled
+// role alone. That set is never wider than the full one and each caller
+// grants per role, so the fallback cannot grant more.
 func (s *Server) nodeRoles(ctx context.Context, nodeRecord *storage.EnrolledNode) []string {
 	if nodeRecord == nil {
 		return nil
 	}
 	_, bindings, err := s.store.GetMeshPolicy(ctx)
 	if err != nil {
+		if !errors.Is(err, storage.ErrNotFound) {
+			logger.Warnw("Custom roles not resolved, using the enrolled role alone: mesh policy not read", "peer_id", nodeRecord.PeerID, "role", nodeRecord.Role, "error", err)
+		}
 		return []string{nodeRecord.Role}
 	}
 	roles, err := nodeRoles(nodeRecord, bindings)
 	if err != nil {
+		logger.Warnw("Custom roles not resolved, using the enrolled role alone: enrollment claims not parsed", "peer_id", nodeRecord.PeerID, "role", nodeRecord.Role, "error", err)
 		return []string{nodeRecord.Role}
 	}
 	return roles
