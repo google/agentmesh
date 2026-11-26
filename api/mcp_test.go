@@ -83,6 +83,62 @@ func TestInspectJSONRPCMCPBody(t *testing.T) {
 			wantTool:  "",
 			wantAllow: false,
 		},
+		// The body goes to the backend as the same bytes. A member that two
+		// parsers read differently names no tool and no handshake method.
+		{
+			name:      "method again in upper case",
+			body:      `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"delete_file"},"METHOD":"ping"}`,
+			wantTool:  "",
+			wantAllow: false,
+		},
+		{
+			name:      "params again in upper case",
+			body:      `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"delete_file"},"PARAMS":{"name":"read_file"}}`,
+			wantTool:  "",
+			wantAllow: false,
+		},
+		{
+			name:      "tool name again in upper case",
+			body:      `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"delete_file","NAME":"read_file"}}`,
+			wantTool:  "",
+			wantAllow: false,
+		},
+		{
+			name:      "params again with a letter that folds to s",
+			body:      `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"delete_file"},"paramſ":{"name":"read_file"}}`,
+			wantTool:  "",
+			wantAllow: false,
+		},
+		{
+			name:      "method twice",
+			body:      `{"jsonrpc":"2.0","id":1,"method":"ping","method":"tools/call","params":{"name":"read_file"}}`,
+			wantTool:  "",
+			wantAllow: false,
+		},
+		{
+			name:      "method twice, one escaped",
+			body:      `{"jsonrpc":"2.0","id":1,"\u006dethod":"ping","method":"tools/call","params":{"name":"read_file"}}`,
+			wantTool:  "",
+			wantAllow: false,
+		},
+		{
+			name:      "tool name twice",
+			body:      `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","name":"delete_file"}}`,
+			wantTool:  "",
+			wantAllow: false,
+		},
+		{
+			name:      "second message after the first",
+			body:      `{"jsonrpc":"2.0","id":1,"method":"ping"} {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"delete_file"}}`,
+			wantTool:  "",
+			wantAllow: false,
+		},
+		{
+			name:      "arguments may repeat the member names",
+			body:      `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{"name":"a","NAME":"b","method":"ping","params":{}}}}`,
+			wantTool:  "read_file",
+			wantAllow: false,
+		},
 	}
 
 	for _, tc := range cases {

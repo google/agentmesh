@@ -286,6 +286,16 @@ match at least one `TaskRule` in every appended block.
 | **`egress://<name>`** | Enforced on HTTP request & TCP `CONNECT` | Must be empty for an HTTP or TCP rule to match. | Enforced against `Method` and `Path` when non-empty (a TCP `CONNECT` tunnel has `Method: "CONNECT"` and `Path: ""`, so any rule with `allowed_paths` denies a tunnel). | Intersected across blocks `1..k` and translated by `CloudTokenExchanger` at egress. |
 | **`system://<name>`** | Enforced on stream handshake | Enforced when a tool call is made. | Same as `mcp://`. | Ignored by wire PEP. |
 
+The enforcement point reads the method and the tool name (`params.name`) from
+a JSON-RPC message that the backend then reads with its own parser. The two
+must read the same call. A message that states
+`method`, `params` or the tool `name` more than once, or in a different letter
+case (`"METHOD"`, which a case-insensitive JSON parser reads as `method`),
+names no tool and no handshake method. A rule with `allowed_tools` then denies
+the request on HTTP. On a `/mesh/mcp` stream, the node answers such a
+`tools/call` under a task-scoped credential with JSON-RPC `-32602` (invalid
+params) and does not send it to the backend.
+
 #### One authorizer assembly for every PEP
 
 Every enforcement point builds its Datalog authorizer through

@@ -16,7 +16,6 @@ package node
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -389,19 +388,20 @@ func (m *MCPService) authorizeMCPRequest(req *jsonrpc.Request, reqCtx RequestCon
 		}
 		return nil
 	case "tools/call":
-		var params struct {
-			Name string `json:"name"`
-		}
-		if len(req.Params) == 0 || json.Unmarshal(req.Params, &params) != nil || params.Name == "" {
-			return &jsonrpc.Response{ID: req.ID, Error: &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "tools/call requires a non-empty tool name"}}
+		// The params go to the backend as the same bytes: the tool checked
+		// here must be the one tool they name to every parser.
+		name, err := api.MCPToolCallName(req.Params)
+		if err != nil {
+			logger.Warnf("[MCPService] %s: refused tools/call from %s that does not name one tool: %v", svcName, reqCtx.PeerID, err)
+			return &jsonrpc.Response{ID: req.ID, Error: &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "tools/call must name one tool: " + err.Error()}}
 		}
 		if err := api.EvaluateTaskRules(reqCtx.TaskRules, api.TaskRequestContext{
 			ServiceType: "mcp",
 			ServiceName: svcName,
-			MCPTool:     params.Name,
+			MCPTool:     name,
 		}, time.Now()); err != nil {
-			logger.Warnf("[MCPService] %s: TAR denied tools/call %q from %s: %v", svcName, params.Name, reqCtx.PeerID, err)
-			return taskDenied(req.ID, fmt.Sprintf("tool %q", params.Name), err)
+			logger.Warnf("[MCPService] %s: TAR denied tools/call %q from %s: %v", svcName, name, reqCtx.PeerID, err)
+			return taskDenied(req.ID, fmt.Sprintf("tool %q", name), err)
 		}
 		return nil
 	default:

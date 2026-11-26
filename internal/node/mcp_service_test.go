@@ -16,14 +16,63 @@ package node
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 
 	"github.com/google/agentmesh/api"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// The params of a tools/call go to the backend as the same bytes. When they
+// state the tool name twice, the task check must refuse the call: the name it
+// would check is not the name every backend reads.
+func TestMCPService_TaskCheckRefusesAToolNamedTwice(t *testing.T) {
+	svc := &MCPService{baseService: baseService{
+		info: &api.ServiceInfo{Name: "weather", Type: api.ServiceType_SERVICE_TYPE_MCP},
+	}}
+	reqCtx := RequestContext{TaskRules: []*api.TaskAuthorizationRule{{
+		Name: "only-get-weather",
+		Rules: []*api.TaskRule{{
+			AllowedServices: []string{"mcp://weather"},
+			Operation:       &api.TaskOperation{AllowedTools: []string{"get_weather"}},
+		}},
+	}}}
+	id, err := jsonrpc.MakeID(float64(1))
+	if err != nil {
+		t.Fatalf("MakeID: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name       string
+		params     string
+		wantDenied bool
+	}{
+		{name: "allowed tool", params: `{"name":"get_weather"}`},
+		{name: "allowed name after another name in upper case", params: `{"name":"drop_table","NAME":"get_weather"}`, wantDenied: true},
+		{name: "allowed name after another name", params: `{"name":"drop_table","name":"get_weather"}`, wantDenied: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := svc.authorizeMCPRequest(&jsonrpc.Request{ID: id, Method: "tools/call", Params: []byte(tc.params)}, reqCtx)
+			if !tc.wantDenied {
+				if resp != nil {
+					t.Fatalf("tools/call with params %s was refused: %v, want it allowed", tc.params, resp.Error)
+				}
+				return
+			}
+			if resp == nil {
+				t.Fatalf("tools/call with params %s was allowed, want it refused", tc.params)
+			}
+			var rpcErr *jsonrpc.Error
+			if !errors.As(resp.Error, &rpcErr) || rpcErr.Code != jsonrpc.CodeInvalidParams {
+				t.Fatalf("tools/call with params %s got error %v, want code %d (invalid params)", tc.params, resp.Error, jsonrpc.CodeInvalidParams)
+			}
+		})
+	}
+}
 
 // newProbeBackend serves a real MCP server that exposes no tools at all.
 func newProbeBackend(t *testing.T) *httptest.Server {
