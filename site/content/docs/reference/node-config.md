@@ -111,15 +111,19 @@ backend.
 
 ## `attenuation`
 
-Biscuit Datalog that the node adds to every authorization decision for
-requests it receives. Each entry is one statement. A trailing `;` is
-optional. A statement that does not parse stops the node at start.
+Local authorization constraints that the node adds to every authorization
+decision for inbound mesh, external ingress, and Envoy gateway requests. Raw
+Datalog statements (`rules`, `checks`, `policies`) can be combined with
+task-scope guardrails (`require_task_scope`, `max_task_ttl`). A trailing `;`
+on Datalog statements is optional. Any invalid entry stops the node at start.
 
 | Key | Meaning |
 |---|---|
 | `rules` | Derive new facts from existing ones: `head(...) <- body(...)`. |
 | `checks` | Conditions that must all hold: `check if ...`. A failing check denies the request regardless of any policy. |
 | `policies` | `allow if ...` and `deny if ...`, evaluated before the baseline policies. The first matching policy wins. A `deny` here overrides a mesh grant. An `allow` here admits a caller that the mesh did not grant, but never a caller that fails a check. |
+| `require_task_scope` | Boolean. When `true`, rejects unattenuated standing credentials (`len(tar_block) == 0`) on non-local inbound mesh, external ingress, and Envoy gateway requests. |
+| `max_task_ttl` | Positive Go duration (for example `15m`). Caps the caller credential's remaining effective lifetime (minimum of Block 0 expiration and appended `tar_block` expirations) and implies `require_task_scope: true`. |
 
 Facts available:
 
@@ -128,9 +132,10 @@ Facts available:
 | `service($type, $name)` | The request: which service is being called. |
 | `time($now)` | Injected at evaluation. |
 | `connection_peer_id($id)` | The authenticated peer. |
-| `user($sub)`, `email($e)`, `group($g)`, `idp_role($r)` | The caller's OIDC claims, from its credential. |
+| `user($sub)`, `email($e)`, `group($g)`, `idp_role($r)` | The caller's standard OIDC identity claims, from its credential. |
+| `claim($k, $v)` | Verified OIDC JWT claims attested into the credential by the control plane (from `PolicyBinding.claims` and `PolicyConfig.attested_claims`, including `"iss"` and multi-valued claims such as `amr`). Structurally separate from node-declared `label($k, $v)`. |
 | `role($r)` | The caller's mesh roles. |
-| `label($k, $v)` | The caller's attested labels. |
+| `label($k, $v)` | The caller's node-declared labels (bounded by `PolicyRole.allowed_labels`). |
 | `node($id)`, `client_peer_id($id)`, `expiration($t)` | The caller's credential binding and expiry. |
 | `granted_*`, `http_granted_service_*` | The caller's grants. [Datalog vocabulary](../policy/#datalog-vocabulary) lists them. |
 | `target_fact($name, $value)` | This node's own identity facts, for target matching. |

@@ -651,3 +651,18 @@ response directly).
    under its peer ID and the catalog name no service. A delegated credential
    grants publishing nothing. An egress destination's `served_by` is its
    publish grant, minted with the destination.
+9. IdP-attested posture and provenance are structurally isolated from
+   node-declared metadata. Verified JWT claims selected by `PolicyConfig`
+   (`PolicyBinding.claims`, including `"iss"`, and `PolicyConfig.attested_claims`,
+   bounded to 16 distinct claim paths and 16 values per claim) are minted as
+   Block 0 `claim(k, v)` facts on both Member and Delegated Session Biscuits,
+   distinct from node-declared `label(k, v)` facts so enrolling nodes can never
+   spoof IdP posture even when `PolicyRole.allowed_labels` contains `"*"`.
+   Claims are re-attested from fresh JWTs on `/refresh`, forwarded as
+   `mesh_claims` (alongside `mesh_labels`) in outbound `/sts/token` JWTs, and
+   enforced across `PolicyBinding.claims` and node `attenuation` (standard
+   Datalog `rules`/`checks`/`policies` over `claim()` plus `require_task_scope`
+   and `max_task_ttl`). Every PEP—including Envoy `ext_authz` and `ext_proc`—strips
+   caller-supplied `X-Mesh-*` and `X-Peer-Id` headers and stamps verified
+   `X-Mesh-Principal`, `X-Mesh-Roles`, `X-Mesh-Claims`, `X-Mesh-Labels`,
+   `X-Mesh-Actor-Node`, `X-Mesh-Origin`, and `X-Mesh-Task`.

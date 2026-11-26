@@ -1072,7 +1072,13 @@ func (s *Server) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	if sessionExpiresAt.Before(biscuitExpiry) {
 		biscuitExpiry = sessionExpiresAt
 	}
-	biscuitData, _, err := identity.MintBiscuitToken(privKey, claims, token, pID, biscuitExpiry, finalRoles, s.mintRoles(r.Context(), policyRoles, finalRoles, req.Labels), req.Labels)
+	attestedClaims, err := s.extractPolicyClaims(ctx, claims, bindings, canonical)
+	if err != nil {
+		logger.Errorf("Failed to load attested claims for registration: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	biscuitData, _, err := identity.MintBiscuitTokenWithClaims(privKey, claims, token, pID, biscuitExpiry, finalRoles, s.mintRoles(r.Context(), policyRoles, finalRoles, req.Labels), req.Labels, attestedClaims)
 	if err != nil {
 		logger.Errorw("Biscuit minting failed", "peer_id", canonical, "error", err)
 		http.Error(w, "Failed to mint biscuit: "+err.Error(), http.StatusForbidden)
@@ -1436,7 +1442,13 @@ func (s *Server) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 		finalRoles = append(finalRoles, customAccessRoles...)
 		nodeRecord.Labels = labelsStillAllowed(canonical, allowedLabelPatterns(finalRoles, policyRoles), nodeRecord.Labels)
 
-		bBytes, _, err := identity.MintBiscuitToken(privKey, claims, nil, pID, biscuitExpiry, finalRoles, s.mintRoles(r.Context(), policyRoles, finalRoles, nodeRecord.Labels), nodeRecord.Labels)
+		attestedClaims, err := s.extractPolicyClaims(ctx, claims, bindings, canonical)
+		if err != nil {
+			logger.Errorf("Failed to load attested claims for refresh of node %s: %v", nodeRecord.PeerID, err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		bBytes, _, err := identity.MintBiscuitTokenWithClaims(privKey, claims, nil, pID, biscuitExpiry, finalRoles, s.mintRoles(r.Context(), policyRoles, finalRoles, nodeRecord.Labels), nodeRecord.Labels, attestedClaims)
 		if err != nil {
 			logger.Errorf("Failed to mint refreshed token for node %s: %v", nodeRecord.PeerID, err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -1775,7 +1787,7 @@ func (s *Server) HandlePolicies(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if err := s.store.SavePolicyDocument(r.Context(), req.Roles, req.Bindings, req.Egress); err != nil {
+		if err := s.store.SavePolicyConfig(r.Context(), req); err != nil {
 			logger.Errorf("Failed to save policy: %v", err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
 			return
@@ -3451,7 +3463,38 @@ func (s *Server) loadPolicyConfig(ctx context.Context) (*api.PolicyConfig, error
 	if err != nil && err != storage.ErrNotFound {
 		return nil, err
 	}
-	return &api.PolicyConfig{Roles: roles, Bindings: bindings, Egress: egress}, nil
+	attestedClaims, err := s.store.GetAttestedClaims(ctx)
+	if err != nil && err != storage.ErrNotFound {
+		return nil, err
+	}
+	return &api.PolicyConfig{
+		Roles:          roles,
+		Bindings:       bindings,
+		Egress:         egress,
+		AttestedClaims: attestedClaims,
+	}, nil
+}
+
+// extractPolicyClaims extracts verified JWT claim values for the union of
+// PolicyConfig.attested_claims and all PolicyBinding.claims keys.
+func (s *Server) extractPolicyClaims(ctx context.Context, rawClaims jwt.MapClaims, bindings []*api.PolicyBinding, subject string) (map[string][]string, error) {
+	if len(rawClaims) == 0 {
+		return nil, nil
+	}
+	attestedPaths, err := s.store.GetAttestedClaims(ctx)
+	if err != nil && err != storage.ErrNotFound {
+		return nil, err
+	}
+	claimPaths, err := api.CollectPolicyClaimPaths(bindings, attestedPaths)
+	if err != nil {
+		logger.Warnw("Policy claim paths invalid; omitting attested claims", "subject", subject, "error", err)
+		return nil, nil
+	}
+	extracted, warnings := api.ExtractVerifiedClaims(rawClaims, claimPaths)
+	for _, warn := range warnings {
+		logger.Warnw("OIDC claim extraction warning", "subject", subject, "warning", warn)
+	}
+	return extracted, nil
 }
 
 // Ceilings on what a non-admin may mint for itself: a token is a standing
@@ -3743,9 +3786,17 @@ func resolveRoles(peerID string, claims jwt.MapClaims, bindings []*api.PolicyBin
 		factValues[fact] = append(factValues[fact], toStringSlice(claims[claim])...)
 	}
 
+	// Extract only the JWT claim paths referenced by bindings so PolicyBinding.claims
+	// (including "iss") is enforced identically at mint time and in Datalog rules.
+	bindingClaimPaths, _ := api.CollectPolicyClaimPaths(bindings, nil)
+	extractedClaims, _ := api.ExtractVerifiedClaims(claims, bindingClaimPaths)
+
 	resolvedRoles := make(map[string]bool)
 	for _, b := range bindings {
 		if b == nil {
+			continue
+		}
+		if !api.MatchBindingClaims(extractedClaims, b.Claims) {
 			continue
 		}
 		for _, m := range b.Members {
@@ -3888,10 +3939,6 @@ func validatePolicyConfig(req *api.PolicyConfig) error {
 		}
 	}
 
-	if factBudget > maxIdentityFactBudget {
-		return fmt.Errorf("policy config would allow a single identity (via overlapping bindings) to accumulate up to %d Datalog facts across all roles, exceeding the safe budget of %d; biscuit-go's authorizer rejects tokens/checks beyond ~1000 world facts, so requests would start failing at authorization time instead of at config validation. Reduce the number of roles, grants, or custom_datalog entries", factBudget, maxIdentityFactBudget)
-	}
-
 	for _, b := range req.Bindings {
 		if b == nil {
 			continue
@@ -3910,6 +3957,21 @@ func validatePolicyConfig(req *api.PolicyConfig) error {
 				return err
 			}
 		}
+		if err := api.ValidateBindingClaims(b.Claims, b.Role); err != nil {
+			return err
+		}
+	}
+
+	if err := api.ValidateAttestedClaims(req.AttestedClaims); err != nil {
+		return err
+	}
+	allClaimPaths, err := api.CollectPolicyClaimPaths(req.Bindings, req.AttestedClaims)
+	if err != nil {
+		return err
+	}
+	factBudget += len(allClaimPaths) * api.MaxValuesPerClaim
+	if factBudget > maxIdentityFactBudget {
+		return fmt.Errorf("policy config would allow a single identity (via overlapping bindings and %d attested claims) to accumulate up to %d Datalog facts across all roles, exceeding the safe budget of %d; biscuit-go's authorizer rejects tokens/checks beyond ~1000 world facts, so requests would start failing at authorization time instead of at config validation. Reduce the number of roles, grants, custom_datalog entries, or attested claims", len(allClaimPaths), factBudget, maxIdentityFactBudget)
 	}
 
 	egressNames := make(map[string]bool, len(req.Egress))

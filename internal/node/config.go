@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/eclipse-biscuit/biscuit-go/v2"
 	"github.com/eclipse-biscuit/biscuit-go/v2/parser"
@@ -31,6 +32,13 @@ type NodeConfigComplete struct {
 	Rules    []biscuit.Rule
 	Services []api.ServiceConfig
 	Labels   map[string]string
+
+	// RequireTaskScope refuses unattenuated standing credentials on inbound
+	// requests (libp2p, external ingress, and Envoy ext_authz / ext_proc).
+	RequireTaskScope bool
+	// MaxTaskTTL caps the remaining effective lifetime of inbound credentials
+	// (implies RequireTaskScope when > 0).
+	MaxTaskTTL time.Duration
 
 	// EgressRequireLabels is the operator's egress floor (api.Egress). Nil
 	// means no floor, so a caller's requirement — or the absence of one —
@@ -87,8 +95,18 @@ func CompleteNodeConfig(config api.NodeConfig) (*NodeConfigComplete, error) {
 	}
 
 	complete := &NodeConfigComplete{
-		Services: config.Services,
-		Labels:   config.Labels,
+		Services:         config.Services,
+		Labels:           config.Labels,
+		RequireTaskScope: config.Attenuation.RequireTaskScope,
+	}
+
+	if rawTTL := strings.TrimSpace(config.Attenuation.MaxTaskTTL); rawTTL != "" {
+		d, err := time.ParseDuration(rawTTL)
+		if err != nil || d <= 0 {
+			return nil, fmt.Errorf("invalid attenuation.max_task_ttl %q: must be a positive duration", config.Attenuation.MaxTaskTTL)
+		}
+		complete.MaxTaskTTL = d
+		complete.RequireTaskScope = true
 	}
 
 	// Rejected at load, not at first use: a floor that cannot compile would

@@ -193,6 +193,11 @@ for a `401` to refresh waits up to a minute longer.
   router and the two nodes enroll with the bootstrap tokens the script mints.
   Without it, an administrator approves each bootstrap enrollment
   ([Headless enrollment](../headless-enrollment/#3-approve)).
+- For enterprise deployments requiring IdP-attested device posture
+  (`PolicyBinding.claims` and `claim()` Datalog facts), environment isolation,
+  mandatory short-lived task scopes (`require_task_scope` / `max_task_ttl`),
+  and tamper-proof provenance headers across Agent Gateway, see
+  [Enterprise device posture, boundary isolation, and gateway provenance](../enterprise-posture-compliance/).
 
 ## Cleaning up
 

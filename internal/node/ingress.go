@@ -472,11 +472,21 @@ func (n *AgentMeshNode) externalIngressHandler() http.Handler {
 		api.SanitizeExternalIngressHeaders(r.Header, true)
 		r.Header.Set(api.HeaderPeerID, remotePeer.String())
 		r.Header.Set(api.HeaderMeshIngress, api.IngressAuthModeStringEdge)
+		r.Header.Set(api.HeaderMeshOrigin, api.MeshOriginExternalIngress)
 		if callerRes.Principal != "" {
 			r.Header.Set(api.HeaderMeshPrincipal, callerRes.Principal)
 		}
 		if len(callerRes.Roles) > 0 {
 			r.Header.Set(api.HeaderMeshRoles, strings.Join(callerRes.Roles, ","))
+		}
+		if formattedClaims := api.FormatClaims(callerRes.Claims); formattedClaims != "" {
+			r.Header.Set(api.HeaderMeshClaims, formattedClaims)
+		}
+		if formattedLabels := api.FormatLabels(callerRes.Labels); formattedLabels != "" {
+			r.Header.Set(api.HeaderMeshLabels, formattedLabels)
+		}
+		if callerRes.ActorNodeID != "" {
+			r.Header.Set(api.HeaderMeshActorNode, callerRes.ActorNodeID)
 		}
 		if callerRes.TaskName != "" {
 			r.Header.Set(api.HeaderMeshTask, callerRes.TaskName)
@@ -488,8 +498,11 @@ func (n *AgentMeshNode) externalIngressHandler() http.Handler {
 			"protocol", string(api.IngressProtocolID),
 			"mode", api.IngressAuthModeStringEdge,
 			"router_peer_id", remotePeer.String(),
+			"actor_node", callerRes.ActorNodeID,
 			"principal", callerRes.Principal,
 			"roles", callerRes.Roles,
+			"claims", api.FormatClaims(callerRes.Claims),
+			"labels", api.FormatLabels(callerRes.Labels),
 			"task", callerRes.TaskName,
 			"target", target,
 			"method", r.Method,
@@ -537,18 +550,26 @@ func (n *AgentMeshNode) buildExternalIngressEvalParams(serviceType, serviceName,
 	if err != nil {
 		return identity.IngressEvalParams{}, err
 	}
+	var requireTaskScope bool
+	var maxTaskTTL time.Duration
+	if n.nodeConfig != nil {
+		requireTaskScope = n.nodeConfig.RequireTaskScope
+		maxTaskTTL = n.nodeConfig.MaxTaskTTL
+	}
 	return identity.IngressEvalParams{
-		ServiceType:     serviceType,
-		ServiceName:     serviceName,
-		Method:          method,
-		Path:            path,
-		TargetFacts:     pol.TargetFacts,
-		MeshPolicyRules: pol.MeshRules,
-		LocalPolicies:   pol.LocalPolicies,
-		LocalChecks:     pol.LocalChecks,
-		LocalRules:      pol.LocalRules,
-		Allow:           allow,
-		Timeout:         n.BiscuitTimeout,
+		ServiceType:      serviceType,
+		ServiceName:      serviceName,
+		Method:           method,
+		Path:             path,
+		TargetFacts:      pol.TargetFacts,
+		MeshPolicyRules:  pol.MeshRules,
+		LocalPolicies:    pol.LocalPolicies,
+		LocalChecks:      pol.LocalChecks,
+		LocalRules:       pol.LocalRules,
+		Allow:            allow,
+		RequireTaskScope: requireTaskScope,
+		MaxTaskTTL:       maxTaskTTL,
+		Timeout:          n.BiscuitTimeout,
 	}, nil
 }
 

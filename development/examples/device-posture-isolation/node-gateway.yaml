@@ -1,0 +1,9 @@
+version: "v1alpha1"
+
+labels:
+  region: egress-gw
+
+attenuation:
+  # Even the sandbox egress gateway enforces short-lived task scopes.
+  require_task_scope: true
+  max_task_ttl: 15m

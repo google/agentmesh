@@ -74,6 +74,14 @@ type Attenuation struct {
 	Policies []string `yaml:"policies"`
 	Checks   []string `yaml:"checks"`
 	Rules    []string `yaml:"rules"`
+	// RequireTaskScope refuses unattenuated standing credentials on inbound
+	// requests (libp2p, external ingress, and Envoy ext_authz / ext_proc),
+	// requiring at least one valid tar_block TaskAuthorizationRule.
+	RequireTaskScope bool `yaml:"require_task_scope,omitempty"`
+	// MaxTaskTTL caps the remaining effective lifetime of inbound credentials
+	// (e.g. "15m"). Implies RequireTaskScope: every inbound credential must
+	// carry a tar_block whose effective expiry is within MaxTaskTTL from now.
+	MaxTaskTTL string `yaml:"max_task_ttl,omitempty"`
 }
 
 // Egress is the operator's outbound policy: what this node demands of the peers

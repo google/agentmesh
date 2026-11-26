@@ -7,7 +7,8 @@ aliases:
 ---
 
 The mesh policy is one document held by the control plane: a list of roles,
-a list of bindings and a list of egress destinations. It is posted as JSON
+a list of bindings, a list of egress destinations, and an optional list of
+`attested_claims`. It is posted as JSON
 (protojson of `PolicyConfig` in `api/agentmesh.proto`) to `POST /policies`, read
 back from `GET /admin/policy`, edited in the console, or given to
 `agentmesh-one --policy-file` for first boot.
@@ -166,7 +167,9 @@ Exact entries of one fact are merged into one `granted_target_set` fact.
 Keys match `[a-zA-Z0-9_.-]{1,63}`. Values are up to 255 characters with no
 `,`, `=`, `"`, `\` or control characters. Every label that a node declares
 must be permitted by a role it holds, or enrollment fails. Manual approval of a
-bootstrap enrollment does not bypass this check.
+bootstrap enrollment does not bypass this check. Labels represent node-declared
+metadata (`label(key, value)`) and are structurally separate from IdP-verified
+JWT claims (`claim(key, value)`).
 
 ### HTTP grants
 
@@ -216,8 +219,9 @@ parses as neither a fact nor a rule fails validation.
 
 | Field | Meaning |
 |---|---|
-| `role` | A role name from `roles`. A binding to an undefined role is rejected. |
+| `role` | A role name from `roles`. A binding to an undefined role is rejected. Multiple bindings may reference the same role (for example, to express OR-of-AND claim profiles). |
 | `members` | Identities that receive the role. At least one is required. |
+| `claims` | Optional map of `<jwt_claim_path>: <expected_value>`. Every entry must match the caller's verified OIDC JWT (logical AND) in addition to matching at least one entry in `members`. Supports top-level claims (including `"iss"` to scope a binding to a specific issuer in multi-issuer meshes, and URI claim keys) as well as dot-separated nested JSON paths (such as `device.trust_tier`). For array-valued claims (such as `amr`), matches when any element equals the expected value. |
 
 A member is one of:
 
@@ -229,6 +233,41 @@ A member is one of:
 | `idp_role:<name>` | an entry of the issuer's `roles` claim |
 | `node:<peer-id>` | one node, by key (exact peer ID only; wildcards are not permitted on `node:`) |
 | `mesh:system:authenticated` | every holder of a valid credential, including members enrolled with a bootstrap token and delegated sessions |
+
+Each binding compiles into standard cross-language Biscuit Datalog rules
+distributed via `GET /policies`, with every `claims` entry emitted as a
+`claim("<path>", "<value>")` predicate:
+
+```datalog
+role("workstation-caller") <- email($v), $v.ends_with("@corp.example"), claim("device.trust_tier", "high"), claim("iss", "https://idp.corp.example")
+```
+
+## Attested claims (`attested_claims`)
+
+`PolicyConfig.attested_claims` is an optional list of OIDC JWT claim paths
+(for example `["iss", "amr", "device.trust_tier", "workload.env"]`) that the
+control plane extracts from verified JWTs and mints as authority-block
+`claim(key, value)` facts into Member and Delegated Session Biscuits—even when
+no `PolicyBinding.claims` entry matches them directly.
+
+- Every claim path referenced in `PolicyBinding.claims` is collected
+  automatically alongside `attested_claims`, so bindings never need to repeat
+  their keys in `attested_claims`.
+- Because `claim(key, value)` is a distinct predicate from node-declared
+  `label(key, value)`, a node can never forge an IdP claim by declaring a label
+  in `agentmesh-node.yaml`, even when a role grants `allowed_labels: ["*"]`.
+- Multi-valued string arrays (such as `amr: ["hwk", "mfa"]`) emit one
+  `claim(key, value)` fact per distinct element. Scalar strings and booleans
+  emit one fact. Numbers, objects, and missing claims are omitted fail-closed.
+- To bound Biscuit size and authorizer fact budgets, a policy may reference at
+  most **16** distinct claim paths across `PolicyBinding.claims` and
+  `attested_claims` combined (`POST /policies` rejects policies above this cap
+  with `400`), and each array-valued claim emits at most **16** distinct values
+  (claims exceeding 16 elements are omitted fail-closed with a warning).
+- Because the control plane retains verified JWT claims on enrolled node
+  records and re-attests them on `POST /refresh` with a fresh JWT, updating
+  `attested_claims` via `POST /policies` takes effect on nodes at their next
+  refresh without restarting the control plane.
 
 Each claim-backed member (`user:`, `email:`, `group:`, `idp_role:`) may carry
 a single trailing `*` (prefix match, compiled to `$v.starts_with("<prefix>")`)
@@ -269,7 +308,7 @@ their own, and `type: egress` in `agentmesh-node.yaml` is refused.
 | `mode` | `EGRESS_MODE_HTTP` (default) or `EGRESS_MODE_TCP` (named `CONNECT` tunnel). |
 | `ports` | Allowed TCP destination ports when `mode` is `EGRESS_MODE_TCP` (for example, `[5432]`). Required in that mode. Each port is from 1 to 65535. |
 | `preserve_host` | Keep the destination hostname (`name`) in the `Host` header when `target_url` points at an operator inspection chain. |
-| `forward_context` | Forward `X-Mesh-Principal`, `X-Mesh-Roles` and `X-Mesh-Task` to `target_url` when `target_url` is an operator inspection chain. |
+| `forward_context` | Forward `X-Mesh-Principal`, `X-Mesh-Roles`, `X-Mesh-Claims`, `X-Mesh-Labels`, `X-Mesh-Actor-Node`, and `X-Mesh-Task` to `target_url` when `target_url` is an operator inspection chain. |
 
 ### Credential brokers
 
@@ -391,8 +430,9 @@ statements.
 | `client_peer_id` | peer ID | control plane |
 | `expiration` | date | control plane |
 | `role` | name | control plane |
-| `user`, `email`, `group`, `idp_role` | string | control plane, from OIDC claims |
-| `label` | key, value | control plane |
+| `user`, `email`, `group`, `idp_role` | string | control plane, from standard OIDC claims |
+| `claim` | key, value | control plane, from verified OIDC JWT claims (`PolicyBinding.claims` and `PolicyConfig.attested_claims`) |
+| `label` | key, value | control plane, from node-declared labels permitted by `allowed_labels` |
 | `right` | `relay` | control plane, for routers |
 | `target_unrestricted` | `true` | control plane, for routers. Node rules, for a role with `allowed_targets: ["*"]`. The destination node, for a request from its local API to a service it serves itself. |
 | `target_restricted` | `true` | node rules, for a role with an `allowed_targets` entry other than `*` |

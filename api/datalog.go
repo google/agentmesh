@@ -140,6 +140,14 @@ const (
 	// Example Datalog: allow if email("bob@example.com")
 	FactEmail = "email"
 
+	// FactClaim carries a verified OIDC JWT claim attested by the control plane
+	// from PolicyConfig.attested_claims or PolicyBinding.claims (including
+	// top-level claims such as "iss" and nested paths such as "device.trust_tier").
+	// Unlike FactLabel, nodes can never self-declare claim() facts at enrollment.
+	// Contains: biscuit.String(claimPath), biscuit.String(claimValue)
+	// Example Datalog: check if claim("device.trust_tier", "high")
+	FactClaim = "claim"
+
 	// FactGrantedServiceAllTypes allows access to all service types (e.g., mcp, inference) and all targets.
 	// Contains: biscuit.Bool(true) (marker fact)
 	// Example Datalog: allow if granted_service_all_types(true)

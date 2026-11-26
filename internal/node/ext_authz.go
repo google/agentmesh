@@ -156,6 +156,23 @@ func evaluateExtAuthz(ctx context.Context, node *AgentMeshNode, in extAuthzCheck
 		api.HeaderMeshBiscuit:   base64.StdEncoding.EncodeToString(rawBiscuit),
 		api.HeaderMeshPrincipal: claims.Principal(),
 		api.HeaderMeshRoles:     strings.Join(claims.Roles, ","),
+		api.HeaderMeshOrigin:    api.MeshOriginGateway,
+	}
+	if formattedClaims := api.FormatClaims(claims.Claims); formattedClaims != "" {
+		respHeaders[api.HeaderMeshClaims] = formattedClaims
+	}
+	if formattedLabels := api.FormatLabels(claims.Labels); formattedLabels != "" {
+		respHeaders[api.HeaderMeshLabels] = formattedLabels
+	}
+	actorNode := claims.ActorNodePeerID
+	if actorNode == "" {
+		actorNode = claims.NodePeerID
+	}
+	if actorNode == "" {
+		actorNode = claims.ClientPeerID
+	}
+	if actorNode != "" {
+		respHeaders[api.HeaderMeshActorNode] = actorNode
 	}
 	if len(claims.TaskRules) > 0 {
 		lastRule := claims.TaskRules[len(claims.TaskRules)-1]
@@ -163,7 +180,7 @@ func evaluateExtAuthz(ctx context.Context, node *AgentMeshNode, in extAuthzCheck
 			respHeaders[api.HeaderMeshTask] = string(taskJSON)
 		}
 		if lastRule.GetName() != "" {
-			respHeaders["X-Mesh-Task-Id"] = lastRule.GetName()
+			respHeaders[api.HeaderMeshTaskID] = lastRule.GetName()
 		}
 	}
 	if after, ok := strings.CutPrefix(target, api.EgressServicePrefix); ok && node.services != nil {

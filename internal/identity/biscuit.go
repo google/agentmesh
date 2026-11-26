@@ -306,11 +306,17 @@ func expirationOf(authorizer biscuit.Authorizer) (time.Time, error) {
 // MintBiscuitToken generates a signed Biscuit token for a peer with policy rules based on JWT claims.
 // labels are control-plane-attested key=value claims (canonical, pre-validated); empty means no claims.
 func MintBiscuitToken(signingKey ed25519.PrivateKey, claims jwt.MapClaims, token *oidc.IDToken, remotePeer peer.ID, biscuitExpiry time.Time, roles []string, policyRoles []*api.PolicyRole, labels map[string]string) ([]byte, []string, error) {
+	return MintBiscuitTokenWithClaims(signingKey, claims, token, remotePeer, biscuitExpiry, roles, policyRoles, labels, nil)
+}
+
+// MintBiscuitTokenWithClaims is MintBiscuitToken with additional verified OIDC
+// claims minted as authority claim(k, v) facts.
+func MintBiscuitTokenWithClaims(signingKey ed25519.PrivateKey, claims jwt.MapClaims, token *oidc.IDToken, remotePeer peer.ID, biscuitExpiry time.Time, roles []string, policyRoles []*api.PolicyRole, labels map[string]string, attestedClaims map[string][]string) ([]byte, []string, error) {
 	if claims == nil {
 		return nil, nil, fmt.Errorf("claims cannot be nil")
 	}
 
-	biscuitBytes, err := mintBiscuitWithBinding(signingKey, remotePeer, false, roles, biscuitExpiry, claims, policyRoles, labels)
+	biscuitBytes, err := mintBiscuitWithBinding(signingKey, remotePeer, false, roles, biscuitExpiry, claims, policyRoles, labels, attestedClaims)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -327,13 +333,23 @@ func MintDelegatedBiscuitToken(signingKey ed25519.PrivateKey, claims jwt.MapClai
 	return MintDelegatedBiscuitTokenWithRand(rand.Reader, signingKey, claims, actorPeer, biscuitExpiry, roles, policyRoles, taskRule, seal)
 }
 
+// MintDelegatedBiscuitTokenWithClaims is MintDelegatedBiscuitToken that also
+// mints verified OIDC claims as authority claim(k, v) facts in Block 0.
+func MintDelegatedBiscuitTokenWithClaims(signingKey ed25519.PrivateKey, claims jwt.MapClaims, actorPeer peer.ID, biscuitExpiry time.Time, roles []string, policyRoles []*api.PolicyRole, attestedClaims map[string][]string, taskRule *api.TaskAuthorizationRule, seal bool) ([]byte, error) {
+	return mintDelegatedBiscuitWithRand(rand.Reader, signingKey, claims, actorPeer, biscuitExpiry, roles, policyRoles, attestedClaims, taskRule, seal)
+}
+
 // MintDelegatedBiscuitTokenWithRand is MintDelegatedBiscuitToken with an
 // explicit random source (used by deterministic conformance vector generators).
 func MintDelegatedBiscuitTokenWithRand(rng io.Reader, signingKey ed25519.PrivateKey, claims jwt.MapClaims, actorPeer peer.ID, biscuitExpiry time.Time, roles []string, policyRoles []*api.PolicyRole, taskRule *api.TaskAuthorizationRule, seal bool) ([]byte, error) {
+	return mintDelegatedBiscuitWithRand(rng, signingKey, claims, actorPeer, biscuitExpiry, roles, policyRoles, nil, taskRule, seal)
+}
+
+func mintDelegatedBiscuitWithRand(rng io.Reader, signingKey ed25519.PrivateKey, claims jwt.MapClaims, actorPeer peer.ID, biscuitExpiry time.Time, roles []string, policyRoles []*api.PolicyRole, attestedClaims map[string][]string, taskRule *api.TaskAuthorizationRule, seal bool) ([]byte, error) {
 	if claims == nil {
 		return nil, fmt.Errorf("claims cannot be nil")
 	}
-	biscuitBytes, err := mintBiscuitWithBindingAndRand(rng, signingKey, actorPeer, true, roles, biscuitExpiry, claims, policyRoles, nil)
+	biscuitBytes, err := mintBiscuitWithBindingAndRand(rng, signingKey, actorPeer, true, roles, biscuitExpiry, claims, policyRoles, nil, attestedClaims)
 	if err != nil {
 		return nil, err
 	}
@@ -353,14 +369,14 @@ func MintDelegatedBiscuitTokenWithRand(rng io.Reader, signingKey ed25519.Private
 }
 
 func mintBiscuit(signingKey ed25519.PrivateKey, remotePeer peer.ID, roles []string, expiration time.Time, claims jwt.MapClaims, policyRoles []*api.PolicyRole, labels map[string]string) ([]byte, error) {
-	return mintBiscuitWithBinding(signingKey, remotePeer, false, roles, expiration, claims, policyRoles, labels)
+	return mintBiscuitWithBinding(signingKey, remotePeer, false, roles, expiration, claims, policyRoles, labels, nil)
 }
 
-func mintBiscuitWithBinding(signingKey ed25519.PrivateKey, remotePeer peer.ID, delegated bool, roles []string, expiration time.Time, claims jwt.MapClaims, policyRoles []*api.PolicyRole, labels map[string]string) ([]byte, error) {
-	return mintBiscuitWithBindingAndRand(rand.Reader, signingKey, remotePeer, delegated, roles, expiration, claims, policyRoles, labels)
+func mintBiscuitWithBinding(signingKey ed25519.PrivateKey, remotePeer peer.ID, delegated bool, roles []string, expiration time.Time, claims jwt.MapClaims, policyRoles []*api.PolicyRole, labels map[string]string, attestedClaims map[string][]string) ([]byte, error) {
+	return mintBiscuitWithBindingAndRand(rand.Reader, signingKey, remotePeer, delegated, roles, expiration, claims, policyRoles, labels, attestedClaims)
 }
 
-func mintBiscuitWithBindingAndRand(rng io.Reader, signingKey ed25519.PrivateKey, remotePeer peer.ID, delegated bool, roles []string, expiration time.Time, claims jwt.MapClaims, policyRoles []*api.PolicyRole, labels map[string]string) ([]byte, error) {
+func mintBiscuitWithBindingAndRand(rng io.Reader, signingKey ed25519.PrivateKey, remotePeer peer.ID, delegated bool, roles []string, expiration time.Time, claims jwt.MapClaims, policyRoles []*api.PolicyRole, labels map[string]string, attestedClaims map[string][]string) ([]byte, error) {
 	builder := biscuit.NewBuilder(signingKey, biscuit.WithRNG(rng))
 	addedFacts := make(map[string]bool)
 	addFact := func(fact biscuit.Fact) error {
@@ -410,6 +426,13 @@ func mintBiscuitWithBindingAndRand(rng io.Reader, signingKey ed25519.PrivateKey,
 	for _, fact := range api.LabelFacts(labels) {
 		if err := addFact(fact); err != nil {
 			return nil, fmt.Errorf("failed to add label fact: %w", err)
+		}
+	}
+
+	// Verified OIDC JWT claims configured via PolicyConfig (see api.FactClaim).
+	for _, fact := range api.ClaimFacts(attestedClaims) {
+		if err := addFact(fact); err != nil {
+			return nil, fmt.Errorf("failed to add claim fact: %w", err)
 		}
 	}
 
@@ -906,6 +929,7 @@ type VerifiedBiscuitClaims struct {
 	IdpRoles        []string
 	Roles           []string
 	Labels          map[string]string
+	Claims          map[string][]string
 	NodePeerID      string
 	ActorNodePeerID string
 	ClientPeerID    string
@@ -1076,6 +1100,28 @@ func InspectVerifiedBiscuit(biscuitData []byte, trustedPublicKeys []ed25519.Publ
 		}
 	}
 
+	var attestedClaims map[string][]string
+	if claimFacts, cErr := authorizer.Query(biscuit.Rule{
+		Head: biscuit.Predicate{Name: "q", IDs: []biscuit.Term{biscuit.Variable("k"), biscuit.Variable("v")}},
+		Body: []biscuit.Predicate{{Name: api.FactClaim, IDs: []biscuit.Term{biscuit.Variable("k"), biscuit.Variable("v")}}},
+	}); cErr == nil {
+		for _, f := range claimFacts {
+			if len(f.IDs) == 2 {
+				k, okK := f.IDs[0].(biscuit.String)
+				v, okV := f.IDs[1].(biscuit.String)
+				if okK && okV {
+					if attestedClaims == nil {
+						attestedClaims = make(map[string][]string)
+					}
+					attestedClaims[string(k)] = append(attestedClaims[string(k)], string(v))
+				}
+			}
+		}
+		for k := range attestedClaims {
+			sort.Strings(attestedClaims[k])
+		}
+	}
+
 	return &VerifiedBiscuitClaims{
 		Biscuit:         b,
 		VerifyingKey:    verifyingKey,
@@ -1085,6 +1131,7 @@ func InspectVerifiedBiscuit(biscuitData []byte, trustedPublicKeys []ed25519.Publ
 		IdpRoles:        queryStrings(api.FactIdpRole),
 		Roles:           queryStrings(api.FactRole),
 		Labels:          labels,
+		Claims:          attestedClaims,
 		NodePeerID:      nodePeerID,
 		ActorNodePeerID: actorNodePeerID,
 		ClientPeerID:    clientPeerID,

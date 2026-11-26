@@ -887,6 +887,7 @@ func TestPolicyBindingRoundTripsEveryField(t *testing.T) {
 	want := &api.PolicyBinding{
 		Role:    api.RoleNode,
 		Members: []string{"group:platform", api.SystemAuthenticated},
+		Claims:  map[string]string{"device.trust_tier": "high", "iss": "https://idp.corp.example"},
 	}
 	requireProtoFieldsSet(t, want)
 
@@ -908,6 +909,37 @@ func TestPolicyBindingRoundTripsEveryField(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.Members, want.Members) {
 		t.Errorf("PolicyBinding.Members did not round trip: saved %v, loaded %v", want.Members, got.Members)
+	}
+	if !reflect.DeepEqual(got.Claims, want.Claims) {
+		t.Errorf("PolicyBinding.Claims did not round trip: saved %v, loaded %v", want.Claims, got.Claims)
+	}
+
+	// Multiple PolicyBindings for the same role with distinct claims must stay separate,
+	// and PolicyConfig.attested_claims must round-trip atomically via SavePolicyConfig.
+	cfg := &api.PolicyConfig{
+		Roles: []*api.PolicyRole{{Name: api.RoleNode}},
+		Bindings: []*api.PolicyBinding{
+			{Role: api.RoleNode, Members: []string{"email:*@corp.example"}, Claims: map[string]string{"device.type": "managed_workstation"}},
+			{Role: api.RoleNode, Members: []string{"email:*@corp.example"}, Claims: map[string]string{"device.type": "managed_mobile", "device.management": "fully_managed"}},
+		},
+		AttestedClaims: []string{"amr", "iss"},
+	}
+	if err := store.SavePolicyConfig(ctx, cfg); err != nil {
+		t.Fatalf("SavePolicyConfig: %v", err)
+	}
+	_, gotBindings, err := store.GetMeshPolicy(ctx)
+	if err != nil {
+		t.Fatalf("GetMeshPolicy after SavePolicyConfig: %v", err)
+	}
+	if len(gotBindings) != 2 {
+		t.Fatalf("got %d bindings for same role with distinct claims, want 2: %+v", len(gotBindings), gotBindings)
+	}
+	gotAttested, err := store.GetAttestedClaims(ctx)
+	if err != nil {
+		t.Fatalf("GetAttestedClaims: %v", err)
+	}
+	if !reflect.DeepEqual(gotAttested, cfg.AttestedClaims) {
+		t.Errorf("AttestedClaims = %v, want %v", gotAttested, cfg.AttestedClaims)
 	}
 }
 

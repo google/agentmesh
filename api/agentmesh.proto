@@ -592,17 +592,29 @@ message PlatformIdentity {
 
 message PolicyBinding {
   string role = 1;
+  // Disjunction (OR): caller must match at least one member.
   repeated string members = 2;
+  // Conjunction (AND): optional verified OIDC JWT claim requirements that must
+  // all hold alongside a matching member (for example {"iss":
+  // "https://idp.example", "device.trust_tier": "high"}). Multiple bindings
+  // may target the same role to express OR-of-AND conditions.
+  map<string, string> claims = 3;
 }
 
-// PolicyConfig is the mesh policy as the operator writes it: roles and
-// bindings. It is the body of POST /policies and the answer of
-// GET /admin/policy, both protojson. Only the control plane reads it, to
-// mint tokens and to render PolicyConfigGetResponse.
+// PolicyConfig is the mesh policy as the operator writes it: roles, bindings,
+// egress destinations, and optional extra OIDC claims to attest. It is the
+// body of POST /policies and the answer of GET /admin/policy, both protojson.
+// Only the control plane reads it, to mint tokens and to render
+// PolicyConfigGetResponse.
 message PolicyConfig {
   repeated PolicyRole roles = 1;
   repeated PolicyBinding bindings = 2;
   repeated EgressDestination egress = 3;
+  // Optional extra verified OIDC JWT claim paths (literal keys or dotted JSON
+  // paths, including "iss") to mint as authority claim(k, v) facts on Biscuits
+  // even when not referenced in any PolicyBinding.claims, for node-local
+  // attenuation, audit provenance, or outbound STS border JWT propagation.
+  repeated string attested_claims = 4;
 }
 
 message PolicyConfigGetRequest {}

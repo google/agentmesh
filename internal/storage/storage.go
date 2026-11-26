@@ -342,6 +342,13 @@ type Store interface {
 	// one transaction: a policy post is applied whole or not at all.
 	SavePolicyDocument(ctx context.Context, roles []*api.PolicyRole, bindings []*api.PolicyBinding, egress []*api.EgressDestination) error
 
+	// SavePolicyConfig replaces roles, bindings, egress destinations, and
+	// attested_claims in one transaction.
+	SavePolicyConfig(ctx context.Context, cfg *api.PolicyConfig) error
+
+	// GetAttestedClaims loads PolicyConfig.attested_claims in deterministic order.
+	GetAttestedClaims(ctx context.Context) ([]string, error)
+
 	// SaveBootstrapToken persists a new bootstrap token.
 	SaveBootstrapToken(ctx context.Context, token *BootstrapToken) error
 

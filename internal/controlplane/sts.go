@@ -810,7 +810,7 @@ func (s *Server) HandleTokenExchange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	biscuitData, biscuitExpiry, subjectID, resolvedRoles, status, err := s.mintDelegatedBiscuitFromJWT(
+	biscuitData, biscuitExpiry, subjectID, resolvedRoles, attestedClaims, status, err := s.mintDelegatedBiscuitFromJWT(
 		r.Context(),
 		req.SubjectToken,
 		actorPeerID,
@@ -838,6 +838,7 @@ func (s *Server) HandleTokenExchange(w http.ResponseWriter, r *http.Request) {
 		"actor_node", nodeRecord.PeerID,
 		"subject", subjectID,
 		"roles", resolvedRoles,
+		"claims", api.FormatClaims(attestedClaims),
 		"expire_time", biscuitExpiry.UTC().Format(time.RFC3339),
 	)
 
@@ -865,16 +866,16 @@ func (s *Server) mintDelegatedBiscuitFromJWT(
 	seal bool,
 	requestedTTLSeconds int64,
 	allowWorkload bool,
-) ([]byte, time.Time, string, []string, int, error) {
+) ([]byte, time.Time, string, []string, map[string][]string, int, error) {
 	verifyCtx, cancel := context.WithTimeout(ctx, JWTVerificationTimeout)
 	defer cancel()
 
 	claims, token, err := identity.VerifyJWT(verifyCtx, subjectJWT, s.config.AllowedAudiences, s.getProviders())
 	if err != nil {
-		return nil, time.Time{}, "", nil, http.StatusUnauthorized, errors.New(s.jwtRefusalMessage(err))
+		return nil, time.Time{}, "", nil, nil, http.StatusUnauthorized, errors.New(s.jwtRefusalMessage(err))
 	}
 	if !allowWorkload && s.isWorkloadClaims(claims) {
-		return nil, time.Time{}, "", nil, http.StatusForbidden, errWorkloadIdentity
+		return nil, time.Time{}, "", nil, nil, http.StatusForbidden, errWorkloadIdentity
 	}
 	if verifiedEmail(claims) == "" {
 		delete(claims, "email")
@@ -885,10 +886,10 @@ func (s *Server) mintDelegatedBiscuitFromJWT(
 		banned, err := s.store.IsIdentityBanned(ctx, subjectKey)
 		if err != nil {
 			logger.Errorf("Failed to check identity ban for %s: %v", subjectKey, err)
-			return nil, time.Time{}, "", nil, http.StatusInternalServerError, errors.New("internal server error")
+			return nil, time.Time{}, "", nil, nil, http.StatusInternalServerError, errors.New("internal server error")
 		}
 		if banned {
-			return nil, time.Time{}, "", nil, http.StatusForbidden, errors.New("identity is banned")
+			return nil, time.Time{}, "", nil, nil, http.StatusForbidden, errors.New("identity is banned")
 		}
 	}
 
@@ -904,13 +905,19 @@ func (s *Server) mintDelegatedBiscuitFromJWT(
 	privKey, _, err := s.store.GetCurrentKey(ctx)
 	if err != nil {
 		logger.Errorf("Failed to retrieve current signing key: %v", err)
-		return nil, time.Time{}, "", nil, http.StatusInternalServerError, errors.New("internal server error")
+		return nil, time.Time{}, "", nil, nil, http.StatusInternalServerError, errors.New("internal server error")
 	}
 
 	policyRoles, bindings, err := s.store.GetMeshPolicy(ctx)
 	if err != nil && err != storage.ErrNotFound {
 		logger.Errorf("Failed to load mesh policy for token exchange: %v", err)
-		return nil, time.Time{}, "", nil, http.StatusInternalServerError, errors.New("internal server error")
+		return nil, time.Time{}, "", nil, nil, http.StatusInternalServerError, errors.New("internal server error")
+	}
+
+	attestedClaims, err := s.extractPolicyClaims(ctx, claims, bindings, subjectPrincipal)
+	if err != nil {
+		logger.Errorf("Failed to load attested claims for token exchange: %v", err)
+		return nil, time.Time{}, "", nil, nil, http.StatusInternalServerError, errors.New("internal server error")
 	}
 
 	// Pass empty peerID so node:<peer> bindings on the origin node never leak to the delegated subject.
@@ -940,15 +947,15 @@ func (s *Server) mintDelegatedBiscuitFromJWT(
 		biscuitExpiry = token.Expiry
 	}
 
-	biscuitData, err := identity.MintDelegatedBiscuitToken(privKey, claims, actorPeerID, biscuitExpiry, resolvedRoles, policyRoles, taskRule, seal)
+	biscuitData, err := identity.MintDelegatedBiscuitTokenWithClaims(privKey, claims, actorPeerID, biscuitExpiry, resolvedRoles, policyRoles, attestedClaims, taskRule, seal)
 	if err != nil {
 		logger.Errorw("Delegated Biscuit minting failed", "actor_node", actorPeerID.String(), "error", err)
-		return nil, time.Time{}, "", nil, http.StatusBadRequest, fmt.Errorf("failed to mint delegated biscuit: %w", err)
+		return nil, time.Time{}, "", nil, nil, http.StatusBadRequest, fmt.Errorf("failed to mint delegated biscuit: %w", err)
 	}
 	if taskRule != nil {
 		biscuitExpiry = api.EffectiveTARExpiration(biscuitExpiry, []*api.TaskAuthorizationRule{taskRule})
 	}
-	return biscuitData, biscuitExpiry, subjectPrincipal, resolvedRoles, http.StatusOK, nil
+	return biscuitData, biscuitExpiry, subjectPrincipal, resolvedRoles, attestedClaims, http.StatusOK, nil
 }
 
 // HandleSTSToken serves stateless HTTP POST `/sts/token` (mesh protocol).
@@ -1093,6 +1100,12 @@ func (s *Server) HandleSTSToken(w http.ResponseWriter, r *http.Request) {
 	if taskName != "" {
 		jwtClaims["mesh_task"] = taskName
 	}
+	if meshClaims := api.ClaimsForBorderJWT(claims.Claims); len(meshClaims) > 0 {
+		jwtClaims["mesh_claims"] = meshClaims
+	}
+	if len(claims.Labels) > 0 {
+		jwtClaims["mesh_labels"] = claims.Labels
+	}
 
 	signedJWT, err := s.oidcSigner.SignJWT(r.Context(), jwtClaims)
 	if err != nil {
@@ -1110,6 +1123,8 @@ func (s *Server) HandleSTSToken(w http.ResponseWriter, r *http.Request) {
 		"subject", subject,
 		"audience", audience,
 		"destination", req.Destination,
+		"claims", api.FormatClaims(claims.Claims),
+		"labels", api.FormatLabels(claims.Labels),
 		"task", taskName,
 		"jti", jti,
 		"expire_time", jwtExpiry.UTC().Format(time.RFC3339),
@@ -1653,7 +1668,7 @@ func (s *Server) handleOAuthAuthCodeGrant(w http.ResponseWriter, r *http.Request
 	}
 
 	seal := r.Form.Get("seal") == "true"
-	biscuitData, biscuitExpiry, _, _, status, err := s.mintDelegatedBiscuitFromJWT(r.Context(), entry.SubjectJWT, actorPeerID, entry.TAR, seal, 0, false)
+	biscuitData, biscuitExpiry, _, _, _, status, err := s.mintDelegatedBiscuitFromJWT(r.Context(), entry.SubjectJWT, actorPeerID, entry.TAR, seal, 0, false)
 	if err != nil {
 		writeOAuthError(w, status, "invalid_grant", err.Error())
 		return
@@ -1758,7 +1773,7 @@ func (s *Server) handleOAuthTokenExchangeGrant(w http.ResponseWriter, r *http.Re
 			return
 		}
 		var status int
-		biscuitData, biscuitExpiry, _, _, status, err = s.mintDelegatedBiscuitFromJWT(r.Context(), subjectToken, actorPeerID, tarRule, seal, reqTTL, admitted != nil)
+		biscuitData, biscuitExpiry, _, _, _, status, err = s.mintDelegatedBiscuitFromJWT(r.Context(), subjectToken, actorPeerID, tarRule, seal, reqTTL, admitted != nil)
 		if err != nil {
 			writeOAuthError(w, status, "invalid_grant", err.Error())
 			return

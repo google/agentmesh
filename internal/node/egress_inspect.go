@@ -96,6 +96,8 @@ func buildMeshAttributesStruct(destName string, ec egressCallerContext) map[stri
 	st, err := structpb.NewStruct(map[string]any{
 		"principal":   ec.principal,
 		"roles":       strings.Join(ec.roles, ","),
+		"claims":      api.FormatClaims(ec.claims),
+		"labels":      api.FormatLabels(ec.labels),
 		"actor_node":  ec.actorNode,
 		"task":        ec.task,
 		"service":     api.EgressServicePrefix + destName,

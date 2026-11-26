@@ -393,6 +393,32 @@ func queryLabelFacts(authorizer biscuit.Authorizer) (map[string]string, error) {
 	return labels, nil
 }
 
+func queryClaimFacts(authorizer biscuit.Authorizer) (map[string][]string, error) {
+	facts, err := authorizer.Query(biscuit.Rule{
+		Head: biscuit.Predicate{Name: "q", IDs: []biscuit.Term{biscuit.Variable("k"), biscuit.Variable("v")}},
+		Body: []biscuit.Predicate{{Name: api.FactClaim, IDs: []biscuit.Term{biscuit.Variable("k"), biscuit.Variable("v")}}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(facts) == 0 {
+		return nil, nil
+	}
+	claims := make(map[string][]string)
+	for _, fact := range facts {
+		if len(fact.IDs) != 2 {
+			return nil, fmt.Errorf("unexpected claim fact shape")
+		}
+		key, keyOK := fact.IDs[0].(biscuit.String)
+		value, valueOK := fact.IDs[1].(biscuit.String)
+		if !keyOK || !valueOK {
+			return nil, fmt.Errorf("unexpected claim fact type")
+		}
+		claims[string(key)] = append(claims[string(key)], string(value))
+	}
+	return claims, nil
+}
+
 func queryExpiration(authorizer biscuit.Authorizer) (time.Time, error) {
 	facts, err := authorizer.Query(biscuit.Rule{
 		Head: biscuit.Predicate{Name: "q", IDs: []biscuit.Term{biscuit.Variable("t")}},

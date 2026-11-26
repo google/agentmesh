@@ -22,6 +22,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -235,11 +236,13 @@ func (s *GatewayServer) Check(ctx context.Context, req *authv3.CheckRequest) (*a
 				AppendAction: corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
 			})
 		}
+		headersToRemove := spoofedMeshHeadersToRemove(headers, res.ResponseHeaders)
 		return &authv3.CheckResponse{
 			Status: &rpcstatus.Status{Code: int32(codes.OK)},
 			HttpResponse: &authv3.CheckResponse_OkResponse{
 				OkResponse: &authv3.OkHttpResponse{
-					Headers: hdrs,
+					Headers:         hdrs,
+					HeadersToRemove: headersToRemove,
 				},
 			},
 		}, nil
@@ -451,7 +454,7 @@ func (s *GatewayServer) evaluateExtProcDecision(ctx context.Context, method, pat
 			AppendAction: corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
 		})
 	}
-	var removeHeaders []string
+	removeHeaders := spoofedMeshHeadersToRemove(headers, res.ResponseHeaders)
 	if _, hasUpstreamAuth := res.ResponseHeaders["Authorization"]; !hasUpstreamAuth {
 		if headers["authorization"] != "" {
 			removeHeaders = append(removeHeaders, "authorization")
@@ -476,6 +479,29 @@ func (s *GatewayServer) evaluateExtProcDecision(ctx context.Context, method, pat
 			RequestHeaders: &extprocv3.HeadersResponse{Response: common},
 		},
 	}
+}
+
+// spoofedMeshHeadersToRemove returns inbound X-Mesh-* and X-Peer-Id header
+// names that were NOT freshly stamped in responseHeaders so untrusted callers
+// cannot smuggle forged provenance or task headers past Envoy ext_authz/ext_proc.
+func spoofedMeshHeadersToRemove(inbound, responseHeaders map[string]string) []string {
+	if len(inbound) == 0 {
+		return nil
+	}
+	stamped := make(map[string]bool, len(responseHeaders))
+	for k := range responseHeaders {
+		stamped[strings.ToLower(k)] = true
+	}
+	peerHeaderLower := strings.ToLower(api.HeaderPeerID)
+	var remove []string
+	for k := range inbound {
+		lower := strings.ToLower(k)
+		if (strings.HasPrefix(lower, "x-mesh-") || lower == peerHeaderLower) && !stamped[lower] {
+			remove = append(remove, lower)
+		}
+	}
+	sort.Strings(remove)
+	return remove
 }
 
 // InspectJSONRPCMCPBody inspects a JSON-RPC 2.0 request body for MCP methods

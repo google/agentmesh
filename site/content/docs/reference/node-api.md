@@ -133,15 +133,25 @@ On the local API listeners, `agentmesh-node` serves:
   control plane (`POST /token/exchange`) into a delegated Biscuit before
   evaluation; a request with no credential is refused with `401`. The target
   service is taken from `X-Mesh-Target-Service` or from the `/mesh/<peer>/<type>/<name>`
-  request path. On `OK`, the response carries `X-Mesh-Biscuit`,
-  `X-Mesh-Principal`, `X-Mesh-Roles`, and, when the token is task-attenuated,
-  `X-Mesh-Task` (the last `TaskAuthorizationRule` as protojson) and
-  `X-Mesh-Task-Id`. For an `egress://` target with a configured credential
+  request path. On `OK`, the response strips any caller-supplied `X-Mesh-*` and
+  `X-Peer-Id` headers (`headers_to_remove` on gRPC) and stamps verified
+  `X-Mesh-Biscuit`, `X-Mesh-Principal`, `X-Mesh-Roles`, `X-Mesh-Claims`,
+  `X-Mesh-Labels`, `X-Mesh-Actor-Node`, `X-Mesh-Origin: mesh-gateway`, and, when the token is
+  task-attenuated, `X-Mesh-Task` (the last `TaskAuthorizationRule` as protojson)
+  and `X-Mesh-Task-Id`. For an `egress://` target with a configured credential
   broker it also carries the brokered `Authorization` header for the upstream.
 - **Envoy gRPC `envoy.service.ext_proc.v3.ExternalProcessor/Process`**: the
   body-aware gateway processor. It inspects JSON-RPC bodies on MCP `tools/call`
   requests to enforce `operation.allowed_tools` in `TaskAuthorizationRule`
-  blocks before injecting the upstream credential.
+  blocks, strips spoofed inbound `X-Mesh-*` and `X-Peer-Id` headers via
+  `remove_headers`, stamps the verified provenance headers above, and injects
+  the upstream credential.
+
+Inbound mesh streams (`/libp2p-http`) and external router ingress
+(`/mesh/ingress/1.0.0`) stamp the same verified `X-Mesh-Principal`,
+`X-Mesh-Roles`, `X-Mesh-Claims`, `X-Mesh-Labels`, `X-Mesh-Actor-Node`, and `X-Mesh-Origin`
+(`mesh-remote` or `mesh-external-ingress`) headers after stripping inbound
+caller values.
 
 ## MCP tools
 

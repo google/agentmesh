@@ -1,0 +1,8 @@
+version: "v1alpha1"
+
+# Deliberately declares node labels matching posture claim names.
+# Because label() and claim() are separate predicates, node-declared labels
+# can never satisfy PolicyBinding.claims or claim() Datalog checks.
+labels:
+  device.trust_tier: high
+  device.type: managed_workstation

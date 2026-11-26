@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -589,6 +590,22 @@ var migrations = []migration{
 		},
 		sqlite: []string{
 			`ALTER TABLE routers ADD COLUMN ingress_url TEXT`,
+		},
+	},
+	{
+		// Persist structured PolicyBinding.claims and PolicyConfig.attested_claims.
+		version: 22,
+		postgres: []string{
+			`ALTER TABLE role_bindings ADD COLUMN IF NOT EXISTS claims_json TEXT DEFAULT '' NOT NULL`,
+			`CREATE TABLE IF NOT EXISTS policy_attested_claims (
+				claim_path VARCHAR(255) PRIMARY KEY
+			)`,
+		},
+		sqlite: []string{
+			`ALTER TABLE role_bindings ADD COLUMN claims_json TEXT DEFAULT '' NOT NULL`,
+			`CREATE TABLE IF NOT EXISTS policy_attested_claims (
+				claim_path TEXT PRIMARY KEY
+			)`,
 		},
 	},
 }
@@ -1392,12 +1409,71 @@ func (s *SQLStore) SaveMeshPolicy(ctx context.Context, roles []*api.PolicyRole, 
 // SavePolicyDocument replaces roles, bindings and egress destinations in one
 // transaction, so a POST /policies is applied whole or not at all.
 func (s *SQLStore) SavePolicyDocument(ctx context.Context, roles []*api.PolicyRole, bindings []*api.PolicyBinding, egress []*api.EgressDestination) error {
+	return s.SavePolicyConfig(ctx, &api.PolicyConfig{
+		Roles:    roles,
+		Bindings: bindings,
+		Egress:   egress,
+	})
+}
+
+// SavePolicyConfig replaces roles, bindings, egress destinations, and
+// attested_claims in one transaction.
+func (s *SQLStore) SavePolicyConfig(ctx context.Context, cfg *api.PolicyConfig) error {
+	if cfg == nil {
+		cfg = &api.PolicyConfig{}
+	}
 	return s.inTx(ctx, func(tx *sql.Tx) error {
-		if err := s.saveMeshPolicyTx(ctx, tx, roles, bindings); err != nil {
+		if err := s.saveMeshPolicyTx(ctx, tx, cfg.Roles, cfg.Bindings); err != nil {
 			return err
 		}
-		return s.saveEgressDestinationsTx(ctx, tx, egress)
+		if err := s.saveEgressDestinationsTx(ctx, tx, cfg.Egress); err != nil {
+			return err
+		}
+		return s.saveAttestedClaimsTx(ctx, tx, cfg.AttestedClaims)
 	})
+}
+
+func (s *SQLStore) saveAttestedClaimsTx(ctx context.Context, tx *sql.Tx, paths []string) error {
+	if _, err := tx.ExecContext(ctx, "DELETE FROM policy_attested_claims"); err != nil {
+		return err
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(paths))
+	sorted := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		sorted = append(sorted, p)
+	}
+	slices.Sort(sorted)
+	for _, p := range sorted {
+		if _, err := tx.ExecContext(ctx, s.rebind("INSERT INTO policy_attested_claims (claim_path) VALUES (?)"), p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// GetAttestedClaims loads PolicyConfig.attested_claims in deterministic order.
+func (s *SQLStore) GetAttestedClaims(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, s.rebind("SELECT claim_path FROM policy_attested_claims ORDER BY claim_path"))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 // inTx runs fn in a transaction and commits when it returns nil.
@@ -1489,8 +1565,16 @@ func (s *SQLStore) saveMeshPolicyTx(ctx context.Context, tx *sql.Tx, roles []*ap
 		if b == nil {
 			continue
 		}
+		claimsJSON := ""
+		if len(b.Claims) > 0 {
+			encoded, err := json.Marshal(b.Claims)
+			if err != nil {
+				return err
+			}
+			claimsJSON = string(encoded)
+		}
 		for _, member := range b.Members {
-			if _, err := tx.ExecContext(ctx, s.rebind("INSERT INTO role_bindings (role_name, member) VALUES (?, ?)"), b.Role, member); err != nil {
+			if _, err := tx.ExecContext(ctx, s.rebind("INSERT INTO role_bindings (role_name, member, claims_json) VALUES (?, ?, ?)"), b.Role, member, claimsJSON); err != nil {
 				return err
 			}
 		}
@@ -1567,23 +1651,36 @@ func (s *SQLStore) GetMeshPolicy(ctx context.Context) ([]*api.PolicyRole, []*api
 		return nil, nil, err
 	}
 
-	bindingsRows, err := s.db.QueryContext(ctx, s.rebind("SELECT role_name, member FROM role_bindings ORDER BY role_name, member"))
+	bindingsRows, err := s.db.QueryContext(ctx, s.rebind("SELECT role_name, member, claims_json FROM role_bindings ORDER BY role_name, claims_json, member"))
 	if err != nil {
 		return nil, nil, err
 	}
 	defer func() { _ = bindingsRows.Close() }()
 
 	var bindings []*api.PolicyBinding
+	var lastRole, lastClaimsJSON string
 	for bindingsRows.Next() {
-		var roleName, member string
-		if err := bindingsRows.Scan(&roleName, &member); err != nil {
+		var roleName, member, claimsJSON string
+		if err := bindingsRows.Scan(&roleName, &member, &claimsJSON); err != nil {
 			return nil, nil, err
 		}
-		if n := len(bindings); n > 0 && bindings[n-1].Role == roleName {
+		if n := len(bindings); n > 0 && lastRole == roleName && lastClaimsJSON == claimsJSON {
 			bindings[n-1].Members = append(bindings[n-1].Members, member)
 			continue
 		}
-		bindings = append(bindings, &api.PolicyBinding{Role: roleName, Members: []string{member}})
+		var claimsMap map[string]string
+		if claimsJSON != "" {
+			if err := json.Unmarshal([]byte(claimsJSON), &claimsMap); err != nil {
+				return nil, nil, fmt.Errorf("role %s: stored binding claims do not parse: %w", roleName, err)
+			}
+		}
+		bindings = append(bindings, &api.PolicyBinding{
+			Role:    roleName,
+			Members: []string{member},
+			Claims:  claimsMap,
+		})
+		lastRole = roleName
+		lastClaimsJSON = claimsJSON
 	}
 	if err := bindingsRows.Err(); err != nil {
 		return nil, nil, err

@@ -90,6 +90,8 @@ type IngressEvalParams struct {
 	LocalChecks        []biscuit.Check
 	LocalRules         []biscuit.Rule
 	Allow              []string
+	RequireTaskScope   bool
+	MaxTaskTTL         time.Duration
 	Timeout            time.Duration
 }
 
@@ -119,6 +121,8 @@ func (p IngressEvalParams) meshPolicy() MeshPolicy {
 type IngressCallerResult struct {
 	Principal     string
 	Roles         []string
+	Labels        map[string]string
+	Claims        map[string][]string
 	TaskName      string
 	ActorNodeID   string
 	IdentityFacts map[string][]string
@@ -159,6 +163,17 @@ func ValidateIngressCallerPreDial(claims *VerifiedBiscuitClaims, p IngressEvalPa
 	if claims.NodePeerID != "" && len(claims.TaskRules) == 0 {
 		return nil, fmt.Errorf("unattenuated transport member biscuits cannot be used as HTTP edge bearer tokens; exchange at /oauth/token")
 	}
+	if (p.RequireTaskScope || p.MaxTaskTTL > 0) && len(claims.TaskRules) == 0 {
+		return nil, fmt.Errorf("task-scoped credential (tar_block) is required")
+	}
+	if p.MaxTaskTTL > 0 {
+		if claims.Expiration.IsZero() {
+			return nil, fmt.Errorf("credential expiration is required when max_task_ttl is configured")
+		}
+		if remaining := time.Until(claims.Expiration); remaining > p.MaxTaskTTL {
+			return nil, fmt.Errorf("credential remaining lifetime %s exceeds max_task_ttl %s", remaining.Round(time.Second), p.MaxTaskTTL)
+		}
+	}
 	if len(claims.TaskRules) > 0 {
 		if err := api.EvaluateTaskRules(claims.TaskRules, p.meshRequest().TaskRequest(), time.Now()); err != nil {
 			return nil, err
@@ -196,9 +211,27 @@ func AuthorizeIngressDelegatedBiscuit(claims *VerifiedBiscuitClaims, p IngressEv
 		actorNodeID = claims.NodePeerID
 	}
 
+	var labels map[string]string
+	if len(claims.Labels) > 0 {
+		labels = make(map[string]string, len(claims.Labels))
+		for k, v := range claims.Labels {
+			labels[k] = v
+		}
+	}
+
+	var attestedClaims map[string][]string
+	if len(claims.Claims) > 0 {
+		attestedClaims = make(map[string][]string, len(claims.Claims))
+		for k, v := range claims.Claims {
+			attestedClaims[k] = append([]string(nil), v...)
+		}
+	}
+
 	return &IngressCallerResult{
 		Principal:     claims.Principal(),
 		Roles:         roles,
+		Labels:        labels,
+		Claims:        attestedClaims,
 		TaskName:      claims.InnermostTaskName(),
 		ActorNodeID:   actorNodeID,
 		IdentityFacts: idMap,
