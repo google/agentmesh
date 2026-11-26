@@ -88,13 +88,20 @@ replica count.
    (the role's `allowed_publish`), checked against the credential the
    handshake presented and the mesh policy the router synced, so a grant
    added to a role reaches the directory at the next pass; a record for
-   anything else is refused. A record
+   anything else is refused. A record carries at most 32 addresses, and an
+   address is at most 1024 bytes with its peer ID; the router refuses a
+   record above either bound. A record
    lives for the mesh's record TTL after its last announcement,
    and an announcement replaces the addresses of the one before; a member
    that stops a service or leaves withdraws its records, and the router
    withdraws them from the same routers. A member asks for providers of
    a key or for a peer; the router answers from its own records and from
-   the routers closest to the key, asked at once. A member keeps no DHT
+   the routers closest to the key, asked at once. An answer carries at
+   most 100 providers in at most 64 KiB, the frame that every reader of
+   the protocol accepts. When the records do not fit, the router keeps
+   each record that is at most an even share of the frame, gives the room
+   that is left to the larger records, the smallest first, and logs and
+   counts the records it leaves out. A member keeps no DHT
    and asks only the routers it holds. It connects to another router only
    to reach a peer behind that router.
 6. Refreshes its own credential before it expires, like a node, at the
@@ -155,6 +162,7 @@ The metrics address exposes, next to the Go runtime metrics:
 | `agentmesh_router_directory_requests_total{op,result}`, `agentmesh_router_directory_request_seconds{op}` | Directory requests served, by operation (`provide`, `withdraw`, `find_providers`, `find_peer`; `place` is a record or withdrawal another router put here, `lookup` a find another router ran here) and result (`ok`, `empty`, `invalid`, `denied` for a record naming a service the member's credential does not grant serving, `error`), with the time each took. |
 | `agentmesh_router_directory_records` | Directory records this router holds: its own members' and the copies placed on it. |
 | `agentmesh_router_directory_records_expired_total` | Records dropped because their provider stopped announcing them for the mesh's record TTL. |
+| `agentmesh_router_directory_records_omitted_total` | Provider records left out of an answer that did not fit the 64 KiB frame, the largest first. The router logs their peer IDs. A steady rate is a key with more providers than one answer carries, or a provider with very large records. |
 | `agentmesh_router_directory_placements_total{result}` | Copies of a member's record, or of its withdrawal, this router placed on the routers closest to the key. |
 | `agentmesh_router_directory_lookups_total{result}` | Peer routers asked during a lookup; `error` is one that did not answer in time and was left out of the answer. |
 | `agentmesh_router_auth_handshakes_total{result}`, `agentmesh_router_lease_renewals_total{result}` | Handshakes and lease renewals by outcome. |

@@ -16,9 +16,11 @@ package router
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -98,6 +100,11 @@ var directoryLookupsTotal = promauto.NewCounterVec(
 	},
 	[]string{"result"},
 )
+
+var directoryRecordsOmittedTotal = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "agentmesh_router_directory_records_omitted_total",
+	Help: "Provider records left out of a directory answer because the answer did not fit the frame; the largest records are left out first",
+})
 
 func init() {
 	for _, op := range []string{directoryOpProvide, directoryOpWithdraw, directoryOpFindProviders, directoryOpFindPeer, directoryOpPlace, directoryOpLookup} {
@@ -402,12 +409,14 @@ func (r *Router) directoryWithdraw(ctx context.Context, remote peer.ID, q *api.D
 }
 
 // recordAddrs parses a record's addresses: at most DirectoryMaxAddrs, each
-// with no peer suffix or the provider's own, stored without it as the
-// peerstore keeps them.
+// at most DirectoryMaxAddrBytes with the provider's peer suffix, each with
+// no peer suffix or the provider's own, stored without it as the peerstore
+// keeps them.
 func recordAddrs(provider peer.ID, raw []string) ([]multiaddr.Multiaddr, error) {
 	if len(raw) > api.DirectoryMaxAddrs {
 		return nil, fmt.Errorf("%d addresses, at most %d", len(raw), api.DirectoryMaxAddrs)
 	}
+	suffixBytes := len("/p2p/") + len(provider.String())
 	addrs := make([]multiaddr.Multiaddr, 0, len(raw))
 	for _, a := range raw {
 		ma, err := multiaddr.NewMultiaddr(a)
@@ -420,6 +429,10 @@ func recordAddrs(provider peer.ID, raw []string) ([]multiaddr.Multiaddr, error) 
 		}
 		if transport == nil {
 			return nil, fmt.Errorf("address %q has no transport", a)
+		}
+		// The error does not quote the address: it is long.
+		if n := len(transport.String()) + suffixBytes; n > api.DirectoryMaxAddrBytes {
+			return nil, fmt.Errorf("an address of %d bytes with its peer suffix, at most %d", n, api.DirectoryMaxAddrBytes)
 		}
 		addrs = append(addrs, transport)
 	}
@@ -597,10 +610,10 @@ func (r *Router) findProviders(ctx context.Context, key []byte, limit int) []pro
 				merged = append(merged, entry)
 				continue
 			}
-			for _, a := range entry.info.Addrs {
-				if !containsAddr(merged[i].info.Addrs, a) {
-					merged[i].info.Addrs = append(merged[i].info.Addrs, a)
-				}
+			addrs, omitted := mergeAddrs(merged[i].info.Addrs, entry.info.Addrs)
+			merged[i].info.Addrs = addrs
+			if omitted > 0 {
+				logger.Warnf("[Directory] Provider %s has more than %d addresses on the routers asked: left out %d", entry.info.ID, api.DirectoryMaxAddrs, omitted)
 			}
 			if merged[i].ingress == nil && entry.ingress != nil {
 				merged[i].ingress = entry.ingress
@@ -610,9 +623,28 @@ func (r *Router) findProviders(ctx context.Context, key []byte, limit int) []pro
 	return merged
 }
 
+// mergeAddrs adds to have the addresses of more that it lacks, up to
+// DirectoryMaxAddrs in all, so a merged record is no larger than one that
+// a provide accepts. It returns how many addresses it left out.
+func mergeAddrs(have, more []multiaddr.Multiaddr) ([]multiaddr.Multiaddr, int) {
+	omitted := 0
+	for _, a := range more {
+		if containsAddr(have, a) {
+			continue
+		}
+		if len(have) >= api.DirectoryMaxAddrs {
+			omitted++
+			continue
+		}
+		have = append(have, a)
+	}
+	return have, omitted
+}
+
 // freshRecords renders up to limit providers, each at the addresses this
 // router sees for it when it holds the provider, which are ahead of the
-// record, and at the record's otherwise.
+// record, and at the record's otherwise. The records it returns fit one
+// frame.
 func (r *Router) freshRecords(entries []providerEntry, limit int) []*api.PeerRecord {
 	records := make([]*api.PeerRecord, 0, min(limit, len(entries)))
 	for _, entry := range entries {
@@ -628,7 +660,70 @@ func (r *Router) freshRecords(entries []providerEntry, limit int) []*api.PeerRec
 		rec.Ingress = cloneServiceIngress(entry.ingress)
 		records = append(records, rec)
 	}
-	return records
+	return frameRecords(records)
+}
+
+// frameRecords returns the records that fit one frame of the directory
+// protocol, in their order. It logs and counts the records it leaves out.
+func frameRecords(records []*api.PeerRecord) []*api.PeerRecord {
+	kept, omitted := fitRecords(records, directoryMaxMessage)
+	if len(omitted) == 0 {
+		return kept
+	}
+	directoryRecordsOmittedTotal.Add(float64(len(omitted)))
+	providers := make([]string, len(omitted))
+	for i, rec := range omitted {
+		providers[i] = rec.GetPeerId()
+	}
+	logger.Warnw("[Directory] Records left out of an answer that did not fit the frame", "frame_bytes", directoryMaxMessage, "kept", len(kept), "omitted", len(omitted), "providers", providers)
+	return kept
+}
+
+// fitRecords splits records into those whose encoded DirectoryResponse is
+// at most budget bytes and those it leaves out. Both keep the order of
+// records. A record that is at most an even share of the budget is always
+// kept, so a large record cannot take the room of a small one. The room
+// that is left goes to the larger records, the smallest first.
+func fitRecords(records []*api.PeerRecord, budget int) (kept, omitted []*api.PeerRecord) {
+	if len(records) == 0 {
+		return nil, nil
+	}
+	share := budget / len(records)
+	sizes := make([]int, len(records))
+	fits := make([]bool, len(records))
+	var larger []int
+	used := 0
+	for i, rec := range records {
+		sizes[i] = answerBytes(rec)
+		if sizes[i] > share {
+			larger = append(larger, i)
+			continue
+		}
+		fits[i] = true
+		used += sizes[i]
+	}
+	slices.SortStableFunc(larger, func(a, b int) int { return cmp.Compare(sizes[a], sizes[b]) })
+	for _, i := range larger {
+		if used+sizes[i] > budget {
+			break
+		}
+		fits[i] = true
+		used += sizes[i]
+	}
+	for i, rec := range records {
+		if fits[i] {
+			kept = append(kept, rec)
+		} else {
+			omitted = append(omitted, rec)
+		}
+	}
+	return kept, omitted
+}
+
+// answerBytes is what one record adds to an encoded DirectoryResponse. The
+// sizes of the records add up to the size of the answer.
+func answerBytes(rec *api.PeerRecord) int {
+	return proto.Size(&api.DirectoryResponse{Providers: []*api.PeerRecord{rec}})
 }
 
 // providerEntryOfRecord parses a record another router answered with.
@@ -661,7 +756,8 @@ func containsAddr(addrs []multiaddr.Multiaddr, a multiaddr.Multiaddr) bool {
 
 // directoryFindPeer answers where a peer is reached: from this router's
 // own peerstore for a member attached here, from the record the member
-// announced under its peer key otherwise.
+// announced under its peer key otherwise. A peer whose addresses do not
+// fit one frame is not found.
 func (r *Router) directoryFindPeer(ctx context.Context, remote peer.ID, q *api.DirectoryFindPeer) (*api.DirectoryResponse, error) {
 	p, err := peer.Decode(q.GetPeerId())
 	if err != nil {
@@ -669,7 +765,11 @@ func (r *Router) directoryFindPeer(ctx context.Context, remote peer.ID, q *api.D
 	}
 	if r.isPeerAuthenticated(p) && r.Host.Network().Connectedness(p) == network.Connected {
 		if addrs := r.Host.Peerstore().Addrs(p); len(addrs) > 0 {
-			return &api.DirectoryResponse{Peer: peerRecord(peer.AddrInfo{ID: p, Addrs: addrs})}, nil
+			records := frameRecords([]*api.PeerRecord{peerRecord(peer.AddrInfo{ID: p, Addrs: addrs})})
+			if len(records) == 0 {
+				return &api.DirectoryResponse{}, nil
+			}
+			return &api.DirectoryResponse{Peer: records[0]}, nil
 		}
 	}
 	records, err := r.lookupProviders(ctx, remote, api.PeerKey(p), 1)

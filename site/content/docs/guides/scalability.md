@@ -222,7 +222,9 @@ its own members and r copies of records whose keys land on it, and asks
 r routers per lookup. A key that every member publishes, such as a
 service type, lands on the same r routers for all of them; those r
 routers hold a record per publisher and answer every lookup of it, and
-a lookup of it returns at most 100 providers.
+a lookup of it returns at most 100 providers in an answer of at most
+64 KiB; `agentmesh_router_directory_records_omitted_total` counts the
+records that did not fit.
 
 What bounds the total is the router's libp2p connection cap. The cap is
 twice the larger of `--high-watermark` and `--conns-per-source-ip`, and
