@@ -1,0 +1,117 @@
+{
+  "roles": [
+    {
+      "name": "mesh:role:router",
+      "allowed_services": ["*"],
+      "allowed_targets": ["*"]
+    },
+    {
+      "name": "mesh:role:node",
+      "allowed_labels": ["region=*"]
+    },
+    {
+      "name": "workstation-host",
+      "allowed_publish": ["a2a://dev-agent"],
+      "allowed_ingress": [
+        {
+          "services": ["a2a://dev-agent"],
+          "allowed_auth_modes": ["INGRESS_AUTH_MODE_EDGE"]
+        }
+      ]
+    },
+    {
+      "name": "workstation-remote-caller",
+      "allowed_services": ["a2a://dev-agent"],
+      "allowed_targets": ["*"]
+    },
+    {
+      "name": "sandbox-workload",
+      "allowed_services": ["egress://api.tools.example"],
+      "allowed_targets": ["*"]
+    }
+  ],
+  "bindings": [
+    {
+      "role": "mesh:role:node",
+      "members": ["email:*@corp.example"],
+      "claims": {
+        "iss": "http://127.0.0.1:18881",
+        "device.trust_tier": "high",
+        "device.type": "managed_workstation"
+      }
+    },
+    {
+      "role": "mesh:role:node",
+      "members": ["email:*@corp.example"],
+      "claims": {
+        "iss": "http://127.0.0.1:18881",
+        "device.trust_tier": "high",
+        "device.type": "managed_mobile",
+        "device.management": "fully_managed"
+      }
+    },
+    {
+      "role": "mesh:role:node",
+      "members": ["email:*@bots.workloads.corp.example"],
+      "claims": {
+        "iss": "http://127.0.0.1:18881",
+        "workload.env": "gateway"
+      }
+    },
+    {
+      "role": "mesh:role:node",
+      "members": ["email:*@bots.workloads.corp.example"],
+      "claims": {
+        "iss": "http://127.0.0.1:18881",
+        "workload.env": "sandbox"
+      }
+    },
+    {
+      "role": "workstation-host",
+      "members": ["email:*@corp.example"],
+      "claims": {
+        "iss": "http://127.0.0.1:18881",
+        "device.trust_tier": "high",
+        "device.type": "managed_workstation",
+        "workload.env": "workstation"
+      }
+    },
+    {
+      "role": "workstation-remote-caller",
+      "members": ["email:*@corp.example"],
+      "claims": {
+        "iss": "http://127.0.0.1:18881",
+        "device.trust_tier": "high",
+        "device.type": "managed_workstation"
+      }
+    },
+    {
+      "role": "workstation-remote-caller",
+      "members": ["email:*@corp.example"],
+      "claims": {
+        "iss": "http://127.0.0.1:18881",
+        "device.trust_tier": "high",
+        "device.type": "managed_mobile",
+        "device.management": "fully_managed"
+      }
+    },
+    {
+      "role": "sandbox-workload",
+      "members": ["email:*@bots.workloads.corp.example"],
+      "claims": {
+        "iss": "http://127.0.0.1:18881",
+        "workload.env": "sandbox"
+      }
+    }
+  ],
+  "egress": [
+    {
+      "name": "api.tools.example",
+      "target_url": "http://127.0.0.1:18883",
+      "credential": "tools-api",
+      "served_by": ["region=egress-gw"],
+      "forward_context": true
+    }
+  ],
+  "attested_claims": ["amr"]
+}

@@ -97,6 +97,24 @@ func ValidateLabels(labels map[string]string) error {
 	return nil
 }
 
+// FormatLabels renders a label map as canonical comma-separated "key=value"
+// pairs sorted by key. Returns "" when labels is empty.
+func FormatLabels(labels map[string]string) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+labels[k])
+	}
+	return strings.Join(parts, ",")
+}
+
 // ParseLabelFlags turns repeated "key=value" flag values into a label set
 // that passes ValidateLabels. nil for none.
 func ParseLabelFlags(raw []string) (map[string]string, error) {

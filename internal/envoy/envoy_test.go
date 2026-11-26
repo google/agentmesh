@@ -159,6 +159,52 @@ func TestGatewayServer_ExtAuthzHTTPAndGRPC(t *testing.T) {
 		t.Fatalf("expected OkHttpResponse headers, got empty")
 	}
 
+	// 2b. gRPC ext_authz Check must strip spoofed inbound X-Mesh-* and X-Peer-Id headers not stamped in ResponseHeaders.
+	checkSpoofed, err := authClient.Check(context.Background(), &authv3.CheckRequest{
+		Attributes: &authv3.AttributeContext{
+			Request: &authv3.AttributeContext_Request{
+				Http: &authv3.AttributeContext_HttpRequest{
+					Method: "POST",
+					Path:   "/mcp/github",
+					Host:   "localhost",
+					Headers: map[string]string{
+						"authorization":  "Bearer valid-token",
+						"x-mesh-labels":  "device_trust=high",
+						"x-mesh-origin":  "spoofed-local",
+						"x-mesh-task":    "forged-task",
+						"x-peer-id":      "forged-peer",
+						"x-mesh-task-id": "forged-id",
+					},
+					Body: `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"get_pr"}}`,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("authClient.Check spoofed: %v", err)
+	}
+	if checkSpoofed.GetStatus().GetCode() != int32(codes.OK) {
+		t.Fatalf("Check spoofed status = %d, want 0", checkSpoofed.GetStatus().GetCode())
+	}
+	removed := checkSpoofed.GetOkResponse().GetHeadersToRemove()
+	for _, wantRemoved := range []string{"x-mesh-labels", "x-mesh-origin", "x-mesh-task", "x-peer-id"} {
+		found := false
+		for _, h := range removed {
+			if h == wantRemoved {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("HeadersToRemove = %v, missing spoofed header %q", removed, wantRemoved)
+		}
+	}
+	for _, h := range removed {
+		if h == "x-mesh-task-id" {
+			t.Errorf("HeadersToRemove must not remove freshly stamped x-mesh-task-id: %v", removed)
+		}
+	}
+
 	checkRespDeny, err := authClient.Check(context.Background(), &authv3.CheckRequest{
 		Attributes: &authv3.AttributeContext{
 			Request: &authv3.AttributeContext_Request{
@@ -243,6 +289,9 @@ func TestGatewayServer_ExtProcProcess(t *testing.T) {
 						{Key: ":method", Value: "POST"},
 						{Key: ":path", Value: "/mesh/mcp/github"},
 						{Key: "authorization", Value: "Bearer tok"},
+						{Key: "x-mesh-labels", Value: "device_trust=forged"},
+						{Key: "x-peer-id", Value: "forged-peer"},
+						{Key: "x-mesh-task-id", Value: "forged-task"},
 					},
 				},
 			},
@@ -274,6 +323,24 @@ func TestGatewayServer_ExtProcProcess(t *testing.T) {
 	}
 	if r2.GetImmediateResponse() != nil {
 		t.Fatalf("unexpected ImmediateResponse: %+v", r2.GetImmediateResponse())
+	}
+	extProcRemoved := r2.GetRequestBody().GetResponse().GetHeaderMutation().GetRemoveHeaders()
+	for _, wantRemoved := range []string{"x-mesh-labels", "x-peer-id"} {
+		found := false
+		for _, h := range extProcRemoved {
+			if h == wantRemoved {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("ext_proc RemoveHeaders = %v, missing spoofed header %q", extProcRemoved, wantRemoved)
+		}
+	}
+	for _, h := range extProcRemoved {
+		if h == "x-mesh-task-id" {
+			t.Errorf("ext_proc RemoveHeaders must not remove freshly stamped x-mesh-task-id: %v", extProcRemoved)
+		}
 	}
 
 	// Also verify ResponseHeaders, ResponseBody, RequestTrailers, ResponseTrailers phases

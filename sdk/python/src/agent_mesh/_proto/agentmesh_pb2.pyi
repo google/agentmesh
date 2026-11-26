@@ -691,22 +691,33 @@ class PlatformIdentity(_message.Message):
     def __init__(self, scopes: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class PolicyBinding(_message.Message):
-    __slots__ = ["members", "role"]
+    __slots__ = ["claims", "members", "role"]
+    class ClaimsEntry(_message.Message):
+        __slots__ = ["key", "value"]
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: str
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
+    CLAIMS_FIELD_NUMBER: _ClassVar[int]
     MEMBERS_FIELD_NUMBER: _ClassVar[int]
     ROLE_FIELD_NUMBER: _ClassVar[int]
+    claims: _containers.ScalarMap[str, str]
     members: _containers.RepeatedScalarFieldContainer[str]
     role: str
-    def __init__(self, role: _Optional[str] = ..., members: _Optional[_Iterable[str]] = ...) -> None: ...
+    def __init__(self, role: _Optional[str] = ..., members: _Optional[_Iterable[str]] = ..., claims: _Optional[_Mapping[str, str]] = ...) -> None: ...
 
 class PolicyConfig(_message.Message):
-    __slots__ = ["bindings", "egress", "roles"]
+    __slots__ = ["attested_claims", "bindings", "egress", "roles"]
+    ATTESTED_CLAIMS_FIELD_NUMBER: _ClassVar[int]
     BINDINGS_FIELD_NUMBER: _ClassVar[int]
     EGRESS_FIELD_NUMBER: _ClassVar[int]
     ROLES_FIELD_NUMBER: _ClassVar[int]
+    attested_claims: _containers.RepeatedScalarFieldContainer[str]
     bindings: _containers.RepeatedCompositeFieldContainer[PolicyBinding]
     egress: _containers.RepeatedCompositeFieldContainer[EgressDestination]
     roles: _containers.RepeatedCompositeFieldContainer[PolicyRole]
-    def __init__(self, roles: _Optional[_Iterable[_Union[PolicyRole, _Mapping]]] = ..., bindings: _Optional[_Iterable[_Union[PolicyBinding, _Mapping]]] = ..., egress: _Optional[_Iterable[_Union[EgressDestination, _Mapping]]] = ...) -> None: ...
+    def __init__(self, roles: _Optional[_Iterable[_Union[PolicyRole, _Mapping]]] = ..., bindings: _Optional[_Iterable[_Union[PolicyBinding, _Mapping]]] = ..., egress: _Optional[_Iterable[_Union[EgressDestination, _Mapping]]] = ..., attested_claims: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class PolicyConfigGetRequest(_message.Message):
     __slots__ = []

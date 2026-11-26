@@ -292,14 +292,28 @@ const (
 	// completions, /mesh/*, /egress/* and CONNECT, and strips it there.
 	HeaderMeshRequiredLabels = "X-Mesh-Required-Labels"
 
-	// HeaderMeshPrincipal, HeaderMeshRoles, HeaderMeshTask, and HeaderMeshTaskID carry
-	// verified caller attribution injected by ext_authz or forwarded to an
-	// operator inspection chain when forward_context is enabled.
+	// HeaderMeshPrincipal, HeaderMeshRoles, HeaderMeshTask, HeaderMeshTaskID,
+	// HeaderMeshClaims, HeaderMeshLabels, HeaderMeshActorNode, and
+	// HeaderMeshOrigin carry verified caller attribution injected by PEPs and
+	// ext_authz, or forwarded to an operator inspection chain when
+	// forward_context is enabled. Inbound caller values are stripped before
+	// stamping verified values.
 	HeaderMeshPrincipal     = "X-Mesh-Principal"
 	HeaderMeshRoles         = "X-Mesh-Roles"
 	HeaderMeshTask          = "X-Mesh-Task"
 	HeaderMeshTaskID        = "X-Mesh-Task-Id"
+	HeaderMeshClaims        = "X-Mesh-Claims"
+	HeaderMeshLabels        = "X-Mesh-Labels"
+	HeaderMeshActorNode     = "X-Mesh-Actor-Node"
+	HeaderMeshOrigin        = "X-Mesh-Origin"
 	HeaderMeshTargetService = "X-Mesh-Target-Service"
+
+	// Canonical values stamped into HeaderMeshOrigin so downstream backends
+	// and local agent harnesses can distinguish remote mesh/gateway invocations
+	// from local interactive sessions.
+	MeshOriginRemote          = "mesh-remote"
+	MeshOriginExternalIngress = "mesh-external-ingress"
+	MeshOriginGateway         = "mesh-gateway"
 
 	// HeaderMeshIngress marks a request delivered over router external ingress
 	// ("edge" or "passthrough"). Inbound values from external callers are

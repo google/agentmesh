@@ -316,6 +316,26 @@ func (n *AgentMeshNode) authorizeWithRules(rawToken []byte, req RequestContext, 
 		return nil, err
 	}
 
+	if n.nodeConfig != nil && (n.nodeConfig.RequireTaskScope || n.nodeConfig.MaxTaskTTL > 0) && (!req.Local || req.Protocol == "ext_authz") {
+		if len(taskRules) == 0 {
+			logger.Infow("Audit Traceability", append(req.auditFields(), "decision", "deny", "reason", "task-scoped credential (tar_block) is required")...)
+			return nil, fmt.Errorf("task-scoped credential (tar_block) is required")
+		}
+		if n.nodeConfig.MaxTaskTTL > 0 {
+			authExp, expErr := queryExpiration(authorizer)
+			if expErr != nil {
+				logger.Infow("Audit Traceability", append(req.auditFields(), "decision", "deny", "reason", "missing credential expiration for max_task_ttl check")...)
+				return nil, fmt.Errorf("credential expiration required for max_task_ttl: %w", expErr)
+			}
+			effectiveExp := api.EffectiveTARExpiration(authExp, taskRules)
+			if remaining := time.Until(effectiveExp); remaining > n.nodeConfig.MaxTaskTTL {
+				reason := fmt.Sprintf("credential remaining lifetime %s exceeds max_task_ttl %s", remaining.Round(time.Second), n.nodeConfig.MaxTaskTTL)
+				logger.Infow("Audit Traceability", append(req.auditFields(), "decision", "deny", "reason", reason)...)
+				return nil, errors.New(reason)
+			}
+		}
+	}
+
 	if len(taskRules) > 0 {
 		if err := api.EvaluateTaskRules(taskRules, meshReq.TaskRequest(), time.Now()); err != nil {
 			logger.Infow("Audit Traceability", append(req.auditFields(), "decision", "deny", "reason", err.Error())...)
@@ -380,6 +400,12 @@ func (n *AgentMeshNode) authorizeWithRules(rawToken []byte, req RequestContext, 
 	}
 	if len(taskRules) > 0 {
 		auditFields = append(auditFields, "task", taskRules[len(taskRules)-1].GetName())
+	}
+	if claims, cErr := queryClaimFacts(authorizer); cErr == nil && len(claims) > 0 {
+		auditFields = append(auditFields, "claims", api.FormatClaims(claims))
+	}
+	if labels, lErr := queryLabelFacts(authorizer); lErr == nil && len(labels) > 0 {
+		auditFields = append(auditFields, "labels", api.FormatLabels(labels))
 	}
 	logger.Infow("Audit Traceability", auditFields...)
 

@@ -1,0 +1,28 @@
+version: "v1alpha1"
+
+labels:
+  region: workstation-us
+
+attenuation:
+  # Standard Biscuit Datalog over first-class claim(k, v) authority facts:
+  # hard deny-first isolation wall evaluated ahead of every allow policy.
+  policies:
+    - 'deny if claim("workload.env", "sandbox");'
+    - 'deny if claim("device.type", "unmanaged_mobile");'
+    - 'deny if claim("device.management", "work_profile");'
+  # Require hardware-key MFA + high-trust managed workstation or fully managed mobile from the corporate IdP.
+  checks:
+    - 'check if claim("iss", "http://127.0.0.1:18881"), claim("amr", "hwk"), claim("device.trust_tier", "high"), claim("device.type", "managed_workstation") or claim("iss", "http://127.0.0.1:18881"), claim("amr", "hwk"), claim("device.trust_tier", "high"), claim("device.type", "managed_mobile"), claim("device.management", "fully_managed");'
+  # Refuse standing credentials; require sealed short-lived task mandates.
+  require_task_scope: true
+  max_task_ttl: 15m
+
+services:
+  - type: a2a
+    name: dev-agent
+    description: "Loopback workstation coding agent"
+    target_url: "http://127.0.0.1:18882"
+    ingress:
+      auth_mode: edge
+      allow:
+        - "email:alice@corp.example"

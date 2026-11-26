@@ -84,6 +84,8 @@ type EgressService struct {
 type egressCallerContext struct {
 	principal string
 	roles     []string
+	claims    map[string][]string
+	labels    map[string]string
 	actorNode string
 	task      string
 	rules     []*api.TaskAuthorizationRule
@@ -245,6 +247,15 @@ func (s *EgressService) Init(ctx context.Context) error {
 					if len(ec.roles) > 0 {
 						pr.Out.Header.Set(api.HeaderMeshRoles, strings.Join(ec.roles, ","))
 					}
+					if formattedClaims := api.FormatClaims(ec.claims); formattedClaims != "" {
+						pr.Out.Header.Set(api.HeaderMeshClaims, formattedClaims)
+					}
+					if formattedLabels := api.FormatLabels(ec.labels); formattedLabels != "" {
+						pr.Out.Header.Set(api.HeaderMeshLabels, formattedLabels)
+					}
+					if ec.actorNode != "" {
+						pr.Out.Header.Set(api.HeaderMeshActorNode, ec.actorNode)
+					}
 					if ec.task != "" {
 						pr.Out.Header.Set(api.HeaderMeshTask, ec.task)
 					}
@@ -293,6 +304,8 @@ func (s *EgressService) extractCallerContext(ctx context.Context) egressCallerCo
 		if claims, err := s.node.VerifyLocalBiscuit(rawBiscuit); err == nil {
 			ec.principal = claims.Principal()
 			ec.roles = claims.Roles
+			ec.claims = claims.Claims
+			ec.labels = claims.Labels
 			if claims.ActorNodePeerID != "" {
 				ec.actorNode = claims.ActorNodePeerID
 			}

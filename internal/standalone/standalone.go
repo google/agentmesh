@@ -580,8 +580,8 @@ func (s *Server) seedPolicyOnFirstBoot(ctx context.Context) error {
 		return fmt.Errorf("invalid seed mesh policy: %w", err)
 	}
 	// The whole document, as POST /policies stores it: a seed file that names
-	// egress destinations must serve them too.
-	if err := s.store.SavePolicyDocument(ctx, seed.Roles, seed.Bindings, seed.Egress); err != nil {
+	// egress destinations or attested_claims must persist them too.
+	if err := s.store.SavePolicyConfig(ctx, &seed); err != nil {
 		return fmt.Errorf("failed to seed mesh policy: %w", err)
 	}
 	return nil

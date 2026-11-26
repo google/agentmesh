@@ -149,10 +149,33 @@ func BuildPolicyRules(roles []*PolicyRole, bindings []*PolicyBinding) (rules []P
 			warnings = append(warnings, fmt.Sprintf("Binding has invalid role %q: %v", b.Role, err))
 			continue
 		}
+		if err := ValidateBindingClaims(b.Claims, b.Role); err != nil {
+			warnings = append(warnings, fmt.Sprintf("Binding for role %q has invalid claims and grants role to nobody: %v", b.Role, err))
+			continue
+		}
+		var claimPreds []biscuit.Predicate
+		var claimSuffix strings.Builder
+		if len(b.Claims) > 0 {
+			claimKeys := make([]string, 0, len(b.Claims))
+			for k := range b.Claims {
+				claimKeys = append(claimKeys, k)
+			}
+			slices.Sort(claimKeys)
+			claimPreds = make([]biscuit.Predicate, 0, len(claimKeys))
+			for _, k := range claimKeys {
+				v := b.Claims[k]
+				claimPreds = append(claimPreds, biscuit.Predicate{
+					Name: FactClaim,
+					IDs:  []biscuit.Term{biscuit.String(k), biscuit.String(v)},
+				})
+				fmt.Fprintf(&claimSuffix, ", %s(%s, %s)", FactClaim, strconv.Quote(k), strconv.Quote(v))
+			}
+		}
+
 		roleHead := biscuit.Predicate{Name: FactRole, IDs: []biscuit.Term{biscuit.String(b.Role)}}
 		for _, m := range b.Members {
 			if m == SystemAuthenticated {
-				add(roleHead)
+				add(roleHead, claimPreds...)
 				continue
 			}
 			parts := strings.SplitN(m, ":", 2)
@@ -169,7 +192,10 @@ func BuildPolicyRules(roles []*PolicyRole, bindings []*PolicyBinding) (rules []P
 					continue
 				}
 				value = id.String()
-				add(roleHead, biscuit.Predicate{Name: prefix, IDs: []biscuit.Term{biscuit.String(value)}})
+				body := make([]biscuit.Predicate, 0, 1+len(claimPreds))
+				body = append(body, biscuit.Predicate{Name: prefix, IDs: []biscuit.Term{biscuit.String(value)}})
+				body = append(body, claimPreds...)
+				add(roleHead, body...)
 				continue
 			}
 			if err := validateBindingMemberCharset(value); err != nil {
@@ -185,10 +211,10 @@ func BuildPolicyRules(roles []*PolicyRole, bindings []*PolicyBinding) (rules []P
 					continue
 				case strings.HasSuffix(value, "*") && !strings.Contains(value[:len(value)-1], "*"):
 					affix := value[:len(value)-1]
-					text = fmt.Sprintf("%s <- %s($v), $v.starts_with(%s)", roleLiteral, prefix, strconv.Quote(affix))
+					text = fmt.Sprintf("%s <- %s($v), $v.starts_with(%s)%s", roleLiteral, prefix, strconv.Quote(affix), claimSuffix.String())
 				case strings.HasPrefix(value, "*") && !strings.Contains(value[1:], "*"):
 					affix := value[1:]
-					text = fmt.Sprintf("%s <- %s($v), $v.ends_with(%s)", roleLiteral, prefix, strconv.Quote(affix))
+					text = fmt.Sprintf("%s <- %s($v), $v.ends_with(%s)%s", roleLiteral, prefix, strconv.Quote(affix), claimSuffix.String())
 				default:
 					warnings = append(warnings, fmt.Sprintf("Binding member %q has an invalid wildcard and grants role %s to nobody", m, b.Role))
 					continue
@@ -201,7 +227,10 @@ func BuildPolicyRules(roles []*PolicyRole, bindings []*PolicyBinding) (rules []P
 				rules = append(rules, PolicyRule{Rule: r, Text: text})
 				continue
 			}
-			add(roleHead, biscuit.Predicate{Name: prefix, IDs: []biscuit.Term{biscuit.String(value)}})
+			body := make([]biscuit.Predicate, 0, 1+len(claimPreds))
+			body = append(body, biscuit.Predicate{Name: prefix, IDs: []biscuit.Term{biscuit.String(value)}})
+			body = append(body, claimPreds...)
+			add(roleHead, body...)
 		}
 	}
 

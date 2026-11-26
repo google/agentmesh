@@ -2689,6 +2689,7 @@ func (n *AgentMeshNode) StartIngressServer(ctx context.Context) error {
 				}
 			}
 			r.Header.Set(api.HeaderPeerID, remotePeer.String())
+			r.Header.Set(api.HeaderMeshOrigin, api.MeshOriginRemote)
 			if claims, cErr := n.VerifyLocalBiscuit(biscuitBytes); cErr == nil && claims != nil {
 				if p := claims.Principal(); p != "" {
 					r.Header.Set(api.HeaderMeshPrincipal, p)
@@ -2696,6 +2697,20 @@ func (n *AgentMeshNode) StartIngressServer(ctx context.Context) error {
 				if len(claims.Roles) > 0 {
 					r.Header.Set(api.HeaderMeshRoles, strings.Join(claims.Roles, ","))
 				}
+				if formattedClaims := api.FormatClaims(claims.Claims); formattedClaims != "" {
+					r.Header.Set(api.HeaderMeshClaims, formattedClaims)
+				}
+				if formattedLabels := api.FormatLabels(claims.Labels); formattedLabels != "" {
+					r.Header.Set(api.HeaderMeshLabels, formattedLabels)
+				}
+				actorNode := claims.ActorNodePeerID
+				if actorNode == "" {
+					actorNode = claims.NodePeerID
+				}
+				if actorNode == "" {
+					actorNode = remotePeer.String()
+				}
+				r.Header.Set(api.HeaderMeshActorNode, actorNode)
 				if t := claims.InnermostTaskName(); t != "" {
 					r.Header.Set(api.HeaderMeshTask, t)
 				}

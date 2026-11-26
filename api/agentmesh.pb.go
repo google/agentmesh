@@ -3504,9 +3504,15 @@ func (x *PlatformIdentity) GetScopes() []string {
 }
 
 type PolicyBinding struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Role          string                 `protobuf:"bytes,1,opt,name=role,proto3" json:"role,omitempty"`
-	Members       []string               `protobuf:"bytes,2,rep,name=members,proto3" json:"members,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Role  string                 `protobuf:"bytes,1,opt,name=role,proto3" json:"role,omitempty"`
+	// Disjunction (OR): caller must match at least one member.
+	Members []string `protobuf:"bytes,2,rep,name=members,proto3" json:"members,omitempty"`
+	// Conjunction (AND): optional verified OIDC JWT claim requirements that must
+	// all hold alongside a matching member (for example {"iss":
+	// "https://idp.example", "device.trust_tier": "high"}). Multiple bindings
+	// may target the same role to express OR-of-AND conditions.
+	Claims        map[string]string `protobuf:"bytes,3,rep,name=claims,proto3" json:"claims,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3555,17 +3561,30 @@ func (x *PolicyBinding) GetMembers() []string {
 	return nil
 }
 
-// PolicyConfig is the mesh policy as the operator writes it: roles and
-// bindings. It is the body of POST /policies and the answer of
-// GET /admin/policy, both protojson. Only the control plane reads it, to
-// mint tokens and to render PolicyConfigGetResponse.
+func (x *PolicyBinding) GetClaims() map[string]string {
+	if x != nil {
+		return x.Claims
+	}
+	return nil
+}
+
+// PolicyConfig is the mesh policy as the operator writes it: roles, bindings,
+// egress destinations, and optional extra OIDC claims to attest. It is the
+// body of POST /policies and the answer of GET /admin/policy, both protojson.
+// Only the control plane reads it, to mint tokens and to render
+// PolicyConfigGetResponse.
 type PolicyConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Roles         []*PolicyRole          `protobuf:"bytes,1,rep,name=roles,proto3" json:"roles,omitempty"`
-	Bindings      []*PolicyBinding       `protobuf:"bytes,2,rep,name=bindings,proto3" json:"bindings,omitempty"`
-	Egress        []*EgressDestination   `protobuf:"bytes,3,rep,name=egress,proto3" json:"egress,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Roles    []*PolicyRole          `protobuf:"bytes,1,rep,name=roles,proto3" json:"roles,omitempty"`
+	Bindings []*PolicyBinding       `protobuf:"bytes,2,rep,name=bindings,proto3" json:"bindings,omitempty"`
+	Egress   []*EgressDestination   `protobuf:"bytes,3,rep,name=egress,proto3" json:"egress,omitempty"`
+	// Optional extra verified OIDC JWT claim paths (literal keys or dotted JSON
+	// paths, including "iss") to mint as authority claim(k, v) facts on Biscuits
+	// even when not referenced in any PolicyBinding.claims, for node-local
+	// attenuation, audit provenance, or outbound STS border JWT propagation.
+	AttestedClaims []string `protobuf:"bytes,4,rep,name=attested_claims,json=attestedClaims,proto3" json:"attested_claims,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *PolicyConfig) Reset() {
@@ -3615,6 +3634,13 @@ func (x *PolicyConfig) GetBindings() []*PolicyBinding {
 func (x *PolicyConfig) GetEgress() []*EgressDestination {
 	if x != nil {
 		return x.Egress
+	}
+	return nil
+}
+
+func (x *PolicyConfig) GetAttestedClaims() []string {
+	if x != nil {
+		return x.AttestedClaims
 	}
 	return nil
 }
@@ -6575,14 +6601,19 @@ const file_api_agentmesh_proto_rawDesc = "" +
 	"\brole_arn\x18\x01 \x01(\tR\aroleArn\x12%\n" +
 	"\x0esession_policy\x18\x02 \x01(\tR\rsessionPolicy\"*\n" +
 	"\x10PlatformIdentity\x12\x16\n" +
-	"\x06scopes\x18\x01 \x03(\tR\x06scopes\"=\n" +
+	"\x06scopes\x18\x01 \x03(\tR\x06scopes\"\xb9\x01\n" +
 	"\rPolicyBinding\x12\x12\n" +
 	"\x04role\x18\x01 \x01(\tR\x04role\x12\x18\n" +
-	"\amembers\x18\x02 \x03(\tR\amembers\"\xb0\x01\n" +
+	"\amembers\x18\x02 \x03(\tR\amembers\x12?\n" +
+	"\x06claims\x18\x03 \x03(\v2'.agentmesh.v1.PolicyBinding.ClaimsEntryR\x06claims\x1a9\n" +
+	"\vClaimsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd9\x01\n" +
 	"\fPolicyConfig\x12.\n" +
 	"\x05roles\x18\x01 \x03(\v2\x18.agentmesh.v1.PolicyRoleR\x05roles\x127\n" +
 	"\bbindings\x18\x02 \x03(\v2\x1b.agentmesh.v1.PolicyBindingR\bbindings\x127\n" +
-	"\x06egress\x18\x03 \x03(\v2\x1f.agentmesh.v1.EgressDestinationR\x06egress\"\x18\n" +
+	"\x06egress\x18\x03 \x03(\v2\x1f.agentmesh.v1.EgressDestinationR\x06egress\x12'\n" +
+	"\x0fattested_claims\x18\x04 \x03(\tR\x0eattestedClaims\"\x18\n" +
 	"\x16PolicyConfigGetRequest\">\n" +
 	"\x17PolicyConfigGetResponse\x12#\n" +
 	"\rdatalog_rules\x18\x01 \x03(\tR\fdatalogRules\"L\n" +
@@ -6847,7 +6878,7 @@ func file_api_agentmesh_proto_rawDescGZIP() []byte {
 }
 
 var file_api_agentmesh_proto_enumTypes = make([]protoimpl.EnumInfo, 9)
-var file_api_agentmesh_proto_msgTypes = make([]protoimpl.MessageInfo, 85)
+var file_api_agentmesh_proto_msgTypes = make([]protoimpl.MessageInfo, 86)
 var file_api_agentmesh_proto_goTypes = []any{
 	(EnrollmentStatus)(0),                 // 0: agentmesh.v1.EnrollmentStatus
 	(ServiceType)(0),                      // 1: agentmesh.v1.ServiceType
@@ -6939,23 +6970,24 @@ var file_api_agentmesh_proto_goTypes = []any{
 	nil,                                   // 87: agentmesh.v1.BootstrapEnrollRequest.LabelsEntry
 	nil,                                   // 88: agentmesh.v1.CommandBackend.EnvEntry
 	nil,                                   // 89: agentmesh.v1.RouterInfo.LabelsEntry
-	nil,                                   // 90: agentmesh.v1.EnrollmentRequest.LabelsEntry
-	nil,                                   // 91: agentmesh.v1.EnrolledNode.LabelsEntry
-	nil,                                   // 92: agentmesh.v1.AdminStatusResponse.NodeCatalogEntry
-	nil,                                   // 93: agentmesh.v1.PeerEvidenceResponse.LabelsEntry
-	(*durationpb.Duration)(nil),           // 94: google.protobuf.Duration
-	(*timestamppb.Timestamp)(nil),         // 95: google.protobuf.Timestamp
+	nil,                                   // 90: agentmesh.v1.PolicyBinding.ClaimsEntry
+	nil,                                   // 91: agentmesh.v1.EnrollmentRequest.LabelsEntry
+	nil,                                   // 92: agentmesh.v1.EnrolledNode.LabelsEntry
+	nil,                                   // 93: agentmesh.v1.AdminStatusResponse.NodeCatalogEntry
+	nil,                                   // 94: agentmesh.v1.PeerEvidenceResponse.LabelsEntry
+	(*durationpb.Duration)(nil),           // 95: google.protobuf.Duration
+	(*timestamppb.Timestamp)(nil),         // 96: google.protobuf.Timestamp
 }
 var file_api_agentmesh_proto_depIdxs = []int32{
 	5,   // 0: agentmesh.v1.RouterGoAway.reason:type_name -> agentmesh.v1.RouterGoAway.Reason
-	94,  // 1: agentmesh.v1.RouterGoAway.retry_after:type_name -> google.protobuf.Duration
+	95,  // 1: agentmesh.v1.RouterGoAway.retry_after:type_name -> google.protobuf.Duration
 	6,   // 2: agentmesh.v1.MeshEvent.type:type_name -> agentmesh.v1.MeshEvent.Type
-	95,  // 3: agentmesh.v1.MeshEvent.event_time:type_name -> google.protobuf.Timestamp
+	96,  // 3: agentmesh.v1.MeshEvent.event_time:type_name -> google.protobuf.Timestamp
 	86,  // 4: agentmesh.v1.EnrollRequest.labels:type_name -> agentmesh.v1.EnrollRequest.LabelsEntry
-	95,  // 5: agentmesh.v1.EnrollResponse.expire_time:type_name -> google.protobuf.Timestamp
+	96,  // 5: agentmesh.v1.EnrollResponse.expire_time:type_name -> google.protobuf.Timestamp
 	87,  // 6: agentmesh.v1.BootstrapEnrollRequest.labels:type_name -> agentmesh.v1.BootstrapEnrollRequest.LabelsEntry
 	0,   // 7: agentmesh.v1.BootstrapEnrollResponse.status:type_name -> agentmesh.v1.EnrollmentStatus
-	95,  // 8: agentmesh.v1.BootstrapEnrollResponse.expire_time:type_name -> google.protobuf.Timestamp
+	96,  // 8: agentmesh.v1.BootstrapEnrollResponse.expire_time:type_name -> google.protobuf.Timestamp
 	2,   // 9: agentmesh.v1.ServiceIngress.auth_mode:type_name -> agentmesh.v1.IngressAuthMode
 	1,   // 10: agentmesh.v1.ServiceInfo.type:type_name -> agentmesh.v1.ServiceType
 	17,  // 11: agentmesh.v1.ServiceInfo.ingress:type_name -> agentmesh.v1.ServiceIngress
@@ -6964,8 +6996,8 @@ var file_api_agentmesh_proto_depIdxs = []int32{
 	19,  // 14: agentmesh.v1.RegisterServiceRequest.command:type_name -> agentmesh.v1.CommandBackend
 	31,  // 15: agentmesh.v1.ControlPlaneInfoResponse.routers:type_name -> agentmesh.v1.RouterInfo
 	23,  // 16: agentmesh.v1.ControlPlaneInfoResponse.directory:type_name -> agentmesh.v1.DirectoryParameters
-	94,  // 17: agentmesh.v1.DirectoryParameters.reprovide_interval:type_name -> google.protobuf.Duration
-	94,  // 18: agentmesh.v1.DirectoryParameters.record_ttl:type_name -> google.protobuf.Duration
+	95,  // 17: agentmesh.v1.DirectoryParameters.reprovide_interval:type_name -> google.protobuf.Duration
+	95,  // 18: agentmesh.v1.DirectoryParameters.record_ttl:type_name -> google.protobuf.Duration
 	25,  // 19: agentmesh.v1.DirectoryRequest.provide:type_name -> agentmesh.v1.DirectoryProvide
 	27,  // 20: agentmesh.v1.DirectoryRequest.find_providers:type_name -> agentmesh.v1.DirectoryFindProviders
 	28,  // 21: agentmesh.v1.DirectoryRequest.find_peer:type_name -> agentmesh.v1.DirectoryFindPeer
@@ -6975,8 +7007,8 @@ var file_api_agentmesh_proto_depIdxs = []int32{
 	30,  // 25: agentmesh.v1.DirectoryResponse.peer:type_name -> agentmesh.v1.PeerRecord
 	17,  // 26: agentmesh.v1.PeerRecord.ingress:type_name -> agentmesh.v1.ServiceIngress
 	89,  // 27: agentmesh.v1.RouterInfo.labels:type_name -> agentmesh.v1.RouterInfo.LabelsEntry
-	94,  // 28: agentmesh.v1.RouterLeaseRequest.ttl:type_name -> google.protobuf.Duration
-	95,  // 29: agentmesh.v1.RouterLeaseResponse.expire_time:type_name -> google.protobuf.Timestamp
+	95,  // 28: agentmesh.v1.RouterLeaseRequest.ttl:type_name -> google.protobuf.Duration
+	96,  // 29: agentmesh.v1.RouterLeaseResponse.expire_time:type_name -> google.protobuf.Timestamp
 	36,  // 30: agentmesh.v1.PolicyRole.http:type_name -> agentmesh.v1.HTTPGrant
 	35,  // 31: agentmesh.v1.PolicyRole.allowed_ingress:type_name -> agentmesh.v1.IngressGrant
 	2,   // 32: agentmesh.v1.IngressGrant.allowed_auth_modes:type_name -> agentmesh.v1.IngressAuthMode
@@ -6987,9 +7019,9 @@ var file_api_agentmesh_proto_depIdxs = []int32{
 	40,  // 37: agentmesh.v1.Inspector.model_armor:type_name -> agentmesh.v1.ModelArmor
 	41,  // 38: agentmesh.v1.Inspector.ext_proc:type_name -> agentmesh.v1.ExtProc
 	4,   // 39: agentmesh.v1.ModelArmor.response:type_name -> agentmesh.v1.ResponseInspection
-	94,  // 40: agentmesh.v1.ModelArmor.timeout:type_name -> google.protobuf.Duration
+	95,  // 40: agentmesh.v1.ModelArmor.timeout:type_name -> google.protobuf.Duration
 	42,  // 41: agentmesh.v1.ExtProc.processing_mode:type_name -> agentmesh.v1.ExtProcProcessingMode
-	94,  // 42: agentmesh.v1.ExtProc.message_timeout:type_name -> google.protobuf.Duration
+	95,  // 42: agentmesh.v1.ExtProc.message_timeout:type_name -> google.protobuf.Duration
 	7,   // 43: agentmesh.v1.ExtProcProcessingMode.request_header_mode:type_name -> agentmesh.v1.ExtProcProcessingMode.HeaderMode
 	7,   // 44: agentmesh.v1.ExtProcProcessingMode.response_header_mode:type_name -> agentmesh.v1.ExtProcProcessingMode.HeaderMode
 	8,   // 45: agentmesh.v1.ExtProcProcessingMode.request_body_mode:type_name -> agentmesh.v1.ExtProcProcessingMode.BodyMode
@@ -6999,65 +7031,66 @@ var file_api_agentmesh_proto_depIdxs = []int32{
 	44,  // 49: agentmesh.v1.CredentialBroker.oidc_federation:type_name -> agentmesh.v1.OIDCFederation
 	45,  // 50: agentmesh.v1.CredentialBroker.aws_assume_role:type_name -> agentmesh.v1.AWSAssumeRole
 	46,  // 51: agentmesh.v1.CredentialBroker.platform_identity:type_name -> agentmesh.v1.PlatformIdentity
-	34,  // 52: agentmesh.v1.PolicyConfig.roles:type_name -> agentmesh.v1.PolicyRole
-	47,  // 53: agentmesh.v1.PolicyConfig.bindings:type_name -> agentmesh.v1.PolicyBinding
-	37,  // 54: agentmesh.v1.PolicyConfig.egress:type_name -> agentmesh.v1.EgressDestination
-	37,  // 55: agentmesh.v1.EgressAssignmentsResponse.egress:type_name -> agentmesh.v1.EgressDestination
-	95,  // 56: agentmesh.v1.KeysResponse.sign_time:type_name -> google.protobuf.Timestamp
-	95,  // 57: agentmesh.v1.TokenRefreshResponse.expire_time:type_name -> google.protobuf.Timestamp
-	18,  // 58: agentmesh.v1.NodeCatalogReport.services:type_name -> agentmesh.v1.ServiceInfo
-	95,  // 59: agentmesh.v1.BootstrapTokenCreateResponse.expire_time:type_name -> google.protobuf.Timestamp
-	95,  // 60: agentmesh.v1.BootstrapToken.create_time:type_name -> google.protobuf.Timestamp
-	95,  // 61: agentmesh.v1.BootstrapToken.expire_time:type_name -> google.protobuf.Timestamp
-	95,  // 62: agentmesh.v1.BootstrapToken.revoke_time:type_name -> google.protobuf.Timestamp
-	62,  // 63: agentmesh.v1.BootstrapTokenListResponse.tokens:type_name -> agentmesh.v1.BootstrapToken
-	0,   // 64: agentmesh.v1.EnrollmentRequest.status:type_name -> agentmesh.v1.EnrollmentStatus
-	90,  // 65: agentmesh.v1.EnrollmentRequest.labels:type_name -> agentmesh.v1.EnrollmentRequest.LabelsEntry
-	95,  // 66: agentmesh.v1.EnrollmentRequest.create_time:type_name -> google.protobuf.Timestamp
-	95,  // 67: agentmesh.v1.EnrollmentRequest.resolve_time:type_name -> google.protobuf.Timestamp
-	64,  // 68: agentmesh.v1.EnrollmentRequestListResponse.requests:type_name -> agentmesh.v1.EnrollmentRequest
-	95,  // 69: agentmesh.v1.User.create_time:type_name -> google.protobuf.Timestamp
-	91,  // 70: agentmesh.v1.EnrolledNode.labels:type_name -> agentmesh.v1.EnrolledNode.LabelsEntry
-	95,  // 71: agentmesh.v1.EnrolledNode.enroll_time:type_name -> google.protobuf.Timestamp
-	95,  // 72: agentmesh.v1.EnrolledNode.expire_time:type_name -> google.protobuf.Timestamp
-	95,  // 73: agentmesh.v1.RouterLease.last_renewal_time:type_name -> google.protobuf.Timestamp
-	95,  // 74: agentmesh.v1.RouterLease.expire_time:type_name -> google.protobuf.Timestamp
-	18,  // 75: agentmesh.v1.NodeServices.services:type_name -> agentmesh.v1.ServiceInfo
-	95,  // 76: agentmesh.v1.NodeServices.report_time:type_name -> google.protobuf.Timestamp
-	66,  // 77: agentmesh.v1.AdminStatusResponse.users:type_name -> agentmesh.v1.User
-	68,  // 78: agentmesh.v1.AdminStatusResponse.active_routers:type_name -> agentmesh.v1.RouterLease
-	67,  // 79: agentmesh.v1.AdminStatusResponse.enrolled_nodes:type_name -> agentmesh.v1.EnrolledNode
-	64,  // 80: agentmesh.v1.AdminStatusResponse.enrollment_requests:type_name -> agentmesh.v1.EnrollmentRequest
-	62,  // 81: agentmesh.v1.AdminStatusResponse.bootstrap_tokens:type_name -> agentmesh.v1.BootstrapToken
-	48,  // 82: agentmesh.v1.AdminStatusResponse.policy:type_name -> agentmesh.v1.PolicyConfig
-	92,  // 83: agentmesh.v1.AdminStatusResponse.node_catalog:type_name -> agentmesh.v1.AdminStatusResponse.NodeCatalogEntry
-	66,  // 84: agentmesh.v1.UserStatusResponse.user:type_name -> agentmesh.v1.User
-	67,  // 85: agentmesh.v1.UserStatusResponse.enrolled_nodes:type_name -> agentmesh.v1.EnrolledNode
-	62,  // 86: agentmesh.v1.UserStatusResponse.bootstrap_tokens:type_name -> agentmesh.v1.BootstrapToken
-	68,  // 87: agentmesh.v1.UserStatusResponse.active_routers:type_name -> agentmesh.v1.RouterLease
-	48,  // 88: agentmesh.v1.UserStatusResponse.policy:type_name -> agentmesh.v1.PolicyConfig
-	67,  // 89: agentmesh.v1.NodeListResponse.nodes:type_name -> agentmesh.v1.EnrolledNode
-	95,  // 90: agentmesh.v1.IdentityEvidenceResponse.biscuit_expire_time:type_name -> google.protobuf.Timestamp
-	95,  // 91: agentmesh.v1.IdentityEvidenceResponse.check_time:type_name -> google.protobuf.Timestamp
-	93,  // 92: agentmesh.v1.PeerEvidenceResponse.labels:type_name -> agentmesh.v1.PeerEvidenceResponse.LabelsEntry
-	95,  // 93: agentmesh.v1.PeerEvidenceResponse.expire_time:type_name -> google.protobuf.Timestamp
-	95,  // 94: agentmesh.v1.PeerEvidenceResponse.check_time:type_name -> google.protobuf.Timestamp
-	95,  // 95: agentmesh.v1.MemberCredential.expire_time:type_name -> google.protobuf.Timestamp
-	76,  // 96: agentmesh.v1.MemberCredential.trusted_keys:type_name -> agentmesh.v1.TrustedSigningKey
-	77,  // 97: agentmesh.v1.MemberCredential.oidc_session:type_name -> agentmesh.v1.OIDCSession
-	95,  // 98: agentmesh.v1.TrustedSigningKey.receive_time:type_name -> google.protobuf.Timestamp
-	79,  // 99: agentmesh.v1.TaskAuthorizationRule.rules:type_name -> agentmesh.v1.TaskRule
-	95,  // 100: agentmesh.v1.TaskAuthorizationRule.expire_time:type_name -> google.protobuf.Timestamp
-	80,  // 101: agentmesh.v1.TaskRule.operation:type_name -> agentmesh.v1.TaskOperation
-	78,  // 102: agentmesh.v1.TokenExchangeRequest.task_rule:type_name -> agentmesh.v1.TaskAuthorizationRule
-	95,  // 103: agentmesh.v1.TokenExchangeResponse.expire_time:type_name -> google.protobuf.Timestamp
-	95,  // 104: agentmesh.v1.STSTokenResponse.expire_time:type_name -> google.protobuf.Timestamp
-	69,  // 105: agentmesh.v1.AdminStatusResponse.NodeCatalogEntry.value:type_name -> agentmesh.v1.NodeServices
-	106, // [106:106] is the sub-list for method output_type
-	106, // [106:106] is the sub-list for method input_type
-	106, // [106:106] is the sub-list for extension type_name
-	106, // [106:106] is the sub-list for extension extendee
-	0,   // [0:106] is the sub-list for field type_name
+	90,  // 52: agentmesh.v1.PolicyBinding.claims:type_name -> agentmesh.v1.PolicyBinding.ClaimsEntry
+	34,  // 53: agentmesh.v1.PolicyConfig.roles:type_name -> agentmesh.v1.PolicyRole
+	47,  // 54: agentmesh.v1.PolicyConfig.bindings:type_name -> agentmesh.v1.PolicyBinding
+	37,  // 55: agentmesh.v1.PolicyConfig.egress:type_name -> agentmesh.v1.EgressDestination
+	37,  // 56: agentmesh.v1.EgressAssignmentsResponse.egress:type_name -> agentmesh.v1.EgressDestination
+	96,  // 57: agentmesh.v1.KeysResponse.sign_time:type_name -> google.protobuf.Timestamp
+	96,  // 58: agentmesh.v1.TokenRefreshResponse.expire_time:type_name -> google.protobuf.Timestamp
+	18,  // 59: agentmesh.v1.NodeCatalogReport.services:type_name -> agentmesh.v1.ServiceInfo
+	96,  // 60: agentmesh.v1.BootstrapTokenCreateResponse.expire_time:type_name -> google.protobuf.Timestamp
+	96,  // 61: agentmesh.v1.BootstrapToken.create_time:type_name -> google.protobuf.Timestamp
+	96,  // 62: agentmesh.v1.BootstrapToken.expire_time:type_name -> google.protobuf.Timestamp
+	96,  // 63: agentmesh.v1.BootstrapToken.revoke_time:type_name -> google.protobuf.Timestamp
+	62,  // 64: agentmesh.v1.BootstrapTokenListResponse.tokens:type_name -> agentmesh.v1.BootstrapToken
+	0,   // 65: agentmesh.v1.EnrollmentRequest.status:type_name -> agentmesh.v1.EnrollmentStatus
+	91,  // 66: agentmesh.v1.EnrollmentRequest.labels:type_name -> agentmesh.v1.EnrollmentRequest.LabelsEntry
+	96,  // 67: agentmesh.v1.EnrollmentRequest.create_time:type_name -> google.protobuf.Timestamp
+	96,  // 68: agentmesh.v1.EnrollmentRequest.resolve_time:type_name -> google.protobuf.Timestamp
+	64,  // 69: agentmesh.v1.EnrollmentRequestListResponse.requests:type_name -> agentmesh.v1.EnrollmentRequest
+	96,  // 70: agentmesh.v1.User.create_time:type_name -> google.protobuf.Timestamp
+	92,  // 71: agentmesh.v1.EnrolledNode.labels:type_name -> agentmesh.v1.EnrolledNode.LabelsEntry
+	96,  // 72: agentmesh.v1.EnrolledNode.enroll_time:type_name -> google.protobuf.Timestamp
+	96,  // 73: agentmesh.v1.EnrolledNode.expire_time:type_name -> google.protobuf.Timestamp
+	96,  // 74: agentmesh.v1.RouterLease.last_renewal_time:type_name -> google.protobuf.Timestamp
+	96,  // 75: agentmesh.v1.RouterLease.expire_time:type_name -> google.protobuf.Timestamp
+	18,  // 76: agentmesh.v1.NodeServices.services:type_name -> agentmesh.v1.ServiceInfo
+	96,  // 77: agentmesh.v1.NodeServices.report_time:type_name -> google.protobuf.Timestamp
+	66,  // 78: agentmesh.v1.AdminStatusResponse.users:type_name -> agentmesh.v1.User
+	68,  // 79: agentmesh.v1.AdminStatusResponse.active_routers:type_name -> agentmesh.v1.RouterLease
+	67,  // 80: agentmesh.v1.AdminStatusResponse.enrolled_nodes:type_name -> agentmesh.v1.EnrolledNode
+	64,  // 81: agentmesh.v1.AdminStatusResponse.enrollment_requests:type_name -> agentmesh.v1.EnrollmentRequest
+	62,  // 82: agentmesh.v1.AdminStatusResponse.bootstrap_tokens:type_name -> agentmesh.v1.BootstrapToken
+	48,  // 83: agentmesh.v1.AdminStatusResponse.policy:type_name -> agentmesh.v1.PolicyConfig
+	93,  // 84: agentmesh.v1.AdminStatusResponse.node_catalog:type_name -> agentmesh.v1.AdminStatusResponse.NodeCatalogEntry
+	66,  // 85: agentmesh.v1.UserStatusResponse.user:type_name -> agentmesh.v1.User
+	67,  // 86: agentmesh.v1.UserStatusResponse.enrolled_nodes:type_name -> agentmesh.v1.EnrolledNode
+	62,  // 87: agentmesh.v1.UserStatusResponse.bootstrap_tokens:type_name -> agentmesh.v1.BootstrapToken
+	68,  // 88: agentmesh.v1.UserStatusResponse.active_routers:type_name -> agentmesh.v1.RouterLease
+	48,  // 89: agentmesh.v1.UserStatusResponse.policy:type_name -> agentmesh.v1.PolicyConfig
+	67,  // 90: agentmesh.v1.NodeListResponse.nodes:type_name -> agentmesh.v1.EnrolledNode
+	96,  // 91: agentmesh.v1.IdentityEvidenceResponse.biscuit_expire_time:type_name -> google.protobuf.Timestamp
+	96,  // 92: agentmesh.v1.IdentityEvidenceResponse.check_time:type_name -> google.protobuf.Timestamp
+	94,  // 93: agentmesh.v1.PeerEvidenceResponse.labels:type_name -> agentmesh.v1.PeerEvidenceResponse.LabelsEntry
+	96,  // 94: agentmesh.v1.PeerEvidenceResponse.expire_time:type_name -> google.protobuf.Timestamp
+	96,  // 95: agentmesh.v1.PeerEvidenceResponse.check_time:type_name -> google.protobuf.Timestamp
+	96,  // 96: agentmesh.v1.MemberCredential.expire_time:type_name -> google.protobuf.Timestamp
+	76,  // 97: agentmesh.v1.MemberCredential.trusted_keys:type_name -> agentmesh.v1.TrustedSigningKey
+	77,  // 98: agentmesh.v1.MemberCredential.oidc_session:type_name -> agentmesh.v1.OIDCSession
+	96,  // 99: agentmesh.v1.TrustedSigningKey.receive_time:type_name -> google.protobuf.Timestamp
+	79,  // 100: agentmesh.v1.TaskAuthorizationRule.rules:type_name -> agentmesh.v1.TaskRule
+	96,  // 101: agentmesh.v1.TaskAuthorizationRule.expire_time:type_name -> google.protobuf.Timestamp
+	80,  // 102: agentmesh.v1.TaskRule.operation:type_name -> agentmesh.v1.TaskOperation
+	78,  // 103: agentmesh.v1.TokenExchangeRequest.task_rule:type_name -> agentmesh.v1.TaskAuthorizationRule
+	96,  // 104: agentmesh.v1.TokenExchangeResponse.expire_time:type_name -> google.protobuf.Timestamp
+	96,  // 105: agentmesh.v1.STSTokenResponse.expire_time:type_name -> google.protobuf.Timestamp
+	69,  // 106: agentmesh.v1.AdminStatusResponse.NodeCatalogEntry.value:type_name -> agentmesh.v1.NodeServices
+	107, // [107:107] is the sub-list for method output_type
+	107, // [107:107] is the sub-list for method input_type
+	107, // [107:107] is the sub-list for extension type_name
+	107, // [107:107] is the sub-list for extension extendee
+	0,   // [0:107] is the sub-list for field type_name
 }
 
 func init() { file_api_agentmesh_proto_init() }
@@ -7091,7 +7124,7 @@ func file_api_agentmesh_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_agentmesh_proto_rawDesc), len(file_api_agentmesh_proto_rawDesc)),
 			NumEnums:      9,
-			NumMessages:   85,
+			NumMessages:   86,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
