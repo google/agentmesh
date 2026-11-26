@@ -17,6 +17,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -43,29 +44,34 @@ const DefaultMaxMCPBodyInspectBytes int64 = 4 << 20
 // and extracts the bare tool name when present, or sets allowStreamInit for
 // session handshake, capability discovery, and protocol notification methods
 // that precede a tool call.
+//
+// The backend receives the same bytes and reads them with its own parser, so
+// the method and the tool read here must be the ones every parser reads. A
+// body that is not one JSON object, or that states "method", "params" or the
+// tool "name" more than once (uniqueJSONMembers), names no tool and no
+// handshake method: a task rule with allowed_tools denies it.
 func InspectJSONRPCMCPBody(body []byte) (mcpTool string, allowStreamInit bool) {
 	if len(bytes.TrimSpace(body)) == 0 {
 		return "", false
 	}
-	var rpc struct {
-		Method string          `json:"method"`
-		Params json.RawMessage `json:"params"`
-	}
-	if err := json.Unmarshal(body, &rpc); err != nil {
+	members, err := uniqueJSONMembers(body, "method", "params")
+	if err != nil {
 		return "", false
 	}
-	switch rpc.Method {
+	var method string
+	if err := json.Unmarshal(members["method"], &method); err != nil {
+		return "", false
+	}
+	switch method {
 	case "initialize", "notifications/initialized", "server/discover", "ping",
 		"tools/list", "resources/list", "prompts/list", "notifications/cancelled":
 		return "", true
 	case "tools/call":
-		var params struct {
-			Name string `json:"name"`
-		}
-		if err := json.Unmarshal(rpc.Params, &params); err != nil {
+		name, err := MCPToolCallName(members["params"])
+		if err != nil {
 			return "", false
 		}
-		rawTool := strings.TrimSpace(params.Name)
+		rawTool := strings.TrimSpace(name)
 		if rawTool == "" {
 			return "", false
 		}
@@ -76,6 +82,65 @@ func InspectJSONRPCMCPBody(body []byte) (mcpTool string, allowStreamInit bool) {
 	default:
 		return "", false
 	}
+}
+
+// MCPToolCallName returns the tool that the params of an MCP tools/call name.
+// It fails when params is not one JSON object with one "name" member that
+// holds a non-empty string (uniqueJSONMembers), so the tool an enforcement
+// point checks is the tool the backend runs.
+func MCPToolCallName(params []byte) (string, error) {
+	members, err := uniqueJSONMembers(params, "name")
+	if err != nil {
+		return "", fmt.Errorf("params: %w", err)
+	}
+	var name string
+	if err := json.Unmarshal(members["name"], &name); err != nil || name == "" {
+		return "", errors.New(`params: no "name" member with a non-empty string`)
+	}
+	return name, nil
+}
+
+// uniqueJSONMembers returns the values of the named members of the JSON
+// object doc. It fails when doc does not say the same thing to every JSON
+// parser: when it is not one valid JSON object and nothing else, when a named
+// member occurs more than once, and when a member differs from a name only in
+// letter case. A case-insensitive parser, encoding/json among them, reads
+// such a member as the named one and keeps the last; most others ignore it.
+func uniqueJSONMembers(doc []byte, names ...string) (map[string]json.RawMessage, error) {
+	// One value and nothing after it: the decoder below reads the first
+	// value of a stream and does not look at what follows it.
+	if !json.Valid(doc) {
+		return nil, errors.New("not one valid JSON value")
+	}
+	dec := json.NewDecoder(bytes.NewReader(doc))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil, errors.New("not a JSON object")
+	}
+	members := make(map[string]json.RawMessage, len(names))
+	for dec.More() {
+		tok, err := dec.Token()
+		key, isString := tok.(string)
+		if err != nil || !isString {
+			return nil, errors.New("not a JSON object")
+		}
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return nil, err
+		}
+		for _, name := range names {
+			if !strings.EqualFold(key, name) {
+				continue
+			}
+			if key != name {
+				return nil, fmt.Errorf("member %q differs from %q only in letter case", key, name)
+			}
+			if _, seen := members[name]; seen {
+				return nil, fmt.Errorf("member %q occurs more than once", name)
+			}
+			members[name] = value
+		}
+	}
+	return members, nil
 }
 
 // InspectMCPHTTPRequestBody buffers and restores r.Body up to maxBytes
