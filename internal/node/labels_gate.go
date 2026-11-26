@@ -105,6 +105,11 @@ var ErrProviderUnreachable = errors.New("provider unreachable")
 // not who the policy says serves that name.
 var ErrProviderNotGranted = errors.New("provider not granted the service")
 
+// ErrLabelsNotSatisfied marks a provider whose credential does not attest
+// every label the caller requires or the egress floor sets: it is enrolled
+// and reachable, and its attested labels are not the ones asked for.
+var ErrLabelsNotSatisfied = errors.New("provider labels not satisfied")
+
 // ErrHandshakeRateLimited marks a provider that refused the credential
 // handshake at its per-peer handshake rate limit: it is up, and answered
 // by resetting the stream with network.StreamRateLimited. A caller that
@@ -337,6 +342,9 @@ func (n *AgentMeshNode) checkProvider(providerBiscuit []byte, peerID peer.ID, re
 	}
 	authorizer.AddPolicy(api.AllowIfTruePolicy)
 	if err := authorizer.Authorize(); err != nil {
+		if stopped, _ := authorizerLimit(err); !stopped {
+			err = fmt.Errorf("%w: %w", ErrLabelsNotSatisfied, err)
+		}
 		if len(floor) > 0 {
 			return fmt.Errorf("provider %s does not attest every label of the caller requirement %v and the egress floor %v: %w", peerID, required, floor, err)
 		}
