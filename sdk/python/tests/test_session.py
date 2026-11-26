@@ -1079,3 +1079,50 @@ def test_a_member_announces_where_it_is_reached_and_withdraws_it_on_leaving():
             nursery.cancel_scope.cancel()
 
     trio.run(with_timeout, 30, main)
+
+
+def test_go_away_replaces_draining_router_immediately_even_when_connection_closes():
+    """A GoAway failover must finish on the session nursery even when the
+    draining router disconnects immediately (which cancels that connection's
+    stream-handler nursery in py-libp2p >=0.8.3) and without waiting for the
+    periodic reservation_check_interval poll."""
+
+    async def main():
+        async with trio.open_nursery() as nursery:
+            r1, addr1 = await start_router(nursery)
+            r2, addr2 = await start_router(nursery)
+            r3, addr3 = await start_router(nursery)
+            pid1, pid2, pid3 = str(r1.get_id()), str(r2.get_id()), str(r3.get_id())
+
+            router_infos = [
+                pb.RouterInfo(peer_id=pid3, addresses=[addr3], labels={"tier": "backup"}, connections=90, connection_limit=100),
+                pb.RouterInfo(peer_id=pid1, addresses=[addr1], labels={"tier": "primary"}, connections=10, connection_limit=100),
+                pb.RouterInfo(peer_id=pid2, addresses=[addr2], labels={"tier": "backup"}, connections=10, connection_limit=100),
+            ]
+            mesh = AgentMesh.enroll(
+                "http://127.0.0.1:1",
+                bootstrap_token="sbt",
+                transport=fake_control_plane([addr3, addr1, addr2], routers=router_infos),
+            )
+            async with mesh.join(
+                refresh_lead=0,
+                routers=2,
+                router_prefer={"tier": "primary"},
+                reservation_check_interval=30.0,
+            ) as session:
+                assert sorted(r.peer_id for r in session.routers) == sorted([pid1, pid2])
+
+                stream = await r1.new_stream(session.host.get_id(), [GOAWAY_PROTOCOL])
+                msg = pb.RouterGoAway(reason=pb.RouterGoAway.DRAINING, retry_after=Duration(seconds=600))
+                await stream.write(encode_varint_prefixed(msg.SerializeToString()))
+                await stream.close()
+                await r1.disconnect(session.host.get_id())
+
+                with trio.fail_after(5):
+                    while sorted(r.peer_id for r in session.routers) != sorted([pid2, pid3]) or len(session.relay_addresses) != 2:
+                        await trio.sleep(0.05)
+                assert session.go_away_received == {"DRAINING": 1}
+                assert pid1 in session.shunned_routers
+            nursery.cancel_scope.cancel()
+
+    trio.run(with_timeout, 30, main)

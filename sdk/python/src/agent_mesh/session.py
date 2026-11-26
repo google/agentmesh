@@ -402,6 +402,9 @@ class MeshSession:
         reason = go_away_reason_name(msg.reason)
         self.go_away_received[reason] = self.go_away_received.get(reason, 0) + 1
         self._shun_router(canonical, retry_after)
+        self._held_router_ids.discard(canonical)
+        self.routers[:] = [r for r in self.routers if r.peer_id != canonical]
+        self._relay_trigger.set()
         await self._detach_router(canonical)
         await self.top_up_routers()
         self._relay_trigger.set()
@@ -1145,13 +1148,33 @@ async def join_mesh(
             is_banned=lambda peer: peer in banned,
         ),
     )
+    def _dispatch_go_away(peer_id: str, msg: pb.RouterGoAway, retry_after: float) -> None:
+        # Run failover on the session's own nursery rather than the inbound
+        # stream handler task: in py-libp2p >=0.8.3 disconnecting the draining
+        # router (or the router closing its socket) cancels that connection's
+        # stream-handler nursery, which would abort top_up_routers() mid-flight.
+        if not session_ref:
+            return
+        active = session_ref[0]
+        if active._nursery is None:  # noqa: SLF001
+            return
+
+        async def _run() -> None:
+            try:
+                await active.handle_go_away(peer_id, msg, retry_after)
+            except Exception as err:  # noqa: BLE001 - logged so failover errors never crash the session nursery
+                logger.warning("go-away handling for router %s failed: %s", peer_id, err)
+
+        try:
+            active._nursery.start_soon(_run)  # noqa: SLF001
+        except RuntimeError:
+            pass
+
     host.set_stream_handler(
         GOAWAY_PROTOCOL,
         go_away_stream_handler(
             is_held_router=lambda peer_id: bool(session_ref and session_ref[0].is_held_router(peer_id)),
-            on_go_away=lambda peer_id, msg, retry_after: (
-                session_ref[0].handle_go_away(peer_id, msg, retry_after) if session_ref else None
-            ),
+            on_go_away=_dispatch_go_away,
         ),
     )
     host.set_stream_handler(STOP_PROTOCOL, stop_stream_handler(host))
@@ -1202,6 +1225,7 @@ async def join_mesh(
                 try:
                     yield session
                 finally:
+                    session_ref.clear()
                     with trio.CancelScope(shield=True):
                         await session._withdraw_self()  # noqa: SLF001
                     nursery.cancel_scope.cancel()
