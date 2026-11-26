@@ -17,7 +17,9 @@ package api
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"slices"
 	"strings"
@@ -95,39 +97,50 @@ func TestExtractVerifiedClaimsAndLimits(t *testing.T) {
 		"device": map[string]any{
 			"trust_tier": "high",
 			"managed":    true,
+			"tier_num":   float64(30),
 		},
+		"auth_time":                 float64(1700000000),
+		"level_int":                 42,
+		"level_json":                json.Number("7"),
 		"https://corp.example/tier": "gold",
 		"amr":                       []any{"mfa", "hwk", "hwk"},
+		"num_arr":                   []any{float64(1), float64(2.5)},
+		"bad_nan":                   math.NaN(),
 		"too_many":                  tooMany,
 		"bad_obj":                   map[string]any{"nested": "x"},
 		"bad_comma":                 "a,b",
 	}
 
-	paths := []string{"iss", "device.trust_tier", "device.managed", "https://corp.example/tier", "amr", "missing", "too_many", "bad_obj", "bad_comma"}
+	paths := []string{"iss", "device.trust_tier", "device.managed", "device.tier_num", "auth_time", "level_int", "level_json", "https://corp.example/tier", "amr", "num_arr", "bad_nan", "missing", "too_many", "bad_obj", "bad_comma"}
 	got, warnings := ExtractVerifiedClaims(raw, paths)
 
 	want := map[string][]string{
 		"iss":                       {"https://idp.corp.example"},
 		"device.trust_tier":         {"high"},
 		"device.managed":            {"true"},
+		"device.tier_num":           {"30"},
+		"auth_time":                 {"1700000000"},
+		"level_int":                 {"42"},
+		"level_json":                {"7"},
 		"https://corp.example/tier": {"gold"},
 		"amr":                       {"hwk", "mfa"},
+		"num_arr":                   {"1", "2.5"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ExtractVerifiedClaims = %#v, want %#v", got, want)
 	}
-	if len(warnings) != 3 {
-		t.Fatalf("expected 3 warnings (too_many, bad_obj, bad_comma), got %d: %v", len(warnings), warnings)
+	if len(warnings) != 4 {
+		t.Fatalf("expected 4 warnings (bad_nan, too_many, bad_obj, bad_comma), got %d: %v", len(warnings), warnings)
 	}
 
-	if !MatchBindingClaims(got, map[string]string{"iss": "https://idp.corp.example", "amr": "hwk", "device.trust_tier": "high"}) {
-		t.Fatal("MatchBindingClaims expected true for matching iss + amr + device.trust_tier")
+	if !MatchBindingClaims(got, map[string]string{"iss": "https://idp.corp.example", "amr": "hwk", "device.trust_tier": "high", "device.tier_num": "30", "auth_time": "1700000000"}) {
+		t.Fatal("MatchBindingClaims expected true for matching iss + amr + device.trust_tier + numeric claims")
 	}
 	if MatchBindingClaims(got, map[string]string{"iss": "https://other-idp.example", "device.trust_tier": "high"}) {
 		t.Fatal("MatchBindingClaims expected false on mismatched iss")
 	}
 
-	wantFormatted := "amr=hwk,amr=mfa,device.managed=true,device.trust_tier=high,https://corp.example/tier=gold,iss=https://idp.corp.example"
+	wantFormatted := "amr=hwk,amr=mfa,auth_time=1700000000,device.managed=true,device.tier_num=30,device.trust_tier=high,https://corp.example/tier=gold,iss=https://idp.corp.example,level_int=42,level_json=7,num_arr=1,num_arr=2.5"
 	if s := FormatClaims(got); s != wantFormatted {
 		t.Errorf("FormatClaims = %q, want %q", s, wantFormatted)
 	}

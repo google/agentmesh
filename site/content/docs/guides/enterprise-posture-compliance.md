@@ -52,10 +52,10 @@ needed to configure claim mappings. Everything lives in the versioned
 3. **Top-level, nested, and multi-valued claims:** Lookup checks exact top-level
    keys first (supporting `"iss"` and URI claim keys such as
    `https://idp.example/trust_tier`) before traversing dot-separated nested JSON
-   objects (such as `device.trust_tier`). Strings, booleans, and string arrays
-   (such as `amr: ["hwk", "mfa"]`, emitted as one `claim()` fact per distinct
-   element) are supported; missing or malformed values are omitted so
-   deny-by-default policies fail closed.
+   objects (such as `device.trust_tier`). Strings, booleans, finite numbers,
+   and scalar arrays (such as `amr: ["hwk", "mfa"]`, emitted as one `claim()`
+   fact per distinct element) are supported; missing or malformed values are
+   omitted so deny-by-default policies fail closed.
 4. **Bounded Biscuit size:** A policy may reference at most **16** distinct
    claim paths across `PolicyBinding.claims` and `attested_claims` combined
    (`POST /policies` returns `400` above that cap), and each array-valued claim

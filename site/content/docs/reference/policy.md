@@ -256,9 +256,10 @@ no `PolicyBinding.claims` entry matches them directly.
 - Because `claim(key, value)` is a distinct predicate from node-declared
   `label(key, value)`, a node can never forge an IdP claim by declaring a label
   in `agentmesh-node.yaml`, even when a role grants `allowed_labels: ["*"]`.
-- Multi-valued string arrays (such as `amr: ["hwk", "mfa"]`) emit one
-  `claim(key, value)` fact per distinct element. Scalar strings and booleans
-  emit one fact. Numbers, objects, and missing claims are omitted fail-closed.
+- Multi-valued scalar arrays (such as `amr: ["hwk", "mfa"]`) emit one
+  `claim(key, value)` fact per distinct element. Scalar strings, booleans, and
+  finite numbers (such as `auth_time` or numeric tier levels) emit one fact.
+  Objects, non-finite numbers, and missing claims are omitted fail-closed.
 - To bound Biscuit size and authorizer fact budgets, a policy may reference at
   most **16** distinct claim paths across `PolicyBinding.claims` and
   `attested_claims` combined (`POST /policies` rejects policies above this cap

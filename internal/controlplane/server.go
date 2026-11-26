@@ -3788,8 +3788,14 @@ func resolveRoles(peerID string, claims jwt.MapClaims, bindings []*api.PolicyBin
 
 	// Extract only the JWT claim paths referenced by bindings so PolicyBinding.claims
 	// (including "iss") is enforced identically at mint time and in Datalog rules.
-	bindingClaimPaths, _ := api.CollectPolicyClaimPaths(bindings, nil)
-	extractedClaims, _ := api.ExtractVerifiedClaims(claims, bindingClaimPaths)
+	bindingClaimPaths, err := api.CollectPolicyClaimPaths(bindings, nil)
+	if err != nil {
+		logger.Warnf("Failed to collect policy claim paths in resolveRoles for peer %s: %v", peerID, err)
+	}
+	extractedClaims, claimWarnings := api.ExtractVerifiedClaims(claims, bindingClaimPaths)
+	for _, w := range claimWarnings {
+		logger.Warnf("Claim extraction warning in resolveRoles for peer %s: %s", peerID, w)
+	}
 
 	resolvedRoles := make(map[string]bool)
 	for _, b := range bindings {

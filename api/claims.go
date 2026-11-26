@@ -15,9 +15,12 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
+	"math"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -225,20 +228,40 @@ func lookupJWTClaimPath(claims map[string]any, claimPath string) (any, bool) {
 	return cur, true
 }
 
+func formatScalarClaim(raw any) (string, bool) {
+	switch v := raw.(type) {
+	case string:
+		return v, true
+	case bool:
+		if v {
+			return "true", true
+		}
+		return "false", true
+	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return "", false
+		}
+		return strconv.FormatFloat(v, 'f', -1, 64), true
+	case int:
+		return strconv.Itoa(v), true
+	case int64:
+		return strconv.FormatInt(v, 10), true
+	case uint64:
+		return strconv.FormatUint(v, 10), true
+	case json.Number:
+		s := v.String()
+		if _, err := v.Float64(); err != nil {
+			return "", false
+		}
+		return s, true
+	default:
+		return "", false
+	}
+}
+
 func extractClaimValues(path string, raw any) ([]string, string) {
 	var rawStrings []string
 	switch v := raw.(type) {
-	case string:
-		if v == "" {
-			return nil, fmt.Sprintf("claim %q is empty; omitted", path)
-		}
-		rawStrings = []string{v}
-	case bool:
-		if v {
-			rawStrings = []string{"true"}
-		} else {
-			rawStrings = []string{"false"}
-		}
 	case []string:
 		if len(v) > MaxValuesPerClaim {
 			return nil, fmt.Sprintf("claim %q has %d values (max %d); omitted", path, len(v), MaxValuesPerClaim)
@@ -249,23 +272,23 @@ func extractClaimValues(path string, raw any) ([]string, string) {
 			return nil, fmt.Sprintf("claim %q has %d values (max %d); omitted", path, len(v), MaxValuesPerClaim)
 		}
 		for _, elem := range v {
-			switch item := elem.(type) {
-			case string:
-				if item != "" {
-					rawStrings = append(rawStrings, item)
-				}
-			case bool:
-				if item {
-					rawStrings = append(rawStrings, "true")
-				} else {
-					rawStrings = append(rawStrings, "false")
-				}
-			default:
+			s, ok := formatScalarClaim(elem)
+			if !ok {
 				return nil, fmt.Sprintf("claim %q contains non-scalar element; omitted", path)
+			}
+			if s != "" {
+				rawStrings = append(rawStrings, s)
 			}
 		}
 	default:
-		return nil, fmt.Sprintf("claim %q is not a string, boolean, or scalar array; omitted", path)
+		s, ok := formatScalarClaim(raw)
+		if !ok {
+			return nil, fmt.Sprintf("claim %q is not a string, boolean, finite number, or scalar array; omitted", path)
+		}
+		if s == "" {
+			return nil, fmt.Sprintf("claim %q is empty; omitted", path)
+		}
+		rawStrings = []string{s}
 	}
 
 	seen := make(map[string]bool, len(rawStrings))
