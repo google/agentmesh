@@ -74,6 +74,43 @@ func TestMCPService_TaskCheckRefusesAToolNamedTwice(t *testing.T) {
 	}
 }
 
+// A message with no id gets no answer, and a server must not run a request
+// that comes as one. A backend on a generic JSON-RPC library can run it.
+// Under a task-scoped credential, a message with no id goes to the backend
+// only when its method is a notification.
+func TestMCPService_TaskCheckAllowsOnlyANotificationWithNoID(t *testing.T) {
+	svc := &MCPService{baseService: baseService{
+		info: &api.ServiceInfo{Name: "weather", Type: api.ServiceType_SERVICE_TYPE_MCP},
+	}}
+	reqCtx := RequestContext{TaskRules: []*api.TaskAuthorizationRule{{
+		Name: "only-get-weather",
+		Rules: []*api.TaskRule{{
+			AllowedServices: []string{"mcp://weather"},
+			Operation:       &api.TaskOperation{AllowedTools: []string{"get_weather"}},
+		}},
+	}}}
+
+	for _, tc := range []struct {
+		name        string
+		method      string
+		params      string
+		wantAllowed bool
+	}{
+		{name: "initialized notification", method: "notifications/initialized", wantAllowed: true},
+		{name: "cancelled notification", method: "notifications/cancelled", params: `{"requestId":1}`, wantAllowed: true},
+		{name: "call of a forbidden tool", method: "tools/call", params: `{"name":"drop_table"}`},
+		{name: "call of an allowed tool", method: "tools/call", params: `{"name":"get_weather"}`},
+		{name: "method that the task denies with an id", method: "resources/read", params: `{"uri":"file:///etc/passwd"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := svc.authorizeMCPRequest(&jsonrpc.Request{Method: tc.method, Params: []byte(tc.params)}, reqCtx)
+			if allowed := resp == nil; allowed != tc.wantAllowed {
+				t.Fatalf("%s with no id: allowed = %v, want %v", tc.method, allowed, tc.wantAllowed)
+			}
+		})
+	}
+}
+
 // newProbeBackend serves a real MCP server that exposes no tools at all.
 func newProbeBackend(t *testing.T) *httptest.Server {
 	t.Helper()

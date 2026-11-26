@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os/exec"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -325,6 +326,11 @@ func (m *MCPService) HandleStreamPassThrough(s network.Stream, reqCtx RequestCon
 			}
 			if req, ok := msg.(*jsonrpc.Request); ok && len(reqCtx.TaskRules) > 0 {
 				if errResp := m.authorizeMCPRequest(req, reqCtx); errResp != nil {
+					// JSON-RPC forbids an answer to a message with no id.
+					// The node drops it: authorizeMCPRequest logged why.
+					if !req.IsCall() {
+						continue
+					}
 					if werr := clientConn.Write(ctx, errResp); werr != nil {
 						logger.Debugf("[MCPService] %s: failed to write TAR rejection: %v", m.info.Name, werr)
 						clientErrc <- werr
@@ -371,11 +377,24 @@ func taskDenied(id jsonrpc.ID, what string, err error) *jsonrpc.Response {
 // authorizeMCPRequest evaluates reqCtx.TaskRules against an inbound JSON-RPC
 // request on an MCP stream. Returns a JSON-RPC error response when denied, or
 // nil when allowed.
+//
+// A message with no id is allowed only when its method is a notification.
+// JSON-RPC forbids an answer to a message with no id, so the caller must not
+// send the response for a denied one.
 func (m *MCPService) authorizeMCPRequest(req *jsonrpc.Request, reqCtx RequestContext) *jsonrpc.Response {
-	if !req.IsCall() {
-		return nil
-	}
 	svcName := m.info.GetName()
+	if !req.IsCall() {
+		// The official MCP SDK servers do not run a tools/call that has no
+		// id. A backend on a generic JSON-RPC library can, because JSON-RPC
+		// lets a server process a notification, and it would run the
+		// request with no task check.
+		if strings.HasPrefix(req.Method, "notifications/") {
+			return nil
+		}
+		err := errors.New("only a notifications/ method may have no id")
+		logger.Warnf("[MCPService] %s: TAR dropped %q with no id from %s: %v", svcName, req.Method, reqCtx.PeerID, err)
+		return taskDenied(req.ID, req.Method+" with no id", err)
+	}
 	switch req.Method {
 	case "initialize", "ping", "tools/list":
 		if err := api.EvaluateTaskRules(reqCtx.TaskRules, api.TaskRequestContext{

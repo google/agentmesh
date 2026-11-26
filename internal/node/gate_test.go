@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -548,6 +550,7 @@ func TestHandleMCPStream_TAREnforcesAllowedTools(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	var dropTableRuns atomic.Int32
 	upstream := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		srv := mcp.NewServer(&mcp.Implementation{Name: "weather-srv", Version: "0.0.1"}, nil)
 		srv.AddTool(&mcp.Tool{Name: "get_weather", Description: "allowed tool", InputSchema: map[string]any{"type": "object"}},
@@ -556,6 +559,7 @@ func TestHandleMCPStream_TAREnforcesAllowedTools(t *testing.T) {
 			})
 		srv.AddTool(&mcp.Tool{Name: "drop_table", Description: "forbidden tool", InputSchema: map[string]any{"type": "object"}},
 			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				dropTableRuns.Add(1)
 				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "dropped"}}}, nil
 			})
 		return srv
@@ -603,7 +607,8 @@ func TestHandleMCPStream_TAREnforcesAllowedTools(t *testing.T) {
 	defer func() { _ = s.Close() }()
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "tc", Version: "0.0.1"}, nil)
-	session, err := client.Connect(ctx, NewStreamTransport(s), nil)
+	transport := NewStreamTransport(s)
+	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
 		t.Fatalf("client.Connect: %v", err)
 	}
@@ -621,5 +626,23 @@ func TestHandleMCPStream_TAREnforcesAllowedTools(t *testing.T) {
 	// Forbidden tool call is rejected by the PEP before reaching the upstream MCP server.
 	if _, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "drop_table", Arguments: map[string]any{}}); err == nil {
 		t.Fatal("expected CallTool(drop_table) to be denied by TAR")
+	}
+
+	// A tools/call with no id gets no answer, so the node cannot refuse it
+	// with one. The node must drop it and keep the stream open. The node
+	// reads the stream in order, so the answer to the call after it shows
+	// that the node is done with the message.
+	if err := transport.Write(ctx, &jsonrpc.Request{Method: "tools/call", Params: []byte(`{"name":"drop_table","arguments":{}}`)}); err != nil {
+		t.Fatalf("write a tools/call with no id: %v", err)
+	}
+	res, err = session.CallTool(ctx, &mcp.CallToolParams{Name: "get_weather", Arguments: map[string]any{}})
+	if err != nil {
+		t.Fatalf("CallTool(get_weather) after a tools/call with no id: %v, want the stream still open", err)
+	}
+	if tc, ok := res.Content[0].(*mcp.TextContent); !ok || tc.Text != "sunny" {
+		t.Fatalf("after a tools/call with no id got %v, want text %q", res.Content, "sunny")
+	}
+	if got := dropTableRuns.Load(); got != 0 {
+		t.Fatalf("the backend ran drop_table %d times, want 0", got)
 	}
 }
