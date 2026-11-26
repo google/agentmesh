@@ -210,7 +210,9 @@ func ExtractTaskRules(biscuitData []byte) ([]*api.TaskAuthorizationRule, error) 
 // authorizer. Every path that admits a biscuit must call this: expiry is a
 // Datalog check over a time fact, so an authorizer built without the fact
 // silently accepts expired tokens (see #296). A token carrying no expiration()
-// fact fails the check, so this is fail-closed.
+// fact fails the check, so this is fail-closed. The check does not refuse an
+// expiration before 1970, so the path must also check the expiration in Go
+// after the authorizer passes: see requireUnexpired.
 func EnforceExpiration(authorizer biscuit.Authorizer) {
 	authorizer.AddFact(biscuit.Fact{
 		Predicate: biscuit.Predicate{
@@ -273,7 +275,20 @@ func requireAuthorityFact(b *biscuit.Biscuit, factName, value string) error {
 	return nil
 }
 
+// validateExpiration refuses an expiration at or before the Unix epoch.
+// Datalog stores a date as unsigned seconds since the epoch. It reads an
+// earlier instant as a far future date, so the expiration check of
+// EnforceExpiration passes for it and the token does not lapse. The epoch
+// itself is the value of an unset Unix time, so it is refused too.
+func validateExpiration(expiration time.Time) error {
+	if expiration.Unix() <= 0 {
+		return fmt.Errorf("%s %s is not after the Unix epoch: Datalog dates are unsigned", api.FactExpiration, expiration.UTC().Format(time.RFC3339))
+	}
+	return nil
+}
+
 // expirationOf reports the expiration() fact of an already-authorized token.
+// It refuses an expiration that validateExpiration refuses.
 func expirationOf(authorizer biscuit.Authorizer) (time.Time, error) {
 	facts, err := authorizer.Query(biscuit.Rule{
 		Head: biscuit.Predicate{Name: "get_exp", IDs: []biscuit.Term{biscuit.Variable("e")}},
@@ -285,6 +300,7 @@ func expirationOf(authorizer biscuit.Authorizer) (time.Time, error) {
 
 	// A token may carry several; the earliest is the one that binds.
 	var earliest time.Time
+	found := false
 	for _, fact := range facts {
 		if len(fact.IDs) != 1 {
 			continue
@@ -293,14 +309,32 @@ func expirationOf(authorizer biscuit.Authorizer) (time.Time, error) {
 		if !ok {
 			continue
 		}
-		if t := time.Time(date); earliest.IsZero() || t.Before(earliest) {
-			earliest = t
+		if t := time.Time(date); !found || t.Before(earliest) {
+			earliest, found = t, true
 		}
 	}
-	if earliest.IsZero() {
+	if !found {
 		return time.Time{}, fmt.Errorf("no %s fact in token", api.FactExpiration)
 	}
+	if err := validateExpiration(earliest); err != nil {
+		return time.Time{}, err
+	}
 	return earliest, nil
+}
+
+// requireUnexpired checks in Go that an already-authorized token carries an
+// expiration() fact and that the expiration is after now. The Datalog check
+// of EnforceExpiration is not sufficient alone: it admits an expiration
+// before 1970 (see validateExpiration).
+func requireUnexpired(authorizer biscuit.Authorizer, now time.Time) error {
+	expiry, err := expirationOf(authorizer)
+	if err != nil {
+		return err
+	}
+	if !expiry.After(now) {
+		return fmt.Errorf("token expired at %s", expiry.UTC().Format(time.RFC3339))
+	}
+	return nil
 }
 
 // MintBiscuitToken generates a signed Biscuit token for a peer with policy rules based on JWT claims.
@@ -377,6 +411,10 @@ func mintBiscuitWithBinding(signingKey ed25519.PrivateKey, remotePeer peer.ID, d
 }
 
 func mintBiscuitWithBindingAndRand(rng io.Reader, signingKey ed25519.PrivateKey, remotePeer peer.ID, delegated bool, roles []string, expiration time.Time, claims jwt.MapClaims, policyRoles []*api.PolicyRole, labels map[string]string, attestedClaims map[string][]string) ([]byte, error) {
+	if err := validateExpiration(expiration); err != nil {
+		return nil, fmt.Errorf("cannot mint biscuit: %w", err)
+	}
+
 	builder := biscuit.NewBuilder(signingKey, biscuit.WithRNG(rng))
 	addedFacts := make(map[string]bool)
 	addFact := func(fact biscuit.Fact) error {
@@ -641,7 +679,8 @@ func verifyBiscuit(biscuitData []byte, expectedPeer peer.ID, trustedPublicKeys [
 	}
 
 	// EnforceExpiration already passed, so the fact is there; a failure here is
-	// a query error, and fails closed rather than caching an admission forever.
+	// a query error or an expiration at or before the Unix epoch, and fails
+	// closed rather than caching an admission forever.
 	expiry, err := expirationOf(authorizer)
 	if err != nil {
 		return nil, nil, time.Time{}, err
@@ -776,6 +815,11 @@ func extractPeerID(trustedPublicKeys []ed25519.PublicKey, biscuitData []byte, ti
 
 	if !verified {
 		return "", fmt.Errorf("signature verification failed: %v", lastErr)
+	}
+	if enforceExpiry {
+		if err := requireUnexpired(authorizer, time.Now()); err != nil {
+			return "", err
+		}
 	}
 
 	// Extract the peer ID using Datalog query

@@ -1003,6 +1003,96 @@ func TestOAuthAndControlPlaneHardening(t *testing.T) {
 	}
 }
 
+// expires_in may only shorten the lifetime of a delegated Biscuit. A value
+// above 9223372036 seconds overflowed time.Duration to a negative number and
+// put an expiration before 1970 into the Biscuit (GHSA-qg99-6frq-2h5m).
+func TestOAuthTokenExchangeBoundsExpiresIn(t *testing.T) {
+	issuer, mintOIDC := startCustomMockOIDC(t)
+	srv, store, baseURL := setupTestServer(t, issuer)
+	t.Cleanup(func() { _ = srv.Close() })
+
+	ctx := context.Background()
+	if err := store.SavePolicyDocument(ctx,
+		[]*api.PolicyRole{{Name: api.RoleNode, AllowedServices: []string{"*"}, AllowedTargets: []string{"*"}}},
+		[]*api.PolicyBinding{{Role: api.RoleNode, Members: []string{api.SystemAuthenticated}}}, nil); err != nil {
+		t.Fatalf("SavePolicyDocument: %v", err)
+	}
+	keys, err := store.GetAllValidPublicKeys(ctx)
+	if err != nil {
+		t.Fatalf("GetAllValidPublicKeys: %v", err)
+	}
+	maxTTL := srv.config.DelegatedBiscuitTTL
+
+	for _, tc := range []struct {
+		name      string
+		expiresIn string
+		resource  string
+		// The Biscuit lapses more than longerThan and at most noLongerThan
+		// after the request.
+		longerThan   time.Duration
+		noLongerThan time.Duration
+	}{
+		{name: "60 shortens the lifetime", expiresIn: "60", noLongerThan: time.Minute},
+		{name: "largest value a time.Duration holds", expiresIn: "9223372036", longerThan: time.Minute, noLongerThan: maxTTL},
+		{name: "value that overflowed time.Duration", expiresIn: "9223372037", longerThan: time.Minute, noLongerThan: maxTTL},
+		{name: "value that overflowed time.Duration, with a task rule", expiresIn: "9223372037", resource: "mcp://weather", longerThan: time.Minute, noLongerThan: maxTTL},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			form := url.Values{
+				"grant_type":         {api.GrantTypeTokenExchange},
+				"subject_token":      {mintOIDC(map[string]interface{}{"sub": "alice-sub", "email": "alice@example.com", "email_verified": true})},
+				"subject_token_type": {api.TokenTypeIDToken},
+				"expires_in":         {tc.expiresIn},
+			}
+			if tc.resource != "" {
+				form.Set("resource", tc.resource)
+			}
+			before := time.Now()
+			resp, err := http.PostForm(baseURL+"/oauth/token", form)
+			if err != nil {
+				t.Fatalf("POST /oauth/token: %v", err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if err != nil {
+				t.Fatalf("read /oauth/token response: %v", err)
+			}
+			after := time.Now()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("POST /oauth/token with expires_in=%s returned %d, want 200: %s", tc.expiresIn, resp.StatusCode, body)
+			}
+			var out struct {
+				AccessToken string `json:"access_token"`
+			}
+			if err := json.Unmarshal(body, &out); err != nil {
+				t.Fatalf("parse /oauth/token response: %v", err)
+			}
+			raw, err := base64.StdEncoding.DecodeString(out.AccessToken)
+			if err != nil {
+				t.Fatalf("decode access_token: %v", err)
+			}
+
+			claims, err := identity.InspectVerifiedBiscuit(raw, keys, srv.config.BiscuitTimeout)
+			if err != nil {
+				t.Fatalf("InspectVerifiedBiscuit refused the Biscuit minted for expires_in=%s: %v", tc.expiresIn, err)
+			}
+			if !claims.Expiration.After(before.Add(tc.longerThan)) || claims.Expiration.After(after.Add(tc.noLongerThan)) {
+				t.Errorf("expires_in=%s: Biscuit lapses %s after the request, want more than %s and at most %s",
+					tc.expiresIn, claims.Expiration.Sub(before).Round(time.Second), tc.longerThan, tc.noLongerThan)
+			}
+			if tc.resource == "" {
+				return
+			}
+			if len(claims.TaskRules) != 1 {
+				t.Fatalf("Biscuit carries %d task rules, want 1", len(claims.TaskRules))
+			}
+			if exp := claims.TaskRules[0].GetExpireTime(); !exp.IsValid() || !exp.AsTime().After(after) {
+				t.Errorf("task rule expire_time = %v, want an instant after the request", exp.AsTime())
+			}
+		})
+	}
+}
+
 // Expired revocations leave the in-memory set as writes accumulate, not only
 // when /revocations is read, and the set stays bounded by its live entries.
 func TestRevokeBiscuitIDPrunesExpiredEntries(t *testing.T) {

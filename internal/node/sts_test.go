@@ -1027,6 +1027,58 @@ func TestCrossNodeBiscuitAndBannedPeerRejection(t *testing.T) {
 	}
 }
 
+// Datalog reads an expiration before 1970 as a far future date, so the Datalog
+// expiration check passes. The enforcement point must also check the
+// expiration in Go, or the Biscuit does not lapse (GHSA-qg99-6frq-2h5m).
+func TestVerifyBiscuitTokenRefusesExpirationBeforeEpoch(t *testing.T) {
+	h := newSTSNodeHarness(t)
+	reqCtx := RequestContext{PeerID: h.peerID, Protocol: string(api.MCPProtocolID), Target: "mcp://github", MCPTool: "get_pr", Local: true}
+
+	// A delegated Biscuit as the control plane mints it. The builder is used
+	// directly because the mint refuses an expiration before 1970.
+	build := func(t *testing.T, expiry time.Time) []byte {
+		t.Helper()
+		facts := []biscuit.Fact{
+			{Predicate: biscuit.Predicate{Name: api.FactExpiration, IDs: []biscuit.Term{biscuit.Date(expiry)}}},
+			{Predicate: biscuit.Predicate{Name: api.FactActorNode, IDs: []biscuit.Term{biscuit.String(h.peerID.String())}}},
+			{Predicate: biscuit.Predicate{Name: api.FactClientPeerID, IDs: []biscuit.Term{biscuit.String(h.peerID.String())}}},
+			{Predicate: biscuit.Predicate{Name: api.FactUser, IDs: []biscuit.Term{biscuit.String("alice")}}},
+		}
+		facts = append(facts, api.BuildServiceDatalogFacts([]string{"mcp://github"})...)
+		builder := biscuit.NewBuilder(h.cpPriv)
+		for _, f := range facts {
+			if err := builder.AddAuthorityFact(f); err != nil {
+				t.Fatalf("AddAuthorityFact(%s): %v", f, err)
+			}
+		}
+		token, err := builder.Build()
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		raw, err := token.Serialize()
+		if err != nil {
+			t.Fatalf("Serialize: %v", err)
+		}
+		return raw
+	}
+
+	for _, tc := range []struct {
+		name      string
+		expiry    time.Time
+		wantAdmit bool
+	}{
+		{name: "valid for five minutes", expiry: time.Now().Add(5 * time.Minute), wantAdmit: true},
+		{name: "before 1970", expiry: time.Date(1734, time.August, 16, 0, 0, 0, 0, time.UTC)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := h.node.VerifyBiscuitToken(build(t, tc.expiry), reqCtx)
+			if (err == nil) != tc.wantAdmit {
+				t.Errorf("VerifyBiscuitToken(expiration %s) error = %v, want admitted = %v", tc.expiry.UTC().Format(time.RFC3339), err, tc.wantAdmit)
+			}
+		})
+	}
+}
+
 func TestExtAuthzMCPBodyInspection(t *testing.T) {
 	h := newSTSNodeHarness(t)
 	tar := &api.TaskAuthorizationRule{

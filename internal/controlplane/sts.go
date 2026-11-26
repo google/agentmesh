@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -1704,6 +1705,11 @@ func (s *Server) handleOAuthAuthCodeGrant(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// maxExpiresInSeconds is the largest expires_in that converts to a
+// time.Duration without overflow. A larger value is reduced to this one. The
+// result does not change: expires_in can only shorten the lifetime.
+const maxExpiresInSeconds = int64(math.MaxInt64 / time.Second)
+
 func (s *Server) handleOAuthTokenExchangeGrant(w http.ResponseWriter, r *http.Request) {
 	subjectToken := strings.TrimSpace(r.Form.Get("subject_token"))
 	subjectTokenType := strings.TrimSpace(r.Form.Get("subject_token_type"))
@@ -1715,7 +1721,7 @@ func (s *Server) handleOAuthTokenExchangeGrant(w http.ResponseWriter, r *http.Re
 	var reqTTL int64
 	if ttlStr := strings.TrimSpace(r.Form.Get("expires_in")); ttlStr != "" {
 		if parsed, err := strconv.ParseInt(ttlStr, 10, 64); err == nil && parsed > 0 {
-			reqTTL = parsed
+			reqTTL = min(parsed, maxExpiresInSeconds)
 		}
 	}
 
