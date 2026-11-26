@@ -736,9 +736,8 @@ func TestExtAuthzHTTPAndGRPC(t *testing.T) {
 	narrowedB64 := base64.StdEncoding.EncodeToString(narrowed)
 
 	// 1. HTTP ext_authz allow: mcp://github + tool get_pr
-	reqAllow := httptest.NewRequest(http.MethodPost, "/ext_authz/mcp/github", nil)
+	reqAllow := httptest.NewRequest(http.MethodPost, "/ext_authz/mcp/github", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_pr"}}`))
 	reqAllow.Header.Set("Authorization", "Bearer "+narrowedB64)
-	reqAllow.Header.Set(HeaderMeshMCPTool, "get_pr")
 	recAllow := httptest.NewRecorder()
 	handleExtAuthzHTTP(h.node, recAllow, reqAllow)
 	if recAllow.Code != http.StatusOK {
@@ -752,9 +751,8 @@ func TestExtAuthzHTTPAndGRPC(t *testing.T) {
 	}
 
 	// 2. HTTP ext_authz deny: mcp://github + tool merge_pr
-	reqDeny := httptest.NewRequest(http.MethodPost, "/ext_authz/mcp/github", nil)
+	reqDeny := httptest.NewRequest(http.MethodPost, "/ext_authz/mcp/github", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"merge_pr"}}`))
 	reqDeny.Header.Set("Authorization", "Bearer "+narrowedB64)
-	reqDeny.Header.Set(HeaderMeshMCPTool, "merge_pr")
 	recDeny := httptest.NewRecorder()
 	handleExtAuthzHTTP(h.node, recDeny, reqDeny)
 	if recDeny.Code != http.StatusForbidden {
@@ -780,26 +778,37 @@ func TestExtAuthzHTTPAndGRPC(t *testing.T) {
 		t.Fatalf("expected HTTP ext_authz 403 Forbidden for malformed X-Mesh-Target-Service, got %d: %s", recBadTarget.Code, recBadTarget.Body.String())
 	}
 
-	// 3. gRPC ext_authz Check (/envoy.service.auth.v3.Authorization/Check)
-	grpcResp, err := newNodeEnvoyGateway(h.node).Check(context.Background(), &authv3.CheckRequest{
-		Attributes: &authv3.AttributeContext{
-			Request: &authv3.AttributeContext_Request{
-				Http: &authv3.AttributeContext_HttpRequest{
-					Method: "POST",
-					Path:   "/mcp/github",
-					Headers: map[string]string{
-						"authorization":                    "Bearer " + narrowedB64,
-						strings.ToLower(HeaderMeshMCPTool): "get_pr",
+	// 3. gRPC ext_authz Check (/envoy.service.auth.v3.Authorization/Check). The tool is in the body,
+	// so a check with no body for a POST cannot name it: a credential with allowed_tools is refused.
+	// A GET opens a stream and carries no call, so it is decided for the service alone.
+	for _, tc := range []struct {
+		name, method, body string
+		wantCode           codes.Code
+	}{
+		{name: "POST with the allowed tool in the body", method: "POST", body: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_pr"}}`, wantCode: codes.OK},
+		{name: "POST with no body", method: "POST", wantCode: codes.PermissionDenied},
+		{name: "GET with no body", method: "GET", wantCode: codes.OK},
+	} {
+		grpcResp, err := newNodeEnvoyGateway(h.node).Check(context.Background(), &authv3.CheckRequest{
+			Attributes: &authv3.AttributeContext{
+				Request: &authv3.AttributeContext_Request{
+					Http: &authv3.AttributeContext_HttpRequest{
+						Method: tc.method,
+						Path:   "/mcp/github",
+						Body:   tc.body,
+						Headers: map[string]string{
+							"authorization": "Bearer " + narrowedB64,
+						},
 					},
 				},
 			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("Check: %v", err)
-	}
-	if grpcResp.GetStatus().GetCode() != int32(codes.OK) || grpcResp.GetOkResponse() == nil {
-		t.Fatalf("expected gRPC CheckResponse status.code == OK, got %+v", grpcResp)
+		})
+		if err != nil {
+			t.Fatalf("%s: Check: %v", tc.name, err)
+		}
+		if got := codes.Code(grpcResp.GetStatus().GetCode()); got != tc.wantCode {
+			t.Fatalf("%s: gRPC CheckResponse status code %v, want %v", tc.name, got, tc.wantCode)
+		}
 	}
 }
 
@@ -930,7 +939,7 @@ func TestExtAuthzMCPBodyInspection(t *testing.T) {
 	}
 	b64Biscuit := base64.StdEncoding.EncodeToString(taskBiscuit)
 
-	// 1. HTTP ext_authz with tools/call for disallowed tool "merge_pr" in JSON-RPC body (without X-Mesh-Mcp-Tool header) -> 403.
+	// 1. HTTP ext_authz with tools/call for disallowed tool "merge_pr" in JSON-RPC body -> 403.
 	disallowedBody := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"merge_pr"}}`
 	httpReq := httptest.NewRequest(http.MethodPost, "/ext_authz/mesh/mcp/github", strings.NewReader(disallowedBody))
 	httpReq.Header.Set("Authorization", "Bearer "+b64Biscuit)
@@ -948,5 +957,16 @@ func TestExtAuthzMCPBodyInspection(t *testing.T) {
 	handleExtAuthzHTTP(h.node, httpRecOK, httpReqOK)
 	if httpRecOK.Code != http.StatusOK {
 		t.Fatalf("expected HTTP ext_authz to allow get_pr tool in body, got %d", httpRecOK.Code)
+	}
+
+	// 3. A client can set any request header. An X-Mesh-Mcp-Tool header that names the allowed tool
+	// does not replace the tool that the body calls ("merge_pr") -> 403.
+	httpReqHeader := httptest.NewRequest(http.MethodPost, "/ext_authz/mesh/mcp/github", strings.NewReader(disallowedBody))
+	httpReqHeader.Header.Set("Authorization", "Bearer "+b64Biscuit)
+	httpReqHeader.Header.Set("X-Mesh-Mcp-Tool", "get_pr")
+	httpRecHeader := httptest.NewRecorder()
+	handleExtAuthzHTTP(h.node, httpRecHeader, httpReqHeader)
+	if httpRecHeader.Code != http.StatusForbidden {
+		t.Fatalf("HTTP ext_authz with a body that calls merge_pr and a client header that names get_pr: got status %d, want 403", httpRecHeader.Code)
 	}
 }

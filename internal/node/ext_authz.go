@@ -29,10 +29,6 @@ import (
 )
 
 const (
-	// HeaderMeshMCPTool lets an external proxy (or ext_proc filter) pass the
-	// extracted MCP tool name during an ext_authz check.
-	HeaderMeshMCPTool = envoy.HeaderMeshMCPTool
-
 	// ExtProcMethodPath is the gRPC HTTP/2 path for Envoy ExternalProcessor.Process.
 	ExtProcMethodPath = envoy.ExtProcMethodPath
 )
@@ -129,7 +125,7 @@ func evaluateExtAuthz(ctx context.Context, node *AgentMeshNode, in extAuthzCheck
 		PeerID:             callerPeer,
 		Protocol:           "ext_authz",
 		Target:             target,
-		MCPTool:            in.Headers[strings.ToLower(HeaderMeshMCPTool)],
+		MCPTool:            in.MCPTool,
 		AllowMCPStreamInit: in.AllowMCPStreamInit,
 		HTTP:               &HTTPRequestFacts{Method: method, Path: reqPath},
 		Local:              isLocal,

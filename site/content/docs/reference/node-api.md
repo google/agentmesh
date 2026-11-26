@@ -153,6 +153,18 @@ Inbound mesh streams (`/libp2p-http`) and external router ingress
 (`mesh-remote` or `mesh-external-ingress`) headers after stripping inbound
 caller values.
 
+The node reads the tool of an MCP `tools/call` from the request body, and from
+nothing else. No request header names the tool, because a client can set a
+header; the node ignores an `X-Mesh-Mcp-Tool` header. To enforce
+`operation.allowed_tools` at the gateway, Envoy must send the body to the node:
+
+- `ext_proc` asks Envoy for the body of a `POST` to an MCP service with a mode
+  override. Set `allow_mode_override: true` on the filter.
+- `ext_authz` receives the body only when its filter sets `with_request_body`.
+  Without a body the node cannot see the tool, so it refuses a `POST` to an
+  MCP service from a credential that has `operation.allowed_tools`. A `GET`
+  or a `DELETE` carries no call and is decided for the service alone.
+
 ## MCP tools
 
 The `/mcp` endpoint speaks Streamable HTTP and takes `POST` only. The

@@ -87,7 +87,7 @@ func TestGatewayServer_ExtAuthzHTTPAndGRPC(t *testing.T) {
 				Message:    "missing or invalid token",
 			}
 		}
-		if in.Headers[strings.ToLower(HeaderMeshMCPTool)] == "merge_pr" {
+		if in.MCPTool == "merge_pr" {
 			return CheckResult{
 				Allowed:    false,
 				HTTPStatus: http.StatusForbidden,
@@ -254,7 +254,7 @@ func TestGatewayServer_ExtAuthzHTTPAndGRPC(t *testing.T) {
 
 func TestGatewayServer_ExtProcProcess(t *testing.T) {
 	gw := NewGatewayServer(func(_ context.Context, in CheckInput) CheckResult {
-		if in.Headers[strings.ToLower(HeaderMeshMCPTool)] == "merge_pr" {
+		if in.MCPTool == "merge_pr" {
 			return CheckResult{
 				Allowed:    false,
 				HTTPStatus: http.StatusForbidden,
@@ -383,6 +383,157 @@ func TestGatewayServer_ExtProcProcess(t *testing.T) {
 		t.Fatalf("Recv ResponseTrailers: %v", err)
 	}
 	_ = stream.CloseSend()
+}
+
+// The body names the tool of an MCP tools/call. A client can set any request
+// header, so a header that names another tool must not change the decision of
+// any of the three check services.
+func TestGatewayServer_BodyDecidesMCPTool(t *testing.T) {
+	// The evaluator stands for a task rule with allowed_tools: [get_pr].
+	gw := NewGatewayServer(func(_ context.Context, in CheckInput) CheckResult {
+		if in.MCPTool == "get_pr" || (in.MCPTool == "" && in.AllowMCPStreamInit) {
+			return CheckResult{Allowed: true, HTTPStatus: http.StatusOK}
+		}
+		return CheckResult{Allowed: false, HTTPStatus: http.StatusForbidden, Message: "tool " + in.MCPTool + " is not allowed"}
+	})
+	addr := startH2CGatewayTestServer(t, gw)
+	conn, err := grpc.NewClient("passthrough:///"+addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	procClient := extprocv3.NewExternalProcessorClient(conn)
+
+	const clientHeader = "x-mesh-mcp-tool"
+
+	// extProc sends one request through ext_proc. It reports whether the
+	// processor asked Envoy for the body and whether it refused the request.
+	extProc := func(t *testing.T, path, headerTool, body string) (buffered, denied bool) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		stream, err := procClient.Process(ctx)
+		if err != nil {
+			t.Fatalf("Process: %v", err)
+		}
+		hdrs := []*corev3.HeaderValue{{Key: ":method", Value: "POST"}, {Key: ":path", Value: path}}
+		if headerTool != "" {
+			hdrs = append(hdrs, &corev3.HeaderValue{Key: clientHeader, Value: headerTool})
+		}
+		if err := stream.Send(&extprocv3.ProcessingRequest{Request: &extprocv3.ProcessingRequest_RequestHeaders{
+			RequestHeaders: &extprocv3.HttpHeaders{Headers: &corev3.HeaderMap{Headers: hdrs}},
+		}}); err != nil {
+			t.Fatalf("Send RequestHeaders: %v", err)
+		}
+		r1, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv RequestHeaders: %v", err)
+		}
+		if r1.GetImmediateResponse() != nil {
+			return false, true
+		}
+		if r1.GetModeOverride().GetRequestBodyMode() != extprocv3http.ProcessingMode_BUFFERED {
+			// Envoy sends no body: the answer to the headers was the decision.
+			return false, false
+		}
+		if err := stream.Send(&extprocv3.ProcessingRequest{Request: &extprocv3.ProcessingRequest_RequestBody{
+			RequestBody: &extprocv3.HttpBody{Body: []byte(body), EndOfStream: true},
+		}}); err != nil {
+			t.Fatalf("Send RequestBody: %v", err)
+		}
+		r2, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv RequestBody: %v", err)
+		}
+		return true, r2.GetImmediateResponse() != nil
+	}
+
+	for _, tc := range []struct {
+		name       string
+		path       string
+		headerTool string
+		bodyTool   string
+		wantDenied bool
+	}{
+		{name: "allowed tool in the body", path: "/mesh/mcp/github", bodyTool: "get_pr"},
+		{name: "refused tool in the body", path: "/mesh/mcp/github", bodyTool: "merge_pr", wantDenied: true},
+		{name: "refused tool in the body, allowed tool in a header", path: "/mesh/mcp/github", headerTool: "get_pr", bodyTool: "merge_pr", wantDenied: true},
+		{name: "allowed tool in the body, refused tool in a header", path: "/mesh/mcp/github", headerTool: "merge_pr", bodyTool: "get_pr"},
+		{name: "service type in upper case, refused tool in the body, allowed tool in a header", path: "/mesh/MCP/github", headerTool: "get_pr", bodyTool: "merge_pr", wantDenied: true},
+		{name: "service type in upper case, allowed tool in the body", path: "/mesh/MCP/github", bodyTool: "get_pr"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + tc.bodyTool + `"}}`
+
+			httpReq := httptest.NewRequest(http.MethodPost, "/ext_authz"+tc.path, strings.NewReader(body))
+			if tc.headerTool != "" {
+				httpReq.Header.Set(clientHeader, tc.headerTool)
+			}
+			rec := httptest.NewRecorder()
+			gw.HandleExtAuthzHTTP(rec, httpReq)
+			if denied := rec.Code != http.StatusOK; denied != tc.wantDenied {
+				t.Errorf("HTTP ext_authz: status %d, denied = %v, want %v", rec.Code, denied, tc.wantDenied)
+			}
+
+			grpcHeaders := map[string]string{}
+			if tc.headerTool != "" {
+				grpcHeaders[clientHeader] = tc.headerTool
+			}
+			resp, err := gw.Check(context.Background(), &authv3.CheckRequest{Attributes: &authv3.AttributeContext{
+				Request: &authv3.AttributeContext_Request{Http: &authv3.AttributeContext_HttpRequest{
+					Method: http.MethodPost, Path: tc.path, Headers: grpcHeaders, Body: body,
+				}},
+			}})
+			if err != nil {
+				t.Fatalf("Check: %v", err)
+			}
+			if denied := resp.GetStatus().GetCode() != int32(codes.OK); denied != tc.wantDenied {
+				t.Errorf("gRPC ext_authz: status code %d, denied = %v, want %v", resp.GetStatus().GetCode(), denied, tc.wantDenied)
+			}
+
+			buffered, denied := extProc(t, tc.path, tc.headerTool, body)
+			if !buffered {
+				t.Errorf("ext_proc: the processor did not ask Envoy for the request body")
+			}
+			if denied != tc.wantDenied {
+				t.Errorf("ext_proc: denied = %v, want %v", denied, tc.wantDenied)
+			}
+		})
+	}
+}
+
+// The tool of an MCP tools/call is in the body. An ext_authz check for a POST
+// that carries no body names no tool and is not a handshake, so the evaluator
+// refuses it for a rule with allowed_tools. A GET or a DELETE carries no call.
+func TestGatewayServer_ExtAuthzWithoutBody(t *testing.T) {
+	var got CheckInput
+	gw := NewGatewayServer(func(_ context.Context, in CheckInput) CheckResult {
+		got = in
+		return CheckResult{Allowed: true, HTTPStatus: http.StatusOK}
+	})
+	for _, tc := range []struct {
+		method        string
+		wantHandshake bool
+	}{
+		{method: http.MethodPost, wantHandshake: false},
+		{method: http.MethodGet, wantHandshake: true},
+		{method: http.MethodDelete, wantHandshake: true},
+	} {
+		t.Run(tc.method, func(t *testing.T) {
+			gw.HandleExtAuthzHTTP(httptest.NewRecorder(), httptest.NewRequest(tc.method, "/ext_authz/mesh/mcp/github", nil))
+			if got.MCPTool != "" || got.AllowMCPStreamInit != tc.wantHandshake {
+				t.Errorf("HTTP ext_authz with no body: tool %q, handshake %v, want no tool and handshake %v", got.MCPTool, got.AllowMCPStreamInit, tc.wantHandshake)
+			}
+			if _, err := gw.Check(context.Background(), &authv3.CheckRequest{Attributes: &authv3.AttributeContext{
+				Request: &authv3.AttributeContext_Request{Http: &authv3.AttributeContext_HttpRequest{Method: tc.method, Path: "/mesh/mcp/github"}},
+			}}); err != nil {
+				t.Fatalf("Check: %v", err)
+			}
+			if got.MCPTool != "" || got.AllowMCPStreamInit != tc.wantHandshake {
+				t.Errorf("gRPC ext_authz with no body: tool %q, handshake %v, want no tool and handshake %v", got.MCPTool, got.AllowMCPStreamInit, tc.wantHandshake)
+			}
+		})
+	}
 }
 
 type referenceCalloutServer struct {
