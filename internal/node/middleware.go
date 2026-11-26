@@ -328,6 +328,10 @@ func (n *AgentMeshNode) authorizeWithRules(rawToken []byte, req RequestContext, 
 				return nil, fmt.Errorf("credential expiration required for max_task_ttl: %w", expErr)
 			}
 			effectiveExp := api.EffectiveTARExpiration(authExp, taskRules)
+			if effectiveExp.IsZero() {
+				logger.Infow("Audit Traceability", append(req.auditFields(), "decision", "deny", "reason", "effective credential expiration is zero")...)
+				return nil, fmt.Errorf("effective credential expiration is zero")
+			}
 			if remaining := time.Until(effectiveExp); remaining > n.nodeConfig.MaxTaskTTL {
 				reason := fmt.Sprintf("credential remaining lifetime %s exceeds max_task_ttl %s", remaining.Round(time.Second), n.nodeConfig.MaxTaskTTL)
 				logger.Infow("Audit Traceability", append(req.auditFields(), "decision", "deny", "reason", reason)...)

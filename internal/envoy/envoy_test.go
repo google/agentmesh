@@ -168,12 +168,15 @@ func TestGatewayServer_ExtAuthzHTTPAndGRPC(t *testing.T) {
 					Path:   "/mcp/github",
 					Host:   "localhost",
 					Headers: map[string]string{
-						"authorization":  "Bearer valid-token",
-						"x-mesh-labels":  "device_trust=high",
-						"x-mesh-origin":  "spoofed-local",
-						"x-mesh-task":    "forged-task",
-						"x-peer-id":      "forged-peer",
-						"x-mesh-task-id": "forged-id",
+						"authorization":          "Bearer valid-token",
+						"x-mesh-target-service":  "inference://laptop-llm",
+						"x-mesh-authentication":  "Bearer task-biscuit",
+						"x-mesh-required-labels": "region=eu",
+						"x-mesh-labels":          "device_trust=high",
+						"x-mesh-origin":          "spoofed-local",
+						"x-mesh-task":            "forged-task",
+						"x-peer-id":              "forged-peer",
+						"x-mesh-task-id":         "forged-id",
 					},
 					Body: `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"get_pr"}}`,
 				},
@@ -200,8 +203,8 @@ func TestGatewayServer_ExtAuthzHTTPAndGRPC(t *testing.T) {
 		}
 	}
 	for _, h := range removed {
-		if h == "x-mesh-task-id" {
-			t.Errorf("HeadersToRemove must not remove freshly stamped x-mesh-task-id: %v", removed)
+		if h == "x-mesh-task-id" || h == "x-mesh-target-service" || h == "x-mesh-authentication" || h == "x-mesh-required-labels" {
+			t.Errorf("HeadersToRemove must not remove %q: %v", h, removed)
 		}
 	}
 
@@ -289,6 +292,9 @@ func TestGatewayServer_ExtProcProcess(t *testing.T) {
 						{Key: ":method", Value: "POST"},
 						{Key: ":path", Value: "/mesh/mcp/github"},
 						{Key: "authorization", Value: "Bearer tok"},
+						{Key: "x-mesh-target-service", Value: "mcp://github"},
+						{Key: "x-mesh-authentication", Value: "Bearer task-biscuit"},
+						{Key: "x-mesh-required-labels", Value: "region=eu"},
 						{Key: "x-mesh-labels", Value: "device_trust=forged"},
 						{Key: "x-peer-id", Value: "forged-peer"},
 						{Key: "x-mesh-task-id", Value: "forged-task"},
@@ -338,8 +344,8 @@ func TestGatewayServer_ExtProcProcess(t *testing.T) {
 		}
 	}
 	for _, h := range extProcRemoved {
-		if h == "x-mesh-task-id" {
-			t.Errorf("ext_proc RemoveHeaders must not remove freshly stamped x-mesh-task-id: %v", extProcRemoved)
+		if h == "x-mesh-task-id" || h == "x-mesh-target-service" || h == "x-mesh-authentication" || h == "x-mesh-required-labels" {
+			t.Errorf("ext_proc RemoveHeaders must not remove %q: %v", h, extProcRemoved)
 		}
 	}
 

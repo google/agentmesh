@@ -481,9 +481,23 @@ func (s *GatewayServer) evaluateExtProcDecision(ctx context.Context, method, pat
 	}
 }
 
+// callerInputMeshHeaders lists legitimate caller-supplied X-Mesh-* headers that
+// Envoy filter chains (ext_authz -> ext_proc -> agentmesh-node sidecar) must
+// preserve for target resolution, authentication, and label-floor routing.
+// Every other inbound X-Mesh-* header (principal, roles, claims, labels,
+// actor-node, origin, task, task-id, ingress, etc.) and X-Peer-Id is stripped
+// unless freshly stamped by the PEP.
+func isCallerInputMeshHeader(lower string) bool {
+	return lower == strings.ToLower(api.HeaderMeshTargetService) ||
+		lower == strings.ToLower(api.HeaderMeshAuthentication) ||
+		lower == strings.ToLower(api.HeaderMeshRequiredLabels)
+}
+
 // spoofedMeshHeadersToRemove returns inbound X-Mesh-* and X-Peer-Id header
-// names that were NOT freshly stamped in responseHeaders so untrusted callers
-// cannot smuggle forged provenance or task headers past Envoy ext_authz/ext_proc.
+// names that were NOT freshly stamped in responseHeaders (excluding caller
+// input routing/auth headers needed by downstream Envoy filters and the
+// sidecar) so untrusted callers cannot smuggle forged provenance or task
+// headers past Envoy ext_authz/ext_proc.
 func spoofedMeshHeadersToRemove(inbound, responseHeaders map[string]string) []string {
 	if len(inbound) == 0 {
 		return nil
@@ -496,6 +510,9 @@ func spoofedMeshHeadersToRemove(inbound, responseHeaders map[string]string) []st
 	var remove []string
 	for k := range inbound {
 		lower := strings.ToLower(k)
+		if isCallerInputMeshHeader(lower) {
+			continue
+		}
 		if (strings.HasPrefix(lower, "x-mesh-") || lower == peerHeaderLower) && !stamped[lower] {
 			remove = append(remove, lower)
 		}
