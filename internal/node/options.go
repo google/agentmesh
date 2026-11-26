@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/google/agentmesh/api"
+	"github.com/google/agentmesh/internal/containment"
 	"github.com/google/agentmesh/internal/identity"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/multiformats/go-multiaddr"
@@ -184,6 +185,10 @@ type Options struct {
 	// OnStreamRefused, when non-nil, is invoked whenever the libp2p auth gate
 	// refuses an unauthenticated or non-router stream.
 	OnStreamRefused func(scope, protocol string)
+	// Containment configures outbound containment webhook dispatching.
+	Containment containment.Config
+	// ContainmentDispatcher allows injecting a pre-built Dispatcher (e.g. for testing).
+	ContainmentDispatcher containment.Dispatcher
 }
 
 // Default applies default values to Options if they are not specified.

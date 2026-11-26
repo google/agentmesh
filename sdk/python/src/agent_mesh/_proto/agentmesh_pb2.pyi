@@ -6,23 +6,54 @@ from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
 from typing import ClassVar as _ClassVar, Iterable as _Iterable, Mapping as _Mapping, Optional as _Optional, Union as _Union
 
+AUTH_DEADLINE_EXCEEDED: TransportRefusalReason
+AUTONOMOUS_RECOVERY_DISABLED: EnrollmentRejectionReason
+BOOTSTRAP_TOKEN_USAGE_EXCEEDED: EnrollmentRejectionReason
+CONTROL_PLANE_ADMIN: RevocationSource
+DATALOG_EVALUATION_DENIED: PolicyDenialReason
 DESCRIPTOR: _descriptor.FileDescriptor
 EGRESS_MODE_HTTP: EgressMode
 EGRESS_MODE_TCP: EgressMode
+ENROLLMENT_REJECTION_REASON_UNSPECIFIED: EnrollmentRejectionReason
 ENROLLMENT_STATUS_APPROVED: EnrollmentStatus
 ENROLLMENT_STATUS_PENDING: EnrollmentStatus
 ENROLLMENT_STATUS_REJECTED: EnrollmentStatus
 ENROLLMENT_STATUS_UNSPECIFIED: EnrollmentStatus
+EXPIRED_BOOTSTRAP_TOKEN: EnrollmentRejectionReason
+EXPIRED_CREDENTIAL: PolicyDenialReason
 INGRESS_AUTH_MODE_EDGE: IngressAuthMode
 INGRESS_AUTH_MODE_PASSTHROUGH: IngressAuthMode
 INGRESS_AUTH_MODE_UNSPECIFIED: IngressAuthMode
+INSPECTION_FILTER_BLOCKED: PolicyDenialReason
+INVALID_CHALLENGE_SIGNATURE: EnrollmentRejectionReason
+INVALID_JWT: EnrollmentRejectionReason
+LOCAL_CONTROL_PLANE_SYNC: RevocationSource
+LOCAL_WORKLOAD: SignalCallerDirection
+MESH_EVENT_BANNED_GOSSIP: RevocationSource
+NOT_ROUTER_ROLE: TransportRefusalReason
+PEER_BANNED: TransportRefusalReason
+PEER_PREVIOUSLY_BANNED: EnrollmentRejectionReason
+PEER_UNAUTHENTICATED: TransportRefusalReason
+POLICY_DENIAL_REASON_UNSPECIFIED: PolicyDenialReason
+PROTOCOL_UNAUTHORIZED: TransportRefusalReason
+REMOTE_PEER: SignalCallerDirection
+REQUESTED_ROLE_UNAUTHORIZED: EnrollmentRejectionReason
 RESPONSE_INSPECTION_BUFFERED: ResponseInspection
 RESPONSE_INSPECTION_REQUEST_ONLY: ResponseInspection
+REVOCATION_SOURCE_UNSPECIFIED: RevocationSource
+ROLE_MISMATCH: PolicyDenialReason
 SERVICE_TYPE_A2A: ServiceType
 SERVICE_TYPE_EGRESS: ServiceType
 SERVICE_TYPE_INFERENCE: ServiceType
 SERVICE_TYPE_MCP: ServiceType
 SERVICE_TYPE_UNSPECIFIED: ServiceType
+SIGNAL_CALLER_DIRECTION_UNSPECIFIED: SignalCallerDirection
+TASK_AUTHORIZATION_RULE_VIOLATION: PolicyDenialReason
+TOKEN_REFRESH_REJECTION: RevocationSource
+TRANSPORT_REFUSAL_REASON_UNSPECIFIED: TransportRefusalReason
+UNATTESTED_LABELS_REJECTED: EnrollmentRejectionReason
+UNAUTHORIZED_PATH_OR_METHOD: PolicyDenialReason
+UNAUTHORIZED_SERVICE: PolicyDenialReason
 
 class AWSAssumeRole(_message.Message):
     __slots__ = ["role_arn", "session_policy"]
@@ -413,6 +444,35 @@ class EnrolledNode(_message.Message):
     role: str
     def __init__(self, peer_id: _Optional[str] = ..., role: _Optional[str] = ..., enrollment_type: _Optional[str] = ..., claims_json: _Optional[str] = ..., owner_id: _Optional[str] = ..., labels: _Optional[_Mapping[str, str]] = ..., enroll_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., expire_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., banned: bool = ..., autonomous_recovery: bool = ..., ephemeral: bool = ...) -> None: ...
 
+class EnrollmentRejectedSignal(_message.Message):
+    __slots__ = ["bootstrap_token_id", "detail", "event_time", "is_autonomous_recovery", "peer_id", "reason", "remote_address", "requested_role", "submitted_labels"]
+    class SubmittedLabelsEntry(_message.Message):
+        __slots__ = ["key", "value"]
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: str
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
+    BOOTSTRAP_TOKEN_ID_FIELD_NUMBER: _ClassVar[int]
+    DETAIL_FIELD_NUMBER: _ClassVar[int]
+    EVENT_TIME_FIELD_NUMBER: _ClassVar[int]
+    IS_AUTONOMOUS_RECOVERY_FIELD_NUMBER: _ClassVar[int]
+    PEER_ID_FIELD_NUMBER: _ClassVar[int]
+    REASON_FIELD_NUMBER: _ClassVar[int]
+    REMOTE_ADDRESS_FIELD_NUMBER: _ClassVar[int]
+    REQUESTED_ROLE_FIELD_NUMBER: _ClassVar[int]
+    SUBMITTED_LABELS_FIELD_NUMBER: _ClassVar[int]
+    bootstrap_token_id: str
+    detail: str
+    event_time: _timestamp_pb2.Timestamp
+    is_autonomous_recovery: bool
+    peer_id: str
+    reason: EnrollmentRejectionReason
+    remote_address: str
+    requested_role: str
+    submitted_labels: _containers.ScalarMap[str, str]
+    def __init__(self, peer_id: _Optional[str] = ..., requested_role: _Optional[str] = ..., reason: _Optional[_Union[EnrollmentRejectionReason, str]] = ..., detail: _Optional[str] = ..., bootstrap_token_id: _Optional[str] = ..., remote_address: _Optional[str] = ..., submitted_labels: _Optional[_Mapping[str, str]] = ..., is_autonomous_recovery: bool = ..., event_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+
 class EnrollmentRequest(_message.Message):
     __slots__ = ["create_time", "id", "labels", "peer_id", "resolve_time", "resolved_by", "status", "token_id"]
     class LabelsEntry(_message.Message):
@@ -519,6 +579,22 @@ class IdentityEvidenceResponse(_message.Message):
     peer_id: str
     trusted_control_plane_keys: _containers.RepeatedScalarFieldContainer[bytes]
     def __init__(self, peer_id: _Optional[str] = ..., biscuit: _Optional[bytes] = ..., biscuit_expire_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., control_plane_url: _Optional[str] = ..., trusted_control_plane_keys: _Optional[_Iterable[bytes]] = ..., check_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+
+class IdentityRevokedSignal(_message.Message):
+    __slots__ = ["event_time", "issuer_peer_id", "peer_id", "reason", "revocation_ids", "source"]
+    EVENT_TIME_FIELD_NUMBER: _ClassVar[int]
+    ISSUER_PEER_ID_FIELD_NUMBER: _ClassVar[int]
+    PEER_ID_FIELD_NUMBER: _ClassVar[int]
+    REASON_FIELD_NUMBER: _ClassVar[int]
+    REVOCATION_IDS_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_FIELD_NUMBER: _ClassVar[int]
+    event_time: _timestamp_pb2.Timestamp
+    issuer_peer_id: str
+    peer_id: str
+    reason: str
+    revocation_ids: _containers.RepeatedScalarFieldContainer[str]
+    source: RevocationSource
+    def __init__(self, peer_id: _Optional[str] = ..., source: _Optional[_Union[RevocationSource, str]] = ..., reason: _Optional[str] = ..., revocation_ids: _Optional[_Iterable[str]] = ..., issuer_peer_id: _Optional[str] = ..., event_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
 
 class IngressGrant(_message.Message):
     __slots__ = ["allowed_auth_modes", "services"]
@@ -726,6 +802,39 @@ class PolicyConfigUpdateResponse(_message.Message):
     success: bool
     def __init__(self, success: bool = ..., error: _Optional[str] = ...) -> None: ...
 
+class PolicyDeniedSignal(_message.Message):
+    __slots__ = ["caller_labels", "caller_peer_id", "caller_roles", "caller_subject", "detail", "direction", "event_time", "reason", "requested_operation", "requested_resource", "target_service"]
+    class CallerLabelsEntry(_message.Message):
+        __slots__ = ["key", "value"]
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: str
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
+    CALLER_LABELS_FIELD_NUMBER: _ClassVar[int]
+    CALLER_PEER_ID_FIELD_NUMBER: _ClassVar[int]
+    CALLER_ROLES_FIELD_NUMBER: _ClassVar[int]
+    CALLER_SUBJECT_FIELD_NUMBER: _ClassVar[int]
+    DETAIL_FIELD_NUMBER: _ClassVar[int]
+    DIRECTION_FIELD_NUMBER: _ClassVar[int]
+    EVENT_TIME_FIELD_NUMBER: _ClassVar[int]
+    REASON_FIELD_NUMBER: _ClassVar[int]
+    REQUESTED_OPERATION_FIELD_NUMBER: _ClassVar[int]
+    REQUESTED_RESOURCE_FIELD_NUMBER: _ClassVar[int]
+    TARGET_SERVICE_FIELD_NUMBER: _ClassVar[int]
+    caller_labels: _containers.ScalarMap[str, str]
+    caller_peer_id: str
+    caller_roles: _containers.RepeatedScalarFieldContainer[str]
+    caller_subject: str
+    detail: str
+    direction: SignalCallerDirection
+    event_time: _timestamp_pb2.Timestamp
+    reason: PolicyDenialReason
+    requested_operation: str
+    requested_resource: str
+    target_service: str
+    def __init__(self, direction: _Optional[_Union[SignalCallerDirection, str]] = ..., reason: _Optional[_Union[PolicyDenialReason, str]] = ..., detail: _Optional[str] = ..., target_service: _Optional[str] = ..., requested_operation: _Optional[str] = ..., requested_resource: _Optional[str] = ..., caller_peer_id: _Optional[str] = ..., caller_subject: _Optional[str] = ..., caller_roles: _Optional[_Iterable[str]] = ..., caller_labels: _Optional[_Mapping[str, str]] = ..., event_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+
 class PolicyRole(_message.Message):
     __slots__ = ["allowed_ingress", "allowed_labels", "allowed_publish", "allowed_services", "allowed_targets", "custom_datalog", "http", "name"]
     ALLOWED_INGRESS_FIELD_NUMBER: _ClassVar[int]
@@ -882,6 +991,44 @@ class STSTokenResponse(_message.Message):
     task_name: str
     def __init__(self, jwt: _Optional[str] = ..., expire_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., subject: _Optional[str] = ..., roles: _Optional[_Iterable[str]] = ..., task_name: _Optional[str] = ...) -> None: ...
 
+class SecuritySignalEvent(_message.Message):
+    __slots__ = ["data_content_type", "enrollment_rejected", "event_time", "id", "identity_revoked", "policy_denied", "source", "spec_version", "subject", "transport_refused", "type"]
+    DATA_CONTENT_TYPE_FIELD_NUMBER: _ClassVar[int]
+    ENROLLMENT_REJECTED_FIELD_NUMBER: _ClassVar[int]
+    EVENT_TIME_FIELD_NUMBER: _ClassVar[int]
+    IDENTITY_REVOKED_FIELD_NUMBER: _ClassVar[int]
+    ID_FIELD_NUMBER: _ClassVar[int]
+    POLICY_DENIED_FIELD_NUMBER: _ClassVar[int]
+    SOURCE_FIELD_NUMBER: _ClassVar[int]
+    SPEC_VERSION_FIELD_NUMBER: _ClassVar[int]
+    SUBJECT_FIELD_NUMBER: _ClassVar[int]
+    TRANSPORT_REFUSED_FIELD_NUMBER: _ClassVar[int]
+    TYPE_FIELD_NUMBER: _ClassVar[int]
+    data_content_type: str
+    enrollment_rejected: EnrollmentRejectedSignal
+    event_time: _timestamp_pb2.Timestamp
+    id: str
+    identity_revoked: IdentityRevokedSignal
+    policy_denied: PolicyDeniedSignal
+    source: str
+    spec_version: str
+    subject: str
+    transport_refused: TransportRefusedSignal
+    type: str
+    def __init__(self, id: _Optional[str] = ..., source: _Optional[str] = ..., spec_version: _Optional[str] = ..., type: _Optional[str] = ..., event_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., data_content_type: _Optional[str] = ..., subject: _Optional[str] = ..., policy_denied: _Optional[_Union[PolicyDeniedSignal, _Mapping]] = ..., transport_refused: _Optional[_Union[TransportRefusedSignal, _Mapping]] = ..., identity_revoked: _Optional[_Union[IdentityRevokedSignal, _Mapping]] = ..., enrollment_rejected: _Optional[_Union[EnrollmentRejectedSignal, _Mapping]] = ...) -> None: ...
+
+class SecuritySignalsConfig(_message.Message):
+    __slots__ = ["coalescing_window", "enabled", "endpoints", "queue_capacity"]
+    COALESCING_WINDOW_FIELD_NUMBER: _ClassVar[int]
+    ENABLED_FIELD_NUMBER: _ClassVar[int]
+    ENDPOINTS_FIELD_NUMBER: _ClassVar[int]
+    QUEUE_CAPACITY_FIELD_NUMBER: _ClassVar[int]
+    coalescing_window: _duration_pb2.Duration
+    enabled: bool
+    endpoints: _containers.RepeatedCompositeFieldContainer[WebhookEndpointConfig]
+    queue_capacity: int
+    def __init__(self, enabled: bool = ..., endpoints: _Optional[_Iterable[_Union[WebhookEndpointConfig, _Mapping]]] = ..., queue_capacity: _Optional[int] = ..., coalescing_window: _Optional[_Union[_duration_pb2.Duration, _Mapping]] = ...) -> None: ...
+
 class ServiceInfo(_message.Message):
     __slots__ = ["description", "ingress", "name", "type"]
     DESCRIPTION_FIELD_NUMBER: _ClassVar[int]
@@ -1000,6 +1147,26 @@ class TokenRevokeResponse(_message.Message):
     success: bool
     def __init__(self, success: bool = ..., error: _Optional[str] = ...) -> None: ...
 
+class TransportRefusedSignal(_message.Message):
+    __slots__ = ["coalesced_count", "detail", "event_time", "first_seen_time", "peer_id", "protocol_id", "reason", "remote_multiaddr"]
+    COALESCED_COUNT_FIELD_NUMBER: _ClassVar[int]
+    DETAIL_FIELD_NUMBER: _ClassVar[int]
+    EVENT_TIME_FIELD_NUMBER: _ClassVar[int]
+    FIRST_SEEN_TIME_FIELD_NUMBER: _ClassVar[int]
+    PEER_ID_FIELD_NUMBER: _ClassVar[int]
+    PROTOCOL_ID_FIELD_NUMBER: _ClassVar[int]
+    REASON_FIELD_NUMBER: _ClassVar[int]
+    REMOTE_MULTIADDR_FIELD_NUMBER: _ClassVar[int]
+    coalesced_count: int
+    detail: str
+    event_time: _timestamp_pb2.Timestamp
+    first_seen_time: _timestamp_pb2.Timestamp
+    peer_id: str
+    protocol_id: str
+    reason: TransportRefusalReason
+    remote_multiaddr: str
+    def __init__(self, reason: _Optional[_Union[TransportRefusalReason, str]] = ..., detail: _Optional[str] = ..., peer_id: _Optional[str] = ..., remote_multiaddr: _Optional[str] = ..., protocol_id: _Optional[str] = ..., coalesced_count: _Optional[int] = ..., first_seen_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., event_time: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...) -> None: ...
+
 class TrustedSigningKey(_message.Message):
     __slots__ = ["public_key", "receive_time"]
     PUBLIC_KEY_FIELD_NUMBER: _ClassVar[int]
@@ -1036,6 +1203,26 @@ class UserStatusResponse(_message.Message):
     user: User
     def __init__(self, user: _Optional[_Union[User, _Mapping]] = ..., enrolled_nodes: _Optional[_Iterable[_Union[EnrolledNode, _Mapping]]] = ..., bootstrap_tokens: _Optional[_Iterable[_Union[BootstrapToken, _Mapping]]] = ..., active_routers: _Optional[_Iterable[_Union[RouterLease, _Mapping]]] = ..., policy: _Optional[_Union[PolicyConfig, _Mapping]] = ...) -> None: ...
 
+class WebhookEndpointConfig(_message.Message):
+    __slots__ = ["ca_cert_path", "client_cert_path", "client_key_path", "event_types", "hmac_secret_path", "max_retries", "timeout", "url"]
+    CA_CERT_PATH_FIELD_NUMBER: _ClassVar[int]
+    CLIENT_CERT_PATH_FIELD_NUMBER: _ClassVar[int]
+    CLIENT_KEY_PATH_FIELD_NUMBER: _ClassVar[int]
+    EVENT_TYPES_FIELD_NUMBER: _ClassVar[int]
+    HMAC_SECRET_PATH_FIELD_NUMBER: _ClassVar[int]
+    MAX_RETRIES_FIELD_NUMBER: _ClassVar[int]
+    TIMEOUT_FIELD_NUMBER: _ClassVar[int]
+    URL_FIELD_NUMBER: _ClassVar[int]
+    ca_cert_path: str
+    client_cert_path: str
+    client_key_path: str
+    event_types: _containers.RepeatedScalarFieldContainer[str]
+    hmac_secret_path: str
+    max_retries: int
+    timeout: _duration_pb2.Duration
+    url: str
+    def __init__(self, url: _Optional[str] = ..., hmac_secret_path: _Optional[str] = ..., ca_cert_path: _Optional[str] = ..., client_cert_path: _Optional[str] = ..., client_key_path: _Optional[str] = ..., timeout: _Optional[_Union[_duration_pb2.Duration, _Mapping]] = ..., max_retries: _Optional[int] = ..., event_types: _Optional[_Iterable[str]] = ...) -> None: ...
+
 class EnrollmentStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = []
 
@@ -1049,4 +1236,19 @@ class EgressMode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = []
 
 class ResponseInspection(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = []
+
+class SignalCallerDirection(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = []
+
+class PolicyDenialReason(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = []
+
+class TransportRefusalReason(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = []
+
+class RevocationSource(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = []
+
+class EnrollmentRejectionReason(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = []
