@@ -16,6 +16,7 @@ package node
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -295,9 +296,14 @@ func (b *StdioBridge) writeReply(w http.ResponseWriter, id, result json.RawMessa
 	_, _ = w.Write(encoded)
 }
 
-// writeBackend hands one line to the backend, answering the caller itself
-// when it cannot. It reports whether the line was written.
-func (b *StdioBridge) writeBackend(w http.ResponseWriter, line []byte) bool {
+// writeBackend hands one message to the backend as one line, answering the
+// caller itself when it cannot. It reports whether the line was written.
+//
+// A stdio MCP server reads one message per line, and JSON allows a line
+// break between two tokens. Written as it came, a message with such a line
+// break is several messages to the backend, and no enforcement point read
+// those. Compact removes every line break that valid JSON can hold.
+func (b *StdioBridge) writeBackend(w http.ResponseWriter, msg []byte) bool {
 	b.mu.Lock()
 	isClosed := b.closed
 	b.mu.Unlock()
@@ -305,11 +311,18 @@ func (b *StdioBridge) writeBackend(w http.ResponseWriter, line []byte) bool {
 		http.Error(w, "Backend process is no longer running", http.StatusServiceUnavailable)
 		return false
 	}
+	var line bytes.Buffer
+	if err := json.Compact(&line, msg); err != nil {
+		logger.Warnf("[StdioBridge] refused a message that is not valid JSON: %v", err)
+		http.Error(w, "Body must be a JSON-RPC message", http.StatusBadRequest)
+		return false
+	}
+	line.WriteByte('\n')
 	// If the backend closes between the check and the write, the write
 	// fails or lands in a dead pipe; either way the reader's shutdown has
 	// closed call.reply and roundTrip's select answers 503.
 	b.writeMu.Lock()
-	_, err := b.stdin.Write(append(line, '\n'))
+	_, err := b.stdin.Write(line.Bytes())
 	b.writeMu.Unlock()
 	if err != nil {
 		http.Error(w, "Failed to write to process stdin", http.StatusInternalServerError)
