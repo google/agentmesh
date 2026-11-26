@@ -612,9 +612,15 @@ func TestCallMCPTool_LabelEnforcement(t *testing.T) {
 		t.Fatalf("CallMCPTool with satisfied label requirement should succeed: %v", err)
 	}
 
-	// A required label that nodeB's attestation does not satisfy: fail closed.
-	if _, err := nodeA.CallMCPTool(ctx, nodeB.Host.ID(), "mcp://code-reviewer/review_pr", map[string]any{}, map[string]string{"region": "na-us"}); err == nil {
-		t.Fatal("CallMCPTool with a non-matching label requirement must fail")
+	// A required label that nodeB's attestation does not satisfy: fail closed,
+	// once. The refusal is a verdict on nodeB's credential, and a retry
+	// presents the same credential again.
+	_, err = nodeA.CallMCPTool(ctx, nodeB.Host.ID(), "mcp://code-reviewer/review_pr", map[string]any{}, map[string]string{"region": "na-us"})
+	if !errors.Is(err, ErrLabelsNotSatisfied) {
+		t.Fatalf("CallMCPTool with a non-matching label requirement = %v, want ErrLabelsNotSatisfied", err)
+	}
+	if strings.Contains(err.Error(), "retries") {
+		t.Fatalf("CallMCPTool with a non-matching label requirement = %v, want one refusal with no retry", err)
 	}
 }
 
@@ -882,8 +888,12 @@ func TestCallMCPTool_EgressFloorEnforcement(t *testing.T) {
 
 	// Floor nodeB does not attest; the caller staying silent must not waive it.
 	nodeA.nodeConfig = &NodeConfigComplete{EgressRequireLabels: map[string]string{"jurisdiction": "eu"}}
-	if _, err := nodeA.CallMCPTool(ctx, nodeB.Host.ID(), "mcp://code-reviewer/review_pr", map[string]any{}, nil); err == nil {
-		t.Fatal("CallMCPTool outside the floor with no caller requirement must fail")
+	_, err = nodeA.CallMCPTool(ctx, nodeB.Host.ID(), "mcp://code-reviewer/review_pr", map[string]any{}, nil)
+	if !errors.Is(err, ErrLabelsNotSatisfied) {
+		t.Fatalf("CallMCPTool outside the floor with no caller requirement = %v, want ErrLabelsNotSatisfied", err)
+	}
+	if strings.Contains(err.Error(), "retries") {
+		t.Fatalf("CallMCPTool outside the floor = %v, want one refusal with no retry", err)
 	}
 }
 

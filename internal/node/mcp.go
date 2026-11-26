@@ -254,8 +254,9 @@ func (n *AgentMeshNode) connectMCPSessionWithRetry(ctx context.Context, targetPe
 		// A denial is an answer, not a failure to reach anyone. Retrying it
 		// just delays the same reply and knocks on the remote peer three times
 		// for one call. That holds for the remote peer refusing the caller
-		// and for the caller refusing a provider not granted the service.
-		if errors.Is(err, ErrAuthRejected) || errors.Is(err, ErrProviderNotGranted) {
+		// and for the caller refusing a provider not granted the service or
+		// not attesting the labels the call requires.
+		if errors.Is(err, ErrAuthRejected) || errors.Is(err, ErrProviderNotGranted) || errors.Is(err, ErrLabelsNotSatisfied) {
 			logger.Warnf("[MCP] Connecting to %s denied, not retrying: %v", targetPeer, err)
 			return nil, nil, err
 		}
