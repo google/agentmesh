@@ -37,10 +37,6 @@ import (
 )
 
 const (
-	// HeaderMeshMCPTool lets an external proxy (or ext_proc filter) pass the
-	// extracted MCP tool name during an ext_authz check.
-	HeaderMeshMCPTool = "X-Mesh-Mcp-Tool"
-
 	// ExtProcMethodPath is the gRPC HTTP/2 path for Envoy ExternalProcessor.Process.
 	ExtProcMethodPath = "/envoy.service.ext_proc.v3.ExternalProcessor/Process"
 	// ExtAuthzV3MethodPath is the gRPC HTTP/2 path for Envoy v3 Authorization.Check.
@@ -57,11 +53,16 @@ const (
 // CheckInput represents a normalized authorization check request from Envoy
 // HTTP ext_authz, gRPC ext_authz, or gRPC ext_proc.
 type CheckInput struct {
-	Method             string
-	Path               string
-	Host               string
-	Headers            map[string]string
-	Body               []byte
+	Method  string
+	Path    string
+	Host    string
+	Headers map[string]string
+	Body    []byte
+	// MCPTool is the tool of an MCP tools/call, and AllowMCPStreamInit says
+	// that the request is an MCP handshake. The server reads both from the
+	// request body that Envoy sent, and from nothing else: a client can set
+	// any request header, so no header names the tool.
+	MCPTool            string
 	AllowMCPStreamInit bool
 }
 
@@ -163,14 +164,7 @@ func (s *GatewayServer) HandleExtAuthzHTTP(w http.ResponseWriter, r *http.Reques
 		}
 		bodyBytes = b
 	}
-	allowInit := headers[strings.ToLower(HeaderMeshMCPTool)] == ""
-	if len(bodyBytes) > 0 && headers[strings.ToLower(HeaderMeshMCPTool)] == "" {
-		tool, isInit := InspectJSONRPCMCPBody(bodyBytes)
-		if tool != "" {
-			headers[strings.ToLower(HeaderMeshMCPTool)] = tool
-		}
-		allowInit = isInit
-	}
+	mcpTool, allowInit := mcpCallOfBody(method, bodyBytes)
 
 	res := s.eval(r.Context(), CheckInput{
 		Method:             method,
@@ -178,6 +172,7 @@ func (s *GatewayServer) HandleExtAuthzHTTP(w http.ResponseWriter, r *http.Reques
 		Host:               r.Host,
 		Headers:            headers,
 		Body:               bodyBytes,
+		MCPTool:            mcpTool,
 		AllowMCPStreamInit: allowInit,
 	})
 	if !res.Allowed {
@@ -207,15 +202,7 @@ func (s *GatewayServer) Check(ctx context.Context, req *authv3.CheckRequest) (*a
 	} else if httpReq.GetBody() != "" {
 		body = []byte(httpReq.GetBody())
 	}
-
-	allowInit := headers[strings.ToLower(HeaderMeshMCPTool)] == ""
-	if len(body) > 0 && headers[strings.ToLower(HeaderMeshMCPTool)] == "" {
-		tool, isInit := InspectJSONRPCMCPBody(body)
-		if tool != "" {
-			headers[strings.ToLower(HeaderMeshMCPTool)] = tool
-		}
-		allowInit = isInit
-	}
+	mcpTool, allowInit := mcpCallOfBody(httpReq.GetMethod(), body)
 
 	res := s.eval(ctx, CheckInput{
 		Method:             httpReq.GetMethod(),
@@ -223,6 +210,7 @@ func (s *GatewayServer) Check(ctx context.Context, req *authv3.CheckRequest) (*a
 		Host:               httpReq.GetHost(),
 		Headers:            headers,
 		Body:               body,
+		MCPTool:            mcpTool,
 		AllowMCPStreamInit: allowInit,
 	})
 	if res.Allowed {
@@ -304,15 +292,14 @@ func (s *GatewayServer) Process(stream extprocv3.ExternalProcessor_ProcessServer
 				capturedHost = capturedHeaders["host"]
 			}
 
-			targetHdr := strings.ToLower(capturedHeaders[strings.ToLower(api.HeaderMeshTargetService)])
-			isMCPRoute := strings.HasPrefix(capturedPath, "/mcp") ||
-				strings.Contains(capturedPath, "/mcp/") ||
-				strings.HasPrefix(targetHdr, api.ServiceTypeStringMCP+"://")
+			// The tool of an MCP tools/call is in the body, so ext_proc asks
+			// Envoy for the body of a POST to an MCP service and decides when
+			// it arrives. Every other request is decided now, with no tool and
+			// no handshake allowance: a task rule with allowed_tools denies it.
 			if !phase.RequestHeaders.GetEndOfStream() &&
 				strings.EqualFold(capturedMethod, http.MethodPost) &&
-				capturedHeaders[strings.ToLower(HeaderMeshMCPTool)] == "" &&
-				isMCPRoute {
-				preResp := s.evaluateExtProcDecision(stream.Context(), capturedMethod, capturedPath, capturedHost, capturedHeaders, false, true)
+				isMCPRoute(capturedPath, capturedHeaders[strings.ToLower(api.HeaderMeshTargetService)]) {
+				preResp := s.evaluateExtProcDecision(stream.Context(), capturedMethod, capturedPath, capturedHost, capturedHeaders, "", false, true)
 				if preResp.GetImmediateResponse() != nil {
 					resp = preResp
 				} else {
@@ -331,21 +318,14 @@ func (s *GatewayServer) Process(stream extprocv3.ExternalProcessor_ProcessServer
 					}
 				}
 			} else {
-				resp = s.evaluateExtProcDecision(stream.Context(), capturedMethod, capturedPath, capturedHost, capturedHeaders, false, false)
+				resp = s.evaluateExtProcDecision(stream.Context(), capturedMethod, capturedPath, capturedHost, capturedHeaders, "", false, false)
 			}
 
 		case *extprocv3.ProcessingRequest_RequestBody:
-			var allowStreamInit bool
-			if len(phase.RequestBody.GetBody()) > 0 && capturedHeaders != nil {
-				tool, allowInit := InspectJSONRPCMCPBody(phase.RequestBody.GetBody())
-				if tool != "" {
-					capturedHeaders[strings.ToLower(HeaderMeshMCPTool)] = tool
-				}
-				allowStreamInit = allowInit
-			}
 			if pendingCheck {
 				pendingCheck = false
-				resp = s.evaluateExtProcDecision(stream.Context(), capturedMethod, capturedPath, capturedHost, capturedHeaders, true, allowStreamInit)
+				mcpTool, allowStreamInit := InspectJSONRPCMCPBody(phase.RequestBody.GetBody())
+				resp = s.evaluateExtProcDecision(stream.Context(), capturedMethod, capturedPath, capturedHost, capturedHeaders, mcpTool, true, allowStreamInit)
 			} else {
 				resp = &extprocv3.ProcessingResponse{
 					Response: &extprocv3.ProcessingResponse_RequestBody{
@@ -361,7 +341,7 @@ func (s *GatewayServer) Process(stream extprocv3.ExternalProcessor_ProcessServer
 		case *extprocv3.ProcessingRequest_ResponseHeaders:
 			if pendingCheck {
 				pendingCheck = false
-				if denyResp := s.evaluateExtProcDecision(stream.Context(), capturedMethod, capturedPath, capturedHost, capturedHeaders, false, false); denyResp.GetImmediateResponse() != nil {
+				if denyResp := s.evaluateExtProcDecision(stream.Context(), capturedMethod, capturedPath, capturedHost, capturedHeaders, "", false, false); denyResp.GetImmediateResponse() != nil {
 					resp = denyResp
 					break
 				}
@@ -390,7 +370,7 @@ func (s *GatewayServer) Process(stream extprocv3.ExternalProcessor_ProcessServer
 		case *extprocv3.ProcessingRequest_RequestTrailers:
 			if pendingCheck {
 				pendingCheck = false
-				if denyResp := s.evaluateExtProcDecision(stream.Context(), capturedMethod, capturedPath, capturedHost, capturedHeaders, false, false); denyResp.GetImmediateResponse() != nil {
+				if denyResp := s.evaluateExtProcDecision(stream.Context(), capturedMethod, capturedPath, capturedHost, capturedHeaders, "", false, false); denyResp.GetImmediateResponse() != nil {
 					resp = denyResp
 					break
 				}
@@ -420,12 +400,13 @@ func (s *GatewayServer) Process(stream extprocv3.ExternalProcessor_ProcessServer
 	}
 }
 
-func (s *GatewayServer) evaluateExtProcDecision(ctx context.Context, method, path, host string, headers map[string]string, isBodyPhase, allowMCPStreamInit bool) *extprocv3.ProcessingResponse {
+func (s *GatewayServer) evaluateExtProcDecision(ctx context.Context, method, path, host string, headers map[string]string, mcpTool string, isBodyPhase, allowMCPStreamInit bool) *extprocv3.ProcessingResponse {
 	res := s.eval(ctx, CheckInput{
 		Method:             method,
 		Path:               path,
 		Host:               host,
 		Headers:            headers,
+		MCPTool:            mcpTool,
 		AllowMCPStreamInit: allowMCPStreamInit,
 	})
 	if !res.Allowed {
@@ -519,6 +500,30 @@ func spoofedMeshHeadersToRemove(inbound, responseHeaders map[string]string) []st
 	}
 	sort.Strings(remove)
 	return remove
+}
+
+// mcpCallOfBody reads the MCP call of an ext_authz check: the tool of a
+// tools/call, or a handshake. The tool is in the body, and Envoy sends the
+// body to ext_authz only when its filter sets with_request_body. A POST with
+// no body names no tool and is not a handshake, so a task rule with
+// allowed_tools refuses it. A GET opens a stream and a DELETE ends a session:
+// they carry no call, as api.InspectMCPHTTPRequestBody also decides.
+func mcpCallOfBody(method string, body []byte) (mcpTool string, allowStreamInit bool) {
+	if len(body) == 0 {
+		return "", strings.EqualFold(method, http.MethodGet) || strings.EqualFold(method, http.MethodDelete)
+	}
+	return InspectJSONRPCMCPBody(body)
+}
+
+// isMCPRoute reports whether a request is for an MCP service, by its path or
+// by X-Mesh-Target-Service, so that ext_proc asks Envoy for the body. It
+// ignores letter case, as the evaluator does when it resolves the service.
+func isMCPRoute(path, targetService string) bool {
+	path = strings.ToLower(path)
+	target := strings.ToLower(strings.TrimSpace(targetService))
+	return strings.HasPrefix(path, "/mcp") ||
+		strings.Contains(path, "/mcp/") ||
+		strings.HasPrefix(target, api.ServiceTypeStringMCP+"://")
 }
 
 // InspectJSONRPCMCPBody inspects a JSON-RPC 2.0 request body for MCP methods

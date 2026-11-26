@@ -228,11 +228,13 @@ func TestWorkstationPEPPostureIsolationTaskScopeAndProvenance(t *testing.T) {
 		},
 	}
 
+	// The tool of an MCP call is in the request body.
+	const getPRCall = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_pr"}}`
+
 	for _, tc := range cases {
 		t.Run("ext_authz/"+tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/ext_authz/mcp/github", nil)
+			req := httptest.NewRequest(http.MethodPost, "/ext_authz/mcp/github", strings.NewReader(getPRCall))
 			req.Header.Set("Authorization", "Bearer "+base64.StdEncoding.EncodeToString(tc.biscuit))
-			req.Header.Set(HeaderMeshMCPTool, "get_pr")
 			rec := httptest.NewRecorder()
 			handleExtAuthzHTTP(h.node, rec, req)
 			if rec.Code != tc.wantStatus {
@@ -267,12 +269,12 @@ func TestWorkstationPEPPostureIsolationTaskScopeAndProvenance(t *testing.T) {
 				Http: &authv3.AttributeContext_HttpRequest{
 					Method: "POST",
 					Path:   "/mcp/github",
+					Body:   getPRCall,
 					Headers: map[string]string{
-						"authorization":                    "Bearer " + base64.StdEncoding.EncodeToString(managedMobileBiscuit),
-						strings.ToLower(HeaderMeshMCPTool): "get_pr",
-						"x-mesh-spoofed":                   "attacker",
-						"x-mesh-claims":                    "forged=true",
-						"x-peer-id":                        "forged-peer",
+						"authorization":  "Bearer " + base64.StdEncoding.EncodeToString(managedMobileBiscuit),
+						"x-mesh-spoofed": "attacker",
+						"x-mesh-claims":  "forged=true",
+						"x-peer-id":      "forged-peer",
 					},
 				},
 			},

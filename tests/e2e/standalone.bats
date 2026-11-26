@@ -311,6 +311,9 @@ static_resources:
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
                       transport_api_version: V3
+                      with_request_body:
+                        max_request_bytes: 1048576
+                        allow_partial_message: false
                       grpc_service:
                         envoy_grpc:
                           cluster_name: agentmesh_node_b_h2c

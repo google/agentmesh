@@ -163,7 +163,11 @@ interfaces:
    presents a Biscuit, or a platform JWT that `agentmesh-node` exchanges at the
    control plane into a delegated Biscuit. On `OK` it returns `X-Mesh-Biscuit`,
    `X-Mesh-Principal`, `X-Mesh-Roles`, `X-Mesh-Task-Id` and, for `egress://`
-   targets with a credential broker, the brokered `Authorization` header.
+   targets with a credential broker, the brokered `Authorization` header. The
+   MCP tool name is in the request body, so `ext_authz` enforces
+   `operation.allowed_tools` only when its filter sends the body
+   (`with_request_body`); without it, the node refuses a `POST` to an MCP
+   service from a credential that has `operation.allowed_tools`.
 2. **Envoy `ext_proc` (`envoy.service.ext_proc.v3.ExternalProcessor`):** the
    body-aware counterpart to `ext_authz`. Because MCP tool names travel inside
    the JSON-RPC request body (`params.name`), `ext_proc` inspects the buffered

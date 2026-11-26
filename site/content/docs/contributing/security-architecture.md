@@ -423,7 +423,9 @@ as a standard OIDC issuer:
    brokered upstream `Authorization` header.
 2. Envoy `ext_proc` (`/envoy.service.ext_proc.v3.ExternalProcessor/Process`)
    inspects buffered JSON-RPC request bodies so `operation.allowed_tools` on
-   MCP `tools/call` is enforced before injecting the upstream credential.
+   MCP `tools/call` is enforced before injecting the upstream credential. The
+   tool comes from the body only: a client can set any request header, so no
+   header names the tool on `ext_authz` or `ext_proc`.
 3. RFC 8693 Token Exchange (`POST /oauth/token`) and MCP OAuth 2.1 accept
    `grant_type=urn:ietf:params:oauth:grant-type:token-exchange` with a JWT or
    Biscuit `subject_token` and optional `TaskAuthorizationRule` (in `options`,
