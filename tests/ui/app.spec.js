@@ -141,6 +141,8 @@ test('a local agent pairs with the node through the relay, and only its signed c
   const why = stack.missing({ app: true });
   test.skip(why !== '', why);
   const stops = [];
+  // Every relay of this test. A relay says on stderr which mode and port it took, and a failure prints that.
+  const relays = [];
   const configHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agentmesh-relay-keys-'));
   stops.push(() => fs.rmSync(configHome, { recursive: true, force: true }));
   try {
@@ -150,6 +152,11 @@ test('a local agent pairs with the node through the relay, and only its signed c
     await stack.assertRelayPortFree();
     let relay;
     stops.push(() => relay?.stop());
+    const startRelay = async (label, options) => {
+      const started = await stack.startAgentRelay(origin, options);
+      relays.push({ label, started });
+      return started;
+    };
     const tools = async () => (await relay.client.listTools()).tools.map((tool) => tool.name);
     const callRaw = (name, args) => relay.client.callTool({ name, arguments: args });
     const call = async (name, args) => {
@@ -172,7 +179,7 @@ test('a local agent pairs with the node through the relay, and only its signed c
     const install = await page.locator('#agent-install').textContent();
     execFileSync('sh', ['-c', install], { env: { ...process.env, HOME: configHome }, stdio: 'pipe' });
     const cli = path.join(configHome, '.local', 'share', 'agentmesh', 'webapp-relay', 'relay.mjs');
-    relay = await stack.startAgentRelay(origin, { agentName: 'Claude Code', configHome, cli });
+    relay = await startRelay('first', { agentName: 'Claude Code', configHome, cli });
     await page.locator('#copy-agent-prompt').click();
     const prompt = await page.evaluate(() => navigator.clipboard.readText());
     const token = /with the token ([0-9a-f]{32})\./.exec(prompt)?.[1];
@@ -205,19 +212,27 @@ test('a local agent pairs with the node through the relay, and only its signed c
 
     // A restarted agent stays paired, and the open page finds its relay again without a reload.
     await relay.stop();
-    relay = await stack.startAgentRelay(origin, { agentName: 'Claude Code', configHome, cli });
+    relay = await startRelay('restarted', { agentName: 'Claude Code', configHome, cli });
     await expect.poll(tools, { timeout: 15_000, message: 'the page reconnects to the restarted relay' }).toContain('get_mesh_info');
     expect((await call('get_mesh_info', {})).peer_id).toBe(await nodeId(page));
+
+    // Another program starts the upstream relay, with no pairing. The agent's relay holds the port, so this one
+    // joins it. It starts before the reload, because a relay that joins learns the tools for certain only from the
+    // update that the other relay sends when the page's tools change: it can lose the list that it asks for at
+    // its own start (sdk/js/webapp/relay-join.ts).
+    const plain = await startRelay('plain', { plain: true });
+    stops.push(() => plain.stop());
+    const plainTools = async () => (await plain.client.listTools()).tools.map((tool) => tool.name);
+    await expect.poll(() => plain.output, { timeout: 5_000, message: 'the plain relay joins the relay that holds the port' }).toContain('client mode');
+
     // A reloaded page stays paired too.
     await page.reload();
     await page.getByRole('button', { name: 'Config' }).click();
     await expect.poll(tools, { timeout: 20_000, message: 'the reloaded page offers its tools again' }).toContain('get_mesh_info');
     expect((await call('get_mesh_info', {})).peer_id).toBe(await nodeId(page));
 
-    // A program with the unpaired upstream relay reaches the page, but its calls are refused.
-    const plain = await stack.startAgentRelay(origin, { plain: true });
-    stops.push(() => plain.stop());
-    const plainTools = async () => (await plain.client.listTools()).tools.map((tool) => tool.name);
+    // The program with no pairing reaches the page through the agent's relay, but its calls are refused:
+    // the agent's relay signs its own calls only.
     await expect.poll(plainTools, { timeout: 20_000, message: 'the plain relay lists the page tools' }).toContain('get_mesh_info');
     expect((await plain.client.callTool({ name: 'get_mesh_info', arguments: {} })).content[0].text).toContain('accepts calls only from a paired agent');
 
@@ -229,6 +244,11 @@ test('a local agent pairs with the node through the relay, and only its signed c
     await expect.poll(tools, { timeout: 10_000, message: 'disconnecting withdraws the tools' }).not.toContain('get_mesh_info');
     await expect(page.locator('#agent-line')).toBeHidden();
     await noViolations(page);
+  } catch (err) {
+    for (const { label, started } of relays) {
+      console.log(`-- stderr of the ${label} relay --\n${started.output}`);
+    }
+    throw err;
   } finally {
     for (const stop of stops.reverse()) {
       await stop();
