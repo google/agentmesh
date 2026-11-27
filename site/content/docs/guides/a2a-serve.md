@@ -26,16 +26,17 @@ relay.
 
 A [recipe](https://a2aproject.github.io/a2a-serve/guide/recipes/) is a
 versioned Git directory that packages a reusable, domain-specific agent. It
-bundles `a2a-serve` configuration (sandbox limits, egress allowlists, and
-approval rules), pinned MCP server connectors, setup metadata for required and
-optional variables, agent instructions, and skills. Running
+bundles `a2a-serve` configuration in `.a2a/config.yaml` (sandbox limits, egress
+allowlists, and approval rules), pinned MCP server connectors in `.mcp.json`,
+setup metadata for required and optional variables in `.a2a/recipe.yaml`, agent
+instructions (`AGENTS.md`, `ENVIRONMENT.md`), and skills. Running
 `a2a-serve recipe <url> --name <name>` shows what the agent will execute, flags
 risky permissions, prompts only for the connectors and secrets the operator
 enables, and writes a ready-to-start agent directory.
 
 Recipes separate what an agent knows how to do from where it runs and who may
 call it. Operators layer environment-specific context (service catalogs,
-datasource UIDs, dashboards, and SLOs) and network settings on top of the
+data-source UIDs, dashboards, and SLOs) and network settings on top of the
 recipe. When maintainers publish improvements to prompts, skills, or pinned MCP
 server versions, running `a2a-serve recipe` inside the agent directory applies
 upstream updates while preserving local overrides.
@@ -125,7 +126,7 @@ a2a-serve recipe https://github.com/a2aproject/a2a-serve/tree/main/examples/04-o
 cd o11y && a2a-serve start --detach
 ```
 
-The operator describes internal services, datasource UIDs, dashboards, and SLOs
+The operator describes internal services, data-source UIDs, dashboards, and SLOs
 in `o11y/ENVIRONMENT.md` (or asks `o11y` to inspect Grafana and draft the file
 with `"Learn the environment."`). The same host or dedicated ops nodes can
 publish additional recipe-bootstrapped or custom expert agents on the relay,
