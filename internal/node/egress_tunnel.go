@@ -446,10 +446,12 @@ func handleConnectTunnel(node *AgentMeshNode, w http.ResponseWriter, r *http.Req
 }
 
 func forwardConnectTunnelToPeer(node *AgentMeshNode, w http.ResponseWriter, r *http.Request, targetPeer peer.ID, host string, port int, biscuitBytes []byte) {
-	dialCtx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	dialCtx, cancel := context.WithTimeout(allowLimitedEgressConn(r.Context()), 10*time.Second)
+	node.prepareEgressPeer(dialCtx, targetPeer.String())
 	meshConn, err := gostream.Dial(dialCtx, node.Host, targetPeer, "/libp2p-http")
 	cancel()
 	if err != nil {
+		logger.Warnf("[Egress] CONNECT dial to peer %s for %s:%d failed: %v", targetPeer, host, port, err)
 		refuse(w, http.StatusBadGateway, fmt.Sprintf("failed to dial egress peer: %v", err), proxyStatusConfigurationError)
 		return
 	}
@@ -466,6 +468,7 @@ func forwardConnectTunnelToPeer(node *AgentMeshNode, w http.ResponseWriter, r *h
 		base64.StdEncoding.EncodeToString(biscuitBytes),
 	)
 	if _, err := io.WriteString(meshConn, reqLine); err != nil {
+		logger.Warnf("[Egress] CONNECT send to peer %s for %s:%d failed: %v", targetPeer, host, port, err)
 		refuse(w, http.StatusBadGateway, "failed to send tunnel request to egress peer", proxyStatusConfigurationError)
 		return
 	}
@@ -473,6 +476,7 @@ func forwardConnectTunnelToPeer(node *AgentMeshNode, w http.ResponseWriter, r *h
 	meshBuf := bufio.NewReader(meshConn)
 	resp, err := http.ReadResponse(meshBuf, r)
 	if err != nil {
+		logger.Warnf("[Egress] CONNECT read response from peer %s for %s:%d failed: %v", targetPeer, host, port, err)
 		refuse(w, http.StatusBadGateway, "failed to read tunnel response from egress peer", proxyStatusConfigurationError)
 		return
 	}

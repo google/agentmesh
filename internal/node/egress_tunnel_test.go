@@ -36,6 +36,13 @@ import (
 	"time"
 
 	"github.com/google/agentmesh/api"
+	"github.com/libp2p/go-libp2p"
+	gostream "github.com/libp2p/go-libp2p-gostream"
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/client"
+	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
+	"github.com/multiformats/go-multiaddr"
 )
 
 func startTestTLSServer(t *testing.T, dnsName string, upstreamHits *atomic.Int32) (string, *x509.CertPool) {
@@ -272,4 +279,154 @@ func TestHandleConnectTunnelRequiredLabels(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("malformed X-Mesh-Required-Labels on CONNECT: got %d, want 400", rec.Code)
 	}
+}
+
+func TestForwardConnectTunnelOverLimitedRelay(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	relayHost, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"), libp2p.DisableRelay())
+	if err != nil {
+		t.Fatalf("relay host: %v", err)
+	}
+	t.Cleanup(func() { _ = relayHost.Close() })
+	if _, err := relay.New(relayHost); err != nil {
+		t.Fatalf("relay.New: %v", err)
+	}
+	relayInfo := peer.AddrInfo{ID: relayHost.ID(), Addrs: relayHost.Addrs()}
+
+	// Provider and consumer connect exclusively via the circuit relay (Limited conn),
+	// mirroring NAT / Cloud Run deployments with no direct peer-to-peer route.
+	providerHost, err := libp2p.New(libp2p.NoListenAddrs, libp2p.EnableRelay())
+	if err != nil {
+		t.Fatalf("provider host: %v", err)
+	}
+	t.Cleanup(func() { _ = providerHost.Close() })
+	if err := providerHost.Connect(ctx, relayInfo); err != nil {
+		t.Fatalf("provider connect relay: %v", err)
+	}
+	if _, err := client.Reserve(ctx, providerHost, relayInfo); err != nil {
+		t.Fatalf("provider reserve relay: %v", err)
+	}
+
+	consumerHost, err := libp2p.New(libp2p.NoListenAddrs, libp2p.EnableRelay())
+	if err != nil {
+		t.Fatalf("consumer host: %v", err)
+	}
+	t.Cleanup(func() { _ = consumerHost.Close() })
+	if err := consumerHost.Connect(ctx, relayInfo); err != nil {
+		t.Fatalf("consumer connect relay: %v", err)
+	}
+	circuitMA, err := multiaddr.NewMultiaddr("/p2p/" + relayHost.ID().String() + "/p2p-circuit")
+	if err != nil {
+		t.Fatalf("circuit multiaddr: %v", err)
+	}
+	if err := consumerHost.Connect(ctx, peer.AddrInfo{
+		ID:    providerHost.ID(),
+		Addrs: []multiaddr.Multiaddr{relayHost.Addrs()[0].Encapsulate(circuitMA)},
+	}); err != nil {
+		t.Fatalf("consumer connect provider via relay: %v", err)
+	}
+	if got := consumerHost.Network().Connectedness(providerHost.ID()); got != network.Limited {
+		t.Fatalf("connectedness = %v, want Limited (relayed)", got)
+	}
+
+	var upstreamHits atomic.Int32
+	tlsAddr, rootPool := startTestTLSServer(t, "pg.internal.example", &upstreamHits)
+	tcpSvc, err := newEgressService(&api.EgressDestination{
+		Name:      "pg.internal.example",
+		Mode:      api.EgressMode_EGRESS_MODE_TCP,
+		Ports:     []uint32{5432},
+		TargetUrl: "https://" + tlsAddr,
+	}, t.TempDir())
+	if err != nil {
+		t.Fatalf("newEgressService: %v", err)
+	}
+
+	meshLn, err := gostream.Listen(providerHost, "/libp2p-http")
+	if err != nil {
+		t.Fatalf("gostream.Listen: %v", err)
+	}
+	t.Cleanup(func() { _ = meshLn.Close() })
+
+	providerSrv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/egress/github.com" {
+				refuse(w, http.StatusForbidden, "Authorization failed", proxyStatusDenied)
+				return
+			}
+			if r.URL.Path == "/egress/pg.internal.example" && strings.EqualFold(r.Header.Get("Upgrade"), HeaderMeshTunnelUpgrade) {
+				tcpSvc.ServeTunnel(r.Context(), w, r, 5432)
+				return
+			}
+			http.NotFound(w, r)
+		}),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() { _ = providerSrv.Serve(meshLn) }()
+	t.Cleanup(func() { _ = providerSrv.Close() })
+
+	consumerNode := &AgentMeshNode{Host: consumerHost}
+
+	t.Run("relayed policy denial returns 403 with Proxy-Status", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodConnect, "http://github.com:443", nil)
+		req.Host = "github.com:443"
+		forwardConnectTunnelToPeer(consumerNode, rec, req, providerHost.ID(), "github.com", 443, []byte("test-biscuit"))
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("got status %d (%q), want 403", rec.Code, strings.TrimSpace(rec.Body.String()))
+		}
+		if ps := rec.Header().Get("Proxy-Status"); !strings.Contains(ps, "agentmesh-node; error=http_request_denied") {
+			t.Fatalf("Proxy-Status = %q, want agentmesh-node; error=http_request_denied", ps)
+		}
+	})
+
+	t.Run("relayed allowed TCP tunnel splices TLS end-to-end", func(t *testing.T) {
+		proxySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			forwardConnectTunnelToPeer(consumerNode, w, r, providerHost.ID(), "pg.internal.example", 5432, []byte("test-biscuit"))
+		}))
+		defer proxySrv.Close()
+
+		conn, err := net.DialTimeout("tcp", strings.TrimPrefix(proxySrv.URL, "http://"), 5*time.Second)
+		if err != nil {
+			t.Fatalf("Dial proxy: %v", err)
+		}
+		defer func() { _ = conn.Close() }()
+
+		req := &http.Request{
+			Method: http.MethodConnect,
+			URL:    &url.URL{Opaque: "pg.internal.example:5432"},
+			Host:   "pg.internal.example:5432",
+			Header: make(http.Header),
+		}
+		if err := req.Write(conn); err != nil {
+			t.Fatalf("Write CONNECT: %v", err)
+		}
+		resp, err := http.ReadResponse(bufio.NewReader(conn), req)
+		if err != nil {
+			t.Fatalf("ReadResponse: %v", err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("CONNECT status = %d, want 200", resp.StatusCode)
+		}
+
+		tlsConn := tls.Client(conn, &tls.Config{
+			ServerName: "pg.internal.example",
+			RootCAs:    rootPool,
+		})
+		if err := tlsConn.Handshake(); err != nil {
+			t.Fatalf("TLS handshake over relayed tunnel failed: %v", err)
+		}
+		if _, err := io.WriteString(tlsConn, "PING\n"); err != nil {
+			t.Fatalf("Write PING: %v", err)
+		}
+		reply, err := bufio.NewReader(tlsConn).ReadString('\n')
+		if err != nil {
+			t.Fatalf("Read PONG: %v", err)
+		}
+		if reply != "PONG\n" {
+			t.Fatalf("got reply %q, want PONG\\n", reply)
+		}
+	})
 }
