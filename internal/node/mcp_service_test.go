@@ -21,6 +21,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/agentmesh/api"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -106,6 +107,66 @@ func TestMCPService_TaskCheckAllowsOnlyANotificationWithNoID(t *testing.T) {
 			resp := svc.authorizeMCPRequest(&jsonrpc.Request{Method: tc.method, Params: []byte(tc.params)}, reqCtx)
 			if allowed := resp == nil; allowed != tc.wantAllowed {
 				t.Fatalf("%s with no id: allowed = %v, want %v", tc.method, allowed, tc.wantAllowed)
+			}
+		})
+	}
+}
+
+// A task rule with allowed_tools decides a request in the same way on a
+// /mesh/mcp stream and on HTTP: the two enforcement points take the session
+// methods from api.MCPSessionMethod. allowed_tools grants tools, so a list of
+// the resources or of the prompts is denied on both.
+func TestMCPService_TaskCheckDecidesARequestAsTheHTTPInspection(t *testing.T) {
+	svc := &MCPService{baseService: baseService{
+		info: &api.ServiceInfo{Name: "weather", Type: api.ServiceType_SERVICE_TYPE_MCP},
+	}}
+	rules := []*api.TaskAuthorizationRule{{
+		Name: "only-get-weather",
+		Rules: []*api.TaskRule{{
+			AllowedServices: []string{"mcp://weather"},
+			Operation:       &api.TaskOperation{AllowedTools: []string{"get_weather"}},
+		}},
+	}}
+	id, err := jsonrpc.MakeID(float64(1))
+	if err != nil {
+		t.Fatalf("MakeID: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name        string
+		method      string
+		params      string
+		wantAllowed bool
+	}{
+		{name: "initialize", method: "initialize", wantAllowed: true},
+		{name: "server/discover", method: "server/discover", wantAllowed: true},
+		{name: "ping", method: "ping", wantAllowed: true},
+		{name: "tools/list", method: "tools/list", wantAllowed: true},
+		{name: "call of an allowed tool", method: "tools/call", params: `{"name":"get_weather"}`, wantAllowed: true},
+		{name: "call of a forbidden tool", method: "tools/call", params: `{"name":"drop_table"}`},
+		{name: "resources/list", method: "resources/list"},
+		{name: "prompts/list", method: "prompts/list"},
+		{name: "resources/read", method: "resources/read", params: `{"uri":"file:///etc/passwd"}`},
+		{name: "prompt with the name of an allowed tool", method: "prompts/get", params: `{"name":"get_weather"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			onStream := svc.authorizeMCPRequest(&jsonrpc.Request{ID: id, Method: tc.method, Params: []byte(tc.params)}, RequestContext{TaskRules: rules}) == nil
+
+			body := `{"jsonrpc":"2.0","id":1,"method":"` + tc.method + `"`
+			if tc.params != "" {
+				body += `,"params":` + tc.params
+			}
+			body += "}"
+			tool, allowInit := api.InspectJSONRPCMCPBody([]byte(body))
+			onHTTP := api.EvaluateTaskRules(rules, api.TaskRequestContext{
+				ServiceType:        "mcp",
+				ServiceName:        "weather",
+				MCPTool:            tool,
+				AllowMCPStreamInit: allowInit,
+			}, time.Now()) == nil
+
+			if onStream != tc.wantAllowed || onHTTP != tc.wantAllowed {
+				t.Fatalf("%s: allowed on a stream = %v, allowed on HTTP = %v, want %v on both", tc.method, onStream, onHTTP, tc.wantAllowed)
 			}
 		})
 	}
