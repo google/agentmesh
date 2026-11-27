@@ -267,6 +267,39 @@ def test_attenuate_biscuit_narrows_authority_across_hops():
         )
 
 
+def test_a_credential_narrowed_to_tools_passes_with_no_tool_only_as_a_session_request():
+    """A task rule with allowed_tools allows a request that names no tool only
+    when the provider says that the request opens or keeps the session. The
+    authorizer infers nothing from the protocol: a provider that serves MCP
+    must authorize each request, so a request with no tool and no flag is
+    denied."""
+    root = node_token(CALLER, ["granted_service_all_types(true)", "target_unrestricted(true)"])
+    narrowed = attenuate_biscuit(
+        root,
+        agentmesh_pb2.TaskAuthorizationRule(
+            name="only-add",
+            rules=[
+                agentmesh_pb2.TaskRule(
+                    allowed_services=["mcp://calc"],
+                    operation=agentmesh_pb2.TaskOperation(allowed_tools=["add"]),
+                )
+            ],
+        ),
+        [CP_KEY],
+    )
+
+    def ask(**fields) -> AuthorizeRequest:
+        return AuthorizeRequest(biscuit=narrowed, peer_id=CALLER, target_service="mcp://calc", protocol="/mesh/mcp/1.0.0", **fields)
+
+    with pytest.raises(AuthorizationError):
+        authorize_caller(ask(), options([]))
+    authorize_caller(ask(allow_mcp_stream_init=True), options([]))
+    authorize_caller(ask(mcp_tool="add"), options([]))
+    # The flag does not allow a tool that the rule leaves out.
+    with pytest.raises(AuthorizationError):
+        authorize_caller(ask(allow_mcp_stream_init=True, mcp_tool="multiply"), options([]))
+
+
 def test_appended_blocks_carrying_anything_but_one_tar_block_fact_are_refused():
     """An appended block may carry exactly one tar_block fact. Anything else a
     holder writes there (a rule, a check, a second fact) is refused before the
