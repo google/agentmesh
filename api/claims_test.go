@@ -18,14 +18,17 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/eclipse-biscuit/biscuit-go/v2"
+	"github.com/eclipse-biscuit/biscuit-go/v2/datalog"
 	"github.com/eclipse-biscuit/biscuit-go/v2/parser"
 )
 
@@ -221,7 +224,9 @@ func TestBuildPolicyRulesWithStructuredBindingClaims(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		auth, err := tok.Authorizer(pub)
+		// The default time limit of the authorizer is 2 ms. A run that takes
+		// longer returns an error, and that error is not a denial.
+		auth, err := tok.Authorizer(pub, biscuit.WithWorldOptions(datalog.WithMaxDuration(5*time.Second)))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -234,7 +239,11 @@ func TestBuildPolicyRulesWithStructuredBindingClaims(t *testing.T) {
 				Body: []biscuit.Predicate{{Name: FactRole, IDs: []biscuit.Term{biscuit.String("workstation-caller")}}},
 			}},
 		})
-		return auth.Authorize() == nil
+		err = auth.Authorize()
+		if errors.Is(err, datalog.ErrWorldRunLimitTimeout) {
+			t.Fatalf("authorize %q with claims %v: %v, want a decision", email, claims, err)
+		}
+		return err == nil
 	}
 
 	if !eval("bob@corp.example", map[string][]string{"iss": {"https://idp.corp.example"}, "device.trust_tier": {"high"}, "device.type": {"managed_workstation"}}) {

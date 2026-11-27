@@ -17,10 +17,13 @@ package api
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/eclipse-biscuit/biscuit-go/v2"
+	"github.com/eclipse-biscuit/biscuit-go/v2/datalog"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -309,7 +312,10 @@ func TestIngressDatalogPolicyEvaluation(t *testing.T) {
 	}
 
 	check := func(svcType, svcName, mode string) bool {
-		auth, err := tok.Authorizer(pub)
+		t.Helper()
+		// The default time limit of the authorizer is 2 ms. A run that takes
+		// longer returns an error, and that error is not a denial.
+		auth, err := tok.Authorizer(pub, biscuit.WithWorldOptions(datalog.WithMaxDuration(5*time.Second)))
 		if err != nil {
 			t.Fatalf("Authorizer: %v", err)
 		}
@@ -320,7 +326,11 @@ func TestIngressDatalogPolicyEvaluation(t *testing.T) {
 		for _, p := range IngressPolicies {
 			auth.AddPolicy(p)
 		}
-		return auth.Authorize() == nil
+		err = auth.Authorize()
+		if errors.Is(err, datalog.ErrWorldRunLimitTimeout) {
+			t.Fatalf("authorize %s://%s %s: %v, want a decision", svcType, svcName, mode, err)
+		}
+		return err == nil
 	}
 
 	if !check("a2a", "assistant", IngressAuthModeStringEdge) {
