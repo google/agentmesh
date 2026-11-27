@@ -36,6 +36,10 @@ const (
 	// answer would carry the credential of an egress destination, and the
 	// transport does not authenticate the caller as the gateway.
 	upstreamCredentialTransportRule = "the upstream credential is returned only over the Unix socket (--socket-path) or to a verified client certificate (--tls-ca)"
+
+	// borderJWTTransportRule is the reason of a refused request for a border
+	// JWT at /oauth/token, on the same condition.
+	borderJWTTransportRule = "a border JWT is returned only over the Unix socket (--socket-path) or to a verified client certificate (--tls-ca)"
 )
 
 type extAuthzCheckInput = envoy.CheckInput

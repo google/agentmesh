@@ -634,8 +634,21 @@ egress:
 		var stsData map[string]any
 		_ = json.NewDecoder(stsResp.Body).Decode(&stsData)
 		_ = stsResp.Body.Close()
+		// The TCP listener does not authenticate the caller as the gateway,
+		// and a border JWT is a bearer credential for the destination.
+		if stsResp.StatusCode != http.StatusForbidden {
+			t.Fatalf("border JWT over plain TCP: status = %d, want 403: %v", stsResp.StatusCode, stsData)
+		}
+		// The same request over the Unix socket of the PEP node returns it.
+		stsResp, err = identityEvidenceSocketClient(pepSocket).PostForm("http://localhost/oauth/token", stsForm)
+		if err != nil {
+			t.Fatalf("POST /oauth/token over the Unix socket (border JWT): %v", err)
+		}
+		stsData = nil
+		_ = json.NewDecoder(stsResp.Body).Decode(&stsData)
+		_ = stsResp.Body.Close()
 		if stsResp.StatusCode != http.StatusOK {
-			t.Fatalf("border JWT status = %d, want 200: %v", stsResp.StatusCode, stsData)
+			t.Fatalf("border JWT over the Unix socket: status = %d, want 200: %v", stsResp.StatusCode, stsData)
 		}
 		borderJWT, _ := stsData["access_token"].(string)
 		if strings.Count(borderJWT, ".") != 2 {

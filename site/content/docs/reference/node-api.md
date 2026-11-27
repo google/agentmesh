@@ -93,6 +93,7 @@ the control plane's `POST /token/exchange`, a Biscuit is attenuated locally.
 | `assertion` | The JWT authorization grant for `jwt-bearer`. |
 | `options` (or `scope` / `resource`) | Optional `TaskAuthorizationRule` as protojson (or space-separated service patterns in `scope`) to append as a `tar_block`. |
 | `seal` | Optional (`true` / `1`): seal the returned Biscuit so downstream holders cannot append further blocks. |
+| `requested_token_type` | Optional. `urn:ietf:params:oauth:token-type:jwt` with an `egress://<destination>` in `resource` returns a border JWT for that destination in place of a Biscuit. Its holder can exchange it at the cloud provider, so the node returns it only over the Unix socket or to a verified client certificate, as for the upstream credential of `ext_authz` (see the gateway integration below). On any other transport it answers `403`. |
 
 Returns standard RFC 8693 JSON (`access_token`,
 `issued_token_type: "urn:agentmesh:params:oauth:token-type:biscuit"`,
@@ -179,7 +180,8 @@ upstream credential. It answers `403` and logs a warning with the target. It
 does not allow the request without the credential. The API token does not
 change this, because applications hold it. Checks that return no upstream
 credential (`mcp://`, `inference://`, `a2a://`, or an `egress://` destination
-with no credential) work on every transport.
+with no credential) work on every transport. The same rule applies to a border
+JWT from `POST /oauth/token` (`requested_token_type`).
 
 ## MCP tools
 
