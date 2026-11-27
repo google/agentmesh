@@ -25,21 +25,20 @@ relay.
 ## `a2a-serve` recipes
 
 A [recipe](https://a2aproject.github.io/a2a-serve/guide/recipes/) is a
-versioned Git directory that packages a repeatable, domain-specific agent. It
-bundles `.a2a/config.yaml` (sandbox limits, egress allowlists, approval rules),
-`.mcp.json` (pinned MCP servers), `.a2a/recipe.yaml` (required and optional
-connectors with prompts for their variables), instructions (`AGENTS.md`,
-`ENVIRONMENT.md`), and agent skills. Running `a2a-serve recipe <url> --name <name>`
-shows what the agent will execute, flags risky permissions, prompts only for the
-connectors and secrets the operator enables, and writes a ready-to-start agent
-directory.
+versioned Git directory that packages a reusable, domain-specific agent. It
+bundles `a2a-serve` configuration (sandbox limits, egress allowlists, and
+approval rules), pinned MCP server connectors, setup metadata for required and
+optional variables, agent instructions, and skills. Running
+`a2a-serve recipe <url> --name <name>` shows what the agent will execute, flags
+risky permissions, prompts only for the connectors and secrets the operator
+enables, and writes a ready-to-start agent directory.
 
 Recipes separate what an agent knows how to do from where it runs and who may
-call it. Operators layer environment-specific context (such as service catalogs,
-datasource UIDs, dashboards, and SLOs in `ENVIRONMENT.md`) and network settings
-on top of the recipe. When maintainers publish improvements to prompts, skills,
-or pinned MCP server versions, running `a2a-serve recipe` inside the agent
-directory applies upstream updates while preserving local overrides.
+call it. Operators layer environment-specific context (service catalogs,
+datasource UIDs, dashboards, and SLOs) and network settings on top of the
+recipe. When maintainers publish improvements to prompts, skills, or pinned MCP
+server versions, running `a2a-serve recipe` inside the agent directory applies
+upstream updates while preserving local overrides.
 
 The [Observability Agent](https://a2aproject.github.io/a2a-serve/examples/04-observability-agent/)
 is a worked example of this model. Its recipe wires an incident-investigation
@@ -60,7 +59,7 @@ credentials.
 
 ```mermaid
 flowchart LR
-  subgraph Dev["Developer machines (zero data-source secrets)"]
+  subgraph Dev["Developer machines (no data-source secrets)"]
     DevAgent["Coding agent + a2a CLI<br/>no prod MCPs, CLIs, or tokens"]
   end
   subgraph Corp["Internal cluster"]
@@ -136,9 +135,9 @@ each with its own sandbox, approval rules, and data-source credentials.
 
 Developer workstations stay lightweight. Developers only install the
 [`a2a` CLI](https://github.com/a2aproject/a2a-cli) (along with its agent skill)
-and connect their workspace to the corporate relay. They have zero MCP
-connectors, zero observability skills or database CLIs, and zero production
-environment variables, secrets, or tokens configured on their laptops.
+and connect their workspace to the corporate relay. They do not need to set up
+MCP connectors, observability skills, database CLIs, or production environment
+variables, secrets, and tokens on their laptops.
 
 Once connected to the relay, a developer discovers published experts and adds
 `o11y` as a contact:
