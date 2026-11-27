@@ -42,6 +42,15 @@ export interface AuthorizeRequest {
   path?: string;
   /** The MCP tool name when evaluating a specific MCP tools/call invocation. */
   mcpTool?: string;
+  /**
+   * True for an MCP request that opens or keeps a session and names no tool:
+   * initialize, server/discover, ping or tools/list. A task rule with
+   * allowed_tools allows a request with no mcpTool only with this flag. The
+   * allowance is for that one request, not for the requests that follow it on
+   * the stream: a provider that serves MCP authorizes each tools/call with
+   * mcpTool set to its params.name, and every other request with neither.
+   */
+  allowMCPStreamInit?: boolean;
 }
 
 export interface ProviderAuthorizerOptions {
@@ -182,7 +191,7 @@ export async function authorizeCaller(req: AuthorizeRequest, options: ProviderAu
           method: req.method ?? "",
           path: req.path ?? "",
           mcpTool,
-          allowMCPStreamInit: req.method === undefined && mcpTool === "" && req.protocol === "/mesh/mcp/1.0.0",
+          allowMCPStreamInit: req.allowMCPStreamInit === true,
         },
         now,
       );

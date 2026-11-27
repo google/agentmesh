@@ -285,6 +285,30 @@ test("attenuateBiscuit and sealBiscuit narrow authority across hops", async () =
   );
 });
 
+// A task rule with allowed_tools allows a request that names no tool only
+// when the provider says that the request opens or keeps the session. The
+// authorizer infers nothing from the protocol: a provider that serves MCP
+// must authorize each request, so a request with no tool and no flag is
+// denied.
+test("a credential narrowed to tools passes with no tool only as a session request", async () => {
+  const root = nodeToken(CALLER, [`granted_service_all_types(true)`, `target_unrestricted(true)`]);
+  const narrowed = await attenuateBiscuit(
+    root,
+    { name: "only-add", rules: [{ allowedServices: ["mcp://calc"], operation: { allowedTools: ["add"] } }] },
+    [cpKey],
+  );
+  const req = request(narrowed, "mcp://calc");
+
+  await assert.rejects(authorizeCaller(req, options([])), AuthorizationError, "no tool and no flag");
+  await authorizeCaller({ ...req, allowMCPStreamInit: true }, options([]));
+  await authorizeCaller({ ...req, mcpTool: "add" }, options([]));
+  await assert.rejects(
+    authorizeCaller({ ...req, allowMCPStreamInit: true, mcpTool: "multiply" }, options([])),
+    AuthorizationError,
+    "the flag does not allow a tool that the rule leaves out",
+  );
+});
+
 // An appended block may carry exactly one tar_block fact. Anything else a
 // holder writes there (a rule, a check, a second fact) is refused before the
 // Datalog runs, whatever the authority block grants.

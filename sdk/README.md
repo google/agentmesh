@@ -414,7 +414,11 @@ service, no directory record, no catalog entry. The reasons:
 - **One inbound protocol.** A2A is the protocol for talking to an agent,
   and the A2A SDKs serve one agent card each. One ingress means one
   authorizer path to audit in three languages instead of two ingress
-  protocols times a registry of services.
+  protocols times a registry of services. The exported authorizer
+  (`authorizeCaller`, `authorize_caller`) decides one request. Under a task
+  rule with `allowed_tools` it allows a request that names no tool only with
+  `allowMCPStreamInit` (`allow_mcp_stream_init`), so an application that
+  serves MCP on it must authorize each message of a session.
 - **The browser.** A browser cannot listen. An agent in a browser is
   reachable through a router's relay and nothing else, which is what
   `accept_a2a` is. The JS SDK runs in a page: it reaches the router over

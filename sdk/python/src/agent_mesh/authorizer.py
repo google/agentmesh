@@ -61,6 +61,14 @@ class AuthorizeRequest:
     path: str = ""
     # The MCP tool name when evaluating a specific MCP tools/call invocation.
     mcp_tool: str = ""
+    # True for an MCP request that opens or keeps a session and names no tool:
+    # initialize, server/discover, ping or tools/list. A task rule with
+    # allowed_tools allows a request with no mcp_tool only with this flag. The
+    # allowance is for that one request, not for the requests that follow it
+    # on the stream: a provider that serves MCP authorizes each tools/call
+    # with mcp_tool set to its params.name, and every other request with
+    # neither.
+    allow_mcp_stream_init: bool = False
 
 
 @dataclass(frozen=True)
@@ -153,7 +161,7 @@ def authorize_caller(req: AuthorizeRequest, options: ProviderAuthorizerOptions) 
                     method=req.method or "",
                     path=req.path,
                     mcp_tool=req.mcp_tool,
-                    allow_mcp_stream_init=req.method is None and not req.mcp_tool and req.protocol == "/mesh/mcp/1.0.0",
+                    allow_mcp_stream_init=req.allow_mcp_stream_init,
                 ),
                 now,
             )

@@ -305,6 +305,15 @@ MCP service reads one message for each line of its standard input, so the
 node removes the line breaks between the JSON tokens of a message before it
 writes the message there.
 
+The node applies these checks to each message of a session.
+The TypeScript and Python SDKs do not serve MCP. Their authorizer
+(`authorizeCaller`, `authorize_caller`) decides one request: under a rule with
+`allowed_tools` it allows a request that names no tool only when the
+application sets `allowMCPStreamInit` (`allow_mcp_stream_init`), and it infers
+nothing from the protocol. An application that serves MCP on that authorizer
+must authorize each message: a session request with the flag, a `tools/call`
+with its `params.name`, and every other request with neither.
+
 #### One authorizer assembly for every PEP
 
 Every enforcement point builds its Datalog authorizer through
