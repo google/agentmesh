@@ -1,0 +1,14 @@
+version: "v1alpha1"
+labels:
+  role: agent-gateway-pep
+attenuation:
+  checks:
+    - 'check if __ISSUER_CHECK__;'
+  # Refuse blanket standing credentials; require sealed short-lived TAR mandates.
+  require_task_scope: true
+  max_task_ttl: 15m
+services:
+  - type: mcp
+    name: github
+    description: "GitHub MCP server governed by Google Cloud Agent Gateway ext_proc + TAR"
+    target_url: "__MCP_GITHUB_URL__"

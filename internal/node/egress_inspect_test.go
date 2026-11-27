@@ -25,6 +25,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -36,6 +37,7 @@ import (
 	extprocv3http "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/ext_proc/v3"
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	typev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
+	jwt "github.com/golang-jwt/jwt/v5"
 	"github.com/google/agentmesh/api"
 	"github.com/google/agentmesh/internal/identity"
 	"google.golang.org/grpc"
@@ -692,6 +694,371 @@ func TestGatewayExtProcServer(t *testing.T) {
 			}
 			if got := resp.GetImmediateResponse().GetStatus().GetCode(); got != tc.wantStatus {
 				t.Errorf("immediate response status = %v, want %v (answer %+v)", got, tc.wantStatus, resp)
+			}
+		})
+	}
+}
+
+func TestGatewayExtProc_UnmodifiedAgentGatewayTraffic(t *testing.T) {
+	h := newSTSNodeHarness(t)
+	node := h.node
+	node.services = NewServiceRegistry(&fakeDHT{}, 0)
+
+	// Register a real egress service (github.com) and two URL-backed MCP services
+	// (one mounted at "/", one at "/mcp" with target_auth_path) — mirroring real
+	// Google Cloud Agent Gateway traffic with no X-Mesh-Target-Service header.
+	egressSvc, err := newEgressServiceForNode(node, &api.EgressDestination{
+		Name:      "github.com",
+		TargetUrl: "https://github.com",
+		ServedBy:  []string{api.RoleNode},
+	}, t.TempDir())
+	if err != nil {
+		t.Fatalf("newEgressServiceForNode: %v", err)
+	}
+	t.Cleanup(func() { _ = egressSvc.Teardown() })
+	if err := node.services.Register(context.Background(), egressSvc); err != nil {
+		t.Fatalf("Register egress github.com: %v", err)
+	}
+
+	secretFile := filepath.Join(t.TempDir(), "github-ro.token")
+	if err := os.WriteFile(secretFile, []byte("ghp_mcp_secret_from_file\n"), 0o600); err != nil {
+		t.Fatalf("write secret file: %v", err)
+	}
+	mcpRootURL, err := withBackendAuthFile("https://github-mcp.internal", secretFile)
+	if err != nil {
+		t.Fatalf("withBackendAuthFile: %v", err)
+	}
+	node.services.insertService(&MCPService{
+		baseService: baseService{
+			info:    &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_MCP, Name: "github"},
+			backend: &api.RegisterServiceRequest_TargetUrl{TargetUrl: mcpRootURL},
+		},
+	})
+	node.services.insertService(&MCPService{
+		baseService: baseService{
+			info:    &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_MCP, Name: "github-copilot"},
+			backend: &api.RegisterServiceRequest_TargetUrl{TargetUrl: "https://api.githubcopilot.com/mcp"},
+		},
+	})
+
+	tar := &api.TaskAuthorizationRule{
+		Name: "tasks/capsule-github-readonly",
+		Rules: []*api.TaskRule{
+			{
+				AllowedServices: []string{"egress://github.com"},
+				Operation: &api.TaskOperation{
+					AllowedMethods: []string{"GET", "POST"},
+					AllowedPaths: []string{
+						"/google/agentmesh.git/info/refs",
+						"/google/agentmesh.git/git-upload-pack",
+					},
+				},
+			},
+			{
+				AllowedServices: []string{"mcp://github", "mcp://github-copilot"},
+				Operation: &api.TaskOperation{
+					AllowedTools: []string{"list_issues", "issue_read"},
+				},
+			},
+		},
+	}
+	agwRoles := []*api.PolicyRole{
+		{
+			Name:            "capsule-github-agent",
+			AllowedServices: []string{"egress://github.com", "mcp://github", "mcp://github-copilot"},
+			AllowedTargets:  []string{"*"},
+		},
+	}
+	baseBiscuit, _, err := identity.MintBiscuitToken(
+		h.cpPriv,
+		jwt.MapClaims{"sub": "capsule@example.com", "email": "capsule@example.com"},
+		nil,
+		h.peerID,
+		time.Now().Add(time.Hour),
+		[]string{api.RoleNode, "capsule-github-agent"},
+		agwRoles,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("MintBiscuitToken: %v", err)
+	}
+	rawBiscuit, err := identity.AttenuateBiscuit(baseBiscuit, tar)
+	if err != nil {
+		t.Fatalf("AttenuateBiscuit: %v", err)
+	}
+	b64Biscuit := base64.StdEncoding.EncodeToString(rawBiscuit)
+
+	socketPath := filepath.Join(t.TempDir(), "node.sock")
+	sidecar, err := StartSidecarServer(node, "127.0.0.1:0", socketPath, "api-token", "", "", "")
+	if err != nil {
+		t.Fatalf("StartSidecarServer: %v", err)
+	}
+	t.Cleanup(func() { _ = sidecar.Close() })
+
+	cc, err := grpc.NewClient("unix:"+socketPath, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("grpc.NewClient unix: %v", err)
+	}
+	defer func() { _ = cc.Close() }()
+	epClient := extprocv3.NewExternalProcessorClient(cc)
+
+	tcpConn, err := grpc.NewClient(node.BoundHTTPAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("grpc.NewClient tcp: %v", err)
+	}
+	defer func() { _ = tcpConn.Close() }()
+	tcpEPClient := extprocv3.NewExternalProcessorClient(tcpConn)
+
+	findHeader := func(mut *extprocv3.HeaderMutation, key string) (string, bool) {
+		for _, h := range mut.GetSetHeaders() {
+			if strings.EqualFold(h.GetHeader().GetKey(), key) {
+				v := h.GetHeader().GetValue()
+				if v == "" {
+					v = string(h.GetHeader().GetRawValue())
+				}
+				return v, true
+			}
+		}
+		return "", false
+	}
+
+	// 1. Unmodified MCP POST "/" (no /mcp path, no X-Mesh-Target-Service) buffers body,
+	// allows list_issues, strips spoofed headers, and injects target_auth_path Authorization.
+	t.Run("unmodified_root_mcp_allow_and_inject_secret", func(t *testing.T) {
+		stream, err := epClient.Process(context.Background())
+		if err != nil {
+			t.Fatalf("Process: %v", err)
+		}
+		defer func() { _ = stream.CloseSend() }()
+		if err := stream.Send(&extprocv3.ProcessingRequest{
+			Request: &extprocv3.ProcessingRequest_RequestHeaders{
+				RequestHeaders: &extprocv3.HttpHeaders{
+					EndOfStream: false,
+					Headers: &corev3.HeaderMap{
+						Headers: []*corev3.HeaderValue{
+							{Key: ":method", Value: "POST"},
+							{Key: ":path", Value: "/"},
+							{Key: ":authority", Value: "github-mcp.internal"},
+							{Key: "x-mesh-biscuit", Value: b64Biscuit},
+							{Key: "x-mesh-claims", Value: "forged=true"},
+							{Key: "x-peer-id", Value: "forged-peer"},
+						},
+					},
+				},
+			},
+		}); err != nil {
+			t.Fatalf("Send RequestHeaders: %v", err)
+		}
+		r1, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv RequestHeaders: %v", err)
+		}
+		if r1.GetModeOverride().GetRequestBodyMode() != extprocv3http.ProcessingMode_BUFFERED {
+			t.Fatalf("expected BUFFERED mode for host-resolved root MCP, got %+v", r1)
+		}
+		if r1.GetRequestHeaders().GetResponse().GetHeaderMutation() != nil {
+			t.Fatalf("Phase 1 must not inject Authorization before tool check: %+v", r1)
+		}
+
+		if err := stream.Send(&extprocv3.ProcessingRequest{
+			Request: &extprocv3.ProcessingRequest_RequestBody{
+				RequestBody: &extprocv3.HttpBody{
+					Body:        []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_issues"}}`),
+					EndOfStream: true,
+				},
+			},
+		}); err != nil {
+			t.Fatalf("Send RequestBody: %v", err)
+		}
+		r2, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv RequestBody: %v", err)
+		}
+		if r2.GetImmediateResponse() != nil {
+			t.Fatalf("expected CONTINUE for list_issues, got %+v", r2.GetImmediateResponse())
+		}
+		mut := r2.GetRequestBody().GetResponse().GetHeaderMutation()
+		if got, ok := findHeader(mut, "Authorization"); !ok || got != "Bearer ghp_mcp_secret_from_file" {
+			t.Fatalf("Authorization = (%q, %v), want Bearer ghp_mcp_secret_from_file", got, ok)
+		}
+		if got, ok := findHeader(mut, api.HeaderMeshTaskID); !ok || got != "tasks/capsule-github-readonly" {
+			t.Fatalf("X-Mesh-Task-Id = (%q, %v), want tasks/capsule-github-readonly", got, ok)
+		}
+	})
+
+	// 1b. Over plain TCP (untrusted transport), a secret-injecting MCP service must be refused (403).
+	t.Run("unmodified_root_mcp_plain_tcp_refuses_secret", func(t *testing.T) {
+		stream, err := tcpEPClient.Process(context.Background())
+		if err != nil {
+			t.Fatalf("Process: %v", err)
+		}
+		defer func() { _ = stream.CloseSend() }()
+		if err := stream.Send(&extprocv3.ProcessingRequest{
+			Request: &extprocv3.ProcessingRequest_RequestHeaders{
+				RequestHeaders: &extprocv3.HttpHeaders{
+					EndOfStream: false,
+					Headers: &corev3.HeaderMap{
+						Headers: []*corev3.HeaderValue{
+							{Key: ":method", Value: "POST"},
+							{Key: ":path", Value: "/"},
+							{Key: ":authority", Value: "github-mcp.internal"},
+							{Key: "x-mesh-biscuit", Value: b64Biscuit},
+						},
+					},
+				},
+			},
+		}); err != nil {
+			t.Fatalf("Send RequestHeaders: %v", err)
+		}
+		r1, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv RequestHeaders: %v", err)
+		}
+		if r1.GetImmediateResponse().GetStatus().GetCode() != typev3.StatusCode_Forbidden {
+			t.Fatalf("expected 403 ImmediateResponse for target_auth_path MCP over plain TCP, got %+v", r1)
+		}
+	})
+
+	// 2. Unmodified MCP POST "/" with disallowed tool returns 403 and never injects secret.
+	t.Run("unmodified_root_mcp_deny_write_tool", func(t *testing.T) {
+		stream, err := epClient.Process(context.Background())
+		if err != nil {
+			t.Fatalf("Process: %v", err)
+		}
+		defer func() { _ = stream.CloseSend() }()
+		_ = stream.Send(&extprocv3.ProcessingRequest{
+			Request: &extprocv3.ProcessingRequest_RequestHeaders{
+				RequestHeaders: &extprocv3.HttpHeaders{
+					EndOfStream: false,
+					Headers: &corev3.HeaderMap{
+						Headers: []*corev3.HeaderValue{
+							{Key: ":method", Value: "POST"},
+							{Key: ":path", Value: "/"},
+							{Key: ":authority", Value: "github-mcp.internal"},
+							{Key: "x-mesh-biscuit", Value: b64Biscuit},
+						},
+					},
+				},
+			},
+		})
+		if _, err := stream.Recv(); err != nil {
+			t.Fatalf("Recv Phase 1: %v", err)
+		}
+		_ = stream.Send(&extprocv3.ProcessingRequest{
+			Request: &extprocv3.ProcessingRequest_RequestBody{
+				RequestBody: &extprocv3.HttpBody{
+					Body:        []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"delete_repository"}}`),
+					EndOfStream: true,
+				},
+			},
+		})
+		r2, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv Phase 2: %v", err)
+		}
+		if r2.GetImmediateResponse().GetStatus().GetCode() != typev3.StatusCode_Forbidden {
+			t.Fatalf("expected 403 ImmediateResponse for delete_repository, got %+v", r2)
+		}
+	})
+
+	// 3. Unmodified MCP POST "/mcp/v1" with :authority containing explicit :443 port
+	// (must resolve to host-matched mcp://github-copilot, NOT misparse as mcp://v1).
+	t.Run("unmodified_subpath_mcp_with_port", func(t *testing.T) {
+		stream, err := epClient.Process(context.Background())
+		if err != nil {
+			t.Fatalf("Process: %v", err)
+		}
+		defer func() { _ = stream.CloseSend() }()
+		_ = stream.Send(&extprocv3.ProcessingRequest{
+			Request: &extprocv3.ProcessingRequest_RequestHeaders{
+				RequestHeaders: &extprocv3.HttpHeaders{
+					EndOfStream: false,
+					Headers: &corev3.HeaderMap{
+						Headers: []*corev3.HeaderValue{
+							{Key: ":method", Value: "POST"},
+							{Key: ":path", Value: "/mcp/v1"},
+							{Key: ":authority", Value: "api.githubcopilot.com:443"},
+							{Key: "x-mesh-biscuit", Value: b64Biscuit},
+						},
+					},
+				},
+			},
+		})
+		r1, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv Phase 1: %v", err)
+		}
+		if r1.GetModeOverride().GetRequestBodyMode() != extprocv3http.ProcessingMode_BUFFERED {
+			t.Fatalf("expected BUFFERED mode, got %+v", r1)
+		}
+		_ = stream.Send(&extprocv3.ProcessingRequest{
+			Request: &extprocv3.ProcessingRequest_RequestBody{
+				RequestBody: &extprocv3.HttpBody{
+					Body:        []byte(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"issue_read"}}`),
+					EndOfStream: true,
+				},
+			},
+		})
+		r2, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv Phase 2: %v", err)
+		}
+		if r2.GetImmediateResponse() != nil {
+			t.Fatalf("expected CONTINUE for issue_read on api.githubcopilot.com:443, got %+v", r2)
+		}
+	})
+
+	// 4. Unmodified Git Smart HTTP clone (GET /info/refs + POST /git-upload-pack) allowed without body buffering;
+	// push (POST /git-receive-pack) and unapproved repo denied 403 in Phase 1.
+	gitCases := []struct {
+		name      string
+		method    string
+		path      string
+		eos       bool
+		wantAllow bool
+	}{
+		{name: "clone_info_refs", method: "GET", path: "/google/agentmesh.git/info/refs?service=git-upload-pack", eos: true, wantAllow: true},
+		{name: "clone_upload_pack", method: "POST", path: "/google/agentmesh.git/git-upload-pack", eos: false, wantAllow: true},
+		{name: "push_receive_pack_denied", method: "POST", path: "/google/agentmesh.git/git-receive-pack", eos: false, wantAllow: false},
+		{name: "other_repo_denied", method: "GET", path: "/internal/secret-repo.git/info/refs?service=git-upload-pack", eos: true, wantAllow: false},
+	}
+	for _, tc := range gitCases {
+		t.Run(tc.name, func(t *testing.T) {
+			stream, err := epClient.Process(context.Background())
+			if err != nil {
+				t.Fatalf("Process: %v", err)
+			}
+			defer func() { _ = stream.CloseSend() }()
+			if err := stream.Send(&extprocv3.ProcessingRequest{
+				Request: &extprocv3.ProcessingRequest_RequestHeaders{
+					RequestHeaders: &extprocv3.HttpHeaders{
+						EndOfStream: tc.eos,
+						Headers: &corev3.HeaderMap{
+							Headers: []*corev3.HeaderValue{
+								{Key: ":method", Value: tc.method},
+								{Key: ":path", Value: tc.path},
+								{Key: ":authority", Value: "github.com"},
+								{Key: "x-mesh-biscuit", Value: b64Biscuit},
+							},
+						},
+					},
+				},
+			}); err != nil {
+				t.Fatalf("Send RequestHeaders: %v", err)
+			}
+			r1, err := stream.Recv()
+			if err != nil {
+				t.Fatalf("Recv RequestHeaders: %v", err)
+			}
+			if tc.wantAllow {
+				if r1.GetImmediateResponse() != nil {
+					t.Fatalf("expected ALLOW, got ImmediateResponse: %+v", r1.GetImmediateResponse())
+				}
+				if r1.GetModeOverride() != nil {
+					t.Fatalf("Git Smart HTTP must not buffer RequestBody, got ModeOverride=%+v", r1.GetModeOverride())
+				}
+			} else if r1.GetImmediateResponse().GetStatus().GetCode() != typev3.StatusCode_Forbidden {
+				t.Fatalf("expected 403 ImmediateResponse, got %+v", r1)
 			}
 		})
 	}

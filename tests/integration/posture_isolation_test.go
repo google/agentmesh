@@ -467,19 +467,23 @@ func TestDevicePostureAndWorkloadIsolationCUJ(t *testing.T) {
 	}
 	stamped := make(map[string]string)
 	for _, h := range okResp.GetOkResponse().GetHeaders() {
-		stamped[h.GetHeader().GetKey()] = h.GetHeader().GetValue()
+		k := h.GetHeader().GetKey()
+		if k != strings.ToLower(k) {
+			t.Errorf("ext_authz emitted non-lowercase HTTP/2 header key %q", k)
+		}
+		stamped[k] = h.GetHeader().GetValue()
 	}
-	if stamped[api.HeaderMeshPrincipal] != "alice@corp.example" {
-		t.Errorf("X-Mesh-Principal = %q, want alice@corp.example", stamped[api.HeaderMeshPrincipal])
+	if stamped[strings.ToLower(api.HeaderMeshPrincipal)] != "alice@corp.example" {
+		t.Errorf("X-Mesh-Principal = %q, want alice@corp.example", stamped[strings.ToLower(api.HeaderMeshPrincipal)])
 	}
-	if stamped[api.HeaderMeshOrigin] != api.MeshOriginGateway {
-		t.Errorf("X-Mesh-Origin = %q, want %q", stamped[api.HeaderMeshOrigin], api.MeshOriginGateway)
+	if stamped[strings.ToLower(api.HeaderMeshOrigin)] != api.MeshOriginGateway {
+		t.Errorf("X-Mesh-Origin = %q, want %q", stamped[strings.ToLower(api.HeaderMeshOrigin)], api.MeshOriginGateway)
 	}
-	if stamped[api.HeaderMeshClaims] != wantClaims {
-		t.Errorf("X-Mesh-Claims = %q, want %q", stamped[api.HeaderMeshClaims], wantClaims)
+	if stamped[strings.ToLower(api.HeaderMeshClaims)] != wantClaims {
+		t.Errorf("X-Mesh-Claims = %q, want %q", stamped[strings.ToLower(api.HeaderMeshClaims)], wantClaims)
 	}
-	if stamped[api.HeaderMeshTaskID] != "workstation-status-task" {
-		t.Errorf("X-Mesh-Task-Id = %q, want workstation-status-task", stamped[api.HeaderMeshTaskID])
+	if stamped[strings.ToLower(api.HeaderMeshTaskID)] != "workstation-status-task" {
+		t.Errorf("X-Mesh-Task-Id = %q, want workstation-status-task", stamped[strings.ToLower(api.HeaderMeshTaskID)])
 	}
 	removed := strings.Join(okResp.GetOkResponse().GetHeadersToRemove(), ",")
 	if !strings.Contains(removed, "x-mesh-spoofed") || !strings.Contains(removed, "x-peer-id") {
