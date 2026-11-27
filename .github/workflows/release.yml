@@ -139,10 +139,15 @@ jobs:
       - name: Stamp the release version on both SDKs
         run: ./hack/sdk-version.sh "${SDK_VERSION#v}"
       - name: Build agentmesh-p2p
+        # hatchling 1.32 and later write core metadata 2.5. The twine that the
+        # upload step pins refuses that version ("'2.5' is not a valid
+        # metadata version"), so the build takes the last hatchling that
+        # writes 2.4. Remove the constraint when the twine pin accepts 2.5.
         working-directory: sdk/python
         run: |
           python -m pip install --upgrade build
-          python -m build
+          echo "hatchling<1.32" > "$RUNNER_TEMP/build-constraints.txt"
+          PIP_CONSTRAINT="$RUNNER_TEMP/build-constraints.txt" python -m build
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
