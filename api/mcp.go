@@ -41,9 +41,9 @@ const (
 const DefaultMaxMCPBodyInspectBytes int64 = 4 << 20
 
 // InspectJSONRPCMCPBody inspects a JSON-RPC 2.0 request body for MCP methods
-// and extracts the tool name when present, or sets allowStreamInit for
-// session handshake, capability discovery, and protocol notification methods
-// that precede a tool call.
+// and extracts the tool name when present, or sets allowStreamInit for a
+// method that opens or keeps a session (MCPSessionMethod) and for the two
+// notifications that a client sends in a session.
 //
 // The backend receives the same bytes and reads them with its own parser, so
 // the method and the tool read here must be the ones every parser reads. A
@@ -68,11 +68,10 @@ func InspectJSONRPCMCPBody(body []byte) (mcpTool string, allowStreamInit bool) {
 	if err := json.Unmarshal(members["method"], &method); err != nil {
 		return "", false
 	}
-	switch method {
-	case "initialize", "notifications/initialized", "server/discover", "ping",
-		"tools/list", "resources/list", "prompts/list", "notifications/cancelled":
+	switch {
+	case MCPSessionMethod(method), method == "notifications/initialized", method == "notifications/cancelled":
 		return "", true
-	case "tools/call":
+	case method == "tools/call":
 		name, err := MCPToolCallName(members["params"])
 		if err != nil {
 			return "", false
@@ -81,6 +80,22 @@ func InspectJSONRPCMCPBody(body []byte) (mcpTool string, allowStreamInit bool) {
 	default:
 		return "", false
 	}
+}
+
+// MCPSessionMethod reports whether method is an MCP request that opens or
+// keeps a session and names no tool, resource or prompt of the service. A
+// task rule with allowed_tools allows these requests and a tools/call of a
+// tool that it lists, and denies every other request. allowed_tools grants
+// tools: it does not grant the lists of the resources or of the prompts.
+//
+// Every enforcement point takes the list from here, so a request that is
+// denied on a /mesh/mcp stream is denied on HTTP too.
+func MCPSessionMethod(method string) bool {
+	switch method {
+	case "initialize", "server/discover", "ping", "tools/list":
+		return true
+	}
+	return false
 }
 
 // MCPToolCallName returns the tool that the params of an MCP tools/call name.

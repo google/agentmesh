@@ -395,8 +395,8 @@ func (m *MCPService) authorizeMCPRequest(req *jsonrpc.Request, reqCtx RequestCon
 		logger.Warnf("[MCPService] %s: TAR dropped %q with no id from %s: %v", svcName, req.Method, reqCtx.PeerID, err)
 		return taskDenied(req.ID, req.Method+" with no id", err)
 	}
-	switch req.Method {
-	case "initialize", "ping", "tools/list":
+	switch {
+	case api.MCPSessionMethod(req.Method):
 		if err := api.EvaluateTaskRules(reqCtx.TaskRules, api.TaskRequestContext{
 			ServiceType:        "mcp",
 			ServiceName:        svcName,
@@ -406,7 +406,7 @@ func (m *MCPService) authorizeMCPRequest(req *jsonrpc.Request, reqCtx RequestCon
 			return taskDenied(req.ID, req.Method, err)
 		}
 		return nil
-	case "tools/call":
+	case req.Method == "tools/call":
 		// The params go to the backend as the same bytes: the tool checked
 		// here must be the one tool they name to every parser.
 		name, err := api.MCPToolCallName(req.Params)

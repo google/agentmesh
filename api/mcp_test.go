@@ -75,6 +75,20 @@ func TestInspectJSONRPCMCPBody(t *testing.T) {
 			wantTool:  "",
 			wantAllow: true,
 		},
+		// allowed_tools grants tools. A list of the resources or of the
+		// prompts is not a session method, as on a /mesh/mcp stream.
+		{
+			name:      "resources/list is not a session method",
+			body:      `{"jsonrpc":"2.0","id":1,"method":"resources/list"}`,
+			wantTool:  "",
+			wantAllow: false,
+		},
+		{
+			name:      "prompts/list is not a session method",
+			body:      `{"jsonrpc":"2.0","id":1,"method":"prompts/list"}`,
+			wantTool:  "",
+			wantAllow: false,
+		},
 		{
 			name:      "resources/read is not auth-free",
 			body:      `{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"file:///secret"}}`,
