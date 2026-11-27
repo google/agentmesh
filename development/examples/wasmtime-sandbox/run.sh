@@ -19,7 +19,7 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-AGENTMESH_VERSION="${AGENTMESH_VERSION:-v0.2.0}"
+AGENTMESH_VERSION="${AGENTMESH_VERSION:-v0.3.0}"
 VERSION_NO_V="${AGENTMESH_VERSION#v}"
 BIN_DIR="$(pwd)/run/bin"
 

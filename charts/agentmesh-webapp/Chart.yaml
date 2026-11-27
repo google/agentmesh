@@ -2,5 +2,5 @@ apiVersion: v2
 name: agentmesh-webapp
 description: A Helm chart for deploying Agent Mesh Connect, the web app that puts a browser on any Agent Mesh
 type: application
-version: 0.2.0
-appVersion: "v0.2.0"
+version: 0.3.0
+appVersion: "v0.3.0"
