@@ -288,7 +288,10 @@ match at least one `TaskRule` in every appended block.
 
 The enforcement point reads the method and the tool name (`params.name`) from
 a JSON-RPC message that the backend then reads with its own parser. The two
-must read the same call. A message that states
+must read the same call. The tool name is checked as the message states it:
+a name with spaces around it, or with a `scheme://service/` prefix, is not
+the tool of `allowed_tools` that it resembles, because the backend receives
+that name unchanged. A message that states
 `method`, `params` or the tool `name` more than once, or in a different letter
 case (`"METHOD"`, which a case-insensitive JSON parser reads as `method`),
 names no tool and no handshake method. A rule with `allowed_tools` then denies
