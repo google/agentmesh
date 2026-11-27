@@ -20,6 +20,7 @@ package envoy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"sort"
@@ -68,6 +69,12 @@ type CheckInput struct {
 	// authenticates the caller as the gateway. The Evaluator returns an
 	// upstream credential only when it is set.
 	TrustedTransport bool
+	// HeadersOnly is true during the ext_proc RequestHeaders pre-check when
+	// the request has a body that has not yet been buffered.
+	HeadersOnly bool
+	// ExtProcMode records the Envoy ext_proc ProtocolConfig summary (for
+	// audit logging) when invoked via ExternalProcessor.Process.
+	ExtProcMode string
 }
 
 // CheckResult represents the policy decision and header mutations returned by
@@ -77,6 +84,11 @@ type CheckResult struct {
 	HTTPStatus      int
 	Message         string
 	ResponseHeaders map[string]string
+	// NeedsRequestBody signals to ext_proc RequestHeaders that the resolved
+	// target requires buffering RequestBody (for example, an MCP service
+	// resolved by Host/Authority rather than by a /mcp path prefix) before
+	// finalizing the decision and mutating upstream headers.
+	NeedsRequestBody bool
 }
 
 // Evaluator evaluates a normalized CheckInput against Agent Mesh's Datalog and TAR policy.
@@ -242,12 +254,17 @@ func (s *GatewayServer) Check(ctx context.Context, req *authv3.CheckRequest) (*a
 		TrustedTransport:   trustedTransportFromContext(ctx),
 	})
 	if res.Allowed {
+		keys := make([]string, 0, len(res.ResponseHeaders))
+		for k := range res.ResponseHeaders {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
 		var hdrs []*corev3.HeaderValueOption
-		for k, v := range res.ResponseHeaders {
+		for _, k := range keys {
 			hdrs = append(hdrs, &corev3.HeaderValueOption{
 				Header: &corev3.HeaderValue{
-					Key:   k,
-					Value: v,
+					Key:   strings.ToLower(k),
+					Value: res.ResponseHeaders[k],
 				},
 				AppendAction: corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
 			})
@@ -286,11 +303,60 @@ func (s *GatewayServer) Check(ctx context.Context, req *authv3.CheckRequest) (*a
 	}, nil
 }
 
+func isFullDuplexBodyMode(mode extprocv3http.ProcessingMode_BodySendMode) bool {
+	return mode == extprocv3http.ProcessingMode_FULL_DUPLEX_STREAMED
+}
+
+func formatExtProcMode(req *extprocv3.ProcessingRequest) string {
+	pc := req.GetProtocolConfig()
+	if pc == nil && req.GetFlowControlInit() == nil {
+		return ""
+	}
+	if pc == nil {
+		return "flow_control_init=true"
+	}
+	return fmt.Sprintf("req=%s,resp=%s,send_body_nowait=%t,flow_control=%t",
+		pc.GetRequestBodyMode().String(),
+		pc.GetResponseBodyMode().String(),
+		pc.GetSendBodyWithoutWaitingForHeaderResponse(),
+		req.GetFlowControlInit() != nil,
+	)
+}
+
+func buildFullDuplexBodyResponse(isResponse bool, body []byte, endOfStream bool) *extprocv3.ProcessingResponse {
+	bodyResp := &extprocv3.BodyResponse{
+		Response: &extprocv3.CommonResponse{
+			BodyMutation: &extprocv3.BodyMutation{
+				Mutation: &extprocv3.BodyMutation_StreamedResponse{
+					StreamedResponse: &extprocv3.StreamedBodyResponse{
+						Body:        body,
+						EndOfStream: endOfStream,
+					},
+				},
+			},
+		},
+	}
+	if isResponse {
+		return &extprocv3.ProcessingResponse{
+			Response: &extprocv3.ProcessingResponse_ResponseBody{
+				ResponseBody: bodyResp,
+			},
+		}
+	}
+	return &extprocv3.ProcessingResponse{
+		Response: &extprocv3.ProcessingResponse_RequestBody{
+			RequestBody: bodyResp,
+		},
+	}
+}
+
 // Process implements envoy.service.ext_proc.v3.ExternalProcessorServer.
 func (s *GatewayServer) Process(stream extprocv3.ExternalProcessor_ProcessServer) error {
 	var capturedHeaders map[string]string
-	var capturedMethod, capturedPath, capturedHost string
-	var pendingCheck bool
+	var capturedMethod, capturedPath, capturedHost, extProcMode string
+	var pendingCheck, deferHeaderResponse bool
+	var isFullDuplexReq, isFullDuplexResp, sendBodyNoWait bool
+	var bodyBuf []byte
 
 	for {
 		req, err := stream.Recv()
@@ -301,9 +367,24 @@ func (s *GatewayServer) Process(stream extprocv3.ExternalProcessor_ProcessServer
 			return err
 		}
 
-		var resp *extprocv3.ProcessingResponse
+		if pc := req.GetProtocolConfig(); pc != nil {
+			isFullDuplexReq = isFullDuplexBodyMode(pc.GetRequestBodyMode())
+			isFullDuplexResp = isFullDuplexBodyMode(pc.GetResponseBodyMode())
+			sendBodyNoWait = pc.GetSendBodyWithoutWaitingForHeaderResponse()
+		}
+		if req.GetFlowControlInit() != nil && !isFullDuplexReq {
+			isFullDuplexReq = true
+		}
+		if modeStr := formatExtProcMode(req); modeStr != "" {
+			extProcMode = modeStr
+		}
+
+		var responses []*extprocv3.ProcessingResponse
 		switch phase := req.GetRequest().(type) {
 		case *extprocv3.ProcessingRequest_RequestHeaders:
+			pendingCheck = false
+			deferHeaderResponse = false
+			bodyBuf = nil
 			capturedHeaders = make(map[string]string)
 			for _, hv := range phase.RequestHeaders.GetHeaders().GetHeaders() {
 				k := strings.ToLower(hv.GetKey())
@@ -322,40 +403,131 @@ func (s *GatewayServer) Process(stream extprocv3.ExternalProcessor_ProcessServer
 
 			// The tool of an MCP tools/call is in the body, so ext_proc asks
 			// Envoy for the body of a POST to an MCP service and decides when
-			// it arrives. Every other request is decided now, with no tool and
-			// no handshake allowance: a task rule with allowed_tools denies it.
-			if !phase.RequestHeaders.GetEndOfStream() &&
-				strings.EqualFold(capturedMethod, http.MethodPost) &&
-				isMCPRoute(capturedPath, capturedHeaders[strings.ToLower(api.HeaderMeshTargetService)]) {
-				preResp := s.evaluateExtProcDecision(stream.Context(), capturedMethod, capturedPath, capturedHost, capturedHeaders, "", false, true)
-				if preResp.GetImmediateResponse() != nil {
-					resp = preResp
-				} else {
+			// it arrives. A POST with a body is also pre-checked with
+			// HeadersOnly=true so a host-resolved MCP service (without a /mcp
+			// path prefix) can request body buffering via NeedsRequestBody.
+			mcpRoute := isMCPRoute(capturedPath, capturedHeaders[strings.ToLower(api.HeaderMeshTargetService)])
+			canBufferBody := !phase.RequestHeaders.GetEndOfStream() &&
+				strings.EqualFold(capturedMethod, http.MethodPost)
+			if canBufferBody {
+				preRes := s.eval(stream.Context(), CheckInput{
+					Method:             capturedMethod,
+					Path:               capturedPath,
+					Host:               capturedHost,
+					Headers:            capturedHeaders,
+					AllowMCPStreamInit: true,
+					HeadersOnly:        true,
+					TrustedTransport:   trustedTransportFromContext(stream.Context()),
+					ExtProcMode:        extProcMode,
+				})
+				if !preRes.Allowed {
+					responses = append(responses, buildExtProcResponse(preRes, capturedHeaders, false))
+				} else if mcpRoute || preRes.NeedsRequestBody {
 					pendingCheck = true
-					resp = &extprocv3.ProcessingResponse{
-						Response: &extprocv3.ProcessingResponse_RequestHeaders{
-							RequestHeaders: &extprocv3.HeadersResponse{
-								Response: &extprocv3.CommonResponse{
-									Status: extprocv3.CommonResponse_CONTINUE,
+					if isFullDuplexReq {
+						if sendBodyNoWait {
+							// Envoy streams RequestBody without waiting for HeadersResponse;
+							// defer header mutation until Phase 2 authorizes the MCP tool.
+							deferHeaderResponse = true
+						} else {
+							// FULL_DUPLEX_STREAMED waits for HeadersResponse before streaming
+							// RequestBody and applies HeaderMutation only on HeadersResponse.
+							// Stamp verified provenance headers now (never backend secrets);
+							// Phase 2 still blocks disallowed tools with ImmediateResponse
+							// before any RequestBody bytes are forwarded upstream.
+							responses = append(responses, buildExtProcResponse(preRes, capturedHeaders, false))
+						}
+					} else {
+						responses = append(responses, &extprocv3.ProcessingResponse{
+							Response: &extprocv3.ProcessingResponse_RequestHeaders{
+								RequestHeaders: &extprocv3.HeadersResponse{
+									Response: &extprocv3.CommonResponse{
+										Status: extprocv3.CommonResponse_CONTINUE,
+									},
 								},
 							},
-						},
-						ModeOverride: &extprocv3http.ProcessingMode{
-							RequestBodyMode: extprocv3http.ProcessingMode_BUFFERED,
-						},
+							ModeOverride: &extprocv3http.ProcessingMode{
+								RequestBodyMode: extprocv3http.ProcessingMode_BUFFERED,
+							},
+						})
 					}
+				} else {
+					responses = append(responses, buildExtProcResponse(preRes, capturedHeaders, false))
 				}
 			} else {
-				resp = s.evaluateExtProcDecision(stream.Context(), capturedMethod, capturedPath, capturedHost, capturedHeaders, "", false, false)
+				responses = append(responses, s.evaluateExtProcDecision(stream.Context(), capturedMethod, capturedPath, capturedHost, capturedHeaders, "", false, false, extProcMode))
 			}
 
 		case *extprocv3.ProcessingRequest_RequestBody:
 			if pendingCheck {
+				chunk := phase.RequestBody.GetBody()
+				if len(bodyBuf)+len(chunk) > MaxHTTPBodyBytes {
+					pendingCheck = false
+					deferHeaderResponse = false
+					bodyBuf = nil
+					responses = append(responses, &extprocv3.ProcessingResponse{
+						Response: &extprocv3.ProcessingResponse_ImmediateResponse{
+							ImmediateResponse: &extprocv3.ImmediateResponse{
+								Status:  &typev3.HttpStatus{Code: typev3.StatusCode_PayloadTooLarge},
+								Body:    []byte("request body exceeds inspection limit"),
+								Details: "mesh_ext_proc_denied",
+							},
+						},
+					})
+					break
+				}
+				if !phase.RequestBody.GetEndOfStream() {
+					if !isFullDuplexReq {
+						// In half-duplex STREAMED mode, answering CONTINUE on a non-final
+						// chunk releases those bytes upstream before the full JSON-RPC
+						// body is inspected (and Envoy ignores HeaderMutation on
+						// BodyResponse outside BUFFERED mode). Fail closed on chunk 1 so
+						// zero unverified body bytes leave Envoy; MCP body authorization
+						// requires BUFFERED (or allow_mode_override) or FULL_DUPLEX_STREAMED.
+						pendingCheck = false
+						deferHeaderResponse = false
+						bodyBuf = nil
+						responses = append(responses, &extprocv3.ProcessingResponse{
+							Response: &extprocv3.ProcessingResponse_ImmediateResponse{
+								ImmediateResponse: &extprocv3.ImmediateResponse{
+									Status:  &typev3.HttpStatus{Code: typev3.StatusCode_Forbidden},
+									Body:    []byte("MCP body authorization requires BUFFERED or FULL_DUPLEX_STREAMED request body mode; partial STREAMED chunk rejected"),
+									Details: "mesh_ext_proc_denied",
+								},
+							},
+						})
+						break
+					}
+					// FULL_DUPLEX_STREAMED buffers silently until EndOfStream (or
+					// RequestTrailers) so zero bytes of a forbidden tool call leave Envoy.
+					bodyBuf = append(bodyBuf, chunk...)
+					break
+				}
+				bodyBuf = append(bodyBuf, chunk...)
 				pendingCheck = false
-				mcpTool, allowStreamInit := InspectJSONRPCMCPBody(phase.RequestBody.GetBody())
-				resp = s.evaluateExtProcDecision(stream.Context(), capturedMethod, capturedPath, capturedHost, capturedHeaders, mcpTool, true, allowStreamInit)
+				fullBody := bodyBuf
+				bodyBuf = nil
+				if isFullDuplexReq {
+					res := s.evaluateExtProcBodyResult(stream.Context(), capturedMethod, capturedPath, capturedHost, capturedHeaders, fullBody, extProcMode)
+					if !res.Allowed {
+						deferHeaderResponse = false
+						responses = append(responses, buildExtProcResponse(res, capturedHeaders, false))
+					} else {
+						if deferHeaderResponse {
+							deferHeaderResponse = false
+							responses = append(responses, buildExtProcResponse(res, capturedHeaders, false))
+						}
+						responses = append(responses, buildFullDuplexBodyResponse(false, fullBody, true))
+					}
+				} else {
+					responses = append(responses, s.finalizeExtProcBodyCheck(stream.Context(), capturedMethod, capturedPath, capturedHost, capturedHeaders, fullBody, true, extProcMode))
+				}
+			} else if isFullDuplexReq {
+				// Echo non-inspected request body chunks verbatim in FULL_DUPLEX_STREAMED
+				// mode so Envoy does not strip the request body.
+				responses = append(responses, buildFullDuplexBodyResponse(false, phase.RequestBody.GetBody(), phase.RequestBody.GetEndOfStream()))
 			} else {
-				resp = &extprocv3.ProcessingResponse{
+				responses = append(responses, &extprocv3.ProcessingResponse{
 					Response: &extprocv3.ProcessingResponse_RequestBody{
 						RequestBody: &extprocv3.BodyResponse{
 							Response: &extprocv3.CommonResponse{
@@ -363,18 +535,21 @@ func (s *GatewayServer) Process(stream extprocv3.ExternalProcessor_ProcessServer
 							},
 						},
 					},
-				}
+				})
 			}
 
 		case *extprocv3.ProcessingRequest_ResponseHeaders:
 			if pendingCheck {
 				pendingCheck = false
-				if denyResp := s.evaluateExtProcDecision(stream.Context(), capturedMethod, capturedPath, capturedHost, capturedHeaders, "", false, false); denyResp.GetImmediateResponse() != nil {
-					resp = denyResp
+				deferHeaderResponse = false
+				fullBody := bodyBuf
+				bodyBuf = nil
+				if denyResp := s.finalizeExtProcBodyCheck(stream.Context(), capturedMethod, capturedPath, capturedHost, capturedHeaders, fullBody, false, extProcMode); denyResp.GetImmediateResponse() != nil {
+					responses = append(responses, denyResp)
 					break
 				}
 			}
-			resp = &extprocv3.ProcessingResponse{
+			responses = append(responses, &extprocv3.ProcessingResponse{
 				Response: &extprocv3.ProcessingResponse_ResponseHeaders{
 					ResponseHeaders: &extprocv3.HeadersResponse{
 						Response: &extprocv3.CommonResponse{
@@ -382,42 +557,63 @@ func (s *GatewayServer) Process(stream extprocv3.ExternalProcessor_ProcessServer
 						},
 					},
 				},
-			}
+			})
 
 		case *extprocv3.ProcessingRequest_ResponseBody:
-			resp = &extprocv3.ProcessingResponse{
-				Response: &extprocv3.ProcessingResponse_ResponseBody{
-					ResponseBody: &extprocv3.BodyResponse{
-						Response: &extprocv3.CommonResponse{
-							Status: extprocv3.CommonResponse_CONTINUE,
+			if isFullDuplexResp {
+				responses = append(responses, buildFullDuplexBodyResponse(true, phase.ResponseBody.GetBody(), phase.ResponseBody.GetEndOfStream()))
+			} else {
+				responses = append(responses, &extprocv3.ProcessingResponse{
+					Response: &extprocv3.ProcessingResponse_ResponseBody{
+						ResponseBody: &extprocv3.BodyResponse{
+							Response: &extprocv3.CommonResponse{
+								Status: extprocv3.CommonResponse_CONTINUE,
+							},
 						},
 					},
-				},
+				})
 			}
 
 		case *extprocv3.ProcessingRequest_RequestTrailers:
 			if pendingCheck {
 				pendingCheck = false
-				if denyResp := s.evaluateExtProcDecision(stream.Context(), capturedMethod, capturedPath, capturedHost, capturedHeaders, "", false, false); denyResp.GetImmediateResponse() != nil {
-					resp = denyResp
+				fullBody := bodyBuf
+				bodyBuf = nil
+				if isFullDuplexReq {
+					res := s.evaluateExtProcBodyResult(stream.Context(), capturedMethod, capturedPath, capturedHost, capturedHeaders, fullBody, extProcMode)
+					if !res.Allowed {
+						deferHeaderResponse = false
+						responses = append(responses, buildExtProcResponse(res, capturedHeaders, false))
+						break
+					}
+					if deferHeaderResponse {
+						deferHeaderResponse = false
+						responses = append(responses, buildExtProcResponse(res, capturedHeaders, false))
+					}
+					responses = append(responses, buildFullDuplexBodyResponse(false, fullBody, false))
+				} else if denyResp := s.finalizeExtProcBodyCheck(stream.Context(), capturedMethod, capturedPath, capturedHost, capturedHeaders, fullBody, false, extProcMode); denyResp.GetImmediateResponse() != nil {
+					responses = append(responses, denyResp)
 					break
 				}
 			}
-			resp = &extprocv3.ProcessingResponse{
+			responses = append(responses, &extprocv3.ProcessingResponse{
 				Response: &extprocv3.ProcessingResponse_RequestTrailers{
 					RequestTrailers: &extprocv3.TrailersResponse{},
 				},
-			}
+			})
 
 		case *extprocv3.ProcessingRequest_ResponseTrailers:
-			resp = &extprocv3.ProcessingResponse{
+			responses = append(responses, &extprocv3.ProcessingResponse{
 				Response: &extprocv3.ProcessingResponse_ResponseTrailers{
 					ResponseTrailers: &extprocv3.TrailersResponse{},
 				},
-			}
+			})
 		}
 
-		if resp != nil {
+		for _, resp := range responses {
+			if resp == nil {
+				continue
+			}
 			if err := stream.Send(resp); err != nil {
 				return err
 			}
@@ -428,7 +624,31 @@ func (s *GatewayServer) Process(stream extprocv3.ExternalProcessor_ProcessServer
 	}
 }
 
-func (s *GatewayServer) evaluateExtProcDecision(ctx context.Context, method, path, host string, headers map[string]string, mcpTool string, isBodyPhase, allowMCPStreamInit bool) *extprocv3.ProcessingResponse {
+func (s *GatewayServer) evaluateExtProcBodyResult(ctx context.Context, method, path, host string, headers map[string]string, body []byte, extProcMode string) CheckResult {
+	var mcpTool string
+	var allowStreamInit bool
+	if len(body) > 0 {
+		mcpTool, allowStreamInit = InspectJSONRPCMCPBody(body)
+	}
+	return s.eval(ctx, CheckInput{
+		Method:             method,
+		Path:               path,
+		Host:               host,
+		Headers:            headers,
+		Body:               body,
+		MCPTool:            mcpTool,
+		AllowMCPStreamInit: allowStreamInit,
+		TrustedTransport:   trustedTransportFromContext(ctx),
+		ExtProcMode:        extProcMode,
+	})
+}
+
+func (s *GatewayServer) finalizeExtProcBodyCheck(ctx context.Context, method, path, host string, headers map[string]string, body []byte, isBodyPhase bool, extProcMode string) *extprocv3.ProcessingResponse {
+	res := s.evaluateExtProcBodyResult(ctx, method, path, host, headers, body, extProcMode)
+	return buildExtProcResponse(res, headers, isBodyPhase)
+}
+
+func (s *GatewayServer) evaluateExtProcDecision(ctx context.Context, method, path, host string, headers map[string]string, mcpTool string, isBodyPhase, allowMCPStreamInit bool, extProcMode string) *extprocv3.ProcessingResponse {
 	res := s.eval(ctx, CheckInput{
 		Method:             method,
 		Path:               path,
@@ -437,7 +657,12 @@ func (s *GatewayServer) evaluateExtProcDecision(ctx context.Context, method, pat
 		MCPTool:            mcpTool,
 		AllowMCPStreamInit: allowMCPStreamInit,
 		TrustedTransport:   trustedTransportFromContext(ctx),
+		ExtProcMode:        extProcMode,
 	})
+	return buildExtProcResponse(res, headers, isBodyPhase)
+}
+
+func buildExtProcResponse(res CheckResult, headers map[string]string, isBodyPhase bool) *extprocv3.ProcessingResponse {
 	if !res.Allowed {
 		status := typev3.StatusCode_Forbidden
 		if res.HTTPStatus == http.StatusUnauthorized {
@@ -454,12 +679,18 @@ func (s *GatewayServer) evaluateExtProcDecision(ctx context.Context, method, pat
 		}
 	}
 
+	keys := make([]string, 0, len(res.ResponseHeaders))
+	for k := range res.ResponseHeaders {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
 	var setHeaders []*corev3.HeaderValueOption
-	for k, v := range res.ResponseHeaders {
+	for _, k := range keys {
 		setHeaders = append(setHeaders, &corev3.HeaderValueOption{
 			Header: &corev3.HeaderValue{
-				Key:      k,
-				RawValue: []byte(v),
+				// Envoy HTTP/2 HeaderMutation requires lowercase header names (RFC 9113).
+				Key:      strings.ToLower(k),
+				RawValue: []byte(res.ResponseHeaders[k]),
 			},
 			AppendAction: corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
 		})

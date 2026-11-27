@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -428,6 +429,58 @@ func (r *ServiceRegistry) List(typeFilter api.ServiceType) []*api.ServiceInfo {
 		out = append(out, info)
 	}
 	return out
+}
+
+// ResolveMCPByHostPath matches an inbound Host/Authority and request path
+// against registered URL-backed MCP services using longest segment-boundary
+// path prefix matching. Returns ambiguous=true if two distinct MCP services
+// tie for the most specific match so callers fail closed.
+func (r *ServiceRegistry) ResolveMCPByHostPath(normHost, reqPath string) (name string, ambiguous bool) {
+	if normHost == "" {
+		return "", false
+	}
+	if reqPath == "" {
+		reqPath = "/"
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	bestLen := -1
+	for _, svc := range r.services {
+		info := svc.Info()
+		if info.GetType() != api.ServiceType_SERVICE_TYPE_MCP {
+			continue
+		}
+		mcpSvc, ok := svc.(*MCPService)
+		if !ok {
+			continue
+		}
+		bt, ok := mcpSvc.targetBackend()
+		if !ok {
+			continue
+		}
+		targetHost := api.NormalizeMeshHost(bt.url.Hostname())
+		if targetHost == "" || targetHost != normHost {
+			continue
+		}
+		basePath := strings.TrimRight(bt.url.Path, "/")
+		if basePath != "" && reqPath != basePath && !strings.HasPrefix(reqPath, basePath+"/") {
+			continue
+		}
+		matchLen := len(basePath)
+		switch {
+		case matchLen > bestLen:
+			bestLen = matchLen
+			name = info.GetName()
+			ambiguous = false
+		case matchLen == bestLen && info.GetName() != name:
+			ambiguous = true
+		}
+	}
+	if ambiguous {
+		return "", true
+	}
+	return name, false
 }
 
 // insertService inserts a service into the registry without calling Init or

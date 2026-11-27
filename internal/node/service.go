@@ -86,6 +86,20 @@ func newReverseProxy(targetURL string) (*httputil.ReverseProxy, error) {
 func (b *baseService) Info() *api.ServiceInfo { return b.info }
 func (b *baseService) Handler() http.Handler  { return b.handler }
 
+// targetBackend parses the configured target_url backend without exposing
+// credentials in the returned URL. Returns false for non-URL backends.
+func (b *baseService) targetBackend() (backendTarget, bool) {
+	t, ok := b.backend.(*api.RegisterServiceRequest_TargetUrl)
+	if !ok || t == nil || t.TargetUrl == "" {
+		return backendTarget{}, false
+	}
+	bt, err := parseBackendTarget(t.TargetUrl)
+	if err != nil || bt.url == nil {
+		return backendTarget{}, false
+	}
+	return bt, true
+}
+
 // Init builds the ingress handler for the backend: URL -> reverse-proxy,
 // Command -> StdioBridge, one process shared by every caller, with the
 // bridge owning the id space and the MCP handshake. Probes and tool

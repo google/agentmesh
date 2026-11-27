@@ -192,6 +192,67 @@ func TestServiceRegistry_ListFiltersByType(t *testing.T) {
 	}
 }
 
+func TestServiceRegistry_ResolveMCPByHostPath(t *testing.T) {
+	r := newServiceRegistryForTest(&fakeDHT{})
+	insertMCP := func(name, targetURL string) {
+		r.insertService(&MCPService{
+			baseService: baseService{
+				info:    &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_MCP, Name: name},
+				backend: &api.RegisterServiceRequest_TargetUrl{TargetUrl: targetURL},
+			},
+		})
+	}
+	insertMCP("github-copilot", "https://:secret@api.githubcopilot.com/mcp")
+	insertMCP("root-mcp", "https://tools.example.com")
+	insertMCP("sub-mcp", "https://tools.example.com/v2/mcp")
+	// Command-backed MCP and non-MCP services must be ignored.
+	r.insertService(&MCPService{
+		baseService: baseService{
+			info:    &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_MCP, Name: "stdio-mcp"},
+			backend: &api.RegisterServiceRequest_Command{Command: &api.CommandBackend{Command: []string{"echo"}}},
+		},
+	})
+	r.insertService(&A2AService{
+		baseService: baseService{
+			info:    &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_A2A, Name: "other-a2a"},
+			backend: &api.RegisterServiceRequest_TargetUrl{TargetUrl: "https://a2a.example.com/"},
+		},
+	})
+
+	cases := []struct {
+		name      string
+		host      string
+		path      string
+		wantName  string
+		wantAmbig bool
+	}{
+		{name: "exact subpath", host: "api.githubcopilot.com", path: "/mcp", wantName: "github-copilot"},
+		{name: "trailing slash subpath", host: "api.githubcopilot.com", path: "/mcp/", wantName: "github-copilot"},
+		{name: "nested subpath", host: "api.githubcopilot.com", path: "/mcp/tools", wantName: "github-copilot"},
+		{name: "segment boundary rejects sibling prefix", host: "api.githubcopilot.com", path: "/mcp-other", wantName: ""},
+		{name: "root target matches any path", host: "tools.example.com", path: "/rpc", wantName: "root-mcp"},
+		{name: "longest prefix wins over root", host: "tools.example.com", path: "/v2/mcp/call", wantName: "sub-mcp"},
+		{name: "non-MCP service ignored", host: "a2a.example.com", path: "/", wantName: ""},
+		{name: "unknown host", host: "unknown.example.com", path: "/mcp", wantName: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ambig := r.ResolveMCPByHostPath(tc.host, tc.path)
+			if got != tc.wantName || ambig != tc.wantAmbig {
+				t.Fatalf("ResolveMCPByHostPath(%q, %q) = (%q, %v), want (%q, %v)", tc.host, tc.path, got, ambig, tc.wantName, tc.wantAmbig)
+			}
+		})
+	}
+
+	// Two distinct MCP services matching the same host+prefix must fail closed as ambiguous.
+	insertMCP("dup-a", "https://dup.example.com/mcp")
+	insertMCP("dup-b", "https://dup.example.com/mcp/")
+	got, ambig := r.ResolveMCPByHostPath("dup.example.com", "/mcp/")
+	if got != "" || !ambig {
+		t.Fatalf("ambiguous match = (%q, %v), want (\"\", true)", got, ambig)
+	}
+}
+
 func TestServiceRegistry_TeardownAllContinuesOnError(t *testing.T) {
 	r := newServiceRegistryForTest(&fakeDHT{})
 	a := newFakeSvc("a", api.ServiceType_SERVICE_TYPE_MCP)

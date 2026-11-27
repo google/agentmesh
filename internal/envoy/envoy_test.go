@@ -267,7 +267,7 @@ func TestGatewayServer_TrustedTransport(t *testing.T) {
 	}
 	seenIn := func(headers []*corev3.HeaderValueOption) string {
 		for _, h := range headers {
-			if h.GetHeader().GetKey() == seenHeader {
+			if h.GetHeader().GetKey() == strings.ToLower(seenHeader) {
 				return h.GetHeader().GetValue() + string(h.GetHeader().GetRawValue())
 			}
 		}
@@ -483,6 +483,12 @@ func TestGatewayServer_ExtProcProcess(t *testing.T) {
 	if r2.GetImmediateResponse() != nil {
 		t.Fatalf("unexpected ImmediateResponse: %+v", r2.GetImmediateResponse())
 	}
+	for _, h := range r2.GetRequestBody().GetResponse().GetHeaderMutation().GetSetHeaders() {
+		k := h.GetHeader().GetKey()
+		if k != strings.ToLower(k) {
+			t.Errorf("ext_proc SetHeaders emitted non-lowercase HTTP/2 header key %q", k)
+		}
+	}
 	extProcRemoved := r2.GetRequestBody().GetResponse().GetHeaderMutation().GetRemoveHeaders()
 	for _, wantRemoved := range []string{"x-mesh-labels", "x-peer-id"} {
 		found := false
@@ -687,6 +693,715 @@ func TestGatewayServer_ExtAuthzWithoutBody(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGatewayServer_ExtProcNeedsRequestBodyAndStreamingPost(t *testing.T) {
+	gw := NewGatewayServer(func(_ context.Context, in CheckInput) CheckResult {
+		if in.Host == "github-mcp.internal" {
+			if in.HeadersOnly && in.MCPTool == "" {
+				return CheckResult{
+					Allowed:          true,
+					HTTPStatus:       http.StatusOK,
+					NeedsRequestBody: true,
+				}
+			}
+			if in.MCPTool != "list_issues" {
+				return CheckResult{
+					Allowed:    false,
+					HTTPStatus: http.StatusForbidden,
+					Message:    "tool denied",
+				}
+			}
+			return CheckResult{
+				Allowed:    true,
+				HTTPStatus: http.StatusOK,
+				ResponseHeaders: map[string]string{
+					api.HeaderMeshPrincipal: "capsule@example.com",
+					"Authorization":         "Bearer mcp-secret",
+				},
+			}
+		}
+		if in.Host == "github.com" && in.Path == "/google/agentmesh.git/git-upload-pack" {
+			return CheckResult{
+				Allowed:    true,
+				HTTPStatus: http.StatusOK,
+				ResponseHeaders: map[string]string{
+					api.HeaderMeshPrincipal: "capsule@example.com",
+				},
+			}
+		}
+		return CheckResult{
+			Allowed:    false,
+			HTTPStatus: http.StatusForbidden,
+			Message:    "path denied",
+		}
+	})
+	addr := startH2CGatewayTestServer(t, gw)
+
+	conn, err := grpc.NewClient("passthrough:///"+addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	procClient := extprocv3.NewExternalProcessorClient(conn)
+
+	// 1. Host-resolved MCP mounted at "/" (no /mcp path, no X-Mesh-Target-Service) buffers via NeedsRequestBody.
+	stream, err := procClient.Process(context.Background())
+	if err != nil {
+		t.Fatalf("Process mcp allow: %v", err)
+	}
+	if err := stream.Send(&extprocv3.ProcessingRequest{
+		Request: &extprocv3.ProcessingRequest_RequestHeaders{
+			RequestHeaders: &extprocv3.HttpHeaders{
+				EndOfStream: false,
+				Headers: &corev3.HeaderMap{
+					Headers: []*corev3.HeaderValue{
+						{Key: ":method", Value: "POST"},
+						{Key: ":path", Value: "/"},
+						{Key: ":authority", Value: "github-mcp.internal"},
+					},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Send RequestHeaders: %v", err)
+	}
+	r1, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv RequestHeaders: %v", err)
+	}
+	if r1.GetModeOverride().GetRequestBodyMode() != extprocv3http.ProcessingMode_BUFFERED {
+		t.Fatalf("expected ModeOverride BUFFERED via NeedsRequestBody, got %+v", r1)
+	}
+	if r1.GetRequestHeaders().GetResponse().GetHeaderMutation() != nil {
+		t.Fatalf("Phase 1 pre-check must not mutate/inject credentials before body evaluation: %+v", r1)
+	}
+	if err := stream.Send(&extprocv3.ProcessingRequest{
+		Request: &extprocv3.ProcessingRequest_RequestBody{
+			RequestBody: &extprocv3.HttpBody{
+				Body:        []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_issues"}}`),
+				EndOfStream: true,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Send RequestBody: %v", err)
+	}
+	r2, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv RequestBody: %v", err)
+	}
+	if r2.GetImmediateResponse() != nil {
+		t.Fatalf("expected CONTINUE for allowed tool, got %+v", r2)
+	}
+	_ = stream.CloseSend()
+
+	// 2. Non-MCP POST (Git Smart HTTP git-upload-pack) decides on headers without buffering RequestBody.
+	streamGit, err := procClient.Process(context.Background())
+	if err != nil {
+		t.Fatalf("Process git POST: %v", err)
+	}
+	if err := streamGit.Send(&extprocv3.ProcessingRequest{
+		Request: &extprocv3.ProcessingRequest_RequestHeaders{
+			RequestHeaders: &extprocv3.HttpHeaders{
+				EndOfStream: false,
+				Headers: &corev3.HeaderMap{
+					Headers: []*corev3.HeaderValue{
+						{Key: ":method", Value: "POST"},
+						{Key: ":path", Value: "/google/agentmesh.git/git-upload-pack"},
+						{Key: ":authority", Value: "github.com"},
+					},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Send git RequestHeaders: %v", err)
+	}
+	rGit, err := streamGit.Recv()
+	if err != nil {
+		t.Fatalf("Recv git RequestHeaders: %v", err)
+	}
+	if rGit.GetModeOverride() != nil {
+		t.Fatalf("non-MCP POST must not request body buffering, got ModeOverride=%+v", rGit.GetModeOverride())
+	}
+	if rGit.GetRequestHeaders().GetResponse().GetHeaderMutation() == nil {
+		t.Fatalf("expected Phase 1 HeaderMutation for non-MCP POST, got %+v", rGit)
+	}
+	_ = streamGit.CloseSend()
+}
+
+func TestGatewayServer_ExtProcPartialStreamedRejectedAndLimits(t *testing.T) {
+	gw := NewGatewayServer(func(_ context.Context, in CheckInput) CheckResult {
+		if in.HeadersOnly && in.MCPTool == "" {
+			return CheckResult{Allowed: true, HTTPStatus: http.StatusOK, NeedsRequestBody: true}
+		}
+		if in.MCPTool != "list_issues" {
+			return CheckResult{Allowed: false, HTTPStatus: http.StatusForbidden, Message: "tool denied"}
+		}
+		return CheckResult{
+			Allowed:    true,
+			HTTPStatus: http.StatusOK,
+			ResponseHeaders: map[string]string{
+				api.HeaderMeshPrincipal: "capsule@example.com",
+			},
+		}
+	})
+	addr := startH2CGatewayTestServer(t, gw)
+
+	conn, err := grpc.NewClient("passthrough:///"+addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	procClient := extprocv3.NewExternalProcessorClient(conn)
+
+	sendMCPHeaders := func(t *testing.T, stream extprocv3.ExternalProcessor_ProcessClient, fullDuplex bool) {
+		t.Helper()
+		req := &extprocv3.ProcessingRequest{
+			Request: &extprocv3.ProcessingRequest_RequestHeaders{
+				RequestHeaders: &extprocv3.HttpHeaders{
+					EndOfStream: false,
+					Headers: &corev3.HeaderMap{
+						Headers: []*corev3.HeaderValue{
+							{Key: ":method", Value: "POST"},
+							{Key: ":path", Value: "/mcp"},
+							{Key: ":authority", Value: "github-mcp.internal"},
+						},
+					},
+				},
+			},
+		}
+		if fullDuplex {
+			req.ProtocolConfig = &extprocv3.ProtocolConfiguration{
+				RequestBodyMode:  extprocv3http.ProcessingMode_FULL_DUPLEX_STREAMED,
+				ResponseBodyMode: extprocv3http.ProcessingMode_FULL_DUPLEX_STREAMED,
+			}
+		}
+		if err := stream.Send(req); err != nil {
+			t.Fatalf("Send RequestHeaders: %v", err)
+		}
+		r, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv RequestHeaders: %v", err)
+		}
+		if r.GetImmediateResponse() != nil {
+			t.Fatalf("unexpected Phase 1 ImmediateResponse: %+v", r)
+		}
+	}
+
+	// 1. Half-duplex STREAMED partial chunks (EndOfStream=false without
+	// FULL_DUPLEX_STREAMED) must fail closed on chunk 1 with 403 ImmediateResponse
+	// so zero bytes leave Envoy before the full body is authorized.
+	for _, tc := range []struct {
+		name       string
+		firstChunk string
+	}{
+		{
+			name:       "excluded_tool_in_first_chunk",
+			firstChunk: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"delete_repository"}}`,
+		},
+		{
+			name:       "allowed_tool_in_first_chunk_smuggling_guard",
+			firstChunk: `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_issues"}}`,
+		},
+		{
+			name:       "partial_json_fragment_in_first_chunk",
+			firstChunk: `{"jsonrpc":"2.0","id":3,"method":"tools/`,
+		},
+	} {
+		t.Run("half_duplex_streamed_rejects_"+tc.name, func(t *testing.T) {
+			stream, err := procClient.Process(context.Background())
+			if err != nil {
+				t.Fatalf("Process: %v", err)
+			}
+			defer func() { _ = stream.CloseSend() }()
+			sendMCPHeaders(t, stream, false)
+
+			if err := stream.Send(&extprocv3.ProcessingRequest{
+				Request: &extprocv3.ProcessingRequest_RequestBody{
+					RequestBody: &extprocv3.HttpBody{Body: []byte(tc.firstChunk), EndOfStream: false},
+				},
+			}); err != nil {
+				t.Fatalf("Send chunk 1: %v", err)
+			}
+			r, err := stream.Recv()
+			if err != nil {
+				t.Fatalf("Recv chunk 1: %v", err)
+			}
+			if r.GetImmediateResponse().GetStatus().GetCode() != typev3.StatusCode_Forbidden {
+				t.Fatalf("expected 403 ImmediateResponse on first partial STREAMED chunk, got %+v", r)
+			}
+		})
+	}
+
+	// 2. Oversized BUFFERED body (> MaxHTTPBodyBytes) fails closed with 413 Payload Too Large.
+	t.Run("buffered_body_overflow_413", func(t *testing.T) {
+		stream, err := procClient.Process(context.Background())
+		if err != nil {
+			t.Fatalf("Process: %v", err)
+		}
+		defer func() { _ = stream.CloseSend() }()
+		sendMCPHeaders(t, stream, false)
+
+		oversized := bytes.Repeat([]byte("a"), MaxHTTPBodyBytes+1)
+		if err := stream.Send(&extprocv3.ProcessingRequest{
+			Request: &extprocv3.ProcessingRequest_RequestBody{
+				RequestBody: &extprocv3.HttpBody{Body: oversized, EndOfStream: true},
+			},
+		}); err != nil {
+			t.Fatalf("Send oversized body: %v", err)
+		}
+		r, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv oversized body: %v", err)
+		}
+		if r.GetImmediateResponse().GetStatus().GetCode() != typev3.StatusCode_PayloadTooLarge {
+			t.Fatalf("expected 413 PayloadTooLarge ImmediateResponse, got %+v", r)
+		}
+	})
+
+	// 3. FULL_DUPLEX_STREAMED safely buffers multi-chunk and trailers-terminated
+	// bodies silently (zero responses until EndOfStream / RequestTrailers),
+	// preventing any forbidden chunk from leaving Envoy.
+	for _, tc := range []struct {
+		name      string
+		chunks    []string
+		wantAllow bool
+	}{
+		{
+			name:      "full_duplex_chunks_allow",
+			chunks:    []string{`{"jsonrpc":"2.0","id":1,"method":"tools/`, `call","params":{"name":"list_`, `issues"}}`},
+			wantAllow: true,
+		},
+		{
+			name:      "full_duplex_excluded_tool_in_first_chunk_newline_in_second",
+			chunks:    []string{`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"delete_repository"}}`, "\n"},
+			wantAllow: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stream, err := procClient.Process(context.Background())
+			if err != nil {
+				t.Fatalf("Process: %v", err)
+			}
+			defer func() { _ = stream.CloseSend() }()
+			sendMCPHeaders(t, stream, true)
+
+			for i, ch := range tc.chunks {
+				isLast := i == len(tc.chunks)-1
+				if err := stream.Send(&extprocv3.ProcessingRequest{
+					Request: &extprocv3.ProcessingRequest_RequestBody{
+						RequestBody: &extprocv3.HttpBody{Body: []byte(ch), EndOfStream: isLast},
+					},
+				}); err != nil {
+					t.Fatalf("Send chunk %d: %v", i, err)
+				}
+			}
+			r, err := stream.Recv()
+			if err != nil {
+				t.Fatalf("Recv final decision: %v", err)
+			}
+			if tc.wantAllow {
+				sr := r.GetRequestBody().GetResponse().GetBodyMutation().GetStreamedResponse()
+				wantBody := strings.Join(tc.chunks, "")
+				if sr == nil || string(sr.GetBody()) != wantBody || !sr.GetEndOfStream() {
+					t.Fatalf("expected StreamedBodyResponse %q (eos=true), got %+v", wantBody, r)
+				}
+			} else if r.GetImmediateResponse().GetStatus().GetCode() != typev3.StatusCode_Forbidden {
+				t.Fatalf("expected 403 ImmediateResponse without echoing body, got %+v", r)
+			}
+		})
+	}
+
+	// 4. Trailers-terminated FULL_DUPLEX_STREAMED body (last body chunk has
+	// EndOfStream=false, followed by RequestTrailers).
+	for _, tc := range []struct {
+		name      string
+		body      string
+		wantAllow bool
+	}{
+		{name: "full_duplex_trailers_allow", body: `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_issues"}}`, wantAllow: true},
+		{name: "full_duplex_trailers_deny", body: `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"issue_write"}}`, wantAllow: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stream, err := procClient.Process(context.Background())
+			if err != nil {
+				t.Fatalf("Process: %v", err)
+			}
+			defer func() { _ = stream.CloseSend() }()
+			sendMCPHeaders(t, stream, true)
+
+			if err := stream.Send(&extprocv3.ProcessingRequest{
+				Request: &extprocv3.ProcessingRequest_RequestBody{
+					RequestBody: &extprocv3.HttpBody{Body: []byte(tc.body), EndOfStream: false},
+				},
+			}); err != nil {
+				t.Fatalf("Send body: %v", err)
+			}
+			if err := stream.Send(&extprocv3.ProcessingRequest{
+				Request: &extprocv3.ProcessingRequest_RequestTrailers{
+					RequestTrailers: &extprocv3.HttpTrailers{},
+				},
+			}); err != nil {
+				t.Fatalf("Send RequestTrailers: %v", err)
+			}
+			r1, err := stream.Recv()
+			if err != nil {
+				t.Fatalf("Recv after RequestTrailers: %v", err)
+			}
+			if !tc.wantAllow {
+				if r1.GetImmediateResponse().GetStatus().GetCode() != typev3.StatusCode_Forbidden {
+					t.Fatalf("expected 403 ImmediateResponse at trailers, got %+v", r1)
+				}
+				return
+			}
+			sr := r1.GetRequestBody().GetResponse().GetBodyMutation().GetStreamedResponse()
+			if sr == nil || string(sr.GetBody()) != tc.body || sr.GetEndOfStream() {
+				t.Fatalf("expected StreamedBodyResponse %q (eos=false), got %+v", tc.body, r1)
+			}
+			rTr, err := stream.Recv()
+			if err != nil {
+				t.Fatalf("Recv TrailersResponse: %v", err)
+			}
+			if rTr.GetRequestTrailers() == nil {
+				t.Fatalf("expected RequestTrailers response, got %+v", rTr)
+			}
+		})
+	}
+
+	// 5. Oversized multi-chunk FULL_DUPLEX_STREAMED body (> MaxHTTPBodyBytes) fails closed with 413.
+	t.Run("full_duplex_body_overflow_413", func(t *testing.T) {
+		stream, err := procClient.Process(context.Background())
+		if err != nil {
+			t.Fatalf("Process: %v", err)
+		}
+		defer func() { _ = stream.CloseSend() }()
+		sendMCPHeaders(t, stream, true)
+
+		half := bytes.Repeat([]byte("a"), (MaxHTTPBodyBytes/2)+1)
+		if err := stream.Send(&extprocv3.ProcessingRequest{
+			Request: &extprocv3.ProcessingRequest_RequestBody{
+				RequestBody: &extprocv3.HttpBody{Body: half, EndOfStream: false},
+			},
+		}); err != nil {
+			t.Fatalf("Send chunk 1: %v", err)
+		}
+		if err := stream.Send(&extprocv3.ProcessingRequest{
+			Request: &extprocv3.ProcessingRequest_RequestBody{
+				RequestBody: &extprocv3.HttpBody{Body: half, EndOfStream: false},
+			},
+		}); err != nil {
+			t.Fatalf("Send chunk 2: %v", err)
+		}
+		r, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv overflow response: %v", err)
+		}
+		if r.GetImmediateResponse().GetStatus().GetCode() != typev3.StatusCode_PayloadTooLarge {
+			t.Fatalf("expected 413 PayloadTooLarge ImmediateResponse, got %+v", r)
+		}
+	})
+}
+
+func TestGatewayServer_ExtProcFullDuplexStreamed(t *testing.T) {
+	gw := NewGatewayServer(func(_ context.Context, in CheckInput) CheckResult {
+		if in.Host == "mcp.example.com" {
+			if in.HeadersOnly && in.MCPTool == "" {
+				return CheckResult{
+					Allowed:          true,
+					HTTPStatus:       http.StatusOK,
+					NeedsRequestBody: true,
+					ResponseHeaders: map[string]string{
+						api.HeaderMeshPrincipal: "spiffe://agent",
+						api.HeaderMeshTaskID:    "tasks/ro",
+					},
+				}
+			}
+			if in.MCPTool != "list_issues" {
+				return CheckResult{Allowed: false, HTTPStatus: http.StatusForbidden, Message: "tool denied"}
+			}
+			return CheckResult{
+				Allowed:    true,
+				HTTPStatus: http.StatusOK,
+				ResponseHeaders: map[string]string{
+					api.HeaderMeshPrincipal: "spiffe://agent",
+					api.HeaderMeshTaskID:    "tasks/ro",
+					"Authorization":         "Bearer mcp-secret",
+				},
+			}
+		}
+		if in.Host == "github.com" && in.Path == "/google/agentmesh.git/git-upload-pack" {
+			return CheckResult{
+				Allowed:    true,
+				HTTPStatus: http.StatusOK,
+				ResponseHeaders: map[string]string{
+					api.HeaderMeshPrincipal: "spiffe://agent",
+				},
+			}
+		}
+		return CheckResult{Allowed: false, HTTPStatus: http.StatusForbidden, Message: "denied"}
+	})
+	addr := startH2CGatewayTestServer(t, gw)
+
+	conn, err := grpc.NewClient("passthrough:///"+addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("grpc.NewClient: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	procClient := extprocv3.NewExternalProcessorClient(conn)
+
+	// 1. FULL_DUPLEX_STREAMED (SendBodyWithoutWaitingForHeaderResponse=false):
+	// matches Google Cloud Agent Gateway CONTENT_AUTHZ.
+	// Allowed MCP call stamps provenance headers on RequestHeaders (no secret),
+	// echoes full request body via StreamedResponse on RequestBody, and echoes
+	// ResponseBody chunks via StreamedResponse.
+	t.Run("full_duplex_mcp_allow_and_echo_req_resp_bodies", func(t *testing.T) {
+		stream, err := procClient.Process(context.Background())
+		if err != nil {
+			t.Fatalf("Process: %v", err)
+		}
+		defer func() { _ = stream.CloseSend() }()
+
+		if err := stream.Send(&extprocv3.ProcessingRequest{
+			ProtocolConfig: &extprocv3.ProtocolConfiguration{
+				RequestBodyMode:                         extprocv3http.ProcessingMode_FULL_DUPLEX_STREAMED,
+				ResponseBodyMode:                        extprocv3http.ProcessingMode_FULL_DUPLEX_STREAMED,
+				SendBodyWithoutWaitingForHeaderResponse: false,
+			},
+			Request: &extprocv3.ProcessingRequest_RequestHeaders{
+				RequestHeaders: &extprocv3.HttpHeaders{
+					EndOfStream: false,
+					Headers: &corev3.HeaderMap{
+						Headers: []*corev3.HeaderValue{
+							{Key: ":method", Value: "POST"},
+							{Key: ":path", Value: "/mcp"},
+							{Key: ":authority", Value: "mcp.example.com"},
+							{Key: "x-mesh-claims", Value: "forged=true"},
+							{Key: "x-peer-id", Value: "spoofed"},
+						},
+					},
+				},
+			},
+		}); err != nil {
+			t.Fatalf("Send RequestHeaders: %v", err)
+		}
+		rHdr, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv RequestHeaders: %v", err)
+		}
+		if rHdr.GetModeOverride() != nil {
+			t.Fatalf("FULL_DUPLEX_STREAMED must not emit conflicting ModeOverride: %+v", rHdr.GetModeOverride())
+		}
+		mut := rHdr.GetRequestHeaders().GetResponse().GetHeaderMutation()
+		if mut == nil {
+			t.Fatalf("expected HeaderMutation on FULL_DUPLEX_STREAMED RequestHeaders, got nil")
+		}
+		sawTaskID := false
+		for _, h := range mut.GetSetHeaders() {
+			k := h.GetHeader().GetKey()
+			if k != strings.ToLower(k) {
+				t.Errorf("non-lowercase header key %q", k)
+			}
+			if k == "authorization" {
+				t.Errorf("Phase 1 FULL_DUPLEX_STREAMED must not inject backend Authorization secret")
+			}
+			if k == "x-mesh-task-id" && string(h.GetHeader().GetRawValue()) == "tasks/ro" {
+				sawTaskID = true
+			}
+		}
+		if !sawTaskID {
+			t.Errorf("missing x-mesh-task-id provenance header in %+v", mut.GetSetHeaders())
+		}
+
+		// Send body split across 2 chunks; server must buffer silently until EndOfStream=true.
+		chunk1 := `{"jsonrpc":"2.0","id":1,"method":"tools/call",`
+		chunk2 := `"params":{"name":"list_issues"}}`
+		if err := stream.Send(&extprocv3.ProcessingRequest{
+			Request: &extprocv3.ProcessingRequest_RequestBody{
+				RequestBody: &extprocv3.HttpBody{Body: []byte(chunk1), EndOfStream: false},
+			},
+		}); err != nil {
+			t.Fatalf("Send chunk1: %v", err)
+		}
+		if err := stream.Send(&extprocv3.ProcessingRequest{
+			Request: &extprocv3.ProcessingRequest_RequestBody{
+				RequestBody: &extprocv3.HttpBody{Body: []byte(chunk2), EndOfStream: true},
+			},
+		}); err != nil {
+			t.Fatalf("Send chunk2: %v", err)
+		}
+		rBody, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv RequestBody: %v", err)
+		}
+		sr := rBody.GetRequestBody().GetResponse().GetBodyMutation().GetStreamedResponse()
+		if sr == nil || string(sr.GetBody()) != chunk1+chunk2 || !sr.GetEndOfStream() {
+			t.Fatalf("expected StreamedResponse echoing full body with EndOfStream=true, got %+v", rBody)
+		}
+
+		// Upstream ResponseBody must also echo via StreamedResponse in FULL_DUPLEX_STREAMED mode.
+		respPayload := `{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`
+		if err := stream.Send(&extprocv3.ProcessingRequest{
+			Request: &extprocv3.ProcessingRequest_ResponseBody{
+				ResponseBody: &extprocv3.HttpBody{Body: []byte(respPayload), EndOfStream: true},
+			},
+		}); err != nil {
+			t.Fatalf("Send ResponseBody: %v", err)
+		}
+		rRespBody, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv ResponseBody: %v", err)
+		}
+		respSR := rRespBody.GetResponseBody().GetResponse().GetBodyMutation().GetStreamedResponse()
+		if respSR == nil || string(respSR.GetBody()) != respPayload || !respSR.GetEndOfStream() {
+			t.Fatalf("expected ResponseBody StreamedResponse echoing payload, got %+v", rRespBody)
+		}
+	})
+
+	// 2. FULL_DUPLEX_STREAMED MCP deny returns 403 ImmediateResponse without echoing body.
+	t.Run("full_duplex_mcp_deny_blocks_body", func(t *testing.T) {
+		stream, err := procClient.Process(context.Background())
+		if err != nil {
+			t.Fatalf("Process: %v", err)
+		}
+		defer func() { _ = stream.CloseSend() }()
+		_ = stream.Send(&extprocv3.ProcessingRequest{
+			ProtocolConfig: &extprocv3.ProtocolConfiguration{
+				RequestBodyMode:  extprocv3http.ProcessingMode_FULL_DUPLEX_STREAMED,
+				ResponseBodyMode: extprocv3http.ProcessingMode_FULL_DUPLEX_STREAMED,
+			},
+			Request: &extprocv3.ProcessingRequest_RequestHeaders{
+				RequestHeaders: &extprocv3.HttpHeaders{
+					EndOfStream: false,
+					Headers: &corev3.HeaderMap{
+						Headers: []*corev3.HeaderValue{
+							{Key: ":method", Value: "POST"},
+							{Key: ":path", Value: "/mcp"},
+							{Key: ":authority", Value: "mcp.example.com"},
+						},
+					},
+				},
+			},
+		})
+		if _, err := stream.Recv(); err != nil {
+			t.Fatalf("Recv RequestHeaders: %v", err)
+		}
+		_ = stream.Send(&extprocv3.ProcessingRequest{
+			Request: &extprocv3.ProcessingRequest_RequestBody{
+				RequestBody: &extprocv3.HttpBody{
+					Body:        []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"delete_repository"}}`),
+					EndOfStream: true,
+				},
+			},
+		})
+		rDeny, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv deny: %v", err)
+		}
+		if rDeny.GetImmediateResponse().GetStatus().GetCode() != typev3.StatusCode_Forbidden {
+			t.Fatalf("expected 403 ImmediateResponse, got %+v", rDeny)
+		}
+	})
+
+	// 3. FULL_DUPLEX_STREAMED with SendBodyWithoutWaitingForHeaderResponse=true defers
+	// HeadersResponse until Phase 2, then sends HeadersResponse (including Authorization)
+	// followed by BodyResponse StreamedResponse.
+	t.Run("full_duplex_send_body_nowait_defers_headers_with_secret", func(t *testing.T) {
+		stream, err := procClient.Process(context.Background())
+		if err != nil {
+			t.Fatalf("Process: %v", err)
+		}
+		defer func() { _ = stream.CloseSend() }()
+		_ = stream.Send(&extprocv3.ProcessingRequest{
+			ProtocolConfig: &extprocv3.ProtocolConfiguration{
+				RequestBodyMode:                         extprocv3http.ProcessingMode_FULL_DUPLEX_STREAMED,
+				ResponseBodyMode:                        extprocv3http.ProcessingMode_FULL_DUPLEX_STREAMED,
+				SendBodyWithoutWaitingForHeaderResponse: true,
+			},
+			Request: &extprocv3.ProcessingRequest_RequestHeaders{
+				RequestHeaders: &extprocv3.HttpHeaders{
+					EndOfStream: false,
+					Headers: &corev3.HeaderMap{
+						Headers: []*corev3.HeaderValue{
+							{Key: ":method", Value: "POST"},
+							{Key: ":path", Value: "/mcp"},
+							{Key: ":authority", Value: "mcp.example.com"},
+						},
+					},
+				},
+			},
+		})
+		body := `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_issues"}}`
+		_ = stream.Send(&extprocv3.ProcessingRequest{
+			Request: &extprocv3.ProcessingRequest_RequestBody{
+				RequestBody: &extprocv3.HttpBody{Body: []byte(body), EndOfStream: true},
+			},
+		})
+		rHdr, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv deferred RequestHeaders: %v", err)
+		}
+		sawAuth := false
+		for _, h := range rHdr.GetRequestHeaders().GetResponse().GetHeaderMutation().GetSetHeaders() {
+			if h.GetHeader().GetKey() == "authorization" && string(h.GetHeader().GetRawValue()) == "Bearer mcp-secret" {
+				sawAuth = true
+			}
+		}
+		if !sawAuth {
+			t.Fatalf("expected deferred HeadersResponse with injected authorization, got %+v", rHdr)
+		}
+		rBody, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv deferred RequestBody: %v", err)
+		}
+		sr := rBody.GetRequestBody().GetResponse().GetBodyMutation().GetStreamedResponse()
+		if sr == nil || string(sr.GetBody()) != body || !sr.GetEndOfStream() {
+			t.Fatalf("expected StreamedResponse echoing body, got %+v", rBody)
+		}
+	})
+
+	// 4. Non-MCP POST (Git Smart HTTP git-upload-pack) in FULL_DUPLEX_STREAMED mode
+	// streams body chunks straight through via StreamedResponse without buffering.
+	t.Run("full_duplex_non_mcp_post_streams_verbatim", func(t *testing.T) {
+		stream, err := procClient.Process(context.Background())
+		if err != nil {
+			t.Fatalf("Process: %v", err)
+		}
+		defer func() { _ = stream.CloseSend() }()
+		_ = stream.Send(&extprocv3.ProcessingRequest{
+			ProtocolConfig: &extprocv3.ProtocolConfiguration{
+				RequestBodyMode:  extprocv3http.ProcessingMode_FULL_DUPLEX_STREAMED,
+				ResponseBodyMode: extprocv3http.ProcessingMode_FULL_DUPLEX_STREAMED,
+			},
+			Request: &extprocv3.ProcessingRequest_RequestHeaders{
+				RequestHeaders: &extprocv3.HttpHeaders{
+					EndOfStream: false,
+					Headers: &corev3.HeaderMap{
+						Headers: []*corev3.HeaderValue{
+							{Key: ":method", Value: "POST"},
+							{Key: ":path", Value: "/google/agentmesh.git/git-upload-pack"},
+							{Key: ":authority", Value: "github.com"},
+						},
+					},
+				},
+			},
+		})
+		if rHdr, err := stream.Recv(); err != nil || rHdr.GetImmediateResponse() != nil {
+			t.Fatalf("Recv git headers: err=%v resp=%+v", err, rHdr)
+		}
+		_ = stream.Send(&extprocv3.ProcessingRequest{
+			Request: &extprocv3.ProcessingRequest_RequestBody{
+				RequestBody: &extprocv3.HttpBody{Body: []byte("0032want abc\n0000"), EndOfStream: true},
+			},
+		})
+		rBody, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv git body: %v", err)
+		}
+		sr := rBody.GetRequestBody().GetResponse().GetBodyMutation().GetStreamedResponse()
+		if sr == nil || string(sr.GetBody()) != "0032want abc\n0000" || !sr.GetEndOfStream() {
+			t.Fatalf("expected git packfile chunk echoed verbatim, got %+v", rBody)
+		}
+	})
 }
 
 type referenceCalloutServer struct {

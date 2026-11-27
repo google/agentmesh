@@ -19,11 +19,14 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/google/agentmesh/api"
 	"github.com/google/agentmesh/internal/envoy"
+	"github.com/google/agentmesh/internal/identity"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -74,6 +77,14 @@ func evaluateExtAuthz(ctx context.Context, node *AgentMeshNode, in extAuthzCheck
 
 	rawBiscuit, status, err := extractAndVerifyExtAuthzBiscuit(ctx, node, in.Headers)
 	if err != nil {
+		logger.Warnw("ExtAuthz denied",
+			"stage", "credential",
+			"method", in.Method,
+			"host", in.Host,
+			"path", in.Path,
+			"status", status,
+			"reason", err.Error(),
+		)
 		return extAuthzCheckResult{
 			Allowed:    false,
 			HTTPStatus: status,
@@ -83,6 +94,14 @@ func evaluateExtAuthz(ctx context.Context, node *AgentMeshNode, in extAuthzCheck
 
 	claims, err := node.VerifyLocalBiscuit(rawBiscuit)
 	if err != nil {
+		logger.Warnw("ExtAuthz denied",
+			"stage", "verify_biscuit",
+			"method", in.Method,
+			"host", in.Host,
+			"path", in.Path,
+			"status", http.StatusForbidden,
+			"reason", err.Error(),
+		)
 		return extAuthzCheckResult{
 			Allowed:    false,
 			HTTPStatus: http.StatusForbidden,
@@ -92,6 +111,15 @@ func evaluateExtAuthz(ctx context.Context, node *AgentMeshNode, in extAuthzCheck
 
 	target, reqPath := resolveExtAuthzTarget(node, in)
 	if target == "" {
+		logger.Warnw("ExtAuthz denied",
+			"stage", "target_resolution",
+			"method", in.Method,
+			"host", in.Host,
+			"path", in.Path,
+			"header_keys", sortedHeaderKeys(in.Headers),
+			"status", http.StatusForbidden,
+			"reason", "unable to resolve target service",
+		)
 		return extAuthzCheckResult{
 			Allowed:    false,
 			HTTPStatus: http.StatusForbidden,
@@ -115,6 +143,15 @@ func evaluateExtAuthz(ctx context.Context, node *AgentMeshNode, in extAuthzCheck
 	if len(claims.TaskRules) > 0 && claims.ClientPeerID != "" {
 		pid, decErr := peer.Decode(claims.ClientPeerID)
 		if decErr != nil {
+			logger.Warnw("ExtAuthz denied",
+				"stage", "client_peer_id",
+				"method", in.Method,
+				"host", in.Host,
+				"path", in.Path,
+				"target", target,
+				"status", http.StatusBadRequest,
+				"reason", decErr.Error(),
+			)
 			return extAuthzCheckResult{
 				Allowed:    false,
 				HTTPStatus: http.StatusBadRequest,
@@ -159,35 +196,42 @@ func evaluateExtAuthz(ctx context.Context, node *AgentMeshNode, in extAuthzCheck
 		}
 	}
 
-	respHeaders := map[string]string{
-		api.HeaderMeshBiscuit:   base64.StdEncoding.EncodeToString(rawBiscuit),
-		api.HeaderMeshPrincipal: claims.Principal(),
-		api.HeaderMeshRoles:     strings.Join(claims.Roles, ","),
-		api.HeaderMeshOrigin:    api.MeshOriginGateway,
+	if in.ExtProcMode != "" {
+		logger.Infow("ExtProc protocol config", "target", target, "method", method, "path", reqPath, "headers_only", in.HeadersOnly, "mode", in.ExtProcMode)
 	}
-	if formattedClaims := api.FormatClaims(claims.Claims); formattedClaims != "" {
-		respHeaders[api.HeaderMeshClaims] = formattedClaims
-	}
-	if formattedLabels := api.FormatLabels(claims.Labels); formattedLabels != "" {
-		respHeaders[api.HeaderMeshLabels] = formattedLabels
-	}
-	actorNode := claims.ActorNodePeerID
-	if actorNode == "" {
-		actorNode = claims.NodePeerID
-	}
-	if actorNode == "" {
-		actorNode = claims.ClientPeerID
-	}
-	if actorNode != "" {
-		respHeaders[api.HeaderMeshActorNode] = actorNode
-	}
-	if len(claims.TaskRules) > 0 {
-		lastRule := claims.TaskRules[len(claims.TaskRules)-1]
-		if taskJSON, mErr := (protojson.MarshalOptions{UseProtoNames: true}).Marshal(lastRule); mErr == nil {
-			respHeaders[api.HeaderMeshTask] = string(taskJSON)
+
+	respHeaders := buildExtAuthzProvenanceHeaders(rawBiscuit, claims)
+
+	var mcpTargetAuth string
+	if after, ok := strings.CutPrefix(target, api.MCPServicePrefix); ok && node.services != nil {
+		if svc, ok := node.services.GetTyped(api.ServiceType_SERVICE_TYPE_MCP, after); ok {
+			if mcpSvc, ok := svc.(*MCPService); ok {
+				if bt, ok := mcpSvc.targetBackend(); ok && bt.auth != "" {
+					if !in.TrustedTransport {
+						logger.Warnf("[ExtAuthz] Check for %s by %s refused: %s", target, claims.Principal(), upstreamCredentialTransportRule)
+						return extAuthzCheckResult{
+							Allowed:    false,
+							HTTPStatus: http.StatusForbidden,
+							Message:    "Forbidden: " + upstreamCredentialTransportRule,
+						}
+					}
+					mcpTargetAuth = bt.auth
+				}
+			}
 		}
-		if lastRule.GetName() != "" {
-			respHeaders[api.HeaderMeshTaskID] = lastRule.GetName()
+	}
+
+	// During the ext_proc RequestHeaders pre-check on an MCP POST without an
+	// extracted tool name, return verified provenance headers (for FULL_DUPLEX_STREAMED
+	// gateways that only accept HeaderMutation on RequestHeaders) while deferring
+	// backend credential injection until RequestBody is evaluated against TAR
+	// allowed_tools.
+	if in.HeadersOnly && strings.HasPrefix(target, api.MCPServicePrefix) && strings.EqualFold(method, http.MethodPost) && reqCtx.MCPTool == "" {
+		return extAuthzCheckResult{
+			Allowed:          true,
+			HTTPStatus:       http.StatusOK,
+			ResponseHeaders:  respHeaders,
+			NeedsRequestBody: true,
 		}
 	}
 	if after, ok := strings.CutPrefix(target, api.EgressServicePrefix); ok && node.services != nil {
@@ -216,6 +260,8 @@ func evaluateExtAuthz(ctx context.Context, node *AgentMeshNode, in extAuthzCheck
 				}
 			}
 		}
+	} else if mcpTargetAuth != "" {
+		respHeaders["Authorization"] = mcpTargetAuth
 	}
 
 	return extAuthzCheckResult{
@@ -263,6 +309,53 @@ func extractAndVerifyExtAuthzBiscuit(ctx context.Context, node *AgentMeshNode, h
 	return nil, http.StatusForbidden, errors.New("forbidden: unrecognizable credential")
 }
 
+func buildExtAuthzProvenanceHeaders(rawBiscuit []byte, claims *identity.VerifiedBiscuitClaims) map[string]string {
+	respHeaders := map[string]string{
+		api.HeaderMeshBiscuit:   base64.StdEncoding.EncodeToString(rawBiscuit),
+		api.HeaderMeshPrincipal: claims.Principal(),
+		api.HeaderMeshRoles:     strings.Join(claims.Roles, ","),
+		api.HeaderMeshOrigin:    api.MeshOriginGateway,
+	}
+	if formattedClaims := api.FormatClaims(claims.Claims); formattedClaims != "" {
+		respHeaders[api.HeaderMeshClaims] = formattedClaims
+	}
+	if formattedLabels := api.FormatLabels(claims.Labels); formattedLabels != "" {
+		respHeaders[api.HeaderMeshLabels] = formattedLabels
+	}
+	actorNode := claims.ActorNodePeerID
+	if actorNode == "" {
+		actorNode = claims.NodePeerID
+	}
+	if actorNode == "" {
+		actorNode = claims.ClientPeerID
+	}
+	if actorNode != "" {
+		respHeaders[api.HeaderMeshActorNode] = actorNode
+	}
+	if len(claims.TaskRules) > 0 {
+		lastRule := claims.TaskRules[len(claims.TaskRules)-1]
+		if taskJSON, mErr := (protojson.MarshalOptions{UseProtoNames: true}).Marshal(lastRule); mErr == nil {
+			respHeaders[api.HeaderMeshTask] = string(taskJSON)
+		}
+		if lastRule.GetName() != "" {
+			respHeaders[api.HeaderMeshTaskID] = lastRule.GetName()
+		}
+	}
+	return respHeaders
+}
+
+func sortedHeaderKeys(headers map[string]string) []string {
+	if len(headers) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(headers))
+	for k := range headers {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func isExtAuthzServiceScheme(scheme string) bool {
 	switch scheme {
 	case api.ServiceTypeStringMCP, api.ServiceTypeStringInference, api.ServiceTypeStringA2A, api.ServiceTypeStringEgress, "http":
@@ -270,6 +363,40 @@ func isExtAuthzServiceScheme(scheme string) bool {
 	default:
 		return false
 	}
+}
+
+func extractHostName(authority string) string {
+	h := strings.TrimSpace(authority)
+	if h == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(h); err == nil {
+		h = host
+	}
+	return api.NormalizeMeshHost(h)
+}
+
+func parseSchemePathTarget(trimmed string) (target, reqPath string) {
+	parts := strings.SplitN(trimmed, "/", 3)
+	if len(parts) < 2 {
+		return "", ""
+	}
+	scheme := strings.ToLower(parts[0])
+	if !isExtAuthzServiceScheme(scheme) {
+		return "", ""
+	}
+	name := parts[1]
+	if scheme == api.ServiceTypeStringEgress {
+		name = api.NormalizeMeshHost(name)
+	}
+	if name == "" {
+		return "", ""
+	}
+	rest := "/"
+	if len(parts) == 3 {
+		rest = "/" + parts[2]
+	}
+	return scheme + "://" + name, rest
 }
 
 func resolveExtAuthzTarget(node *AgentMeshNode, in extAuthzCheckInput) (target, reqPath string) {
@@ -290,41 +417,35 @@ func resolveExtAuthzTarget(node *AgentMeshNode, in extAuthzCheckInput) (target, 
 		}
 		return "", path
 	}
-	trimmed := strings.TrimPrefix(path, "/mesh/")
-	trimmed = strings.TrimPrefix(trimmed, "/")
-	parts := strings.SplitN(trimmed, "/", 3)
-	if len(parts) >= 2 {
-		scheme := strings.ToLower(parts[0])
-		if isExtAuthzServiceScheme(scheme) {
-			name := parts[1]
-			if scheme == api.ServiceTypeStringEgress {
-				name = api.NormalizeMeshHost(name)
-			}
-			rest := "/"
-			if len(parts) == 3 {
-				rest = "/" + parts[2]
-			}
-			if name != "" {
-				return scheme + "://" + name, rest
-			}
-		}
-	}
 	if strings.HasPrefix(path, "/mesh/") {
+		if t, rest := parseSchemePathTarget(strings.TrimPrefix(path, "/mesh/")); t != "" {
+			return t, rest
+		}
 		if route, ok := parseEgressRoute(path); ok && isExtAuthzServiceScheme(route.serviceType) {
 			up := "/" + route.upstreamPath
 			return route.serviceType + "://" + route.serviceName, up
 		}
 	}
-	if node != nil && node.services != nil && strings.TrimSpace(in.Host) != "" {
-		normHost := api.NormalizeMeshHost(in.Host)
-		if normHost != "" {
+	if node != nil && node.services != nil {
+		if normHost := extractHostName(in.Host); normHost != "" {
+			if path == "" {
+				path = "/"
+			}
+			mcpName, ambiguous := node.services.ResolveMCPByHostPath(normHost, path)
+			if ambiguous {
+				logger.Warnf("[ExtAuthz] ambiguous MCP host/path match for host=%q path=%q; denying fail-closed", normHost, path)
+				return "", path
+			}
+			if mcpName != "" {
+				return api.MCPServicePrefix + mcpName, path
+			}
 			if _, ok := node.services.GetTyped(api.ServiceType_SERVICE_TYPE_EGRESS, normHost); ok {
-				if path == "" {
-					path = "/"
-				}
 				return api.EgressServicePrefix + normHost, path
 			}
 		}
+	}
+	if t, rest := parseSchemePathTarget(strings.TrimPrefix(path, "/")); t != "" {
+		return t, rest
 	}
 	return "", path
 }

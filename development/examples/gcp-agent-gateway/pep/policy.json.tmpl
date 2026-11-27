@@ -1,0 +1,53 @@
+{
+  "attested_claims": [
+    "azp",
+    "email_verified",
+    "google.compute_engine.project_id"
+  ],
+  "roles": [
+    {
+      "name": "mesh:role:router",
+      "allowed_services": ["*"],
+      "allowed_targets": ["*"]
+    },
+    {
+      "name": "mesh:role:node",
+      "allowed_labels": ["role=*"],
+      "allowed_publish": ["mcp://github"],
+      "allowed_services": ["system://mesh.catalog"],
+      "allowed_targets": ["*"]
+    },
+    {
+      "name": "agw-github-agent",
+      "allowed_services": [
+        "egress://github.com",
+        "egress://api.github.com",
+        "mcp://github"
+      ],
+      "allowed_targets": ["*"]
+    }
+  ],
+  "bindings": [
+    {
+      "role": "mesh:role:node",
+      "members": ["mesh:system:authenticated"]
+    },
+    {
+      "role": "agw-github-agent",
+      "members": ["mesh:system:authenticated"],
+      "claims": {
+        "iss": "https://accounts.google.com"
+      }
+    }
+  ],
+  "egress": [
+    {
+      "name": "github.com",
+      "served_by": ["role=agent-gateway-pep"]
+    },
+    {
+      "name": "api.github.com",
+      "served_by": ["role=agent-gateway-pep"]
+    }
+  ]
+}
