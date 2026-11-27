@@ -41,7 +41,7 @@ const (
 const DefaultMaxMCPBodyInspectBytes int64 = 4 << 20
 
 // InspectJSONRPCMCPBody inspects a JSON-RPC 2.0 request body for MCP methods
-// and extracts the bare tool name when present, or sets allowStreamInit for
+// and extracts the tool name when present, or sets allowStreamInit for
 // session handshake, capability discovery, and protocol notification methods
 // that precede a tool call.
 //
@@ -50,6 +50,12 @@ const DefaultMaxMCPBodyInspectBytes int64 = 4 << 20
 // body that is not one JSON object, or that states "method", "params" or the
 // tool "name" more than once (uniqueJSONMembers), names no tool and no
 // handshake method: a task rule with allowed_tools denies it.
+//
+// The tool name is the string of the body, unchanged. A name with spaces
+// around it, or with a "scheme://service/" prefix, is not the tool of
+// allowed_tools that it resembles: the backend receives the name as the body
+// states it, and the service of the prefix is not the service that was
+// checked.
 func InspectJSONRPCMCPBody(body []byte) (mcpTool string, allowStreamInit bool) {
 	if len(bytes.TrimSpace(body)) == 0 {
 		return "", false
@@ -71,14 +77,7 @@ func InspectJSONRPCMCPBody(body []byte) (mcpTool string, allowStreamInit bool) {
 		if err != nil {
 			return "", false
 		}
-		rawTool := strings.TrimSpace(name)
-		if rawTool == "" {
-			return "", false
-		}
-		if _, stripped, err := SplitToolName(rawTool); err == nil {
-			return stripped, false
-		}
-		return rawTool, false
+		return name, false
 	default:
 		return "", false
 	}

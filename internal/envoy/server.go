@@ -556,8 +556,9 @@ func isMCPRoute(path, targetService string) bool {
 }
 
 // InspectJSONRPCMCPBody inspects a JSON-RPC 2.0 request body for MCP methods
-// and extracts the bare tool name when present, or sets allowStreamInit for
-// session handshake, capability discovery, and protocol notification methods.
+// and extracts the tool name as the body states it, or sets allowStreamInit
+// for session handshake, capability discovery, and protocol notification
+// methods.
 func InspectJSONRPCMCPBody(body []byte) (mcpTool string, allowStreamInit bool) {
 	return api.InspectJSONRPCMCPBody(body)
 }

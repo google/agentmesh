@@ -15,11 +15,13 @@
 package api
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestInspectJSONRPCMCPBody(t *testing.T) {
@@ -35,10 +37,18 @@ func TestInspectJSONRPCMCPBody(t *testing.T) {
 			wantTool:  "read_file",
 			wantAllow: false,
 		},
+		// The backend receives the name as the body states it. A name that
+		// only resembles a tool of allowed_tools is not that tool.
 		{
-			name:      "tools/call namespaced tool",
+			name:      "tools/call with a service prefix keeps the name of the body",
 			body:      `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mcp://github/get_pr"}}`,
-			wantTool:  "get_pr",
+			wantTool:  "mcp://github/get_pr",
+			wantAllow: false,
+		},
+		{
+			name:      "tools/call with spaces around the name keeps the name of the body",
+			body:      `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":" read_file "}}`,
+			wantTool:  " read_file ",
 			wantAllow: false,
 		},
 		{
@@ -151,8 +161,48 @@ func TestInspectJSONRPCMCPBody(t *testing.T) {
 	}
 }
 
+// A task rule checks the tool that the backend receives. A name with a
+// service prefix, or with spaces around it, is not the tool of allowed_tools
+// that it resembles: the backend gets the name with the prefix and the
+// spaces, and the service of the prefix is not the service that was checked.
+func TestTaskRuleChecksTheToolNameAsTheBodyStatesIt(t *testing.T) {
+	rules := []*TaskAuthorizationRule{{Rules: []*TaskRule{{
+		AllowedServices: []string{"mcp://github"},
+		Operation:       &TaskOperation{AllowedTools: []string{"get_pr"}},
+	}}}}
+	for _, tc := range []struct {
+		name       string
+		tool       string
+		wantDenied bool
+	}{
+		{name: "the allowed tool", tool: "get_pr"},
+		{name: "prefix of the same service", tool: "mcp://github/get_pr", wantDenied: true},
+		{name: "prefix of another service", tool: "mcp://gitlab/get_pr", wantDenied: true},
+		{name: "space before", tool: " get_pr", wantDenied: true},
+		{name: "line feed after", tool: "get_pr\n", wantDenied: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			name, err := json.Marshal(tc.tool)
+			if err != nil {
+				t.Fatalf("encode tool name %q: %v", tc.tool, err)
+			}
+			body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":` + string(name) + `}}`
+			tool, allowInit := InspectJSONRPCMCPBody([]byte(body))
+			err = EvaluateTaskRules(rules, TaskRequestContext{
+				ServiceType:        "mcp",
+				ServiceName:        "github",
+				MCPTool:            tool,
+				AllowMCPStreamInit: allowInit,
+			}, time.Now())
+			if denied := err != nil; denied != tc.wantDenied {
+				t.Fatalf("tools/call of %q, checked as %q: denied = %v (%v), want %v", tc.tool, tool, denied, err, tc.wantDenied)
+			}
+		})
+	}
+}
+
 func TestInspectMCPHTTPRequestBody(t *testing.T) {
-	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mcp://git/status"}}`
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"status"}}`
 	req := httptest.NewRequest(http.MethodPost, "/mcp/git", strings.NewReader(body))
 	tool, allowInit, err := InspectMCPHTTPRequestBody(req, 1024)
 	if err != nil {

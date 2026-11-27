@@ -916,7 +916,7 @@ func TestExtAuthzUpstreamCredentialNeedsTrustedTransport(t *testing.T) {
 }
 
 func TestInspectMCPHTTPRequestBody(t *testing.T) {
-	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mcp://github/get_pr"}}`
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_pr"}}`
 	req := httptest.NewRequest(http.MethodPost, "/mcp/github", strings.NewReader(body))
 	tool, allowInit, err := inspectMCPHTTPRequestBody(req)
 	if err != nil {

@@ -108,7 +108,7 @@ func TestGatewayServer_ExtAuthzHTTPAndGRPC(t *testing.T) {
 	addr := startH2CGatewayTestServer(t, gw)
 
 	// 1. HTTP ext_authz allow & deny
-	reqAllow := httptest.NewRequest(http.MethodPost, "/ext_authz/mcp/github", strings.NewReader(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"mcp://github/get_pr"}}`))
+	reqAllow := httptest.NewRequest(http.MethodPost, "/ext_authz/mcp/github", strings.NewReader(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"get_pr"}}`))
 	reqAllow.Header.Set("Authorization", "Bearer valid-token")
 	recAllow := httptest.NewRecorder()
 	gw.HandleExtAuthzHTTP(recAllow, reqAllow)
