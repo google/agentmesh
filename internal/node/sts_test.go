@@ -1073,3 +1073,100 @@ func TestExtAuthzMCPBodyInspection(t *testing.T) {
 		t.Fatalf("HTTP ext_authz with a body that calls merge_pr and a client header that names get_pr: got status %d, want 403", httpRecHeader.Code)
 	}
 }
+
+// A border JWT is a bearer credential for an egress destination: its holder
+// can exchange it at the cloud provider. The node returns it only on a
+// transport that authenticates the caller as the gateway. On any other
+// transport it does not ask the control plane for one.
+func TestNodeOAuthTokenBorderJWTNeedsTrustedTransport(t *testing.T) {
+	h := newSTSNodeHarness(t)
+	const borderJWT = "header.payload.signature"
+
+	var mints atomic.Int32
+	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sts/token" {
+			http.NotFound(w, r)
+			return
+		}
+		mints.Add(1)
+		payload, err := proto.Marshal(&api.STSTokenResponse{Jwt: borderJWT, ExpireTime: timestamppb.New(time.Now().Add(5 * time.Minute))})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-protobuf")
+		_, _ = w.Write(payload)
+	}))
+	t.Cleanup(controlPlane.Close)
+	if err := h.node.Store.SaveControlPlaneURL(controlPlane.URL); err != nil {
+		t.Fatalf("SaveControlPlaneURL: %v", err)
+	}
+
+	plainTCP := func(r *http.Request) *http.Request { return r }
+	unixSocket := func(r *http.Request) *http.Request {
+		return r.WithContext(context.WithValue(r.Context(), localSocketContextKey{}, true))
+	}
+	tlsWith := func(state tls.ConnectionState) func(*http.Request) *http.Request {
+		return func(r *http.Request) *http.Request {
+			r.TLS = &state
+			return r
+		}
+	}
+
+	tests := []struct {
+		name               string
+		transport          func(*http.Request) *http.Request
+		requestedTokenType string
+		wantStatus         int
+		wantIssued         string
+	}{
+		{name: "plain TCP", transport: plainTCP, requestedTokenType: api.TokenTypeJWT, wantStatus: http.StatusForbidden},
+		{name: "TLS without a client certificate", transport: tlsWith(tls.ConnectionState{}), requestedTokenType: api.TokenTypeJWT, wantStatus: http.StatusForbidden},
+		{name: "Unix socket", transport: unixSocket, requestedTokenType: api.TokenTypeJWT, wantStatus: http.StatusOK, wantIssued: api.TokenTypeJWT},
+		{name: "verified client certificate", transport: tlsWith(tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{{}}}}), requestedTokenType: api.TokenTypeJWT, wantStatus: http.StatusOK, wantIssued: api.TokenTypeJWT},
+		{name: "plain TCP, the caller asks for a Biscuit", transport: plainTCP, wantStatus: http.StatusOK, wantIssued: api.TokenTypeBiscuit},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mintsBefore := mints.Load()
+			form := url.Values{}
+			form.Set("grant_type", api.GrantTypeTokenExchange)
+			form.Set("subject_token", base64.StdEncoding.EncodeToString(h.nodeBiscuit))
+			form.Set("subject_token_type", api.TokenTypeBiscuit)
+			form.Add("resource", "egress://api.github.com")
+			if tc.requestedTokenType != "" {
+				form.Set("requested_token_type", tc.requestedTokenType)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rec := httptest.NewRecorder()
+			handleNodeOAuthToken(h.node, "secret-sidecar-token", rec, tc.transport(req))
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			var body map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("response is not JSON: %s", rec.Body.String())
+			}
+			if tc.wantStatus != http.StatusOK {
+				if body["error"] != "access_denied" {
+					t.Errorf("error %v, want access_denied", body["error"])
+				}
+				if strings.Contains(rec.Body.String(), borderJWT) {
+					t.Errorf("the refusal carries the border JWT: %s", rec.Body.String())
+				}
+				if got := mints.Load() - mintsBefore; got != 0 {
+					t.Errorf("the node asked the control plane for %d border JWT(s), want 0", got)
+				}
+				return
+			}
+			if body["issued_token_type"] != tc.wantIssued {
+				t.Errorf("issued_token_type %v, want %s", body["issued_token_type"], tc.wantIssued)
+			}
+			if tc.wantIssued == api.TokenTypeJWT && body["access_token"] != borderJWT {
+				t.Errorf("access_token %v, want the border JWT of the control plane", body["access_token"])
+			}
+		})
+	}
+}

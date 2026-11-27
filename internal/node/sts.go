@@ -480,6 +480,9 @@ func withCallerOrTokenAuth(node *AgentMeshNode, token string, allowAuthorization
 //
 // A client_assertion on any grant also authenticates the caller, so a token
 // exchange without a subject_token narrows the assertion's own identity.
+//
+// requested_token_type=jwt asks for a border JWT for an egress:// resource.
+// The node returns one only on a trusted transport (fromTrustedTransport).
 func handleNodeOAuthToken(node *AgentMeshNode, sidecarToken string, w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeNodeOAuthError(w, http.StatusMethodNotAllowed, "invalid_request", "Method not allowed")
@@ -540,6 +543,16 @@ func handleNodeOAuthToken(node *AgentMeshNode, sidecarToken string, w http.Respo
 	sealParam := strings.TrimSpace(r.FormValue("seal"))
 	audience := strings.TrimSpace(r.FormValue("audience"))
 	seal := sealParam == "true" || sealParam == "1"
+
+	// A border JWT is a bearer credential for an egress destination: its
+	// holder can exchange it at the cloud provider. An application on the
+	// same host can send this request too, and only the transport tells it
+	// from the gateway. Refuse before any exchange with the control plane.
+	if requestedTokenType == api.TokenTypeJWT && !fromTrustedTransport(r) {
+		logger.Warnf("[OAuth] Border JWT for %q refused: %s", truncateForLog(strings.Join(resources, ",")), borderJWTTransportRule)
+		writeNodeOAuthError(w, http.StatusForbidden, "access_denied", borderJWTTransportRule)
+		return
+	}
 
 	tar, err := api.BuildTARFromOAuthParams("oauth-task", options, resources, scope, nil)
 	if err != nil {
