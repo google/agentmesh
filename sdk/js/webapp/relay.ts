@@ -20,6 +20,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { LocalRelayMcpServer, RelayBridgeServer, parseCliOptions, type RelayBridgeServerOptions, type RelayCallToolResult, type RelayInvokeArgs } from "@mcp-b/webmcp-local-relay";
 import { PAIR_TOOL, signCall, startPairing, type PairResponse } from "./pairing.ts";
+import { requestToolsAfterJoin } from "./relay-join.ts";
 
 const log = (line: string) => process.stderr.write(`[agentmesh-webapp-relay] ${line}\n`);
 const failure = (text: string): RelayCallToolResult => {
@@ -68,6 +69,8 @@ class SigningBridge extends RelayBridgeServer {
     super(options);
     this.#name = name;
     this.#keys = keys;
+    // Another agent's relay can hold the port: this one then joins it, and must not miss the page's tools.
+    requestToolsAfterJoin(this, log);
   }
 
   override async invokeTool(toolName: string, args: RelayInvokeArgs, options?: { signal?: AbortSignal }): Promise<RelayCallToolResult> {
