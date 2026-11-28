@@ -82,6 +82,7 @@ var (
 	ingressTLSKeyPath        string
 	allowInsecureIngressHTTP bool
 	publicControlPlaneURL    string
+	callAuditLogPath         string
 )
 
 var logger = golog.Logger("agentmesh-router-cli")
@@ -93,6 +94,10 @@ func main() {
 		Version: version.String(),
 		Run: func(cmd *cobra.Command, args []string) {
 			logging.Setup(logging.Options{Level: logLevel, Format: logFormat})
+
+			if callAuditLogPath == "" {
+				callAuditLogPath = os.Getenv("AGENTMESH_CALL_AUDIT_LOG_PATH")
+			}
 
 			opts := router.Options{
 				ControlPlaneURL:           controlPlaneURL,
@@ -122,6 +127,7 @@ func main() {
 				IngressTLSKeyPath:         ingressTLSKeyPath,
 				AllowInsecureIngressHTTP:  allowInsecureIngressHTTP,
 				PublicControlPlaneURL:     publicControlPlaneURL,
+				CallAuditLogPath:          callAuditLogPath,
 			}
 			labels, err := api.ParseLabelFlags(labelFlags)
 			if err != nil {
@@ -187,6 +193,7 @@ func main() {
 	rootCmd.Flags().StringVar(&ingressTLSKeyPath, "ingress-tls-key-path", "", "Path to TLS private key file for --ingress-addr")
 	rootCmd.Flags().BoolVar(&allowInsecureIngressHTTP, "allow-insecure-ingress-http", false, "Allow --ingress-addr on a non-loopback interface without TLS and allow http:// in --ingress-url. Risk: every caller's bearer Biscuit and request body then cross the network in plaintext between the client and this router; set it only when a TLS-terminating L7 load balancer in front of the router is the only thing that can reach --ingress-addr")
 	rootCmd.Flags().StringVar(&publicControlPlaneURL, "public-control-plane", "", "Optional public URL of the control plane advertised in RFC 9728 and A2A OAuth metadata when --control-plane uses a cluster-internal address")
+	rootCmd.Flags().StringVar(&callAuditLogPath, "call-audit-log-path", "", "Path to file for structured call audit logging (JSONL); stdout and stderr write to process streams (default: disabled, or env AGENTMESH_CALL_AUDIT_LOG_PATH)")
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

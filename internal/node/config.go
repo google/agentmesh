@@ -44,6 +44,9 @@ type NodeConfigComplete struct {
 	// means no floor, so a caller's requirement — or the absence of one —
 	// stands on its own, as it always has.
 	EgressRequireLabels map[string]string
+
+	// CallAuditLogPath is the optional file path for structured JSONL tool call audit log.
+	CallAuditLogPath string
 }
 
 // LoadNodeConfig loads the node configuration from the specified path.
@@ -98,6 +101,7 @@ func CompleteNodeConfig(config api.NodeConfig) (*NodeConfigComplete, error) {
 		Services:         config.Services,
 		Labels:           config.Labels,
 		RequireTaskScope: config.Attenuation.RequireTaskScope,
+		CallAuditLogPath: config.Audit.CallLogPath,
 	}
 
 	if rawTTL := strings.TrimSpace(config.Attenuation.MaxTaskTTL); rawTTL != "" {

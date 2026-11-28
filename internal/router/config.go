@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/google/agentmesh/api"
+	"github.com/google/agentmesh/internal/audit"
 	"github.com/google/agentmesh/internal/identity"
 	"github.com/multiformats/go-multiaddr"
 )
@@ -145,6 +146,10 @@ type Options struct {
 	// SinglePortBindHost is the configured bind host paired with the bound WS
 	// port when AdvertiseSinglePortIngress is set and IngressURL is empty.
 	SinglePortBindHost string
+	// CallAuditLogger provides structured JSONL audit logging for calls (e.g. Ingress tool calls).
+	CallAuditLogger *audit.Logger
+	// CallAuditLogPath specifies the destination file for call audit logging.
+	CallAuditLogPath string
 }
 
 // Default sets default values for options.

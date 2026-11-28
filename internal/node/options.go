@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/google/agentmesh/api"
+	"github.com/google/agentmesh/internal/audit"
 	"github.com/google/agentmesh/internal/identity"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/multiformats/go-multiaddr"
@@ -184,6 +185,12 @@ type Options struct {
 	// OnStreamRefused, when non-nil, is invoked whenever the libp2p auth gate
 	// refuses an unauthenticated or non-router stream.
 	OnStreamRefused func(scope, protocol string)
+	// CallAuditLogger is the optional sink for tool call audit log records.
+	// Nil (the default) disables call audit logging unless CallAuditLogPath is set.
+	CallAuditLogger *audit.Logger
+	// CallAuditLogPath is the optional file path (or 'stdout'/'stderr'/'-')
+	// for structured JSONL tool call audit log. Empty (the default) disables audit logging.
+	CallAuditLogPath string
 }
 
 // Default applies default values to Options if they are not specified.
