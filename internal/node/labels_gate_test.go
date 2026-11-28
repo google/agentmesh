@@ -359,6 +359,64 @@ func TestLabelGateTellsUnreachableFromDenied(t *testing.T) {
 	}
 }
 
+// The 403 names what the provider's credential failed, not what the caller
+// sent: a caller that asked for labels and reached a peer whose credential
+// is expired is told the peer is not enrolled, not that it lacks the labels.
+func TestLabelGateDenialNamesTheFailedCheck(t *testing.T) {
+	cpPub, cpPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, otherPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := peer.ID("provider-peer-id")
+	mint := func(key ed25519.PrivateKey, expiry time.Time) []byte {
+		t.Helper()
+		b, err := identity.MintBootstrapBiscuitToken(key, provider, api.RoleNode, expiry, nil, map[string]string{"region": "eu"})
+		if err != nil {
+			t.Fatalf("mint: %v", err)
+		}
+		return b
+	}
+	valid := mint(cpPriv, time.Now().Add(time.Hour))
+	required := map[string]string{"region": "eu"}
+	floor := map[string]string{"jurisdiction": "eu"}
+
+	tests := []struct {
+		name     string
+		biscuit  []byte
+		required map[string]string
+		floor    map[string]string
+		service  string
+		want     string
+	}{
+		{"expired credential, labels required", mint(cpPriv, time.Now().Add(-time.Hour)), required, nil, "", "Forbidden: destination is not an enrolled peer"},
+		{"untrusted signer, labels required", mint(otherPriv, time.Now().Add(time.Hour)), required, nil, "", "Forbidden: destination is not an enrolled peer"},
+		{"no credential, floor set", nil, nil, floor, "", "Forbidden: destination is not an enrolled peer"},
+		{"required label not attested", valid, map[string]string{"region": "na"}, nil, "", "Required labels not attested by provider"},
+		{"floor not attested", valid, nil, floor, "", "Forbidden: provider does not attest the egress floor"},
+		{"service not granted, labels required", valid, required, nil, "mcp://calc", "Forbidden: provider is not granted mcp://calc"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			node := &AgentMeshNode{
+				trustedKeys:    []TrustedKey{{Key: cpPub, ReceivedAt: time.Now()}},
+				BiscuitTimeout: 500 * time.Millisecond,
+				nodeConfig:     &NodeConfigComplete{EgressRequireLabels: tt.floor},
+			}
+			err := node.checkProvider(tt.biscuit, provider, tt.required, tt.service)
+			if err == nil {
+				t.Fatal("checkProvider = nil, want a refusal")
+			}
+			if got := labelGateDenial(err, tt.required, node.egressFloor(), tt.service); got != tt.want {
+				t.Errorf("labelGateDenial(%v) = %q, want %q", err, got, tt.want)
+			}
+		})
+	}
+}
+
 // authorizerFactLimitRules are mesh policy rules that derive more facts
 // from role(node) than the authorizer admits, so any check that adds them
 // stops at datalog.ErrWorldRunLimitMaxFacts before it reaches a verdict.

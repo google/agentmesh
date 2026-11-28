@@ -185,6 +185,24 @@ func labelGateStatus(err error, denied string) (string, int) {
 	return denied, http.StatusForbidden
 }
 
+// labelGateDenial is the text of a 403 from the label gate. It names the
+// check the provider's credential failed, read from err, rather than what
+// the caller sent: a caller that asked for labels and reached a peer whose
+// credential does not verify is told the peer is not enrolled. A label
+// failure names the caller's requirement when there was one, since the
+// requirement and the floor are checked together.
+func labelGateDenial(err error, required, floor map[string]string, service string) string {
+	switch {
+	case errors.Is(err, ErrProviderNotGranted):
+		return "Forbidden: provider is not granted " + service
+	case errors.Is(err, ErrLabelsNotSatisfied) && len(required) > 0:
+		return "Required labels not attested by provider"
+	case errors.Is(err, ErrLabelsNotSatisfied) && len(floor) > 0:
+		return "Forbidden: provider does not attest the egress floor"
+	}
+	return "Forbidden: destination is not an enrolled peer"
+}
+
 // authorizerLimit reports whether err is an authorizer that stopped at one
 // of its run limits before it reached a verdict, and whether that limit is
 // time, the only one that depends on load: the facts and iterations limits
