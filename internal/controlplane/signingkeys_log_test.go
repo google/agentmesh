@@ -16,6 +16,7 @@ package controlplane
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/ed25519"
 	"errors"
 	"strings"
@@ -28,11 +29,12 @@ import (
 	"github.com/google/agentmesh/internal/storage"
 )
 
-// keyringReadFailStore fails GetAllValidKeys from its failFrom'th call on.
+// keyringReadFailStore fails GetAllValidKeys and GetAllValidOIDCKeys from
+// their failFrom'th call on, each counted on its own.
 type keyringReadFailStore struct {
 	storage.Store
-	calls    int
-	failFrom int
+	calls, oidcCalls int
+	failFrom         int
 }
 
 var errKeyringRead = errors.New("keyring read failed")
@@ -45,40 +47,73 @@ func (s *keyringReadFailStore) GetAllValidKeys(ctx context.Context) ([]storage.K
 	return s.Store.GetAllValidKeys(ctx)
 }
 
-// When the keyring cannot be read back after an install, the failure is
+func (s *keyringReadFailStore) GetAllValidOIDCKeys(ctx context.Context) ([]storage.OIDCKeyPair, error) {
+	s.oidcCalls++
+	if s.oidcCalls >= s.failFrom {
+		return nil, errKeyringRead
+	}
+	return s.Store.GetAllValidOIDCKeys(ctx)
+}
+
+// When a keyring cannot be read back after an install, the failure is
 // logged with its error instead of an install line listing no valid keys.
 func TestReconcileKeyringLogsAFailedReadBack(t *testing.T) {
 	prev := golog.GetConfig()
 	logging.Setup(logging.Options{RingBuffer: true})
 	t.Cleanup(func() { golog.SetupLogging(prev) })
-	ctx := context.Background()
-	base, err := storage.NewSQLStore("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("NewSQLStore: %v", err)
-	}
-	t.Cleanup(func() { _ = base.Close() })
 
-	first, second := newEd25519(t), newEd25519(t)
-	if err := reconcileEd25519Keyring(ctx, base, []ed25519.PrivateKey{first}, time.Hour); err != nil {
-		t.Fatalf("install the first key: %v", err)
-	}
-	// Call 1 is the read before SetKeyring, call 2 the read after it.
-	store := &keyringReadFailStore{Store: base, failFrom: 2}
-	if err := reconcileEd25519Keyring(ctx, store, []ed25519.PrivateKey{second, first}, time.Hour); err != nil {
-		t.Fatalf("install the second key: %v", err)
-	}
+	for _, tc := range []struct {
+		name string
+		// install puts the first key in place, then installs the second in
+		// front of it through store, and returns the second key's id.
+		install func(t *testing.T, base, store storage.Store) string
+	}{
+		{"ed25519", func(t *testing.T, base, store storage.Store) string {
+			first, second := newEd25519(t), newEd25519(t)
+			if err := reconcileEd25519Keyring(context.Background(), base, []ed25519.PrivateKey{first}, time.Hour); err != nil {
+				t.Fatalf("install the first key: %v", err)
+			}
+			if err := reconcileEd25519Keyring(context.Background(), store, []ed25519.PrivateKey{second, first}, time.Hour); err != nil {
+				t.Fatalf("install the second key: %v", err)
+			}
+			return keyFingerprint(second.Public().(ed25519.PublicKey))
+		}},
+		{"es256", func(t *testing.T, base, store storage.Store) string {
+			first, second := newP256(t), newP256(t)
+			if err := reconcileES256Keyring(context.Background(), base, []*ecdsa.PrivateKey{first}, time.Hour); err != nil {
+				t.Fatalf("install the first key: %v", err)
+			}
+			if err := reconcileES256Keyring(context.Background(), store, []*ecdsa.PrivateKey{second, first}, time.Hour); err != nil {
+				t.Fatalf("install the second key: %v", err)
+			}
+			pub, err := second.PublicKey.Bytes()
+			if err != nil {
+				t.Fatalf("encode the second key: %v", err)
+			}
+			return es256Kid(pub)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base, err := storage.NewSQLStore("sqlite", ":memory:")
+			if err != nil {
+				t.Fatalf("NewSQLStore: %v", err)
+			}
+			t.Cleanup(func() { _ = base.Close() })
+			// Call 1 is the read before the keyring is set, call 2 the read after it.
+			signing := tc.install(t, base, &keyringReadFailStore{Store: base, failFrom: 2})
 
-	secondFP := keyFingerprint(second.Public().(ed25519.PublicKey))
-	logged := false
-	for _, line := range logging.RecentLogs() {
-		if strings.Contains(line, errKeyringRead.Error()) && strings.Contains(line, secondFP) {
-			logged = true
-		}
-		if strings.Contains(line, "Operator signing keys installed\t") && strings.Contains(line, secondFP) {
-			t.Fatalf("install line %q claims a keyring that was not read", line)
-		}
-	}
-	if !logged {
-		t.Fatalf("no log line names the failed read back (%v) for signing key %s", errKeyringRead, secondFP)
+			logged := false
+			for _, line := range logging.RecentLogs() {
+				if strings.Contains(line, errKeyringRead.Error()) && strings.Contains(line, signing) {
+					logged = true
+				}
+				if strings.Contains(line, "Operator signing keys installed	") && strings.Contains(line, signing) {
+					t.Fatalf("install line %q claims a keyring that was not read", line)
+				}
+			}
+			if !logged {
+				t.Fatalf("no log line names the failed read back (%v) for signing key %s", errKeyringRead, signing)
+			}
+		})
 	}
 }

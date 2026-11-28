@@ -188,10 +188,16 @@ func (s *Server) pruneCatalog(now time.Time) {
 		if _, ok := keep[peerID]; ok {
 			continue
 		}
+		cur, ok := s.catalog[peerID]
+		if !ok {
+			// Evicted meanwhile, by a ban: not this sweep's drop.
+			logger.Debugw("Service report already dropped during the sweep", "peer_id", peerID)
+			continue
+		}
 		// A report written since the snapshot came from a node admitted
 		// when it reported, after the list was read: it is not this
 		// sweep's to drop.
-		if cur, ok := s.catalog[peerID]; ok && !cur.ReportedAt.Equal(seen.ReportedAt) {
+		if !cur.ReportedAt.Equal(seen.ReportedAt) {
 			logger.Debugw("Kept service report written during the sweep", "peer_id", peerID)
 			continue
 		}
