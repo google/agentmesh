@@ -59,7 +59,7 @@ bootstrap token, `join` runs an interactive OIDC login.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--bootstrap-token-path` | | File containing a bootstrap token. |
+| `--bootstrap-token-path` | | File containing a bootstrap token minted with `"role": "mesh:role:node"`. |
 | `--bootstrap-token` | | The token as a value. Visible in process listings. The file form is preferred. |
 | `--offline-access` | `false` | Request an OIDC refresh token, so that the node can re-enroll on its own when its credential expires. |
 | `--allow-loopback` | `false` | Advertise and dial loopback and link-local addresses. For several nodes on one host. |

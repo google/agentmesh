@@ -107,7 +107,7 @@ The subcommands talk to a running instance over its HTTP API. Shared flags:
 
 | Command | Flags | Effect |
 |---|---|---|
-| `token create` | `--role` (`mesh:role:node`), `--ttl-hours` (24), `--max-usages` (1), `--description`, `--autonomous-recovery` | Mint a token. Prints it once on stdout. |
+| `token create` | `--role` (`mesh:role:node`), `--ttl-hours` (24), `--max-usages` (1), `--description`, `--autonomous-recovery` | Mint a component enrollment token (`mesh:role:node` or `mesh:role:router`). Prints it once on stdout. |
 | `token list` | | Tokens with usage count, status (`active`, `exhausted`, `expired`, `revoked`) and expiry. |
 | `token revoke <id>` | | Revoke by ID or unambiguous ID prefix. Enrolled devices keep their identity. |
 | `token qr` | `--enroll-url`, `--ttl-hours`, `--max-usages`, `--description`, `--autonomous-recovery` | Mint a node token and print `mesh://enroll?server=<url>&token=<token>` as a terminal QR code. The URL must be `https`. |

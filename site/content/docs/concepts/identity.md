@@ -124,7 +124,10 @@ contains:
 
 The node does not set any of these facts. For an OIDC enrollment, roles
 come from the bindings in the mesh policy, never from the identity provider.
-A bootstrap enrollment gets only the role of its bootstrap token. An
+A bootstrap enrollment gets only the component role of its bootstrap token
+(`mesh:role:node` or `mesh:role:router`). Custom access roles are granted
+afterwards through policy bindings on `node:<peer-id>` (see
+[custom node roles](../../guides/custom-node-roles/)). An
 issuer's `roles` claim is stored as `idp_role()`, which grants nothing by
 itself. Labels are the ones the node asked for and the policy allowed.
 Grants come from the policy.

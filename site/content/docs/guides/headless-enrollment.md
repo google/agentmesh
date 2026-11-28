@@ -128,12 +128,19 @@ curl -fsS -X POST https://mesh.example.com/admin/bootstrap-tokens \
 ```
 
 The plaintext `token` is shown once. The control plane keeps only its hash.
-`role` is the role that the token enrolls into (`mesh:role:router` for a
-router). `ttl_hours` defaults to 24 and `max_usages` to 1. The Bootstrap
-Tokens view in the console and `agentmesh-one token create` do the same thing. An
-OIDC user who is already enrolled can mint tokens for their own machines
-through `POST /user/bootstrap-tokens` with their ID token. Such tokens
-record the user as owner, and banning the user disables them.
+`role` is the component role that the token enrolls into (`mesh:role:node` for a
+node, `mesh:role:router` for a router). `ttl_hours` defaults to 24 and
+`max_usages` to 1. The Bootstrap Tokens view in the console and `agentmesh-one
+token create` do the same thing. An OIDC user who is already enrolled can mint
+tokens for their own machines through `POST /user/bootstrap-tokens` with their ID
+token. Such tokens record the user as owner, and banning the user disables them.
+
+Bootstrap tokens enroll component identities only, not custom access roles.
+`agentmesh-node` always requests `mesh:role:node` and will fail to enroll if the
+bootstrap token specifies a custom role (such as `caller` or `developer`). To
+grant custom access roles to an enrolled node, bind the role to the node's
+PeerID (`node:<peer-id>`) in the mesh policy; see the [custom node roles
+guide](../custom-node-roles/).
 
 Write the token to a file on the target machine. The node reads it from a
 file and not from a flag, so it does not appear in process listings or in
