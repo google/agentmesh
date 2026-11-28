@@ -367,6 +367,19 @@ that is not the token is the backend's credential, and the node forwards
 it. Streaming responses are passed through. One provider can also be
 addressed directly, at `/mesh/<peer-id>/inference/<name>/v1/chat/completions`.
 
+### Usage metering
+
+For inference services backed by a shared upstream, the provider node meters usage per authenticated caller peer ID and service name on `/metrics`:
+
+| Metric | Labels | Meaning |
+|---|---|---|
+| `agentmesh_node_inference_requests_total` | `peer_id`, `service` | Total inference requests served by this node. |
+| `agentmesh_node_inference_request_bytes_total` | `peer_id`, `service` | Request body bytes received from the caller. |
+| `agentmesh_node_inference_response_bytes_total` | `peer_id`, `service` | Response body bytes sent to the caller, including streamed SSE chunks. |
+| `agentmesh_node_inference_tokens_total` | `peer_id`, `service`, `model`, `token_type` | Prompt and completion tokens (`token_type="prompt"` or `"completion"`) reported by the upstream provider. |
+
+Attribution uses the transport-authenticated caller's peer ID (or `"unknown"` when caller identity cannot be verified). Request and response payloads (prompts, completions, tool arguments) are never recorded. Discovery probes (`GET /v1/models`) are excluded from these metrics so that request and byte counters strictly reflect actual inference invocations.
+
 ## Egress
 
 `/egress/<destination>/<path>` reaches an external HTTP destination that the

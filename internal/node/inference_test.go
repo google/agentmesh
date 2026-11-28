@@ -23,14 +23,64 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/agentmesh/api"
+	"github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/peer"
 	dto "github.com/prometheus/client_model/go"
 )
 
-func getCounterValue(peerID, model, tokenType string) float64 {
-	metric, err := inferenceTokensTotal.GetMetricWithLabelValues(peerID, model, tokenType)
+func newInferenceTestPeer(t *testing.T) peer.ID {
+	t.Helper()
+	priv, _, err := crypto.GenerateKeyPair(crypto.Ed25519, -1)
+	if err != nil {
+		t.Fatalf("crypto.GenerateKeyPair: %v", err)
+	}
+	id, err := peer.IDFromPrivateKey(priv)
+	if err != nil {
+		t.Fatalf("peer.IDFromPrivateKey: %v", err)
+	}
+	return id
+}
+
+func getCounterValue(peerID, service, model, tokenType string) float64 {
+	metric, err := inferenceTokensTotal.GetMetricWithLabelValues(peerID, service, model, tokenType)
+	if err != nil {
+		return 0
+	}
+	var m dto.Metric
+	if err := metric.Write(&m); err != nil {
+		return 0
+	}
+	return m.GetCounter().GetValue()
+}
+
+func getRequestCounterValue(peerID, service string) float64 {
+	metric, err := inferenceRequestsTotal.GetMetricWithLabelValues(peerID, service)
+	if err != nil {
+		return 0
+	}
+	var m dto.Metric
+	if err := metric.Write(&m); err != nil {
+		return 0
+	}
+	return m.GetCounter().GetValue()
+}
+
+func getRequestBytesValue(peerID, service string) float64 {
+	metric, err := inferenceRequestBytesTotal.GetMetricWithLabelValues(peerID, service)
+	if err != nil {
+		return 0
+	}
+	var m dto.Metric
+	if err := metric.Write(&m); err != nil {
+		return 0
+	}
+	return m.GetCounter().GetValue()
+}
+
+func getResponseBytesValue(peerID, service string) float64 {
+	metric, err := inferenceResponseBytesTotal.GetMetricWithLabelValues(peerID, service)
 	if err != nil {
 		return 0
 	}
@@ -85,8 +135,9 @@ func TestInferenceService_ForwardingHeadersDoNotReachTheBackend(t *testing.T) {
 }
 
 func TestInferenceService_TokenAccountability_JSON(t *testing.T) {
-	peerID := "test-peer-json"
+	peerID := newInferenceTestPeer(t).String()
 	modelName := "test-model-json"
+	serviceName := "test-inference-json"
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -103,7 +154,7 @@ func TestInferenceService_TokenAccountability_JSON(t *testing.T) {
 
 	svc := &InferenceService{
 		baseService: baseService{
-			info:    &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_INFERENCE, Name: "test-inference-json"},
+			info:    &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_INFERENCE, Name: serviceName},
 			backend: &api.RegisterServiceRequest_TargetUrl{TargetUrl: server.URL},
 		},
 	}
@@ -111,13 +162,17 @@ func TestInferenceService_TokenAccountability_JSON(t *testing.T) {
 		t.Fatalf("Init failed: %v", err)
 	}
 
-	req := httptest.NewRequest("POST", "http://localhost/chat", bytes.NewReader([]byte(`{"test":true}`)))
+	reqPayload := `{"test":true}`
+	req := httptest.NewRequest("POST", "http://localhost/chat", bytes.NewReader([]byte(reqPayload)))
 	req.RemoteAddr = "127.0.0.1:1234"
 	req.Header.Set("X-Peer-Id", peerID)
 	w := httptest.NewRecorder()
 
-	initialPromptTokens := getCounterValue(peerID, modelName, "prompt")
-	initialCompletionTokens := getCounterValue(peerID, modelName, "completion")
+	initialPromptTokens := getCounterValue(peerID, serviceName, modelName, "prompt")
+	initialCompletionTokens := getCounterValue(peerID, serviceName, modelName, "completion")
+	initialRequests := getRequestCounterValue(peerID, serviceName)
+	initialReqBytes := getRequestBytesValue(peerID, serviceName)
+	initialRespBytes := getResponseBytesValue(peerID, serviceName)
 
 	svc.Handler().ServeHTTP(w, req)
 
@@ -129,11 +184,11 @@ func TestInferenceService_TokenAccountability_JSON(t *testing.T) {
 		t.Fatalf("Expected status OK, got %d, body: %s", resp.StatusCode, string(body))
 	}
 
-	// Wait briefly for async recording goroutine to finish
-	time.Sleep(50 * time.Millisecond)
-
-	promptTokens := getCounterValue(peerID, modelName, "prompt") - initialPromptTokens
-	completionTokens := getCounterValue(peerID, modelName, "completion") - initialCompletionTokens
+	promptTokens := getCounterValue(peerID, serviceName, modelName, "prompt") - initialPromptTokens
+	completionTokens := getCounterValue(peerID, serviceName, modelName, "completion") - initialCompletionTokens
+	requests := getRequestCounterValue(peerID, serviceName) - initialRequests
+	reqBytes := getRequestBytesValue(peerID, serviceName) - initialReqBytes
+	respBytes := getResponseBytesValue(peerID, serviceName) - initialRespBytes
 
 	if promptTokens != 42 {
 		t.Errorf("Expected 42 prompt tokens, got %f", promptTokens)
@@ -141,11 +196,21 @@ func TestInferenceService_TokenAccountability_JSON(t *testing.T) {
 	if completionTokens != 99 {
 		t.Errorf("Expected 99 completion tokens, got %f", completionTokens)
 	}
+	if requests != 1 {
+		t.Errorf("Expected 1 request, got %f", requests)
+	}
+	if reqBytes != float64(len(reqPayload)) {
+		t.Errorf("Expected %d request bytes, got %f", len(reqPayload), reqBytes)
+	}
+	if respBytes != float64(len(body)) {
+		t.Errorf("Expected %d response bytes, got %f", len(body), respBytes)
+	}
 }
 
 func TestInferenceService_TokenAccountability_SSE(t *testing.T) {
-	peerID := "test-peer-sse"
+	peerID := newInferenceTestPeer(t).String()
 	modelName := "test-model-sse"
+	serviceName := "test-inference-sse"
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -168,7 +233,7 @@ func TestInferenceService_TokenAccountability_SSE(t *testing.T) {
 
 	svc := &InferenceService{
 		baseService: baseService{
-			info:    &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_INFERENCE, Name: "test-inference-sse"},
+			info:    &api.ServiceInfo{Type: api.ServiceType_SERVICE_TYPE_INFERENCE, Name: serviceName},
 			backend: &api.RegisterServiceRequest_TargetUrl{TargetUrl: server.URL},
 		},
 	}
@@ -176,13 +241,17 @@ func TestInferenceService_TokenAccountability_SSE(t *testing.T) {
 		t.Fatalf("Init failed: %v", err)
 	}
 
-	req := httptest.NewRequest("POST", "http://localhost/chat", bytes.NewReader([]byte(`{"test":true}`)))
+	reqPayload := `{"test":true}`
+	req := httptest.NewRequest("POST", "http://localhost/chat", bytes.NewReader([]byte(reqPayload)))
 	req.RemoteAddr = "127.0.0.1:1234"
 	req.Header.Set("X-Peer-Id", peerID)
 	w := httptest.NewRecorder()
 
-	initialPromptTokens := getCounterValue(peerID, modelName, "prompt")
-	initialCompletionTokens := getCounterValue(peerID, modelName, "completion")
+	initialPromptTokens := getCounterValue(peerID, serviceName, modelName, "prompt")
+	initialCompletionTokens := getCounterValue(peerID, serviceName, modelName, "completion")
+	initialRequests := getRequestCounterValue(peerID, serviceName)
+	initialReqBytes := getRequestBytesValue(peerID, serviceName)
+	initialRespBytes := getResponseBytesValue(peerID, serviceName)
 
 	svc.Handler().ServeHTTP(w, req)
 
@@ -199,16 +268,25 @@ func TestInferenceService_TokenAccountability_SSE(t *testing.T) {
 		t.Fatalf("Expected body to contain [DONE], got: %q", string(body))
 	}
 
-	// Wait briefly for async recording goroutine to finish
-	time.Sleep(50 * time.Millisecond)
-
-	promptTokens := getCounterValue(peerID, modelName, "prompt") - initialPromptTokens
-	completionTokens := getCounterValue(peerID, modelName, "completion") - initialCompletionTokens
+	promptTokens := getCounterValue(peerID, serviceName, modelName, "prompt") - initialPromptTokens
+	completionTokens := getCounterValue(peerID, serviceName, modelName, "completion") - initialCompletionTokens
+	requests := getRequestCounterValue(peerID, serviceName) - initialRequests
+	reqBytes := getRequestBytesValue(peerID, serviceName) - initialReqBytes
+	respBytes := getResponseBytesValue(peerID, serviceName) - initialRespBytes
 
 	if promptTokens != 50 {
 		t.Errorf("Expected 50 prompt tokens, got %f", promptTokens)
 	}
 	if completionTokens != 150 {
 		t.Errorf("Expected 150 completion tokens, got %f", completionTokens)
+	}
+	if requests != 1 {
+		t.Errorf("Expected 1 request, got %f", requests)
+	}
+	if reqBytes != float64(len(reqPayload)) {
+		t.Errorf("Expected %d request bytes, got %f", len(reqPayload), reqBytes)
+	}
+	if respBytes != float64(len(body)) {
+		t.Errorf("Expected %d response bytes, got %f", len(body), respBytes)
 	}
 }

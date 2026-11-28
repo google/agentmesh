@@ -62,7 +62,7 @@ func (s *InferenceService) Init(ctx context.Context) error {
 		s.backendURL = target.url
 		s.backendAuth = target
 		s.engine = newOpenAIEngine(target.url, target.client())
-		s.handler = s.trackActive(s.newInferenceProxy())
+		s.handler = s.trackActive(s.trackUsage(s.newInferenceProxy()))
 	case *api.RegisterServiceRequest_Command:
 		return fmt.Errorf("command-based backends are not supported for InferenceService")
 	default:
@@ -108,13 +108,97 @@ func (s *InferenceService) trackActive(next http.Handler) http.Handler {
 	})
 }
 
+func (s *InferenceService) trackUsage(next http.Handler) http.Handler {
+	serviceName := "unknown"
+	if s.info != nil && s.info.GetName() != "" {
+		serviceName = s.info.GetName()
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isDiscoveryProbe(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		peerID := getPeerID(r)
+
+		recordInferenceRequest(peerID, serviceName)
+
+		var reqBytes atomic.Int64
+		if r.Body != nil && r.Body != http.NoBody {
+			r.Body = &countingReadCloser{
+				ReadCloser: r.Body,
+				count:      &reqBytes,
+			}
+		}
+
+		cw := &countingResponseWriter{
+			ResponseWriter: w,
+		}
+
+		defer func() {
+			recordInferenceBytes(peerID, serviceName, reqBytes.Load(), cw.bytesWritten.Load())
+		}()
+
+		next.ServeHTTP(cw, r)
+	})
+}
+
+func isDiscoveryProbe(r *http.Request) bool {
+	return r.Method == http.MethodGet && (r.URL.Path == "/v1/models" || strings.HasSuffix(r.URL.Path, "/v1/models") || r.URL.Path == "/models" || strings.HasSuffix(r.URL.Path, "/models"))
+}
+
+type countingReadCloser struct {
+	io.ReadCloser
+	count *atomic.Int64
+}
+
+func (c *countingReadCloser) Read(p []byte) (int, error) {
+	n, err := c.ReadCloser.Read(p)
+	if n > 0 {
+		c.count.Add(int64(n))
+	}
+	return n, err
+}
+
+func (c *countingReadCloser) Close() error {
+	return c.ReadCloser.Close()
+}
+
+type countingResponseWriter struct {
+	http.ResponseWriter
+	bytesWritten atomic.Int64
+}
+
+func (w *countingResponseWriter) Write(p []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(p)
+	if n > 0 {
+		w.bytesWritten.Add(int64(n))
+	}
+	return n, err
+}
+
+func (w *countingResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+func (w *countingResponseWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 func (s *InferenceService) newInferenceProxy() http.Handler {
+	serviceName := "unknown"
+	if s.info != nil && s.info.GetName() != "" {
+		serviceName = s.info.GetName()
+	}
 	return &httputil.ReverseProxy{
 		// The transport addresses the backend; the proxy itself strips the
 		// inbound Forwarded and X-Forwarded-* headers and blanks a missing
 		// User-Agent.
 		Rewrite: func(*httputil.ProxyRequest) {},
 		Transport: &inferenceTransport{
+			service: serviceName,
 			backend: s.backendURL,
 			auth:    s.backendAuth,
 			base:    http.DefaultTransport,
@@ -123,6 +207,7 @@ func (s *InferenceService) newInferenceProxy() http.Handler {
 }
 
 type inferenceTransport struct {
+	service string
 	backend *url.URL
 	auth    backendTarget
 	base    http.RoundTripper
@@ -151,7 +236,7 @@ func (t *inferenceTransport) RoundTrip(req *http.Request) (*http.Response, error
 	if resp.StatusCode == http.StatusOK {
 		peerID := getPeerID(req)
 		isSSE := strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream")
-		resp.Body = newInterceptingReader(resp.Body, peerID, isSSE)
+		resp.Body = newInterceptingReader(resp.Body, peerID, t.service, isSSE)
 	}
 
 	return resp, nil
@@ -172,18 +257,27 @@ func singleJoiningSlash(a, b string) string {
 func getPeerID(r *http.Request) string {
 	remoteAddr := r.RemoteAddr
 	if remoteAddr != "" {
-		if _, err := peer.Decode(remoteAddr); err == nil {
-			return remoteAddr
+		if pID, err := peer.Decode(remoteAddr); err == nil {
+			return pID.String()
 		}
 		if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
-			if _, err := peer.Decode(host); err == nil {
-				return host
+			if pID, err := peer.Decode(host); err == nil {
+				return pID.String()
 			}
 			// Only trust X-Peer-Id if request comes from local loopback / trusted localhost source
 			if host == "127.0.0.1" || host == "::1" || host == "localhost" {
 				if peerHeader := r.Header.Get(api.HeaderPeerID); peerHeader != "" {
-					return peerHeader
+					if pID, err := peer.Decode(peerHeader); err == nil {
+						return pID.String()
+					}
 				}
+			}
+		}
+	}
+	if fromLocalSocket(r) || remoteAddr == "@" {
+		if peerHeader := r.Header.Get(api.HeaderPeerID); peerHeader != "" {
+			if pID, err := peer.Decode(peerHeader); err == nil {
+				return pID.String()
 			}
 		}
 	}
@@ -196,7 +290,7 @@ type interceptingReader struct {
 	done chan struct{}
 }
 
-func newInterceptingReader(body io.ReadCloser, peerID string, isSSE bool) io.ReadCloser {
+func newInterceptingReader(body io.ReadCloser, peerID, service string, isSSE bool) io.ReadCloser {
 	pr, pw := io.Pipe()
 	ir := &interceptingReader{
 		body: body,
@@ -207,7 +301,7 @@ func newInterceptingReader(body io.ReadCloser, peerID string, isSSE bool) io.Rea
 	go func() {
 		defer func() { _ = pr.Close() }()
 		defer close(ir.done)
-		parseResponseStream(pr, peerID, isSSE)
+		parseResponseStream(pr, peerID, service, isSSE)
 	}()
 
 	return ir
@@ -225,30 +319,30 @@ func (ir *interceptingReader) Read(p []byte) (n int, err error) {
 }
 
 func (ir *interceptingReader) Close() error {
-	err := ir.body.Close()
 	_ = ir.pw.CloseWithError(io.EOF)
-	return err
+	<-ir.done
+	return ir.body.Close()
 }
 
-func parseResponseStream(r io.Reader, peerID string, isSSE bool) {
+func parseResponseStream(r io.Reader, peerID, service string, isSSE bool) {
 	if isSSE {
-		parseSSEResponse(r, peerID)
+		parseSSEResponse(r, peerID, service)
 	} else {
-		parseJSONResponse(r, peerID)
+		parseJSONResponse(r, peerID, service)
 	}
 }
 
-func parseJSONResponse(r io.Reader, peerID string) {
+func parseJSONResponse(r io.Reader, peerID, service string) {
 	var resp openai.ChatCompletion
 	if err := json.NewDecoder(io.LimitReader(r, maxInferenceBodyBytes)).Decode(&resp); err != nil {
 		return
 	}
 	if resp.JSON.Usage.Valid() && (resp.Usage.PromptTokens > 0 || resp.Usage.CompletionTokens > 0) {
-		recordTokens(peerID, resp.Model, int(resp.Usage.PromptTokens), int(resp.Usage.CompletionTokens))
+		recordTokens(peerID, service, resp.Model, int(resp.Usage.PromptTokens), int(resp.Usage.CompletionTokens))
 	}
 }
 
-func parseSSEResponse(r io.Reader, peerID string) {
+func parseSSEResponse(r io.Reader, peerID, service string) {
 	reader := bufio.NewReader(io.LimitReader(r, maxInferenceBodyBytes*4))
 	var model string
 	for {
@@ -280,7 +374,7 @@ func parseSSEResponse(r io.Reader, peerID string) {
 				model = chunk.Model
 			}
 			if chunk.JSON.Usage.Valid() && (chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0) {
-				recordTokens(peerID, model, int(chunk.Usage.PromptTokens), int(chunk.Usage.CompletionTokens))
+				recordTokens(peerID, service, model, int(chunk.Usage.PromptTokens), int(chunk.Usage.CompletionTokens))
 				break
 			}
 		}
