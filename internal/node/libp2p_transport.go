@@ -16,55 +16,55 @@ package node
 
 import (
 	"context"
+	"fmt"
+	"net"
+	"net/http"
 
+	gostream "github.com/libp2p/go-libp2p-gostream"
 	libp2phttp "github.com/libp2p/go-libp2p-http"
 	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
-// newLibp2pHTTPTransport returns the go-libp2p-http transport over h, with
-// each request's stream reset when the request's context ends.
+// newLibp2pHTTPTransport returns a transport for libp2p:// URLs whose host is a
+// peer ID. Requests go through net/http's Transport over a gostream connection
+// to the peer's /libp2p-http protocol, as the router's ingress transport does,
+// so net/http closes the stream when the request's context ends.
 //
-// go-libp2p-http uses the request context only to open the stream. A caller
-// that cancels a long or streaming request would otherwise leave the stream,
-// and the remote handler behind it, open until the remote side finishes.
-func newLibp2pHTTPTransport(h host.Host) *libp2phttp.RoundTripper {
-	return libp2phttp.NewTransport(cancelableStreamHost{h})
+// go-libp2p-http's own transport uses the request context only to open the
+// stream, which left the stream, and the remote handler behind it, open after
+// the caller cancelled a long or streaming request.
+//
+// Keep-alives are disabled so each request gets its own stream, as it did with
+// go-libp2p-http. A pooled stream over a limited (relayed) connection can be
+// closed by the relay while idle, and net/http does not retry a request with a
+// body, such as an A2A POST, on a reused connection.
+func newLibp2pHTTPTransport(h host.Host) http.RoundTripper {
+	return libp2pSchemeTransport{&http.Transport{
+		DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
+			hostPart, _, err := net.SplitHostPort(addr)
+			if err != nil {
+				hostPart = addr
+			}
+			pid, err := peer.Decode(hostPart)
+			if err != nil {
+				return nil, fmt.Errorf("invalid target peer %q: %w", hostPart, err)
+			}
+			return gostream.Dial(ctx, h, pid, libp2phttp.DefaultP2PProtocol)
+		},
+		DisableKeepAlives: true,
+	}}
 }
 
-// cancelableStreamHost resets a stream opened by NewStream when the context
-// passed to NewStream ends before the stream is closed.
-type cancelableStreamHost struct {
-	host.Host
-}
+// libp2pSchemeTransport sends libp2p:// requests through next as http://, so
+// callers keep libp2p:// URLs, which an ordinary client refuses.
+type libp2pSchemeTransport struct{ next http.RoundTripper }
 
-func (h cancelableStreamHost) NewStream(ctx context.Context, p peer.ID, pids ...protocol.ID) (network.Stream, error) {
-	s, err := h.Host.NewStream(ctx, p, pids...)
-	if err != nil {
-		return nil, err
+func (t libp2pSchemeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Scheme != "libp2p" {
+		return nil, fmt.Errorf("unsupported scheme %q", req.URL.Scheme)
 	}
-	stop := context.AfterFunc(ctx, func() { _ = s.Reset() })
-	return &cancelableStream{Stream: s, stop: stop}, nil
-}
-
-type cancelableStream struct {
-	network.Stream
-	stop func() bool
-}
-
-func (s *cancelableStream) Close() error {
-	s.stop()
-	return s.Stream.Close()
-}
-
-func (s *cancelableStream) Reset() error {
-	s.stop()
-	return s.Stream.Reset()
-}
-
-func (s *cancelableStream) ResetWithError(code network.StreamErrorCode) error {
-	s.stop()
-	return s.Stream.ResetWithError(code)
+	out := req.Clone(req.Context())
+	out.URL.Scheme = "http"
+	return t.next.RoundTrip(out)
 }
