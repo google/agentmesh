@@ -21,9 +21,12 @@ import (
 	"testing"
 	"time"
 
+	golog "github.com/ipfs/go-log/v2"
+
 	dto "github.com/prometheus/client_model/go"
 
 	"github.com/google/agentmesh/api"
+	"github.com/google/agentmesh/internal/logging"
 	"github.com/google/agentmesh/internal/storage"
 )
 
@@ -361,5 +364,48 @@ func TestPruneCatalogKeepsAReportWrittenDuringTheSweep(t *testing.T) {
 	}
 	if _, ok := snap["gone"]; ok {
 		t.Fatal("the sweep kept the report of a node that is not enrolled")
+	}
+}
+
+// A report evicted while the sweep runs (a ban drops it at once) is gone
+// before the sweep gets to it, so the sweep does not count it as one it
+// dropped.
+func TestPruneCatalogCountsOnlyTheReportsItDrops(t *testing.T) {
+	prev := golog.GetConfig()
+	logging.Setup(logging.Options{RingBuffer: true})
+	t.Cleanup(func() { golog.SetupLogging(prev) })
+	store := &listHookStore{Store: newMetricsTestStore(t)}
+	now := time.Now()
+	srv, err := NewServer(Options{DriverName: "sqlite", DataSourceName: "unused", OIDCIssuer: "https://issuer"}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = srv.Close() }()
+	srv.catalog["gone"] = nodeCatalogEntry{ReportedAt: now.Add(-time.Hour)}
+	srv.catalog["banned"] = nodeCatalogEntry{ReportedAt: now.Add(-time.Hour)}
+	store.afterList = func() {
+		srv.catalogMu.Lock()
+		delete(srv.catalog, "banned")
+		srv.catalogMu.Unlock()
+	}
+
+	// The ring buffer is shared by the process: only lines this sweep wrote count.
+	earlier := make(map[string]bool)
+	for _, line := range logging.RecentLogs() {
+		earlier[line] = true
+	}
+	srv.pruneCatalog(now)
+
+	var summaries []string
+	for _, line := range logging.RecentLogs() {
+		if !earlier[line] && strings.Contains(line, "service reports of nodes no longer admitted") {
+			summaries = append(summaries, line)
+		}
+	}
+	if len(summaries) != 1 || !strings.Contains(summaries[0], "Dropped 1 service reports") {
+		t.Fatalf("sweep summary lines %q, want one that counts the 1 report the sweep dropped", summaries)
+	}
+	if n := len(srv.catalogSnapshot()); n != 0 {
+		t.Fatalf("catalog after the sweep has %d entries, want 0", n)
 	}
 }
