@@ -468,8 +468,8 @@ func (m *MCPService) HandleStreamPassThrough(s network.Stream, reqCtx RequestCon
 						}
 						outcome := audit.OutcomeUnauthorized
 						var rpcErr *jsonrpc.Error
-						if errors.As(errResp.Error, &rpcErr) && rpcErr.Code == jsonrpc.CodeInvalidParams {
-							outcome = audit.OutcomeInvalidParams
+						if errors.As(errResp.Error, &rpcErr) {
+							outcome = audit.ClassifyJSONRPCError(rpcErr.Code)
 						}
 						auditLogger.Log(audit.Record{
 							Timestamp:      startTime.UTC().Format(time.RFC3339Nano),

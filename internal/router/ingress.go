@@ -805,16 +805,20 @@ func ingressCallerPeerID(claims *identity.VerifiedBiscuitClaims) string {
 	if claims == nil {
 		return ""
 	}
+	var raw string
 	if claims.NodePeerID != "" {
-		return claims.NodePeerID
+		raw = claims.NodePeerID
+	} else if claims.ActorNodePeerID != "" {
+		raw = claims.ActorNodePeerID
+	} else if claims.ClientPeerID != "" {
+		raw = claims.ClientPeerID
+	} else {
+		raw = claims.Principal()
 	}
-	if claims.ActorNodePeerID != "" {
-		return claims.ActorNodePeerID
+	if pID, err := peer.Decode(raw); err == nil {
+		return pID.String()
 	}
-	if claims.ClientPeerID != "" {
-		return claims.ClientPeerID
-	}
-	return claims.Principal()
+	return raw
 }
 
 func (r *Router) serveIngressAgentCard(
