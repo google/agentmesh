@@ -24,6 +24,7 @@ import (
 
 	"github.com/eclipse-biscuit/biscuit-go/v2"
 	"github.com/google/agentmesh/api"
+	"github.com/google/agentmesh/internal/audit"
 	"github.com/google/agentmesh/internal/identity"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -67,6 +68,16 @@ type RequestContext struct {
 	// the caller's Biscuit during stream authentication so downstream stream
 	// handlers (such as MCP pass-through) can enforce tool-level constraints.
 	TaskRules []*api.TaskAuthorizationRule
+
+	// CallerLabels holds the control-plane attested label() facts extracted
+	// from the caller's verified Biscuit token during stream authentication.
+	CallerLabels map[string]string
+
+	// ProviderPeerID is the local node's peer ID serving the request.
+	ProviderPeerID peer.ID
+
+	// AuditLogger is the call audit logger for recording tool call events.
+	AuditLogger *audit.Logger
 }
 
 // HTTPRequestFacts is what an HTTP request contributes to policy.
@@ -173,7 +184,7 @@ func (n *AgentMeshNode) WithBiscuitAuth(next func(network.Stream, RequestContext
 
 		writer := msgio.NewVarintWriter(ts)
 
-		taskRules, err := n.verifyBiscuitTokenWithRules(authFrame.Biscuit, reqCtx)
+		taskRules, callerLabels, err := n.verifyBiscuitTokenWithRules(authFrame.Biscuit, reqCtx)
 		if err != nil {
 			logger.Warnf("[Auth] AuthZ Denied %s: %v", remotePeer, err)
 			resp := &api.AuthResponse{Success: false, Error: err.Error()}
@@ -182,6 +193,7 @@ func (n *AgentMeshNode) WithBiscuitAuth(next func(network.Stream, RequestContext
 			return
 		}
 		reqCtx.TaskRules = taskRules
+		reqCtx.CallerLabels = callerLabels
 
 		// Valid. Mutual auth: return our control-plane-minted identity so the
 		// caller can verify this node's attested facts (e.g. region) before
@@ -205,18 +217,18 @@ func (n *AgentMeshNode) WithBiscuitAuth(next func(network.Stream, RequestContext
 
 // VerifyBiscuitToken checks revocation, cache, and evaluates the token against trusted keys and local policies.
 func (n *AgentMeshNode) VerifyBiscuitToken(biscuitBytes []byte, reqCtx RequestContext) error {
-	_, err := n.verifyBiscuitTokenWithRules(biscuitBytes, reqCtx)
+	_, _, err := n.verifyBiscuitTokenWithRules(biscuitBytes, reqCtx)
 	return err
 }
 
-func (n *AgentMeshNode) verifyBiscuitTokenWithRules(biscuitBytes []byte, reqCtx RequestContext) ([]*api.TaskAuthorizationRule, error) {
+func (n *AgentMeshNode) verifyBiscuitTokenWithRules(biscuitBytes []byte, reqCtx RequestContext) ([]*api.TaskAuthorizationRule, map[string]string, error) {
 	remotePeer := reqCtx.PeerID
 
 	// Check revocation cache
 	if n.revokedPeers != nil {
 		if _, isRevoked := n.revokedPeers.Get(remotePeer.String()); isRevoked {
 			logger.Warnf("[Auth] Peer %s is revoked", remotePeer)
-			return nil, fmt.Errorf("peer is revoked")
+			return nil, nil, fmt.Errorf("peer is revoked")
 		}
 	}
 
@@ -226,12 +238,14 @@ func (n *AgentMeshNode) verifyBiscuitTokenWithRules(biscuitBytes []byte, reqCtx 
 
 	var authorized bool
 	var taskRules []*api.TaskAuthorizationRule
+	var callerLabels map[string]string
 	var lastErr error
 	for _, pubKey := range keys {
 		logger.Infof("[Auth] Trying key: %x", pubKey.Key)
-		if rules, err := n.authorizeWithRules(biscuitBytes, reqCtx, pubKey.Key); err == nil {
+		if rules, labels, err := n.authorizeWithRules(biscuitBytes, reqCtx, pubKey.Key); err == nil {
 			authorized = true
 			taskRules = rules
+			callerLabels = labels
 			break
 		} else {
 			lastErr = err
@@ -243,39 +257,39 @@ func (n *AgentMeshNode) verifyBiscuitTokenWithRules(biscuitBytes []byte, reqCtx 
 
 	if !authorized {
 		if lastErr != nil {
-			return nil, lastErr
+			return nil, nil, lastErr
 		}
-		return nil, fmt.Errorf("authorization failed")
+		return nil, nil, fmt.Errorf("authorization failed")
 	}
 
-	return taskRules, nil
+	return taskRules, callerLabels, nil
 }
 
 func (n *AgentMeshNode) Authorize(rawToken []byte, req RequestContext, pubKey ed25519.PublicKey) error {
-	_, err := n.authorizeWithRules(rawToken, req, pubKey)
+	_, _, err := n.authorizeWithRules(rawToken, req, pubKey)
 	return err
 }
 
-func (n *AgentMeshNode) authorizeWithRules(rawToken []byte, req RequestContext, pubKey ed25519.PublicKey) ([]*api.TaskAuthorizationRule, error) {
+func (n *AgentMeshNode) authorizeWithRules(rawToken []byte, req RequestContext, pubKey ed25519.PublicKey) ([]*api.TaskAuthorizationRule, map[string]string, error) {
 	if len(pubKey) != ed25519.PublicKeySize {
-		return nil, fmt.Errorf("invalid public key size: %d", len(pubKey))
+		return nil, nil, fmt.Errorf("invalid public key size: %d", len(pubKey))
 	}
 	b, taskRules, err := identity.UnmarshalInbound(rawToken)
 	if err != nil {
-		return nil, fmt.Errorf("invalid biscuit: %w", err)
+		return nil, nil, fmt.Errorf("invalid biscuit: %w", err)
 	}
 	if n.IsBiscuitRevoked(b) {
 		logger.Infow("Audit Traceability", append(req.auditFields(), "decision", "deny", "reason", "biscuit is revoked")...)
-		return nil, fmt.Errorf("biscuit is revoked")
+		return nil, nil, fmt.Errorf("biscuit is revoked")
 	}
 
 	authorizer, err := b.Authorizer(pubKey, identity.AuthorizerOptions(n.BiscuitTimeout)...)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if err := identity.RequireAuthorityRequestBinding(b, req.PeerID); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// The request as every enforcement point describes it: the service it
@@ -307,35 +321,35 @@ func (n *AgentMeshNode) authorizeWithRules(rawToken []byte, req RequestContext, 
 
 	pol, err := n.meshPolicy()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := identity.AuthorizeMeshRequest(authorizer, meshReq, pol); err != nil {
 		logger.Infow("Audit Traceability", append(req.auditFields(), "decision", "deny", "reason", err.Error())...)
 		logger.Debugf("Authorizer failure: %v, token: %s", err, b.String())
 		logger.Debugf("Authorizer state: %s", authorizer.PrintWorld())
-		return nil, err
+		return nil, nil, err
 	}
 
 	if n.nodeConfig != nil && (n.nodeConfig.RequireTaskScope || n.nodeConfig.MaxTaskTTL > 0) && (!req.Local || req.Protocol == "ext_authz") {
 		if len(taskRules) == 0 {
 			logger.Infow("Audit Traceability", append(req.auditFields(), "decision", "deny", "reason", "task-scoped credential (tar_block) is required")...)
-			return nil, fmt.Errorf("task-scoped credential (tar_block) is required")
+			return nil, nil, fmt.Errorf("task-scoped credential (tar_block) is required")
 		}
 		if n.nodeConfig.MaxTaskTTL > 0 {
 			authExp, expErr := queryExpiration(authorizer)
 			if expErr != nil {
 				logger.Infow("Audit Traceability", append(req.auditFields(), "decision", "deny", "reason", "missing credential expiration for max_task_ttl check")...)
-				return nil, fmt.Errorf("credential expiration required for max_task_ttl: %w", expErr)
+				return nil, nil, fmt.Errorf("credential expiration required for max_task_ttl: %w", expErr)
 			}
 			effectiveExp := api.EffectiveTARExpiration(authExp, taskRules)
 			if effectiveExp.IsZero() {
 				logger.Infow("Audit Traceability", append(req.auditFields(), "decision", "deny", "reason", "effective credential expiration is zero")...)
-				return nil, fmt.Errorf("effective credential expiration is zero")
+				return nil, nil, fmt.Errorf("effective credential expiration is zero")
 			}
 			if remaining := time.Until(effectiveExp); remaining > n.nodeConfig.MaxTaskTTL {
 				reason := fmt.Sprintf("credential remaining lifetime %s exceeds max_task_ttl %s", remaining.Round(time.Second), n.nodeConfig.MaxTaskTTL)
 				logger.Infow("Audit Traceability", append(req.auditFields(), "decision", "deny", "reason", reason)...)
-				return nil, errors.New(reason)
+				return nil, nil, errors.New(reason)
 			}
 		}
 	}
@@ -343,7 +357,7 @@ func (n *AgentMeshNode) authorizeWithRules(rawToken []byte, req RequestContext, 
 	if len(taskRules) > 0 {
 		if err := api.EvaluateTaskRules(taskRules, meshReq.TaskRequest(), time.Now()); err != nil {
 			logger.Infow("Audit Traceability", append(req.auditFields(), "decision", "deny", "reason", err.Error())...)
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
@@ -396,7 +410,7 @@ func (n *AgentMeshNode) authorizeWithRules(rawToken []byte, req RequestContext, 
 			if actorPID, pErr := peer.Decode(actorNodeStr); pErr == nil {
 				if _, isRevoked := n.revokedPeers.Get(actorPID.String()); isRevoked {
 					logger.Infow("Audit Traceability", append(req.auditFields(), "decision", "deny", "reason", "actor_node is revoked")...)
-					return nil, fmt.Errorf("actor_node %s is revoked", actorPID.String())
+					return nil, nil, fmt.Errorf("actor_node %s is revoked", actorPID.String())
 				}
 			}
 		}
@@ -408,12 +422,14 @@ func (n *AgentMeshNode) authorizeWithRules(rawToken []byte, req RequestContext, 
 	if claims, cErr := queryClaimFacts(authorizer); cErr == nil && len(claims) > 0 {
 		auditFields = append(auditFields, "claims", api.FormatClaims(claims))
 	}
+	var callerLabels map[string]string
 	if labels, lErr := queryLabelFacts(authorizer); lErr == nil && len(labels) > 0 {
+		callerLabels = labels
 		auditFields = append(auditFields, "labels", api.FormatLabels(labels))
 	}
 	logger.Infow("Audit Traceability", auditFields...)
 
-	return taskRules, nil
+	return taskRules, callerLabels, nil
 }
 
 // auditFields is what every authorization decision logs about the request:

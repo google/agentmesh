@@ -37,6 +37,7 @@ import (
 
 	"github.com/eclipse-biscuit/biscuit-go/v2"
 	"github.com/google/agentmesh/api"
+	"github.com/google/agentmesh/internal/audit"
 	cpclient "github.com/google/agentmesh/internal/controlplane/client"
 	"github.com/google/agentmesh/internal/identity"
 	"github.com/google/agentmesh/internal/p2plimits"
@@ -384,6 +385,8 @@ type Router struct {
 	// since the last one that answered.
 	externalAddrLookupFailures atomic.Int32
 	authFailureLog             perPeerLogLimiter
+
+	callAuditLogger *audit.Logger
 }
 
 // NewRouter initializes the router.
@@ -395,13 +398,31 @@ func NewRouter(ctx context.Context, config Options) (*Router, error) {
 
 	ctx, cancel := context.WithCancel(ctx)
 
+	var auditLogger *audit.Logger
+	if config.CallAuditLogger != nil {
+		auditLogger = config.CallAuditLogger
+	} else if config.CallAuditLogPath != "" {
+		l, err := audit.NewFromFile(config.CallAuditLogPath)
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("failed to open call audit log: %w", err)
+		}
+		auditLogger = l
+	}
+
 	handshakeLimiter, err := ratelimit.NewPeerRateLimiter(handshakeLimiterSize)
 	if err != nil {
+		if auditLogger != nil {
+			_ = auditLogger.Close()
+		}
 		cancel()
 		return nil, fmt.Errorf("failed to create handshake rate limiter: %w", err)
 	}
 	ingressLimiter, err := ratelimit.NewPeerRateLimiterWithRate(handshakeLimiterSize, ingressRateLimitPerIP, ingressRateBurstPerIP)
 	if err != nil {
+		if auditLogger != nil {
+			_ = auditLogger.Close()
+		}
 		cancel()
 		return nil, fmt.Errorf("failed to create ingress rate limiter: %w", err)
 	}
@@ -413,6 +434,7 @@ func NewRouter(ctx context.Context, config Options) (*Router, error) {
 		handshakeLimiter: handshakeLimiter,
 		ingressLimiter:   ingressLimiter,
 		syncTrigger:      make(chan struct{}, 1),
+		callAuditLogger:  auditLogger,
 	}, nil
 }
 
@@ -2017,8 +2039,18 @@ func (r *Router) Close() error {
 			errs = append(errs, err)
 		}
 	}
+	if r.callAuditLogger != nil {
+		if err := r.callAuditLogger.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	r.wg.Wait()
 	return errors.Join(errs...)
+}
+
+// CallAuditLogger returns the configured call audit logger, if any.
+func (r *Router) CallAuditLogger() *audit.Logger {
+	return r.callAuditLogger
 }
 
 func getOrGeneratePeerKey(keyPath string) (crypto.PrivKey, error) {

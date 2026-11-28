@@ -1310,7 +1310,7 @@ func TestVerifyBiscuitPreservesPolicyDenialAcrossMultipleTrustedKeys(t *testing.
 		BiscuitTimeout: 500 * time.Millisecond,
 	}
 
-	_, err = node.verifyBiscuitTokenWithRules(tokenBytes, RequestContext{
+	_, _, err = node.verifyBiscuitTokenWithRules(tokenBytes, RequestContext{
 		PeerID:   callerPeer,
 		Protocol: "/denied/proto",
 	})

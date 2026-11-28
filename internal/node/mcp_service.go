@@ -15,7 +15,9 @@
 package node
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -25,7 +27,9 @@ import (
 	"time"
 
 	"github.com/google/agentmesh/api"
+	"github.com/google/agentmesh/internal/audit"
 	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -50,6 +54,30 @@ type MCPService struct {
 	// (tests) is kept as is.
 	sessionsOnce sync.Once
 	sessions     chan struct{}
+
+	auditLogger *audit.Logger
+	nodeID      peer.ID
+}
+
+func (m *MCPService) providerPeerID() string {
+	if m.nodeID != "" {
+		return m.nodeID.String()
+	}
+	return "unknown"
+}
+
+func (m *MCPService) effectiveAuditLogger(reqCtx RequestContext) *audit.Logger {
+	if reqCtx.AuditLogger != nil {
+		return reqCtx.AuditLogger
+	}
+	return m.auditLogger
+}
+
+func (m *MCPService) effectiveProviderPeerID(reqCtx RequestContext) string {
+	if reqCtx.ProviderPeerID != "" {
+		return reqCtx.ProviderPeerID.String()
+	}
+	return m.providerPeerID()
 }
 
 func (m *MCPService) sessionSlots() chan struct{} {
@@ -287,6 +315,38 @@ func (m *MCPService) HandleStreamPassThrough(s network.Stream, reqCtx RequestCon
 	clientErrc := make(chan error, 2)
 	backendDone := make(chan struct{})
 
+	auditLogger := m.effectiveAuditLogger(reqCtx)
+	providerID := m.effectiveProviderPeerID(reqCtx)
+
+	type inFlightCall struct {
+		toolName  string
+		startTime time.Time
+		bytesIn   int64
+	}
+	var inFlightCalls sync.Map
+
+	defer func() {
+		if auditLogger != nil {
+			inFlightCalls.Range(func(key, val any) bool {
+				call := val.(inFlightCall)
+				inFlightCalls.Delete(key)
+				auditLogger.Log(audit.Record{
+					Timestamp:      call.startTime.UTC().Format(time.RFC3339Nano),
+					CallerPeerID:   reqCtx.PeerID.String(),
+					CallerLabels:   reqCtx.CallerLabels,
+					ProviderPeerID: providerID,
+					ServiceName:    m.info.GetName(),
+					ToolName:       call.toolName,
+					Outcome:        audit.OutcomeBackendError,
+					LatencyMS:      float64(time.Since(call.startTime).Microseconds()) / 1000.0,
+					BytesIn:        call.bytesIn,
+					BytesOut:       0,
+				})
+				return true
+			})
+		}
+	}()
+
 	go func() {
 		defer close(backendDone)
 		for {
@@ -297,6 +357,45 @@ func (m *MCPService) HandleStreamPassThrough(s network.Stream, reqCtx RequestCon
 					logger.Debugf("[MCPService] %s: failed to close write side to client: %v", m.info.Name, cwErr)
 				}
 				return
+			}
+			if auditLogger != nil {
+				if resp, ok := msg.(*jsonrpc.Response); ok && resp.ID.IsValid() {
+					respID := fmt.Sprint(resp.ID.Raw())
+					if val, found := inFlightCalls.LoadAndDelete(respID); found {
+						call := val.(inFlightCall)
+						var bytesOut int64
+						if enc, encErr := jsonrpc.EncodeMessage(resp); encErr == nil {
+							bytesOut = int64(len(enc))
+						}
+						outcome := audit.OutcomeOK
+						if resp.Error != nil {
+							var rpcErr *jsonrpc.Error
+							if errors.As(resp.Error, &rpcErr) {
+								outcome = audit.ClassifyJSONRPCError(rpcErr.Code)
+							} else {
+								outcome = audit.OutcomeCallFailed
+							}
+						} else if resp.Result != nil {
+							if b, mErr := json.Marshal(resp.Result); mErr == nil {
+								if bytes.Contains(b, []byte(`"isError":true`)) || bytes.Contains(b, []byte(`"isError": true`)) {
+									outcome = audit.OutcomeToolError
+								}
+							}
+						}
+						auditLogger.Log(audit.Record{
+							Timestamp:      call.startTime.UTC().Format(time.RFC3339Nano),
+							CallerPeerID:   reqCtx.PeerID.String(),
+							CallerLabels:   reqCtx.CallerLabels,
+							ProviderPeerID: providerID,
+							ServiceName:    m.info.GetName(),
+							ToolName:       call.toolName,
+							Outcome:        outcome,
+							LatencyMS:      float64(time.Since(call.startTime).Microseconds()) / 1000.0,
+							BytesIn:        call.bytesIn,
+							BytesOut:       bytesOut,
+						})
+					}
+				}
 			}
 			if err := clientConn.Write(ctx, msg); err != nil {
 				logger.Debugf("[MCPService] %s: client write error: %v", m.info.Name, err)
@@ -314,6 +413,33 @@ func (m *MCPService) HandleStreamPassThrough(s network.Stream, reqCtx RequestCon
 				clientErrc <- err
 				return
 			}
+
+			var isToolCall bool
+			var isCall bool
+			var requestID string
+			var toolName string
+			var startTime time.Time
+			var bytesIn int64
+
+			if req, ok := msg.(*jsonrpc.Request); ok && req.Method == "tools/call" {
+				isToolCall = true
+				isCall = req.IsCall()
+				if req.ID.IsValid() {
+					requestID = fmt.Sprint(req.ID.Raw())
+				}
+				startTime = time.Now()
+				if name, nErr := api.MCPToolCallName(req.Params); nErr == nil && name != "" {
+					toolName = name
+				} else {
+					toolName = "unknown"
+				}
+				if auditLogger != nil {
+					if enc, encErr := jsonrpc.EncodeMessage(req); encErr == nil {
+						bytesIn = int64(len(enc))
+					}
+				}
+			}
+
 			if req, ok := msg.(*jsonrpc.Request); ok && preflightMethodsUnsupportedByPassThrough[req.Method] {
 				resp := &jsonrpc.Response{ID: req.ID, Error: &jsonrpc.Error{Code: jsonrpc.CodeMethodNotFound, Message: req.Method + " is not supported by this pass-through proxy"}}
 				if werr := clientConn.Write(ctx, resp); werr != nil {
@@ -335,10 +461,55 @@ func (m *MCPService) HandleStreamPassThrough(s network.Stream, reqCtx RequestCon
 						clientErrc <- werr
 						return
 					}
+					if isToolCall && auditLogger != nil {
+						var bytesOut int64
+						if enc, encErr := jsonrpc.EncodeMessage(errResp); encErr == nil {
+							bytesOut = int64(len(enc))
+						}
+						outcome := audit.OutcomeUnauthorized
+						var rpcErr *jsonrpc.Error
+						if errors.As(errResp.Error, &rpcErr) {
+							outcome = audit.ClassifyJSONRPCError(rpcErr.Code)
+						}
+						auditLogger.Log(audit.Record{
+							Timestamp:      startTime.UTC().Format(time.RFC3339Nano),
+							CallerPeerID:   reqCtx.PeerID.String(),
+							CallerLabels:   reqCtx.CallerLabels,
+							ProviderPeerID: providerID,
+							ServiceName:    m.info.GetName(),
+							ToolName:       toolName,
+							Outcome:        outcome,
+							LatencyMS:      float64(time.Since(startTime).Microseconds()) / 1000.0,
+							BytesIn:        bytesIn,
+							BytesOut:       bytesOut,
+						})
+					}
 					continue
 				}
 			}
+			if isToolCall && auditLogger != nil && isCall && requestID != "" {
+				inFlightCalls.Store(requestID, inFlightCall{
+					toolName:  toolName,
+					startTime: startTime,
+					bytesIn:   bytesIn,
+				})
+			}
 			if err := backendConn.Write(ctx, msg); err != nil {
+				if isToolCall && auditLogger != nil && isCall && requestID != "" {
+					inFlightCalls.Delete(requestID)
+					auditLogger.Log(audit.Record{
+						Timestamp:      startTime.UTC().Format(time.RFC3339Nano),
+						CallerPeerID:   reqCtx.PeerID.String(),
+						CallerLabels:   reqCtx.CallerLabels,
+						ProviderPeerID: providerID,
+						ServiceName:    m.info.GetName(),
+						ToolName:       toolName,
+						Outcome:        audit.OutcomeBackendError,
+						LatencyMS:      float64(time.Since(startTime).Microseconds()) / 1000.0,
+						BytesIn:        bytesIn,
+						BytesOut:       0,
+					})
+				}
 				logger.Debugf("[MCPService] %s: backend write error: %v", m.info.Name, err)
 				clientErrc <- err
 				return

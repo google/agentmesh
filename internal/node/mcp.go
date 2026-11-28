@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/google/agentmesh/api"
+	"github.com/google/agentmesh/internal/audit"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/peerstore"
@@ -209,8 +210,46 @@ func (n *AgentMeshNode) CallMCPTool(ctx context.Context, targetPeer peer.ID, too
 		return nil, err
 	}
 
+	var startTime time.Time
+	var callerID string
+	var callerLabels map[string]string
+	providerID := targetPeer.String()
+	if n.callAuditLogger != nil {
+		startTime = time.Now()
+		if n.Host != nil {
+			callerID = n.Host.ID().String()
+		}
+		callerLabels = n.ownAttestedLabels()
+	}
+
 	session, cleanup, err := n.connectMCPSessionWithRetry(ctx, targetPeer, targetService, requiredLabels)
 	if err != nil {
+		if n.callAuditLogger != nil {
+			outcome := audit.OutcomeCallFailed
+			if errors.Is(err, ErrAuthRejected) {
+				outcome = audit.OutcomeUnauthorized
+			} else if errors.Is(err, ErrLabelsNotSatisfied) {
+				outcome = audit.OutcomeLabelsNotSatisfied
+			} else if errors.Is(err, ErrProviderNotGranted) {
+				outcome = audit.OutcomeProviderNotGranted
+			} else if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "context deadline exceeded") {
+				outcome = audit.OutcomeTimeout
+			} else if errors.Is(err, context.Canceled) {
+				outcome = audit.OutcomeCancelled
+			}
+			n.callAuditLogger.Log(audit.Record{
+				Timestamp:      startTime.UTC().Format(time.RFC3339Nano),
+				CallerPeerID:   callerID,
+				CallerLabels:   callerLabels,
+				ProviderPeerID: providerID,
+				ServiceName:    targetService,
+				ToolName:       originalToolName,
+				Outcome:        outcome,
+				LatencyMS:      float64(time.Since(startTime).Microseconds()) / 1000.0,
+				BytesIn:        0,
+				BytesOut:       0,
+			})
+		}
 		return nil, err
 	}
 	defer cleanup()
@@ -222,7 +261,48 @@ func (n *AgentMeshNode) CallMCPTool(ctx context.Context, targetPeer peer.ID, too
 		Arguments: params,
 	}
 
+	var bytesOut int64
+	if n.callAuditLogger != nil {
+		if callParamsBytes, mErr := json.Marshal(callParams); mErr == nil {
+			bytesOut = int64(len(callParamsBytes))
+		}
+	}
+
 	res, err := session.CallTool(ctx, callParams)
+
+	if n.callAuditLogger != nil {
+		var bytesIn int64
+		if res != nil {
+			if resBytes, mErr := json.Marshal(res); mErr == nil {
+				bytesIn = int64(len(resBytes))
+			}
+		}
+		outcome := audit.OutcomeOK
+		if err != nil {
+			outcome = audit.OutcomeCallFailed
+			if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "context deadline exceeded") {
+				outcome = audit.OutcomeTimeout
+			} else if errors.Is(err, context.Canceled) {
+				outcome = audit.OutcomeCancelled
+			}
+		} else if res != nil && res.IsError {
+			outcome = audit.OutcomeToolError
+		}
+
+		n.callAuditLogger.Log(audit.Record{
+			Timestamp:      startTime.UTC().Format(time.RFC3339Nano),
+			CallerPeerID:   callerID,
+			CallerLabels:   callerLabels,
+			ProviderPeerID: providerID,
+			ServiceName:    targetService,
+			ToolName:       originalToolName,
+			Outcome:        outcome,
+			LatencyMS:      float64(time.Since(startTime).Microseconds()) / 1000.0,
+			BytesIn:        bytesIn,
+			BytesOut:       bytesOut,
+		})
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to call tool %s: %w", toolName, err)
 	}

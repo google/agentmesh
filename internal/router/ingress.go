@@ -34,6 +34,7 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/eclipse-biscuit/biscuit-go/v2"
 	"github.com/google/agentmesh/api"
+	"github.com/google/agentmesh/internal/audit"
 	"github.com/google/agentmesh/internal/identity"
 	gostream "github.com/libp2p/go-libp2p-gostream"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -524,6 +525,20 @@ func (r *Router) handleIngressRequest(w http.ResponseWriter, req *http.Request, 
 		if _, err := identity.ValidateIngressCallerPreDial(verified, evalParams); err != nil {
 			routerIngressRequestsTotal.WithLabelValues(modeStr, ingressOutcomeDeny).Inc()
 			logger.Warnf("[Ingress] Pre-dial AuthZ denied caller (%s) from %s for %s: %v", verified.Principal(), clientIP, targetURI, err)
+			if r.callAuditLogger != nil && evalParams.MCPTool != "" {
+				r.callAuditLogger.Log(audit.Record{
+					Timestamp:      time.Now().UTC().Format(time.RFC3339Nano),
+					CallerPeerID:   ingressCallerPeerID(verified),
+					CallerLabels:   verified.Labels,
+					ProviderPeerID: targetPeer.String(),
+					ServiceName:    serviceName,
+					ToolName:       evalParams.MCPTool,
+					Outcome:        audit.OutcomeUnauthorized,
+					LatencyMS:      0,
+					BytesIn:        0,
+					BytesOut:       0,
+				})
+			}
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
@@ -575,7 +590,7 @@ func (r *Router) handleIngressRequest(w http.ResponseWriter, req *http.Request, 
 			"method", req.Method,
 			"path", backendPath,
 		)
-		r.forwardIngressHTTP(w, req, transport, targetPeer, serviceTypeStr, serviceName, subpath, hasTrailingOrSubpath, routerBiscuitHeader, api.IngressAuthModeStringPassthrough, "")
+		r.forwardIngressHTTP(w, req, transport, targetPeer, serviceTypeStr, serviceName, subpath, hasTrailingOrSubpath, routerBiscuitHeader, api.IngressAuthModeStringPassthrough, "", "", nil)
 		return
 	}
 
@@ -592,6 +607,20 @@ func (r *Router) handleIngressRequest(w http.ResponseWriter, req *http.Request, 
 	if err != nil {
 		routerIngressRequestsTotal.WithLabelValues(modeStr, ingressOutcomeDeny).Inc()
 		logger.Warnf("[Ingress] Edge AuthZ denied Biscuit caller (%s) from %s for %s: %v", verifiedCaller.Principal(), clientIP, targetURI, err)
+		if r.callAuditLogger != nil && evalParams.MCPTool != "" {
+			r.callAuditLogger.Log(audit.Record{
+				Timestamp:      time.Now().UTC().Format(time.RFC3339Nano),
+				CallerPeerID:   ingressCallerPeerID(verifiedCaller),
+				CallerLabels:   verifiedCaller.Labels,
+				ProviderPeerID: targetPeer.String(),
+				ServiceName:    serviceName,
+				ToolName:       evalParams.MCPTool,
+				Outcome:        audit.OutcomeUnauthorized,
+				LatencyMS:      0,
+				BytesIn:        0,
+				BytesOut:       0,
+			})
+		}
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
@@ -611,7 +640,7 @@ func (r *Router) handleIngressRequest(w http.ResponseWriter, req *http.Request, 
 		"path", backendPath,
 	)
 
-	r.forwardIngressHTTP(w, req, transport, targetPeer, serviceTypeStr, serviceName, subpath, hasTrailingOrSubpath, routerBiscuitHeader, api.IngressAuthModeStringEdge, callerBiscuitHdr)
+	r.forwardIngressHTTP(w, req, transport, targetPeer, serviceTypeStr, serviceName, subpath, hasTrailingOrSubpath, routerBiscuitHeader, api.IngressAuthModeStringEdge, callerBiscuitHdr, evalParams.MCPTool, verifiedCaller)
 }
 
 func (r *Router) forwardIngressHTTP(
@@ -622,12 +651,28 @@ func (r *Router) forwardIngressHTTP(
 	serviceTypeStr, serviceName, subpath string,
 	hasTrailingOrSubpath bool,
 	routerBiscuitHeader, modeStr, callerBiscuitHdr string,
+	mcpTool string,
+	verifiedCaller *identity.VerifiedBiscuitClaims,
 ) {
 	upstreamPath := "/" + serviceTypeStr + "/" + serviceName
 	if hasTrailingOrSubpath {
 		upstreamPath += "/" + subpath
 	}
 	stripAuth := modeStr == api.IngressAuthModeStringEdge
+
+	var start time.Time
+	var cr *ingressCountingReader
+	var cw *ingressCountingResponseWriter
+	shouldAudit := r.callAuditLogger != nil && mcpTool != ""
+	if shouldAudit {
+		start = time.Now()
+		if req.Body != nil {
+			cr = &ingressCountingReader{ReadCloser: req.Body}
+			req.Body = cr
+		}
+		cw = &ingressCountingResponseWriter{ResponseWriter: w}
+		w = cw
+	}
 
 	proxy := &httputil.ReverseProxy{
 		Transport:     transport,
@@ -661,6 +706,119 @@ func (r *Router) forwardIngressHTTP(
 		},
 	}
 	proxy.ServeHTTP(w, req)
+
+	if shouldAudit {
+		latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
+		outcome := audit.OutcomeOK
+		status := cw.statusCode
+		if status == 0 {
+			status = http.StatusOK
+		}
+		if status >= 400 {
+			switch status {
+			case http.StatusUnauthorized:
+				outcome = audit.OutcomeUnauthorized
+			case http.StatusForbidden:
+				outcome = audit.OutcomeForbidden
+			case http.StatusNotFound:
+				outcome = audit.OutcomeNotFound
+			case http.StatusTooManyRequests:
+				outcome = audit.OutcomeRateLimited
+			case http.StatusBadGateway:
+				outcome = audit.OutcomeBadGateway
+			case http.StatusGatewayTimeout:
+				outcome = audit.OutcomeTimeout
+			default:
+				if status >= 500 {
+					outcome = audit.OutcomeBackendError
+				} else {
+					outcome = audit.OutcomeCallFailed
+				}
+			}
+		}
+
+		var callerLabels map[string]string
+		if verifiedCaller != nil {
+			callerLabels = verifiedCaller.Labels
+		}
+		var bytesIn int64
+		if cr != nil {
+			bytesIn = cr.bytesRead
+		}
+		r.callAuditLogger.Log(audit.Record{
+			Timestamp:      start.UTC().Format(time.RFC3339Nano),
+			CallerPeerID:   ingressCallerPeerID(verifiedCaller),
+			CallerLabels:   callerLabels,
+			ProviderPeerID: targetPeer.String(),
+			ServiceName:    serviceName,
+			ToolName:       mcpTool,
+			Outcome:        outcome,
+			LatencyMS:      latencyMs,
+			BytesIn:        bytesIn,
+			BytesOut:       cw.bytesWritten,
+		})
+	}
+}
+
+type ingressCountingResponseWriter struct {
+	http.ResponseWriter
+	statusCode   int
+	bytesWritten int64
+}
+
+func (w *ingressCountingResponseWriter) WriteHeader(code int) {
+	w.statusCode = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *ingressCountingResponseWriter) Write(b []byte) (int, error) {
+	if w.statusCode == 0 {
+		w.statusCode = http.StatusOK
+	}
+	n, err := w.ResponseWriter.Write(b)
+	w.bytesWritten += int64(n)
+	return n, err
+}
+
+func (w *ingressCountingResponseWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+type ingressCountingReader struct {
+	io.ReadCloser
+	bytesRead int64
+}
+
+func (r *ingressCountingReader) Read(p []byte) (int, error) {
+	n, err := r.ReadCloser.Read(p)
+	r.bytesRead += int64(n)
+	return n, err
+}
+
+func (r *ingressCountingReader) Close() error {
+	return r.ReadCloser.Close()
+}
+
+func ingressCallerPeerID(claims *identity.VerifiedBiscuitClaims) string {
+	if claims == nil {
+		return ""
+	}
+	var raw string
+	if claims.NodePeerID != "" {
+		raw = claims.NodePeerID
+	} else if claims.ActorNodePeerID != "" {
+		raw = claims.ActorNodePeerID
+	} else if claims.ClientPeerID != "" {
+		raw = claims.ClientPeerID
+	} else {
+		raw = claims.Principal()
+	}
+	if pID, err := peer.Decode(raw); err == nil {
+		return pID.String()
+	}
+	return raw
 }
 
 func (r *Router) serveIngressAgentCard(

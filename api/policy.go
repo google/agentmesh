@@ -54,6 +54,12 @@ type NodeConfig struct {
 	// together and mean opposite directions.
 	Labels map[string]string `yaml:"labels,omitempty"`
 	Egress Egress            `yaml:"egress"`
+	Audit  AuditConfig       `yaml:"audit,omitempty"`
+}
+
+// AuditConfig holds optional audit logging configuration for the node.
+type AuditConfig struct {
+	CallLogPath string `yaml:"call_log_path,omitempty"`
 }
 
 // NodeConfigVersionV1Alpha1 is the only node config schema this build understands.

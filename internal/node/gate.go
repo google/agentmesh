@@ -87,6 +87,12 @@ func (n *AgentMeshNode) HandleMCPStream(s network.Stream, reqCtx RequestContext)
 		if t, err := api.ParseServiceType(targetType); err == nil && t == api.ServiceType_SERVICE_TYPE_MCP {
 			if svc, ok := n.services.GetTyped(t, targetName); ok {
 				if mcpSvc, isMcp := svc.(*MCPService); isMcp {
+					if reqCtx.AuditLogger == nil {
+						reqCtx.AuditLogger = n.callAuditLogger
+					}
+					if reqCtx.ProviderPeerID == "" && n.Host != nil {
+						reqCtx.ProviderPeerID = n.Host.ID()
+					}
 					mcpSvc.HandleStreamPassThrough(s, reqCtx)
 					return
 				}

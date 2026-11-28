@@ -39,6 +39,7 @@ import (
 
 	"github.com/eclipse-biscuit/biscuit-go/v2"
 	"github.com/google/agentmesh/api"
+	"github.com/google/agentmesh/internal/audit"
 	cpclient "github.com/google/agentmesh/internal/controlplane/client"
 	"github.com/google/agentmesh/internal/identity"
 	"github.com/google/agentmesh/internal/p2plimits"
@@ -285,6 +286,9 @@ type AgentMeshNode struct {
 	catalogMCPServer *mcp.Server
 	egressOnce       sync.Once
 	egressHandler    http.Handler
+
+	callAuditLogger       *audit.Logger
+	callAuditLoggerCloser io.Closer
 }
 
 // SetTokenSource configures the live platform/OIDC token source presented as
@@ -532,6 +536,21 @@ func NewAgentMeshNode(cfg Options) (*AgentMeshNode, error) {
 		return nil, fmt.Errorf("failed to create label gate cache: %w", err)
 	}
 
+	auditLogPath := cfg.CallAuditLogPath
+	if auditLogPath == "" && cfg.NodeConfig != nil {
+		auditLogPath = cfg.NodeConfig.CallAuditLogPath
+	}
+	if cfg.CallAuditLogger != nil {
+		node.callAuditLogger = cfg.CallAuditLogger
+	} else if auditLogPath != "" {
+		l, err := audit.NewFromFile(auditLogPath)
+		if err != nil {
+			return nil, fmt.Errorf("call audit log: %w", err)
+		}
+		node.callAuditLogger = l
+		node.callAuditLoggerCloser = l
+	}
+
 	return node, nil
 }
 
@@ -543,6 +562,31 @@ func (n *AgentMeshNode) labels() map[string]string {
 		return nil
 	}
 	return n.nodeConfig.Labels
+}
+
+// ownAttestedLabels returns the node's control-plane attested labels.
+func (n *AgentMeshNode) ownAttestedLabels() map[string]string {
+	if n == nil {
+		return nil
+	}
+	if bBytes := n.GetIdentity(); len(bBytes) > 0 {
+		if b, err := biscuit.Unmarshal(bBytes); err == nil {
+			n.keysMu.RLock()
+			trusted := n.trustedKeys
+			n.keysMu.RUnlock()
+			for _, tk := range trusted {
+				if authorizer, err := b.Authorizer(tk.Key); err == nil {
+					if labels, err := queryLabelFacts(authorizer); err == nil && len(labels) > 0 {
+						return labels
+					}
+				}
+			}
+		}
+	}
+	if n.nodeConfig != nil && len(n.nodeConfig.Labels) > 0 {
+		return n.nodeConfig.Labels
+	}
+	return nil
 }
 
 // Start initializes the libp2p host, DHT, connects to the routers, and starts runtime components.
@@ -2200,6 +2244,14 @@ func (n *AgentMeshNode) RegisterService(ctx context.Context, req *api.RegisterSe
 	if err != nil {
 		return err
 	}
+	if mcpSvc, isMcp := svc.(*MCPService); isMcp {
+		if mcpSvc.auditLogger == nil && n.callAuditLogger != nil {
+			mcpSvc.auditLogger = n.callAuditLogger
+		}
+		if mcpSvc.nodeID == "" && n.Host != nil {
+			mcpSvc.nodeID = n.Host.ID()
+		}
+	}
 	return n.services.Register(ctx, svc)
 }
 
@@ -2231,6 +2283,11 @@ func (n *AgentMeshNode) Teardown() error {
 		n.services.TeardownAll()
 	}
 	var errs []error
+	if n.callAuditLoggerCloser != nil {
+		if err := n.callAuditLoggerCloser.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	if n.Host != nil {
 		if err := n.Host.Close(); err != nil {
 			errs = append(errs, err)
