@@ -199,6 +199,11 @@ func (n *AgentMeshNode) refreshRouterCatalog(ctx context.Context) error {
 func (n *AgentMeshNode) wantRouters() int {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	return n.wantRoutersLocked()
+}
+
+// wantRoutersLocked requires n.mu.
+func (n *AgentMeshNode) wantRoutersLocked() int {
 	matched := 0
 	for _, c := range n.routerCatalog {
 		if len(n.config.RouterSelector) == 0 || api.LabelsSatisfy(n.config.RouterSelector, c.Labels) {
@@ -208,6 +213,12 @@ func (n *AgentMeshNode) wantRouters() int {
 	return min(n.config.Routers, matched)
 }
 
+// routerLiveLocked reports whether an authenticated router still has a connection.
+// The caller holds n.mu.
+func (n *AgentMeshNode) routerLiveLocked(router peer.ID) bool {
+	return n.authenticatedRouters[router] && (n.Host == nil || n.Host.Network().Connectedness(router) == network.Connected)
+}
+
 // attachedRouters lists the routers the node keeps and holds a live
 // authenticated session with.
 func (n *AgentMeshNode) attachedRouters() []peer.ID {
@@ -215,7 +226,7 @@ func (n *AgentMeshNode) attachedRouters() []peer.ID {
 	defer n.mu.Unlock()
 	var out []peer.ID
 	for pid := range n.attached {
-		if n.authenticatedRouters[pid] && n.Host.Network().Connectedness(pid) == network.Connected {
+		if n.routerLiveLocked(pid) {
 			out = append(out, pid)
 		}
 	}
@@ -240,10 +251,10 @@ func (n *AgentMeshNode) RefreshRouters(ctx context.Context) error { return n.ref
 func (n *AgentMeshNode) detach(router peer.ID) {
 	n.mu.Lock()
 	delete(n.attached, router)
-	n.mu.Unlock()
 	if n.connMgr != nil {
 		n.connMgr.Unprotect(router, routerTag)
 	}
+	n.mu.Unlock()
 	n.refreshRelays()
 }
 
@@ -307,17 +318,11 @@ func (n *AgentMeshNode) selectAndWarnRouters(cands []routerCandidate, k int, exc
 // admitByRouters) never overshoot Options.Routers or dial the same router twice.
 func (n *AgentMeshNode) reserveRoutersToAttach() []peer.AddrInfo {
 	n.mu.Lock()
-	matched := 0
-	for _, c := range n.routerCatalog {
-		if len(n.config.RouterSelector) == 0 || api.LabelsSatisfy(n.config.RouterSelector, c.Labels) {
-			matched++
-		}
-	}
-	want := min(n.config.Routers, matched)
+	want := n.wantRoutersLocked()
 	inUse := 0
 	counted := make(map[peer.ID]bool, len(n.attached)+len(n.dialing))
 	for pid := range n.attached {
-		if n.authenticatedRouters[pid] && (n.Host == nil || n.Host.Network().Connectedness(pid) == network.Connected) {
+		if n.routerLiveLocked(pid) {
 			counted[pid] = true
 			inUse++
 		}
@@ -360,16 +365,58 @@ func (n *AgentMeshNode) shun(router peer.ID, d time.Duration) {
 
 func (n *AgentMeshNode) finishDialAndAttach(router peer.ID) {
 	n.mu.Lock()
+	delete(n.dialing, router)
+	want := n.wantRoutersLocked()
+	live := 0
+	var dropped []peer.ID
+	for pid := range n.attached {
+		if n.routerLiveLocked(pid) {
+			live++
+		} else {
+			dropped = append(dropped, pid)
+		}
+	}
+	// A redial or another top-up may have filled the target while this
+	// handshake was in flight. Check and record the attachment under one lock.
+	if !n.attached[router] && live >= want {
+		n.mu.Unlock()
+		logger.Infof("[AuthN] Not attaching admitted router %s: holding %d live routers, target %d", router, live, want)
+		return
+	}
 	if n.attached == nil {
 		n.attached = map[peer.ID]bool{}
 	}
+	if !n.attached[router] && n.routerLiveLocked(router) {
+		live++
+	}
 	n.attached[router] = true
-	delete(n.dialing, router)
-	n.mu.Unlock()
+	// Protection changes share the attachment lock, so a concurrent detach
+	// cannot leave a router protected after its attachment has been removed.
 	if n.connMgr != nil {
 		n.connMgr.Protect(router, routerTag)
 	}
+	if live >= want {
+		// Keep trying a dropped router while still short. Once replacements
+		// fill the target, retire it even if its redial is already in flight:
+		// redial never attaches on success, so it cannot restore a K+1th hold.
+		// Use the same snapshot as the count: a live router that drops
+		// during this decision must keep its own redial intent.
+		for _, pid := range dropped {
+			delete(n.attached, pid)
+			if n.connMgr != nil {
+				n.connMgr.Unprotect(pid, routerTag)
+			}
+		}
+	} else {
+		dropped = nil
+	}
+	n.mu.Unlock()
+	for _, pid := range dropped {
+		logger.Infof("[AuthN] Releasing dropped router %s: %d live routers fill the target %d", pid, live, want)
+	}
 	n.refreshRelays()
+	// A router to announce to: services registered before this one was
+	// held, as the egress assignments are at start, go to the directory now.
 	n.triggerReprovide()
 }
 
@@ -382,9 +429,9 @@ func (n *AgentMeshNode) clearDialing(routers []peer.AddrInfo) {
 }
 
 // dialAndAttach runs authRouter against each router at once and attaches
-// the ones that admit the node, delivering one outcome per router on the
-// returned channel in completion order. A caller may stop reading early:
-// the dials still in flight attach on their own as they land.
+// the ones that admit the node while there is room, delivering one outcome
+// per router on the returned channel in completion order. A caller may stop
+// reading early: the dials still in flight finish on their own.
 func (n *AgentMeshNode) dialAndAttach(ctx context.Context, routers []peer.AddrInfo, biscuitBytes []byte) <-chan error {
 	n.mu.Lock()
 	if n.dialing == nil && len(routers) > 0 {
