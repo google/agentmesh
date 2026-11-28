@@ -30,7 +30,7 @@ import { tcp } from "@libp2p/tcp";
 import { tls } from "@libp2p/tls";
 import { createLibp2p } from "libp2p";
 import assert from "node:assert/strict";
-import { after, before, test } from "node:test";
+import { after, before, test, type TestContext } from "node:test";
 import { AUTH_PROTOCOL, authenticateWithPeer, authStreamHandler } from "./auth.ts";
 import { ROLE_ROUTER, loadBiscuit, verifyPeerBiscuit } from "./biscuit.ts";
 import { ROLE_NODE } from "./controlplane.ts";
@@ -49,6 +49,7 @@ import {
 } from "./gen/agentmesh_pb.ts";
 import { Identity } from "./identity.ts";
 import { AgentMesh } from "./mesh.ts";
+import type { MeshSession } from "./session.ts";
 import { BanSet, EVENT_FRESHNESS_MS, verifyMeshEvent } from "./sync.ts";
 
 type Wasm = Awaited<ReturnType<typeof loadBiscuit>>;
@@ -177,6 +178,9 @@ before(async () => {
     connectionEncrypters: [tls()],
     streamMuxers: [yamux()],
     services: { identify: identify(), relay: circuitRelayServer() },
+    // Every member in these tests dials from 127.0.0.1; libp2p's default of
+    // five inbound connections per host per second would refuse later joins.
+    connectionManager: { inboundConnectionThreshold: 1_000 },
   });
   const routerBiscuit = cp.current.mint(router.peerId.toString(), ROLE_ROUTER);
   await router.handle(AUTH_PROTOCOL, authStreamHandler({ ownBiscuit: () => routerBiscuit, trustedKeys: () => cp.keys.map((k) => k.pub) }));
@@ -373,6 +377,125 @@ test("an event that arrives while a pull is in flight is followed by another pul
     session.triggerSync();
     await Promise.race([pulledAgain, new Promise<void>((resolve) => (deadline = setTimeout(resolve, 5_000)))]);
     assert.equal(cp.policyReads, start + 2, "the event that came during the pull was not followed by a pull of its own");
+  } finally {
+    clearTimeout(deadline);
+    cp.onPolicyRead = undefined;
+    await session.close();
+  }
+});
+
+/** Triggers a pull whose random delay is half the jitter; Math.random is mocked for this call only. */
+function triggerAtHalfJitter(t: TestContext, session: MeshSession): void {
+  const random = t.mock.method(Math, "random", () => 0.5);
+  try {
+    session.triggerSync();
+  } finally {
+    random.mock.restore();
+  }
+}
+
+test("a burst of events does not push back the pull the first one asked for", async (t) => {
+  const mesh = await AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", bootstrapToken: "sbt", fetch: cp.fetch });
+  const session = await mesh.join({ refreshLeadMs: 0, controlPlaneSyncIntervalMs: 3_600_000, controlPlaneSyncJitterMs: 200 });
+  const start = cp.policyReads;
+  let pulled!: () => void;
+  const pulledOnce = new Promise<void>((resolve) => (pulled = resolve));
+  let burst: ReturnType<typeof setInterval> | undefined;
+  cp.onPolicyRead = (reads) => {
+    if (reads === start + 1) {
+      clearInterval(burst);
+      pulled();
+    }
+    return Promise.resolve();
+  };
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // Every event asks for a pull 100 ms after it, and they keep coming
+    // every 20 ms for well past the first one's delay.
+    triggerAtHalfJitter(t, session);
+    burst = setInterval(() => triggerAtHalfJitter(t, session), 20);
+    const outcome = await Promise.race([
+      pulledOnce.then(() => "pulled"),
+      new Promise<string>((resolve) => (deadline = setTimeout(() => resolve("burst over"), 5_000))),
+    ]);
+    assert.equal(outcome, "pulled", "the burst kept moving the triggered pull back");
+  } finally {
+    clearInterval(burst);
+    clearTimeout(deadline);
+    cp.onPolicyRead = undefined;
+    await session.close();
+  }
+});
+
+test("a pull that ends while a triggered one is still due leaves that one's timer alone", async (t) => {
+  const mesh = await AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", bootstrapToken: "sbt", fetch: cp.fetch });
+  const session = await mesh.join({ refreshLeadMs: 0, controlPlaneSyncIntervalMs: 3_600_000, controlPlaneSyncJitterMs: 200 });
+  const start = cp.policyReads;
+  let secondPull!: () => void;
+  const pulledAgain = new Promise<void>((resolve) => (secondPull = resolve));
+  // The second event arrives while the first pull is reading /policies, and
+  // that pull ends long before the second event's timer fires.
+  cp.onPolicyRead = (reads) => {
+    if (reads === start + 1) {
+      triggerAtHalfJitter(t, session);
+    }
+    if (reads === start + 2) {
+      secondPull();
+    }
+    return Promise.resolve();
+  };
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // A triggered pull comes due 100 ms after its event.
+    triggerAtHalfJitter(t, session);
+    await Promise.race([pulledAgain, new Promise<void>((resolve) => (deadline = setTimeout(resolve, 5_000)))]);
+    assert.equal(cp.policyReads, start + 2, "the first pull's end replaced the pending triggered pull with a periodic one");
+  } finally {
+    clearTimeout(deadline);
+    cp.onPolicyRead = undefined;
+    await session.close();
+  }
+});
+
+test("a pull queued behind another does not let the first one schedule a periodic pull", async () => {
+  const intervalMs = 200;
+  const mesh = await AgentMesh.enroll({ controlPlaneUrl: "http://127.0.0.1:1", bootstrapToken: "sbt", fetch: cp.fetch });
+  const session = await mesh.join({ refreshLeadMs: 0, controlPlaneSyncIntervalMs: intervalMs, controlPlaneSyncJitterMs: 0 });
+  const start = cp.policyReads;
+  let releasedAt = 0;
+  let thirdPull!: (at: number) => void;
+  const pulledThird = new Promise<number>((resolve) => (thirdPull = resolve));
+  cp.onPolicyRead = (reads) => {
+    if (reads === start + 1) {
+      // As in the test above: a second event comes due while this pull is
+      // in flight, so its pull is queued behind this one.
+      return new Promise<void>((release) => {
+        session.triggerSync();
+        setTimeout(release, 0);
+      });
+    }
+    if (reads === start + 2) {
+      // The queued pull is slower than the periodic interval.
+      return new Promise<void>((release) =>
+        setTimeout(() => {
+          releasedAt = performance.now();
+          release();
+        }, 2 * intervalMs),
+      );
+    }
+    if (reads === start + 3) {
+      thirdPull(performance.now());
+    }
+    return Promise.resolve();
+  };
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  try {
+    session.triggerSync();
+    const at = await Promise.race([pulledThird, new Promise<number>((resolve) => (deadline = setTimeout(() => resolve(-1), 5_000)))]);
+    assert.notEqual(at, -1, "no periodic pull followed the queued one");
+    // The next periodic pull is scheduled when the queued one ends, not by
+    // the first pull while the queued one is still running.
+    assert.ok(at - releasedAt >= intervalMs / 2, `a pull started ${Math.round(at - releasedAt)} ms after the queued one, want about ${intervalMs} ms`);
   } finally {
     clearTimeout(deadline);
     cp.onPolicyRead = undefined;
