@@ -25,6 +25,8 @@ import (
 	"strings"
 
 	"github.com/google/agentmesh/api"
+	"github.com/google/agentmesh/internal/identity"
+	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 // Service is the contract the ServiceRegistry and ingress server use.
@@ -49,8 +51,8 @@ type baseService struct {
 
 // newReverseProxyHandler builds a single-host reverse-proxy handler for a
 // URL backend. Same code path as today's URL branch in RegisterService.
-func newReverseProxyHandler(targetURL string) (http.Handler, error) {
-	p, err := newReverseProxy(targetURL)
+func newReverseProxyHandler(targetURL string, forwardContext ...bool) (http.Handler, error) {
+	p, err := newReverseProxy(targetURL, forwardContext...)
 	if err != nil {
 		return nil, err
 	}
@@ -59,12 +61,14 @@ func newReverseProxyHandler(targetURL string) (http.Handler, error) {
 
 // newReverseProxy is newReverseProxyHandler for a service type that hooks
 // the backend's responses (ModifyResponse).
-func newReverseProxy(targetURL string) (*httputil.ReverseProxy, error) {
+func newReverseProxy(targetURL string, forwardContext ...bool) (*httputil.ReverseProxy, error) {
 	target, err := parseBackendTarget(targetURL)
 	if err != nil {
 		return nil, err
 	}
 	u := target.url
+	fwd := len(forwardContext) > 0 && forwardContext[0]
+	allowIdentityForwarding := api.IsLoopbackURL(targetURL) || fwd
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			noTrailingSlash := pr.In.Header.Get(api.HeaderMeshNoTrailingSlash) == "true"
@@ -77,10 +81,61 @@ func newReverseProxy(targetURL string) (*httputil.ReverseProxy, error) {
 			if noTrailingSlash && !strings.HasSuffix(u.Path, "/") && strings.HasSuffix(pr.Out.URL.Path, "/") {
 				pr.Out.URL.Path = strings.TrimSuffix(pr.Out.URL.Path, "/")
 			}
+			if !allowIdentityForwarding {
+				stripMeshIdentityHeaders(pr.Out.Header)
+			}
 			pr.SetXForwarded()
 			logger.Debugf("[ReverseProxy] Forwarding to: %q", pr.Out.URL.String())
 		},
 	}, nil
+}
+
+// stripMeshIdentityHeaders removes caller-supplied or unstamped X-Mesh-* and
+// X-Peer-Id headers when identity context forwarding is not permitted to a destination.
+func stripMeshIdentityHeaders(h http.Header) {
+	for name := range h {
+		lower := strings.ToLower(name)
+		if strings.HasPrefix(lower, "x-mesh-") || strings.EqualFold(name, api.HeaderPeerID) {
+			delete(h, name)
+		}
+	}
+}
+
+// populateVerifiedIdentityHeaders stamps transport-verified identity attributes onto h.
+// Caller-supplied headers should be stripped prior to calling this function.
+func populateVerifiedIdentityHeaders(h http.Header, remotePeer peer.ID, claims *identity.VerifiedBiscuitClaims) {
+	if remotePeer != "" {
+		h.Set(api.HeaderPeerID, remotePeer.String())
+	}
+	h.Set(api.HeaderMeshOrigin, api.MeshOriginRemote)
+	if claims == nil {
+		return
+	}
+	if p := claims.Principal(); p != "" {
+		h.Set(api.HeaderMeshPrincipal, p)
+	}
+	if len(claims.Roles) > 0 {
+		h.Set(api.HeaderMeshRoles, strings.Join(claims.Roles, ","))
+	}
+	if formattedClaims := api.FormatClaims(claims.Claims); formattedClaims != "" {
+		h.Set(api.HeaderMeshClaims, formattedClaims)
+	}
+	if formattedLabels := api.FormatLabels(claims.Labels); formattedLabels != "" {
+		h.Set(api.HeaderMeshLabels, formattedLabels)
+	}
+	actorNode := claims.ActorNodePeerID
+	if actorNode == "" {
+		actorNode = claims.NodePeerID
+	}
+	if actorNode == "" && remotePeer != "" {
+		actorNode = remotePeer.String()
+	}
+	if actorNode != "" {
+		h.Set(api.HeaderMeshActorNode, actorNode)
+	}
+	if t := claims.InnermostTaskName(); t != "" {
+		h.Set(api.HeaderMeshTask, t)
+	}
 }
 
 func (b *baseService) Info() *api.ServiceInfo { return b.info }
@@ -108,7 +163,8 @@ func (b *baseService) targetBackend() (backendTarget, bool) {
 func (b *baseService) Init(ctx context.Context) error {
 	switch x := b.backend.(type) {
 	case *api.RegisterServiceRequest_TargetUrl:
-		h, err := newReverseProxyHandler(x.TargetUrl)
+		fwd := b.info != nil && b.info.GetForwardContext()
+		h, err := newReverseProxyHandler(x.TargetUrl, fwd)
 		if err != nil {
 			return err
 		}
@@ -197,10 +253,11 @@ func buildRegisterRequest(sCfg api.ServiceConfig) (*api.RegisterServiceRequest, 
 	}
 	req := &api.RegisterServiceRequest{
 		Service: &api.ServiceInfo{
-			Type:        sType,
-			Name:        sCfg.Name,
-			Description: sCfg.Description,
-			Ingress:     ing,
+			Type:           sType,
+			Name:           sCfg.Name,
+			Description:    sCfg.Description,
+			Ingress:        ing,
+			ForwardContext: sCfg.ForwardContext,
 		},
 	}
 	switch {

@@ -113,19 +113,40 @@ func (t backendTarget) apply(h http.Header) {
 // client returns an HTTP client that presents the backend credential on
 // every request, for backends dialled through an SDK rather than a proxy.
 func (t backendTarget) client() *http.Client {
-	if t.auth == "" {
+	return t.clientWithHeaders(nil)
+}
+
+// clientWithHeaders returns an HTTP client that presents extra headers (e.g. verified identity headers)
+// and the backend credential on every outbound request.
+func (t backendTarget) clientWithHeaders(extraHeaders http.Header) *http.Client {
+	if len(extraHeaders) == 0 && t.auth == "" {
 		return http.DefaultClient
 	}
-	return &http.Client{Transport: backendAuthTransport{target: t, base: http.DefaultTransport}}
+	return &http.Client{
+		Transport: mcpHeaderTransport{
+			target:  t,
+			headers: extraHeaders.Clone(),
+			base:    http.DefaultTransport,
+		},
+	}
 }
 
-type backendAuthTransport struct {
-	target backendTarget
-	base   http.RoundTripper
+type mcpHeaderTransport struct {
+	target  backendTarget
+	headers http.Header
+	base    http.RoundTripper
 }
 
-func (b backendAuthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+func (m mcpHeaderTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	req = req.Clone(req.Context())
-	b.target.apply(req.Header)
-	return b.base.RoundTrip(req)
+	stripMeshIdentityHeaders(req.Header)
+	for k, vv := range m.headers {
+		req.Header[k] = vv
+	}
+	m.target.apply(req.Header)
+	base := m.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(req)
 }

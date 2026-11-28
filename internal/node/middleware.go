@@ -67,6 +67,12 @@ type RequestContext struct {
 	// the caller's Biscuit during stream authentication so downstream stream
 	// handlers (such as MCP pass-through) can enforce tool-level constraints.
 	TaskRules []*api.TaskAuthorizationRule
+
+	// CallerClaims holds verified claims from the caller's Biscuit token, if available.
+	CallerClaims *identity.VerifiedBiscuitClaims
+
+	// CallerBiscuit holds the verified caller's raw Biscuit token bytes.
+	CallerBiscuit []byte
 }
 
 // HTTPRequestFacts is what an HTTP request contributes to policy.
@@ -182,6 +188,10 @@ func (n *AgentMeshNode) WithBiscuitAuth(next func(network.Stream, RequestContext
 			return
 		}
 		reqCtx.TaskRules = taskRules
+		if claims, cErr := n.VerifyLocalBiscuit(authFrame.Biscuit); cErr == nil {
+			reqCtx.CallerClaims = claims
+		}
+		reqCtx.CallerBiscuit = authFrame.Biscuit
 
 		// Valid. Mutual auth: return our control-plane-minted identity so the
 		// caller can verify this node's attested facts (e.g. region) before

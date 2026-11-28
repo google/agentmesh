@@ -2680,41 +2680,19 @@ func (n *AgentMeshNode) StartIngressServer(ctx context.Context) error {
 				recordEgressDecision(serviceName, egressOutcomeAllow)
 			}
 
-			// Strip the biscuit header and any caller-supplied X-Mesh-* headers so
+			// Strip the biscuit header and any caller-supplied X-Mesh-* / X-Peer-Id headers so
 			// only transport-verified identity attributes reach the backend service.
 			for name := range r.Header {
 				lower := strings.ToLower(name)
-				if lower == "cookie" || strings.HasPrefix(lower, "x-mesh-") {
+				if lower == "cookie" || strings.HasPrefix(lower, "x-mesh-") || strings.EqualFold(name, api.HeaderPeerID) {
 					delete(r.Header, name)
 				}
 			}
-			r.Header.Set(api.HeaderPeerID, remotePeer.String())
-			r.Header.Set(api.HeaderMeshOrigin, api.MeshOriginRemote)
-			if claims, cErr := n.VerifyLocalBiscuit(biscuitBytes); cErr == nil && claims != nil {
-				if p := claims.Principal(); p != "" {
-					r.Header.Set(api.HeaderMeshPrincipal, p)
-				}
-				if len(claims.Roles) > 0 {
-					r.Header.Set(api.HeaderMeshRoles, strings.Join(claims.Roles, ","))
-				}
-				if formattedClaims := api.FormatClaims(claims.Claims); formattedClaims != "" {
-					r.Header.Set(api.HeaderMeshClaims, formattedClaims)
-				}
-				if formattedLabels := api.FormatLabels(claims.Labels); formattedLabels != "" {
-					r.Header.Set(api.HeaderMeshLabels, formattedLabels)
-				}
-				actorNode := claims.ActorNodePeerID
-				if actorNode == "" {
-					actorNode = claims.NodePeerID
-				}
-				if actorNode == "" {
-					actorNode = remotePeer.String()
-				}
-				r.Header.Set(api.HeaderMeshActorNode, actorNode)
-				if t := claims.InnermostTaskName(); t != "" {
-					r.Header.Set(api.HeaderMeshTask, t)
-				}
+			var claims *identity.VerifiedBiscuitClaims
+			if c, cErr := n.VerifyLocalBiscuit(biscuitBytes); cErr == nil {
+				claims = c
 			}
+			populateVerifiedIdentityHeaders(r.Header, remotePeer, claims)
 
 			// Under the type the policy was evaluated on: a same-named service
 			// of another type is not what the caller was granted.

@@ -42,6 +42,7 @@ type ServiceConfig struct {
 	Command        []string          `yaml:"command,omitempty"`
 	Env            map[string]string `yaml:"env,omitempty"`
 	Ingress        *IngressConfig    `yaml:"ingress,omitempty"`
+	ForwardContext bool              `yaml:"forward_context,omitempty"`
 }
 
 // NodeConfig defines the optional attenuation rules and static services for a specific Agent Mesh Node.

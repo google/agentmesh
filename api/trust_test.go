@@ -65,6 +65,34 @@ func TestValidateControlPlaneTransport(t *testing.T) {
 	}
 }
 
+func TestIsLoopbackHostAndURL(t *testing.T) {
+	for _, tc := range []struct {
+		host string
+		url  string
+		want bool
+	}{
+		{host: "localhost", url: "http://localhost:8080/mcp", want: true},
+		{host: "127.0.0.1", url: "http://127.0.0.1:9090", want: true},
+		{host: "::1", url: "http://[::1]:9090/mcp", want: true},
+		{host: "127.0.0.2", url: "http://127.0.0.2:8000", want: true},
+		{host: "example.com", url: "http://example.com/mcp", want: false},
+		{host: "192.168.1.1", url: "https://192.168.1.1:8443", want: false},
+		{host: "10.0.0.1", url: "http://10.0.0.1:8080", want: false},
+		{host: "", url: "not-a-valid-url", want: false},
+	} {
+		t.Run(tc.url, func(t *testing.T) {
+			if tc.host != "" {
+				if got := IsLoopbackHost(tc.host); got != tc.want {
+					t.Errorf("IsLoopbackHost(%q) = %v, want %v", tc.host, got, tc.want)
+				}
+			}
+			if got := IsLoopbackURL(tc.url); got != tc.want {
+				t.Errorf("IsLoopbackURL(%q) = %v, want %v", tc.url, got, tc.want)
+			}
+		})
+	}
+}
+
 func genKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
