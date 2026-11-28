@@ -57,12 +57,26 @@ func ValidateControlPlaneTransport(rawURL string, allowInsecure bool) error {
 	}
 }
 
-func isLoopbackHost(host string) bool {
+// IsLoopbackHost reports whether host is "localhost" or an IPv4/IPv6 loopback address.
+func IsLoopbackHost(host string) bool {
 	if strings.EqualFold(host, "localhost") {
 		return true
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// IsLoopbackURL reports whether rawURL parses and has a loopback host.
+func IsLoopbackURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Hostname() == "" {
+		return false
+	}
+	return IsLoopbackHost(u.Hostname())
+}
+
+func isLoopbackHost(host string) bool {
+	return IsLoopbackHost(host)
 }
 
 // KeysResponseFreshness bounds how far a signed /keys response's timestamp

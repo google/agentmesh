@@ -47,7 +47,8 @@ type A2AService struct{ baseService }
 func (s *A2AService) Init(ctx context.Context) error {
 	switch x := s.backend.(type) {
 	case *api.RegisterServiceRequest_TargetUrl:
-		h, err := newReverseProxy(x.TargetUrl)
+		fwd := s.info != nil && s.info.GetForwardContext()
+		h, err := newReverseProxy(x.TargetUrl, fwd)
 		if err != nil {
 			return err
 		}

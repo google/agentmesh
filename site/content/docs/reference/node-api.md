@@ -256,7 +256,10 @@ Returns the tool's result content. If the caller authenticated with a
 Delegated or Task-Attenuated Biscuit, `agentmesh-node` forwards that Biscuit on the
 mesh stream so the provider enforces the caller's roles and `tar_block` tool
 restrictions. A policy denial comes back as a tool error that the caller can
-read, not as a transport failure.
+read, not as a transport failure. For an HTTP `target_url` backend, the provider
+node stamps verified caller identity headers on every request to the backend,
+matching the behavior of the `/mesh/<peer>/mcp/<service>` HTTP proxy path (see
+[Verified identity headers on published service backends](#verified-identity-headers-on-published-service-backends)).
 
 ### When the node has no credential
 
@@ -294,6 +297,33 @@ and `.well-known/agent-card.json` is rewritten for the mesh.
 | Header | Effect |
 |---|---|
 | `X-Mesh-Required-Labels: k=v[,k=v]` | Forward only to a peer whose credential attests every listed pair. Otherwise `403`. Removed before forwarding. Also honoured on `/v1/chat/completions`, `/v1/completions` and `CONNECT`. On `/egress/*` this node is the provider, so it checks its own labels. |
+
+### Verified identity headers on published service backends
+
+When callers invoke an MCP service — either through the HTTP proxy path (`/mesh/<peer-id>/mcp/<name>`) or via progressive discovery tool calls (`call_remote_tool` over `/mesh/mcp/1.0.0`) — the provider node authenticates the caller and attaches transport-verified identity headers to the HTTP requests forwarded to the service's `target_url`:
+
+| Header | Meaning | Example |
+|---|---|---|
+| `X-Peer-Id` | The libp2p peer ID of the immediate calling node. | `12D3KooW...` |
+| `X-Mesh-Origin` | Provenance indicator. Always `mesh-remote` for remote calls. | `mesh-remote` |
+| `X-Mesh-Actor-Node` | Peer ID of the initiating actor node (or caller's node peer ID). | `12D3KooW...` |
+| `X-Mesh-Principal` | Attested primary principal from the verified Biscuit (email, username, or node identifier). | `alice@example.com` |
+| `X-Mesh-Roles` | Comma-separated list of mesh roles granted in the caller's verified Biscuit. | `developer,operator` |
+| `X-Mesh-Claims` | Comma-separated `key=value` pairs of verified custom claims. | `dept=platform,tier=gold` |
+| `X-Mesh-Labels` | Comma-separated `key=value` pairs of verified node labels. | `env=prod,region=us-central1` |
+| `X-Mesh-Task` | The active `TaskAuthorizationRule` name if the caller's credential is task-attenuated. | `tasks/code-review` |
+
+#### Supported backend types
+These headers are delivered only to HTTP `target_url` backends. Stdio/command backends (`command`) run as local subprocesses and do not receive HTTP headers.
+
+#### Privacy boundary and `forward_context`
+To prevent accidental leakage of internal identity claims, roles, and labels to external third-party endpoints:
+- **Loopback backends** (`127.0.0.1`, `localhost`, `::1`): Verified identity headers are stamped and forwarded automatically by default.
+- **Non-loopback (external) backends**: All `X-Mesh-*` and `X-Peer-Id` headers are stripped by default. External destinations receive verified identity headers only if `forward_context: true` is explicitly configured on the service entry in `agentmesh-node.yaml`.
+
+#### Security guidance for backend authors
+- **Anti-spoofing:** The provider node strictly strips any caller-supplied `X-Mesh-*` and `X-Peer-Id` headers on inbound requests before stamping verified identity attributes.
+- **Trust verified headers:** Backend authors should always inspect the verified headers above (particularly `X-Mesh-Actor-Node`, `X-Mesh-Principal`, and `X-Peer-Id`) rather than relying on unauthenticated caller names passed in tool arguments or payload parameters.
 
 ### Talking MCP through the proxy
 

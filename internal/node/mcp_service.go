@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os/exec"
 	"sort"
 	"strings"
@@ -138,14 +139,36 @@ func (m *MCPService) Teardown() error {
 // case's fresh-transport-per-session shape rather than giving the bridge a
 // per-session id space. Cost: a fresh process per call instead of one
 // long-lived one, so slow-starting backends pay startup repeatedly.
+// backendTransport builds a fresh MCP transport to this service's backend
+// without caller identity context (used for discovery and health probes).
 func (m *MCPService) backendTransport() (mcp.Transport, error) {
+	return m.backendTransportForStream(nil, RequestContext{})
+}
+
+// backendTransportForStream builds a fresh MCP transport to this service's backend.
+// When dialing an HTTP target_url, it attaches verified caller identity headers if
+// the target is a loopback URL or if forward_context is enabled on the service.
+// Command backends get their own subprocess per call (mcp.CommandTransport),
+// not a shared one: the go-sdk client numbers requests from 1 per
+// connection, so a shared process risked one session reading another's
+// reply. Stdio MCP is single-session by spec, so this mirrors the URL
+// case's fresh-transport-per-session shape rather than giving the bridge a
+// per-session id space. Cost: a fresh process per call instead of one
+// long-lived one, so slow-starting backends pay startup repeatedly.
+func (m *MCPService) backendTransportForStream(s network.Stream, reqCtx RequestContext) (mcp.Transport, error) {
 	switch x := m.backend.(type) {
 	case *api.RegisterServiceRequest_TargetUrl:
 		target, err := parseBackendTarget(x.TargetUrl)
 		if err != nil {
 			return nil, err
 		}
-		return &mcp.StreamableClientTransport{Endpoint: target.url.String(), HTTPClient: target.client()}, nil
+		allowIdentityForwarding := api.IsLoopbackURL(x.TargetUrl) || (m.info != nil && m.info.GetForwardContext())
+		var headers http.Header
+		if allowIdentityForwarding && (reqCtx.PeerID != "" || reqCtx.CallerClaims != nil) {
+			headers = make(http.Header)
+			populateVerifiedIdentityHeaders(headers, reqCtx.PeerID, reqCtx.CallerClaims)
+		}
+		return &mcp.StreamableClientTransport{Endpoint: target.url.String(), HTTPClient: target.clientWithHeaders(headers)}, nil
 	case *api.RegisterServiceRequest_Command:
 		if x.Command == nil || len(x.Command.Command) == 0 {
 			return nil, fmt.Errorf("missing command for command-backed MCP service %q", m.info.GetName())
@@ -228,7 +251,7 @@ func (m *MCPService) HandleStreamPassThrough(s network.Stream, reqCtx RequestCon
 		}
 	}()
 
-	backendTransport, err := m.backendTransport()
+	backendTransport, err := m.backendTransportForStream(s, reqCtx)
 	if err != nil {
 		logger.Errorf("[MCPService] %s: %v", m.info.Name, err)
 		return

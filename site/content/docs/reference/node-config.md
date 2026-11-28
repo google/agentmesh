@@ -86,6 +86,7 @@ A list. Each entry has these keys:
 | `env` | no | `command` only. Environment for the subprocess. |
 | `target_auth_path` | no | `target_url` only. File whose contents the node presents to the backend: a bare token as `Authorization: Bearer <token>`, or `user:pass` as HTTP Basic. Read once at start, never logged or advertised. It overrides any `Authorization` header that a caller sent. |
 | `ingress` | no | Exposes an `a2a`, `mcp` or `inference` service on router HTTP ingress (`<ingress_url>/<peer_id>/<type>/<name>`), subject to the node's `allowed_ingress` role ceiling. Subkeys: `auth_mode` (`edge`, the default, or `passthrough`) and `allow` (optional list of `PolicyBinding.members` patterns narrowing `edge` callers). See the [external ingress guide](../../guides/external-ingress/). |
+| `forward_context` | no | `target_url` only. Forward verified caller identity headers (`X-Mesh-Principal`, `X-Mesh-Roles`, `X-Mesh-Claims`, `X-Mesh-Labels`, `X-Mesh-Actor-Node`, `X-Mesh-Task`, `X-Peer-Id`, `X-Mesh-Origin`) to `target_url` for non-loopback destinations. Loopback destinations receive them automatically by default. |
 
 Rules by type:
 

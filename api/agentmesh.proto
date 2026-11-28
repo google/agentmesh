@@ -181,6 +181,9 @@ message ServiceInfo {
   string description = 3;
   // Optional external ingress exposure for this service.
   ServiceIngress ingress = 4;
+  // Forward X-Mesh-Principal, X-Mesh-Roles, X-Mesh-Claims, X-Mesh-Labels,
+  // X-Mesh-Actor-Node, and X-Mesh-Task to target_url for non-loopback destinations.
+  bool forward_context = 5;
 }
 
 message CommandBackend {
