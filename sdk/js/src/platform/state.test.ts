@@ -26,7 +26,6 @@ test("overlapping state writes publish their own bytes", { timeout: 5000 }, asyn
   const state = openState(dir);
   await state.write("credential", Uint8Array.of(0));
   assert.deepEqual(await state.read("credential"), Uint8Array.of(0));
-  console.log("CONTROL OK");
   const rename = fs.rename;
   let signalReady!: () => void;
   let allowRename!: () => void;
