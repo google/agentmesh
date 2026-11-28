@@ -50,7 +50,6 @@ for (const outcome of ["commit", "abort", "abort without a reason"] as const) {
     );
     opened.onsuccess();
     await queued;
-    console.log("CONTROL OK");
     stored.onsuccess();
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.equal(settled, false, "write settled before the transaction finished");
@@ -107,7 +106,6 @@ test("browser state retries an unsuccessful database open", async (t) => {
   assert.deepEqual(await working.read("credential"), data);
   assert.deepEqual(await working.read("credential"), data);
   assert.equal(opens, 1);
-  console.log("CONTROL OK");
 
   const recovering = openState("recovering");
   await assert.rejects(recovering.read("credential"), failure);
