@@ -22,7 +22,6 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -820,15 +819,7 @@ func createEgressProxy(node *AgentMeshNode) http.Handler {
 		}
 		if err := node.VerifyProvider(r.Context(), pid, requiredLabels, service); err != nil {
 			logger.Warnf("[Egress] refused egress to %s: %v", pid, err)
-			denied := "Forbidden: destination is not an enrolled peer"
-			if errors.Is(err, ErrProviderNotGranted) {
-				denied = "Forbidden: provider is not granted " + service
-			} else if len(requiredLabels) > 0 {
-				denied = "Required labels not attested by provider"
-			} else if len(node.egressFloor()) > 0 {
-				denied = "Forbidden: provider does not attest the egress floor"
-			}
-			text, status := labelGateStatus(err, denied)
+			text, status := labelGateStatus(err, labelGateDenial(err, requiredLabels, node.egressFloor(), service))
 			http.Error(w, text, status)
 			return
 		}
