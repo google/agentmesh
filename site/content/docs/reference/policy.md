@@ -64,9 +64,22 @@ notice.
 
 ## Roles
 
+Agent Mesh distinguishes between **component roles** and **access roles**:
+
+- **Component roles** (`mesh:role:node` and `mesh:role:router`): Infrastructure identities built into the mesh architecture. They define what kind of binary a peer is:
+  - `mesh:role:router` must be held by a router before the control plane grants it a lease and other nodes trust it to relay traffic and serve ingress.
+  - `mesh:role:node` must be held by a node before peers admit it as an enrolled mesh member.
+  - These names are fixed for the life of the enrollment so a policy mistake can never accidentally promote a node into a router.
+  - **Bootstrap tokens only enroll component roles.** `agentmesh-node` always requests `mesh:role:node` at enrollment. Minting a bootstrap token with an access role (e.g. `--role caller`) fails enrollment.
+- **Access roles** (`caller`, `developer`, `analyst`, etc.): Application-level roles describing what services a member may call (`allowed_services`), serve (`allowed_publish`), or expose on ingress (`allowed_ingress`), and which targets they may reach (`allowed_targets`).
+  - Access roles are attached dynamically through policy bindings (`user:`, `group:`, `email:`, or `node:<peer-id>`).
+  - They take effect live via `POST /policies` without re-enrolling or restarting binaries.
+  - For bootstrap-enrolled nodes, bound custom roles are derived at evaluation time via distributed Biscuit Datalog rules (`role("<role>") <- node("<peer-id>")`) rather than written into the node's Biscuit token on refresh. Thus, inspecting the credential (`/mesh/identity`) or reading `X-Mesh-Roles` will continue to show only `mesh:role:node`. Effective permissions come from policy evaluation against the synced rules, not merely the roles listed in the credential.
+  - Policy changes propagate within the sync jitter window (up to `ControlPlaneSyncInterval / 10`, or 0–90 seconds by default). See the [custom node roles guide](../../guides/custom-node-roles/) for a step-by-step recipe.
+
 | Field | Type | Meaning |
 |---|---|---|
-| `name` | string, required, unique | The role name. `mesh:role:node` and `mesh:role:router` are the roles that the two binaries request at enrollment. Any other name is an ordinary role. |
+| `name` | string, required, unique | The role name. `mesh:role:node` and `mesh:role:router` are reserved component roles that the two binaries request at enrollment. Any other name defines a custom access role. |
 | `allowed_services` | list of service patterns | Services that holders may call. |
 | `allowed_publish` | list of service patterns | Services that holders may serve. A router keeps a member's directory record only for a service its credential grants here, and a caller sends a request to a provider it reached by name only when the provider's credential does. If absent, holders may publish nothing but an egress destination whose `served_by` selects them. See [Publishing](#publishing). |
 | `allowed_ingress` | list of ingress grants | Inbound services (`a2a`, `mcp`, `inference`, or `*`) that holders may expose on router HTTP ingress. Each entry has `services` (required) and optional `allowed_auth_modes` (`INGRESS_AUTH_MODE_EDGE`, `INGRESS_AUTH_MODE_PASSTHROUGH`; empty grants `EDGE` only). See the [external ingress guide](../../guides/external-ingress/). |
@@ -287,8 +300,13 @@ and UTF-8 (for example `group:Engineering Team`), and may not contain `"`,
 
 `role:` is not a member, because a role cannot grant a role. A bootstrap
 token enrollment carries no OIDC claims. Such a node receives the token's
-role and the roles bound to `mesh:system:authenticated` or to its
-`node:<peer-id>`. A binding on claims adds nothing to such a node.
+component role (`mesh:role:node`) and any access roles bound to
+`mesh:system:authenticated` or to its `node:<peer-id>`. A binding on claims
+adds nothing to such a node. Roles bound to `node:<peer-id>` take effect via
+distributed Datalog rules without updating the node's Biscuit credential, so the
+credential still lists only `mesh:role:node` while policy evaluation authorizes
+the calls. Grants propagate within the sync jitter window (0–90 seconds by
+default); see the [custom node roles guide](../../guides/custom-node-roles/).
 
 ## Egress destinations
 
@@ -399,11 +417,15 @@ At enrollment, refresh, and token exchange, the control plane mints into the
 credential one `role()` fact per role and the compiled `granted_*` facts of
 every role. For an identity that the identity provider authenticates, the
 control plane resolves the roles from the bindings. A member that enrolled
-with a bootstrap token gets only the token's role. The control
-plane also renders the policy as Datalog rules served as `datalog_rules` at
-`GET /policies`. Nodes, routers and SDK members fetch this text
-(`--control-plane-sync-interval`, 15 minutes for a node, 5 for a router) and
-add it to their authorizer as it arrives.
+with a bootstrap token receives only the token's component role (`mesh:role:node`)
+in its credential. Access roles bound to its `node:<peer-id>` are not written
+into the Biscuit, even on refresh. Instead, the control plane renders the
+policy as Datalog rules served as `datalog_rules` at `GET /policies` (e.g.
+`role("caller") <- node("...")`). Nodes, routers and SDK members fetch this text
+(`--control-plane-sync-interval`, 15 minutes for a node, 5 for a router;
+propagating within the sync jitter window of 0–90 seconds) and add it to their
+authorizer as it arrives. When a node presents its credential, effective
+permissions are derived from these synced rules during authorizer evaluation.
 
 At the destination node, in this order:
 
