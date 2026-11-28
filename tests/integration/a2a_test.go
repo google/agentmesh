@@ -16,6 +16,7 @@ package integration_test
 
 import (
 	"context"
+	"encoding/json"
 	"iter"
 	"net/http"
 	"net/http/httptest"
@@ -71,9 +72,11 @@ func TestA2ACUJ(t *testing.T) {
 	// interface and a stale signature, which the mesh must drop on
 	// regeneration, and streaming, which it must keep and carry. Its
 	// JSON-RPC endpoint is "/invoke", as in the a2a-go samples, not the
-	// root: the mesh URL must keep that path. The backend exists before
-	// the node: services are declared in the node's configuration, never
-	// registered at runtime.
+	// root: the mesh URL must keep that path. It also serves an extended
+	// card with one more skill and input mode, naming its private
+	// interfaces, which the mesh must redact (issue #675). The backend
+	// exists before the node: services are declared in the node's
+	// configuration, never registered at runtime.
 	var sendCount atomic.Int32
 	var sawLabelsHeader atomic.Bool
 	firstStreamEventSeen := make(chan struct{})
@@ -99,16 +102,30 @@ func TestA2ACUJ(t *testing.T) {
 		Name:         "echo-agent",
 		Description:  "test a2a agent",
 		Version:      "1.0.0",
-		Capabilities: a2a.AgentCapabilities{Streaming: true},
+		Capabilities: a2a.AgentCapabilities{Streaming: true, ExtendedAgentCard: true},
 		SupportedInterfaces: []*a2a.AgentInterface{
 			{URL: "http://localhost:9999/invoke", ProtocolBinding: a2a.TransportProtocolJSONRPC, ProtocolVersion: "1.0"},
 			{URL: "localhost:50051", ProtocolBinding: a2a.TransportProtocolGRPC, ProtocolVersion: "1.0"},
 		},
 		Signatures: []a2a.AgentCardSignature{{Protected: "eyJhbGciOiJFUzI1NiJ9", Signature: "c3RhbGU"}},
 	}
+	extendedCard := *agentCard
+	extendedCard.Description = "extended"
+	extendedCard.SupportedInterfaces = []*a2a.AgentInterface{
+		{URL: "http://127.0.0.1:7777", ProtocolBinding: a2a.TransportProtocolJSONRPC, ProtocolVersion: "1.0"},
+		{URL: "10.0.0.5:50051", ProtocolBinding: a2a.TransportProtocolGRPC, ProtocolVersion: "1.0"},
+	}
+	extendedCard.Skills = []a2a.AgentSkill{{ID: "vision", Name: "vision", Description: "describes images", Tags: []string{}}}
+	extendedCard.DefaultInputModes = []string{"text", "image/png"}
+	privateURLs := []string{"127.0.0.1:7777", "10.0.0.5"}
+	var extendedCardServed atomic.Bool
 	mux := http.NewServeMux()
 	mux.Handle(a2asrv.WellKnownAgentCardPath, a2asrv.NewStaticAgentCardHandler(agentCard))
-	mux.Handle("/invoke", a2asrv.NewJSONRPCHandler(a2asrv.NewHandler(echo)))
+	mux.Handle("/invoke", a2asrv.NewJSONRPCHandler(a2asrv.NewHandler(echo,
+		a2asrv.WithExtendedAgentCardProducer(a2asrv.ExtendedAgentCardProducerFn(func(context.Context, *a2a.GetExtendedAgentCardRequest) (*a2a.AgentCard, error) {
+			extendedCardServed.Store(true)
+			return &extendedCard, nil
+		})))))
 	agent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get(api.HeaderMeshRequiredLabels) != "" {
 			sawLabelsHeader.Store(true)
@@ -173,8 +190,11 @@ func TestA2ACUJ(t *testing.T) {
 	if !card.Capabilities.Streaming {
 		t.Errorf("streaming = %v, want true as the agent declares it", card.Capabilities.Streaming)
 	}
+	if !card.Capabilities.ExtendedAgentCard {
+		t.Errorf("extendedAgentCard = %v, want true as the agent declares it", card.Capabilities.ExtendedAgentCard)
+	}
 	if len(card.Signatures) != 0 {
-		t.Error("stale signatures must be dropped from the regenerated card")
+		t.Errorf("len(signatures) = %d, want 0: stale signatures must be dropped from the regenerated card", len(card.Signatures))
 	}
 
 	// CUJ step 2: a stock SDK client built from that card, constrained to
@@ -203,6 +223,42 @@ func TestA2ACUJ(t *testing.T) {
 	}
 	if len(reply.Parts) == 0 || reply.Parts[0].Text() != "echo from eu" {
 		t.Fatalf("unexpected reply: %+v", reply)
+	}
+
+	// CUJ step 2a: the stock client gets the extended card through the
+	// mesh with its extra skill and input mode, but with the mesh URL in
+	// place of the agent's private interfaces, so it can switch to it
+	// (A2A 1.0, section 3.1.11) and keep talking through the mesh.
+	ext, err := euClient.GetExtendedAgentCard(ctx, &a2a.GetExtendedAgentCardRequest{})
+	if err != nil {
+		t.Fatalf("GetExtendedAgentCard through the mesh: %v", err)
+	}
+	if served := extendedCardServed.Load(); !served {
+		t.Errorf("extendedCardServed = %v, want true: the call must reach the agent", served)
+	}
+	extJSON, err := json.Marshal(ext)
+	if err != nil {
+		t.Fatalf("marshal extended card: %v", err)
+	}
+	for _, private := range privateURLs {
+		if strings.Contains(string(extJSON), private) {
+			t.Errorf("extended card through the mesh names %q, want none of the agent's own URLs: %s", private, extJSON)
+		}
+	}
+	if len(ext.SupportedInterfaces) != 1 || ext.SupportedInterfaces[0].URL != meshBase+"/invoke" {
+		t.Errorf("extended card interfaces = %+v, want exactly one interface with URL %q", ext.SupportedInterfaces, meshBase+"/invoke")
+	}
+	if ext.Description != "extended" || len(ext.Skills) != 1 || ext.Skills[0].ID != "vision" {
+		t.Errorf("extended card description, skills = %q, %+v; want %q, the vision skill", ext.Description, ext.Skills, "extended")
+	}
+	if got, want := strings.Join(ext.DefaultInputModes, ","), "text,image/png"; got != want {
+		t.Errorf("extended card defaultInputModes = %q, want %q", got, want)
+	}
+	if len(ext.Signatures) != 0 {
+		t.Errorf("len(extended card signatures) = %d, want 0: stale signatures must be dropped", len(ext.Signatures))
+	}
+	if err := euClient.UpdateCard(ext); err != nil {
+		t.Errorf("UpdateCard(extended card) = %v, want nil: the client's mesh endpoint must stay on the card", err)
 	}
 
 	// CUJ step 2b: the card keeps streaming, so the same client may stream
