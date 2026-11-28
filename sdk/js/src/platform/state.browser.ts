@@ -58,7 +58,11 @@ export function openState(location: string): StateStore {
     },
     async remove(name) {
       const tx = (await open()).transaction(STORE, "readwrite");
-      await request(tx.objectStore(STORE).delete(name));
+      await new Promise<void>((resolve, reject) => {
+        tx.oncomplete = () => resolve();
+        tx.onabort = () => reject(tx.error ?? new Error("IndexedDB delete transaction aborted"));
+        tx.objectStore(STORE).delete(name);
+      });
     },
   };
 }

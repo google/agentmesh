@@ -67,6 +67,59 @@ for (const outcome of ["commit", "abort", "abort without a reason"] as const) {
   });
 }
 
+// forget() deletes the credential with remove(): a delete whose transaction
+// aborted leaves the credential stored, so remove() must not report it gone.
+for (const outcome of ["commit", "abort", "abort without a reason"] as const) {
+  test(`browser state remove waits for transaction ${outcome}`, { timeout: 5000 }, async (t) => {
+    const opened = { result: { transaction: () => transaction }, onsuccess: () => {} };
+    const deleted = { onsuccess: () => {} };
+    let signalDelete!: () => void;
+    const queued = new Promise<void>((resolve) => { signalDelete = resolve; });
+    const failure = new DOMException("commit failed", "UnknownError");
+    const transaction = {
+      objectStore: () => ({
+        delete: () => {
+          signalDelete();
+          return deleted;
+        },
+      }),
+      error: outcome === "abort" ? failure : null,
+      oncomplete: () => {},
+      onabort: () => {},
+    };
+    Object.defineProperty(globalThis, "indexedDB", {
+      configurable: true,
+      value: { open: () => opened },
+    });
+    t.after(() => Reflect.deleteProperty(globalThis, "indexedDB"));
+
+    let settled = false;
+    const result = openState("test").remove("credential").then(
+      () => { settled = true; },
+      (error: unknown) => {
+        settled = true;
+        return error;
+      },
+    );
+    opened.onsuccess();
+    await queued;
+    deleted.onsuccess();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(settled, false, "remove settled before the transaction finished");
+    if (outcome === "commit") {
+      transaction.oncomplete();
+    } else {
+      transaction.onabort();
+    }
+    const error = await result;
+    if (outcome === "abort without a reason") {
+      assert.match(String(error), /IndexedDB delete transaction aborted/);
+    } else {
+      assert.equal(error, outcome === "abort" ? failure : undefined);
+    }
+  });
+}
+
 test("browser state retries an unsuccessful database open", async (t) => {
   const failure = new DOMException("database temporarily unavailable", "UnknownError");
   const data = Uint8Array.of(5);
