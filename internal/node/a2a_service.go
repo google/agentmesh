@@ -225,6 +225,13 @@ func etagMatches(header, etag string) bool {
 // the headers already prepared for egress (biscuit, agent claim, passthrough
 // Authorization) on the incoming request.
 func fetchRemoteAgentCard(node *AgentMeshNode, rt http.RoundTripper, r *http.Request, route egressRoute) (*http.Response, error) {
+	// The well-known public card is a different resource than the held
+	// client request, so that request's query string is not forwarded.
+	if r.URL != nil && r.URL.RawQuery != "" {
+		clone := r.Clone(r.Context())
+		clone.URL.RawQuery = ""
+		r = clone
+	}
 	return a2aMeshRequest(node, rt, r, route, http.MethodGet, a2aAgentCardPath, nil)
 }
 
@@ -235,14 +242,20 @@ func a2aMeshRequest(node *AgentMeshNode, rt http.RoundTripper, r *http.Request, 
 	if node != nil {
 		node.prepareEgressPeer(ctx, route.peerID)
 	}
-	url := fmt.Sprintf("libp2p://%s/%s/%s/%s", route.peerID, route.serviceType, route.serviceName, upstreamPath)
+	meshPath := fmt.Sprintf("/%s/%s", route.serviceType, route.serviceName)
+	if upstreamPath != "" {
+		meshPath += "/" + upstreamPath
+	}
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, url, reader)
+	req, err := http.NewRequestWithContext(ctx, method, "libp2p://"+route.peerID+meshPath, reader)
 	if err != nil {
 		return nil, err
+	}
+	if r.URL != nil {
+		req.URL.RawQuery = r.URL.RawQuery
 	}
 	req.Header = r.Header.Clone()
 	// The node decodes the card itself, so negotiate identity encoding
@@ -288,11 +301,7 @@ func a2aServeExtendedAgentCard(node *AgentMeshNode, rt http.RoundTripper, w http
 	if !ok {
 		return false
 	}
-	upstreamPath := route.upstreamPath
-	if r.URL.RawQuery != "" {
-		upstreamPath += "?" + r.URL.RawQuery
-	}
-	resp, err := a2aMeshRequest(node, rt, r, route, r.Method, upstreamPath, body)
+	resp, err := a2aMeshRequest(node, rt, r, route, r.Method, route.upstreamPath, body)
 	if err != nil {
 		logger.Warnf("[A2A] extended agent card call to %s failed: %v", route.peerID, err)
 		http.Error(w, "Bad Gateway: extended agent card call failed", http.StatusBadGateway)
@@ -326,7 +335,11 @@ func a2aServeExtendedAgentCard(node *AgentMeshNode, rt http.RoundTripper, w http
 			return true
 		}
 		result, ok := envelope["result"]
-		if !ok {
+		errField, hasErr := envelope["error"]
+		// A JSON-RPC error may also serialize "result": null. Relay it
+		// unchanged; only a non-null result is a card to redact.
+		if !ok || bytes.Equal(bytes.TrimSpace(result), []byte("null")) ||
+			(hasErr && !bytes.Equal(bytes.TrimSpace(errField), []byte("null"))) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(raw)
 			return true

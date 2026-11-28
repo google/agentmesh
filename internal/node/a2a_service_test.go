@@ -390,6 +390,38 @@ func TestA2AServeExtendedAgentCardHTTPJSONRedacts(t *testing.T) {
 	}
 }
 
+func TestA2AServeExtendedAgentCardEmptyPathKeepsQuery(t *testing.T) {
+	const call = `{"jsonrpc":"2.0","id":"7","method":"GetExtendedAgentCard","params":{}}`
+	for _, tc := range []struct {
+		name, path, wantURL string
+	}{
+		{"empty path, no query", "/mesh/12D3KooWpeer/a2a/agent", "libp2p://12D3KooWpeer/a2a/agent"},
+		{"empty path, query", "/mesh/12D3KooWpeer/a2a/agent?session=1", "libp2p://12D3KooWpeer/a2a/agent?session=1"},
+		{"path and query", "/mesh/12D3KooWpeer/a2a/agent/invoke?session=1", "libp2p://12D3KooWpeer/a2a/agent/invoke?session=1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rt, outbound := extendedCardAgent(t, func(*http.Request) *http.Response {
+				return cardResponse(http.StatusOK, `{"jsonrpc":"2.0","id":"7","result":`+extendedCardJSON+`}`)
+			})
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest("POST", tc.path, strings.NewReader(call))
+			req.Host = "127.0.0.1:8080"
+			if !serveEgressLocally(nil, rt, rec, req) {
+				t.Fatal("GetExtendedAgentCard must be handled locally")
+			}
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200, body: %s", rec.Code, rec.Body.String())
+			}
+			if len(*outbound) == 0 {
+				t.Fatal("no outbound request, want the call forwarded to the agent")
+			}
+			if got := (*outbound)[0].URL.String(); got != tc.wantURL {
+				t.Errorf("forwarded URL = %q, want %q", got, tc.wantURL)
+			}
+		})
+	}
+}
+
 func TestA2AServeExtendedAgentCardDropsBindingsTheMeshDoesNotOffer(t *testing.T) {
 	// Only the extended card names an interface outside the public card's
 	// bindings, or nothing the mesh carries at all: what the public card
@@ -444,6 +476,8 @@ func TestA2AServeExtendedAgentCardRelaysErrors(t *testing.T) {
 	}{
 		{"JSON-RPC error", "POST", "/mesh/12D3KooWpeer/a2a/agent", `{"jsonrpc":"2.0","id":1,"method":"GetExtendedAgentCard"}`,
 			http.StatusOK, `{"jsonrpc":"2.0","id":1,"error":{"code":-32007,"message":"not configured"}}`},
+		{"JSON-RPC error with null result", "POST", "/mesh/12D3KooWpeer/a2a/agent", `{"jsonrpc":"2.0","id":1,"method":"GetExtendedAgentCard"}`,
+			http.StatusOK, `{"jsonrpc":"2.0","id":1,"result":null,"error":{"code":-32007,"message":"not configured"}}`},
 		{"HTTP+JSON status", "GET", "/mesh/12D3KooWpeer/a2a/agent/extendedAgentCard", "",
 			http.StatusUnauthorized, `{"error":"unauthenticated"}`},
 	} {
