@@ -96,7 +96,18 @@ agentmesh-node join https://mesh.example.com \
   --data-dir ./n1
 ```
 
-Once joined, start the node:
+When running `agentmesh-node run` in the foreground with a TCP listener (`--bind-addr`),
+the node requires an API token file for local client authentication (`--api-token-path`).
+Create this token file before starting the node:
+
+```bash
+openssl rand -hex 16 > ./n1/api-token
+chmod 0600 ./n1/api-token
+```
+
+(Alternatively, starting with `--daemonize` generates `api-token` automatically if one is not configured.)
+
+Once the token file is in place, start the node:
 
 ```bash
 agentmesh-node run \
@@ -152,13 +163,44 @@ curl -fsS https://mesh.example.com/admin/policy \
   -H "Authorization: Bearer $AGENTMESH_ADMIN_TOKEN" > policy.json
 ```
 
-Add your custom access role under `roles` and bind it to the node's PeerID
-under `bindings`. For example, to grant a role named `caller` that allows
+> [!WARNING]
+> `POST /policies` replaces the entire mesh policy document rather than patching
+> it. Always merge new roles and bindings into your existing `policy.json`
+> fetched above. Replacing the policy entirely with a standalone snippet will drop
+> other existing roles (such as `mesh:role:router`) and bindings, breaking
+> router leases and other mesh services.
+
+Merge your custom access role into `roles` and add a binding to the node's PeerID
+in `bindings`. For example, using `jq` to append a role named `caller` that allows
 invoking `mcp://calculator` and any inference model:
+
+```bash
+PEER_ID="12D3KooWFaBcD1234567890abcdefghijklmnopqrstuv"
+
+jq --arg pid "$PEER_ID" '
+  .roles += [{
+    "name": "caller",
+    "allowed_services": ["mcp://calculator", "inference://*"],
+    "allowed_targets": ["*"]
+  }] |
+  .bindings += [{
+    "role": "caller",
+    "members": ["node:" + $pid]
+  }]
+' policy.json > policy-updated.json
+```
+
+The resulting `policy-updated.json` contains your existing policy plus the new
+role and binding:
 
 ```json
 {
   "roles": [
+    {
+      "name": "mesh:role:router",
+      "allowed_publish": ["*"],
+      "allowed_targets": ["*"]
+    },
     {
       "name": "mesh:role:node",
       "allowed_services": ["system://mesh.catalog"],
@@ -172,6 +214,10 @@ invoking `mcp://calculator` and any inference model:
     }
   ],
   "bindings": [
+    {
+      "role": "mesh:role:router",
+      "members": ["user:system:serviceaccount:agentmesh:router"]
+    },
     {
       "role": "mesh:role:node",
       "members": ["mesh:system:authenticated"]
@@ -190,7 +236,7 @@ Post the updated policy back to `POST /policies`:
 curl -fsS -X POST https://mesh.example.com/policies \
   -H "Authorization: Bearer $AGENTMESH_ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
-  -d @policy.json
+  -d @policy-updated.json
 ```
 
 (You can also make this update in the web console under **Policy** by adding the
