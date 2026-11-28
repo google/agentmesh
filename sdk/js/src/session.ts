@@ -247,6 +247,8 @@ export class MeshSession {
   #refreshing: Promise<void> | undefined;
   /** A triggered pull is due and its timer has not fired yet. */
   #syncTriggered = false;
+  /** Counts sync timers fired; only the latest schedules the next periodic pull. */
+  #syncRuns = 0;
   #keepingRelay: Promise<void> | undefined;
   #keepRelayPending = false;
   readonly #heldRouterIds: Set<string>;
@@ -1063,7 +1065,9 @@ export class MeshSession {
 
   /** Asks for a pull soon, after a random delay so a fleet told at once does not pull at once. */
   triggerSync(): void {
-    if (this.#closed) {
+    // A triggered pull already due covers this event too, like a one-slot
+    // channel: a burst of events does not keep pushing its timer back.
+    if (this.#closed || this.#syncTriggered) {
       return;
     }
     this.#syncTriggered = true;
@@ -1074,6 +1078,7 @@ export class MeshSession {
     clearTimeout(this.#syncTimer);
     this.#syncTimer = setTimeout(() => {
       this.#syncTriggered = false;
+      const run = ++this.#syncRuns;
       // A pull in flight may have read the control plane before this one was
       // asked for, so it is not shared: this one starts when it ends.
       (this.#syncing ?? Promise.resolve())
@@ -1081,8 +1086,9 @@ export class MeshSession {
         .then(() => (this.#closed ? undefined : this.sync()))
         .catch(() => {})
         .finally(() => {
-          // A trigger that came in meanwhile keeps its own, earlier timer.
-          if (!this.#closed && this.#syncIntervalMs > 0 && !this.#syncTriggered) {
+          // A trigger that came in meanwhile keeps its own, earlier timer, and
+          // a pull queued behind this one schedules the next when it ends.
+          if (!this.#closed && this.#syncIntervalMs > 0 && !this.#syncTriggered && run === this.#syncRuns) {
             // Stretched by up to a tenth so a fleet started together does not pull together.
             this.#scheduleSync(this.#syncIntervalMs + Math.floor(Math.random() * (this.#syncIntervalMs / 10 + 1)));
           }
